@@ -7,6 +7,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+pub mod binary;
 pub mod cmd;
 pub mod collision;
 pub mod cvar;

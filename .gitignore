@@ -8,3 +8,4 @@ gamedata/
 tests/browser/node_modules/
 tests/browser/test-results/
 crates/q2-wasm/pkg/
+rust_out

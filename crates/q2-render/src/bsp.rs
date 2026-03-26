@@ -174,34 +174,7 @@ pub struct BspData {
     pub models: Vec<BspModel>,
 }
 
-// ---------------------------------------------------------------------------
-// Helpers — little-endian reading
-// ---------------------------------------------------------------------------
-
-/// Read a little-endian `u16` from a byte slice at the given offset.
-fn read_u16(data: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([data[off], data[off + 1]])
-}
-
-/// Read a little-endian `i16` from a byte slice at the given offset.
-fn read_i16(data: &[u8], off: usize) -> i16 {
-    i16::from_le_bytes([data[off], data[off + 1]])
-}
-
-/// Read a little-endian `u32` from a byte slice at the given offset.
-fn read_u32(data: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-}
-
-/// Read a little-endian `i32` from a byte slice at the given offset.
-fn read_i32(data: &[u8], off: usize) -> i32 {
-    i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-}
-
-/// Read a little-endian `f32` from a byte slice at the given offset.
-fn read_f32(data: &[u8], off: usize) -> f32 {
-    f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-}
+use q2_common::binary::{read_f32, read_i16, read_i32, read_u16, read_u32};
 
 /// Read a `Vec3f` (3 consecutive LE f32s).
 fn read_vec3(data: &[u8], off: usize) -> Vec3f {

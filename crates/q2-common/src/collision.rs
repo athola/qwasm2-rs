@@ -1621,44 +1621,7 @@ pub fn sign_bits_for_plane(normal: Vec3f) -> u8 {
     bits
 }
 
-// ---------------------------------------------------------------------------
-// Binary read helpers (little-endian)
-// ---------------------------------------------------------------------------
-
-fn read_u16(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-fn read_i16(data: &[u8], offset: usize) -> i16 {
-    i16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-fn read_i32(data: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
+use crate::binary::{read_f32, read_i16, read_i32, read_u16, read_u32};
 
 // ---------------------------------------------------------------------------
 // Tests
