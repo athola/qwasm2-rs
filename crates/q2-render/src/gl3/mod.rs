@@ -364,57 +364,47 @@ impl Renderer for Gl3Renderer {
 }
 
 /// Build a combined view-projection matrix from RefDef.
-/// Quake 2 coordinate system: +X=forward, +Y=left, +Z=up.
 fn build_view_projection(fd: &RefDef) -> [f32; 16] {
+    let proj = perspective_matrix(fd);
+    let view = view_matrix(fd);
+    mat4_mul(&proj, &view)
+}
+
+/// Standard perspective projection matrix.
+fn perspective_matrix(fd: &RefDef) -> [f32; 16] {
     let aspect = fd.width as f32 / fd.height.max(1) as f32;
     let fov_y_rad = (fd.fov_y.max(1.0)).to_radians();
     let near = 4.0;
     let far = 4096.0;
 
-    // Perspective matrix
     let f = 1.0 / (fov_y_rad / 2.0).tan();
     let nf = 1.0 / (near - far);
 
-    let proj = [
+    [
         f / aspect, 0.0,  0.0,                    0.0,
         0.0,        f,    0.0,                    0.0,
         0.0,        0.0,  (far + near) * nf,     -1.0,
         0.0,        0.0,  2.0 * far * near * nf,  0.0,
-    ];
+    ]
+}
 
-    // View matrix: translate by -vieworg, then rotate by -viewangles
-    // Q2 angles: pitch (X), yaw (Y), roll (Z)
+/// View matrix converting Q2 world coords to OpenGL eye coords.
+/// Q2: +X forward, +Y left, +Z up. OpenGL: -Z forward, +X right, +Y up.
+fn view_matrix(fd: &RefDef) -> [f32; 16] {
     let pitch = fd.viewangles.x.to_radians();
     let yaw = fd.viewangles.y.to_radians();
-    let _roll = fd.viewangles.z.to_radians();
 
     let (sp, cp) = (pitch.sin(), pitch.cos());
     let (sy, cy) = (yaw.sin(), yaw.cos());
 
-    // Q2 convention: +X forward, +Y left, +Z up
-    // OpenGL convention: -Z forward, +X right, +Y up
-    // View matrix converts Q2 world coords to OpenGL eye coords:
-    //   eye_right   = -sin(yaw), cos(yaw), 0
-    //   eye_up      = -sin(pitch)*cos(yaw), -sin(pitch)*sin(yaw), cos(pitch)
-    //   eye_forward = -cos(pitch)*cos(yaw), -cos(pitch)*sin(yaw), -sin(pitch)
+    // Basis vectors: eye_right, eye_up, eye_forward
+    let (rx, ry, rz) = (-sy, cy, 0.0f32);
+    let (ux, uy, uz) = (-sp * cy, -sp * sy, cp);
+    let (fx, fy, fz) = (-cp * cy, -cp * sy, -sp);
 
-    let rx = -sy;
-    let ry = cy;
-    let rz = 0.0f32;
+    let (tx, ty, tz) = (fd.vieworg.x, fd.vieworg.y, fd.vieworg.z);
 
-    let ux = -sp * cy;
-    let uy = -sp * sy;
-    let uz = cp;
-
-    let fx = -cp * cy;
-    let fy = -cp * sy;
-    let fz = -sp;
-
-    let tx = fd.vieworg.x;
-    let ty = fd.vieworg.y;
-    let tz = fd.vieworg.z;
-
-    let view = [
+    [
         rx,  ux,  fx,  0.0,
         ry,  uy,  fy,  0.0,
         rz,  uz,  fz,  0.0,
@@ -422,10 +412,7 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
         -(ux*tx + uy*ty + uz*tz),
         -(fx*tx + fy*ty + fz*tz),
         1.0,
-    ];
-
-    // Multiply proj * view
-    mat4_mul(&proj, &view)
+    ]
 }
 
 fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
@@ -441,10 +428,12 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
+/// Knuth multiplicative hash constant (golden ratio * 2^32).
+const KNUTH_HASH: usize = 2654435761;
+
 /// Assign a color to a face based on its texinfo index and lighting.
 fn face_color(texinfo_idx: usize, brightness: f32) -> (f32, f32, f32) {
-    // Use a simple hash to vary colors per-texture
-    let h = texinfo_idx.wrapping_mul(2654435761) & 0xFFFFFF;
+    let h = texinfo_idx.wrapping_mul(KNUTH_HASH) & 0xFFFFFF;
     let base_r = ((h >> 16) & 0xFF) as f32 / 255.0;
     let base_g = ((h >> 8) & 0xFF) as f32 / 255.0;
     let base_b = (h & 0xFF) as f32 / 255.0;
