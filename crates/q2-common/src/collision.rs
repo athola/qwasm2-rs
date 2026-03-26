@@ -1495,6 +1495,22 @@ impl CollisionMap {
         self.models.len()
     }
 
+    pub fn num_brushes(&self) -> usize {
+        self.brushes.len()
+    }
+
+    pub fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn num_leafs(&self) -> usize {
+        self.leafs.len()
+    }
+
+    pub fn num_planes(&self) -> usize {
+        self.planes.len()
+    }
+
     /// Get a specific model.
     pub fn model(&self, index: usize) -> Option<&CModel> {
         self.models.get(index)

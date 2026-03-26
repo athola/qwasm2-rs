@@ -41,10 +41,12 @@ pub struct PackFile {
 /// A loaded PAK archive.
 #[derive(Debug)]
 pub struct Pack {
-    /// Path to the .pak file on disk
+    /// Path to the .pak file on disk (empty for in-memory packs)
     pub path: PathBuf,
     /// Files in this pack, keyed by normalized name
     pub files: HashMap<String, PackFile>,
+    /// In-memory PAK data (for WASM where we fetch the whole file)
+    data: Option<Vec<u8>>,
 }
 
 /// A search path entry — either a directory or a PAK file.
@@ -149,11 +151,103 @@ impl Pack {
         Ok(Pack {
             path: path.to_path_buf(),
             files,
+            data: None,
+        })
+    }
+
+    /// Load a PAK from an in-memory byte buffer (for WASM where files are fetched).
+    pub fn load_from_bytes(name: &str, data: &[u8]) -> Q2Result<Self> {
+        if data.len() < 12 {
+            return Err(Q2Error::Drop(format!(
+                "{}: data too small for PAK header",
+                name
+            )));
+        }
+
+        let mut cursor = Cursor::new(data);
+
+        let magic = read_u32_le(&mut cursor)?;
+        if magic != PAK_MAGIC {
+            return Err(Q2Error::Drop(format!(
+                "{}: not a PAK file (magic: {:#010x})",
+                name, magic
+            )));
+        }
+
+        let dir_offset = read_u32_le(&mut cursor)?;
+        let dir_len = read_u32_le(&mut cursor)?;
+
+        if dir_len % PAK_DIR_ENTRY_SIZE != 0 {
+            return Err(Q2Error::Drop(format!(
+                "{}: invalid PAK directory length {}",
+                name, dir_len
+            )));
+        }
+
+        let num_files = (dir_len / PAK_DIR_ENTRY_SIZE) as usize;
+        if num_files > MAX_FILES_IN_PACK {
+            return Err(Q2Error::Drop(format!(
+                "{}: too many files ({} > {})",
+                name, num_files, MAX_FILES_IN_PACK
+            )));
+        }
+
+        cursor.seek(SeekFrom::Start(dir_offset as u64)).map_err(|e| {
+            Q2Error::Drop(format!("{}: can't seek to directory: {}", name, e))
+        })?;
+
+        let mut files = HashMap::with_capacity(num_files);
+
+        for _ in 0..num_files {
+            let mut name_buf = [0u8; 56];
+            cursor.read_exact(&mut name_buf).map_err(|e| {
+                Q2Error::Drop(format!("{}: truncated directory: {}", name, e))
+            })?;
+
+            let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(56);
+            let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
+            let normalized = normalize_path(&file_name);
+
+            let offset = read_u32_le(&mut cursor)?;
+            let size = read_u32_le(&mut cursor)?;
+
+            files.insert(
+                normalized.clone(),
+                PackFile {
+                    name: normalized,
+                    offset,
+                    size,
+                },
+            );
+        }
+
+        tracing::info!("Loaded PAK from memory: {} ({} files)", name, files.len());
+
+        Ok(Pack {
+            path: PathBuf::from(name),
+            files,
+            data: Some(data.to_vec()),
         })
     }
 
     /// Read a file from this PAK archive.
     pub fn read_file(&self, entry: &PackFile) -> Q2Result<Vec<u8>> {
+        let start = entry.offset as usize;
+        let end = start + entry.size as usize;
+
+        // In-memory mode (WASM)
+        if let Some(ref data) = self.data {
+            if end > data.len() {
+                return Err(Q2Error::Drop(format!(
+                    "{}: file '{}' extends past end of PAK",
+                    self.path.display(),
+                    entry.name
+                )));
+            }
+            return Ok(data[start..end].to_vec());
+        }
+
+        // Disk mode (native)
         let file = std::fs::File::open(&self.path)
             .map_err(|e| Q2Error::Drop(format!("can't open {}: {}", self.path.display(), e)))?;
         let mut reader = io::BufReader::new(file);
@@ -175,6 +269,11 @@ impl FileSystem {
             search_paths: Vec::new(),
             game_dir: game_dir.to_string(),
         }
+    }
+
+    /// Add a pre-loaded PAK directly (for WASM where data is fetched into memory).
+    pub fn add_pack(&mut self, pack: Pack) {
+        self.search_paths.push(SearchPath::Pack(pack));
     }
 
     /// Add a directory to the search path. Also loads any .pak files found in it.

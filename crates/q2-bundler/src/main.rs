@@ -139,96 +139,137 @@ fn generate_html(inlined_js: &str) -> String {
 <title>Qwasm2-rs</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ background: #1a1a2e; color: #e0e0e0; font-family: 'Courier New', monospace; }}
-  #container {{ max-width: 800px; margin: 40px auto; padding: 20px; }}
-  h1 {{ color: #e94560; margin-bottom: 20px; }}
+  body {{ background: #0a0a0a; color: #e0e0e0; font-family: 'Courier New', monospace; overflow: hidden; }}
+  #game-container {{ position: relative; width: 100vw; height: 100vh; }}
   canvas {{
-    width: 100%; max-width: 800px; height: 600px;
-    background: #16213e; border: 2px solid #0f3460;
-    display: block; margin: 20px 0;
+    width: 100%; height: 100%;
+    display: block;
+    background: #16213e;
+    cursor: crosshair;
   }}
-  #status {{ padding: 10px; background: #16213e; border: 1px solid #0f3460; margin: 10px 0; white-space: pre-wrap; font-size: 14px; max-height: 300px; overflow-y: auto; }}
+  #status-container {{
+    position: absolute; bottom: 0; left: 0; right: 0;
+    z-index: 10;
+  }}
+  #status-container.hidden {{ display: none; }}
+  #status-toolbar {{
+    display: flex; gap: 4px; padding: 4px 8px;
+    background: rgba(0, 0, 0, 0.95);
+    border-bottom: 1px solid #333;
+  }}
+  #status-toolbar button {{
+    background: #222; color: #aaa; border: 1px solid #444;
+    padding: 2px 8px; font-size: 11px; font-family: inherit;
+    cursor: pointer;
+  }}
+  #status-toolbar button:hover {{ background: #444; color: #fff; }}
+  #status {{
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.85);
+    white-space: pre-wrap; font-size: 13px;
+    max-height: 35vh; overflow-y: auto;
+    user-select: text; cursor: text;
+  }}
   .pass {{ color: #4ecca3; }}
   .fail {{ color: #e94560; }}
   .info {{ color: #a0a0d0; }}
-  button {{ background: #0f3460; color: #e0e0e0; border: 1px solid #e94560; padding: 8px 16px; cursor: pointer; font-family: inherit; margin: 4px; }}
-  button:hover {{ background: #e94560; }}
+  #hud {{
+    position: absolute; top: 8px; left: 12px;
+    font-size: 12px; color: #888; z-index: 10;
+    pointer-events: none;
+  }}
+  #click-prompt {{
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 18px; color: #e94560;
+    z-index: 20; text-align: center;
+  }}
+  #click-prompt.hidden {{ display: none; }}
 </style>
 </head>
 <body>
-<div id="container">
-  <h1>Qwasm2-rs</h1>
-  <div>
-    <button onclick="runSelfTest()">Run Self-Test</button>
-    <button onclick="checkWebGL()">Check WebGL2</button>
-    <button onclick="showEngineInfo()">Engine Info</button>
+<div id="game-container">
+  <canvas id="canvas"></canvas>
+  <div id="hud"></div>
+  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
+  <div id="status-container">
+    <div id="status-toolbar">
+      <button onclick="copyLog()">Copy to clipboard</button>
+      <button onclick="saveLog()">Save to file</button>
+      <button onclick="clearLog()">Clear</button>
+      <span style="color:#555;font-size:11px;margin-left:auto">` to toggle</span>
+    </div>
+    <div id="status"><span class="info">Loading engine...</span></div>
   </div>
-  <canvas id="canvas" width="800" height="600"></canvas>
-  <div id="status"><span class="info">Loading WASM module...</span></div>
 </div>
 
 <script type="module">
 {inlined_js}
 
-const statusEl = document.getElementById('status');
-
-function log(msg, cls = 'info') {{
-  const span = document.createElement('span');
-  span.className = cls;
-  span.textContent = msg + '\n';
-  statusEl.appendChild(span);
-  statusEl.scrollTop = statusEl.scrollHeight;
+// Resize canvas to window
+function resize() {{
+  const canvas = document.getElementById('canvas');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
 }}
+resize();
+window.addEventListener('resize', resize);
 
-// Expose to global scope for button onclick handlers
-window.runSelfTest = function() {{
-  try {{
-    const result = self_test();
-    if (result === 'PASS') {{
-      log('Self-test: PASS', 'pass');
-    }} else {{
-      log('Self-test: ' + result, 'fail');
-    }}
-  }} catch (e) {{
-    log('Self-test error: ' + e, 'fail');
+// Hide click prompt on pointer lock
+document.addEventListener('pointerlockchange', () => {{
+  const el = document.getElementById('click-prompt');
+  if (document.pointerLockElement) {{
+    el.classList.add('hidden');
+  }} else {{
+    el.classList.remove('hidden');
   }}
+}});
+
+// Toggle status log with backtick
+document.addEventListener('keydown', (e) => {{
+  if (e.code === 'Backquote') {{
+    document.getElementById('status-container').classList.toggle('hidden');
+  }}
+}});
+
+// Log utilities
+window.copyLog = function() {{
+  const text = document.getElementById('status').innerText;
+  navigator.clipboard.writeText(text).then(() => {{
+    const btn = document.querySelector('#status-toolbar button');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1000);
+  }});
 }};
 
-window.checkWebGL = function() {{
-  try {{
-    log(check_webgl2());
-  }} catch (e) {{
-    log('WebGL check error: ' + e, 'fail');
-  }}
+window.saveLog = function() {{
+  const text = document.getElementById('status').innerText;
+  const blob = new Blob([text], {{ type: 'text/plain' }});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'qwasm2-log-' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.txt';
+  a.click();
+  URL.revokeObjectURL(url);
 }};
 
-window.showEngineInfo = function() {{
-  try {{
-    log(engine_info());
-  }} catch (e) {{
-    log('Engine info error: ' + e, 'fail');
-  }}
+window.clearLog = function() {{
+  document.getElementById('status').innerHTML = '';
 }};
 
-// Initialize WASM module
+// Initialize and start game
 try {{
   await init();
-  log('WASM module loaded: ' + engine_version(), 'pass');
 
-  // Auto-run self-test
-  window.runSelfTest();
-  window.checkWebGL();
+  // Determine pak URL — if served by devserver, fetch from /gamedata/
+  const pakUrl = '/gamedata/baseq2/pak0.pak';
 
-  // Playwright test hooks (same scope so functions are accessible)
-  document.getElementById('wasm-loaded').textContent = 'true';
-  try {{
-    document.getElementById('self-test-result').textContent = self_test();
-  }} catch(e) {{
-    document.getElementById('self-test-result').textContent = 'ERROR: ' + e;
-  }}
+  await start_game('canvas', pakUrl);
 }} catch (e) {{
-  log('Failed to initialize WASM: ' + e, 'fail');
-  document.getElementById('self-test-result').textContent = 'ERROR: ' + e;
+  const statusEl = document.getElementById('status');
+  statusEl.innerHTML += '<span class="fail">ERROR: ' + e + '</span>\n';
+  console.error('[qwasm2-rs]', e);
 }}
 </script>
 

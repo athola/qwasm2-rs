@@ -1980,6 +1980,7 @@ name = "q2-devserver"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
@@ -2062,10 +2063,16 @@ dependencies = [
 name = "q2-wasm"
 version = "0.1.0"
 dependencies = [
+ "glow",
  "js-sys",
+ "q2-client",
  "q2-common",
+ "q2-platform",
+ "q2-render",
+ "q2-render-api",
  "q2-shared",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 
