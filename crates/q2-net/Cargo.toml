@@ -1,0 +1,13 @@
+[package]
+name = "q2-net"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+q2-common = { path = "../q2-common" }
+matchbox_socket = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

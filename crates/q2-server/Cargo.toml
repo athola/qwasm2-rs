@@ -1,0 +1,13 @@
+[package]
+name = "q2-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+q2-common = { path = "../q2-common" }
+q2-game = { path = "../q2-game" }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

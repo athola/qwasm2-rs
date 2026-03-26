@@ -1,0 +1,15 @@
+[package]
+name = "q2-shared"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glam = { workspace = true }
+bitflags = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,7 @@
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"
+
+[target.'cfg(all())']
+rustflags = [
+    "-W", "clippy::undocumented_unsafe_blocks",
+]

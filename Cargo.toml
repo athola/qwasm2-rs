@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/q2-shared",
+    "crates/q2-common",
+    "crates/q2-game",
+    "crates/q2-server",
+    "crates/q2-client",
+    "crates/q2-render-api",
+    "crates/q2-render",
+    "crates/q2-platform",
+    "crates/q2-net",
+    "crates/q2-bin",
+    "crates/q2-devserver",
+    "crates/q2-wasm",
+    "crates/q2-bundler",
+]
+
+[workspace.dependencies]
+glam = { version = "0.29", features = ["serde"] }
+bitflags = "2"
+slotmap = "1"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "2"
+anyhow = "1"
+glow = "0.16"
+matchbox_socket = "0.14"
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+js-sys = "0.3"
+cpal = "0.15"
+lewton = "0.10"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+base64 = "0.22"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"

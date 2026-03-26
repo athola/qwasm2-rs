@@ -1,0 +1,13 @@
+[package]
+name = "q2-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+bitflags = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "q2-render-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+
+[lints]
+workspace = true

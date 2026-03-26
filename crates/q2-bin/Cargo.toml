@@ -1,0 +1,25 @@
+[package]
+name = "q2-bin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "qwasm2"
+path = "src/main.rs"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+q2-common = { path = "../q2-common" }
+q2-game = { path = "../q2-game" }
+q2-server = { path = "../q2-server" }
+q2-client = { path = "../q2-client" }
+q2-render-api = { path = "../q2-render-api" }
+q2-render = { path = "../q2-render" }
+q2-platform = { path = "../q2-platform" }
+q2-net = { path = "../q2-net" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

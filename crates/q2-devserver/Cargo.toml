@@ -1,0 +1,17 @@
+[package]
+name = "q2-devserver"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "q2-devserver"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

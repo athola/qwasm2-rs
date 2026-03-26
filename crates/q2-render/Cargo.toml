@@ -1,0 +1,14 @@
+[package]
+name = "q2-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+q2-common = { path = "../q2-common" }
+q2-render-api = { path = "../q2-render-api" }
+glow = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

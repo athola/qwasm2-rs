@@ -1,0 +1,2 @@
+# Clippy configuration for qwasm2-rs
+# Unsafe block documentation is enforced via workspace lints in Cargo.toml

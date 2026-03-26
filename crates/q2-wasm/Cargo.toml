@@ -1,0 +1,28 @@
+[package]
+name = "q2-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Qwasm2-rs WASM entry point — cdylib target for wasm-pack"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+q2-shared = { path = "../q2-shared" }
+q2-common = { path = "../q2-common" }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Node",
+    "Performance",
+    "WebGl2RenderingContext",
+    "Window",
+] }
+js-sys = { workspace = true }
+
+[lints]
+workspace = true

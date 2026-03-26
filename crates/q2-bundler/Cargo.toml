@@ -1,0 +1,16 @@
+[package]
+name = "q2-bundler"
+version = "0.1.0"
+edition = "2021"
+description = "Bundles WASM + JS glue into a single self-contained HTML file"
+
+[[bin]]
+name = "q2-bundler"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+base64 = "0.22"
+
+[lints]
+workspace = true
