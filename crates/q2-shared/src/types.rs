@@ -52,7 +52,7 @@ impl Default for EntityState {
 // Player‐movement type enum — replaces pmtype_t
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 pub enum PmType {
     #[default]
     Normal,

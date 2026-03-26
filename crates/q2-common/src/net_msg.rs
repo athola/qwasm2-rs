@@ -187,6 +187,20 @@ impl NetMsg {
         &self.data
     }
 
+    /// Current read cursor position.
+    pub fn read_position(&self) -> usize {
+        self.read_pos
+    }
+
+    /// Return a slice of all data from the current read position to the end.
+    pub fn remaining_data(&self) -> &[u8] {
+        if self.read_pos >= self.data.len() {
+            &[]
+        } else {
+            &self.data[self.read_pos..]
+        }
+    }
+
     // ----- Write operations (append to buffer) -----
 
     /// Write a signed byte (1 byte).
