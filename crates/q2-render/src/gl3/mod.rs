@@ -154,8 +154,13 @@ impl Gl3Renderer {
         let vertex_count = (verts.len() / 6) as i32;
         tracing::info!("GL3: uploading {} triangles ({} verts)", vertex_count / 3, vertex_count);
 
+        // SAFETY: All glow GL calls require unsafe. `verts` is a live
+        // `Vec<f32>` whose backing allocation is valid for the duration of this
+        // block. `f32` has no padding, and `verts.len() * size_of::<f32>()`
+        // cannot overflow because `Vec` guarantees its allocation fits in
+        // `isize`. The resulting `&[u8]` borrows `verts` immutably and is
+        // consumed by `buffer_data_u8_slice` before `verts` is dropped.
         unsafe {
-            // SAFETY(ffi): glow GL calls require unsafe. Creating VAO/VBO.
             let vao = gl.create_vertex_array().expect("create VAO");
             let vbo = gl.create_buffer().expect("create VBO");
 
@@ -164,7 +169,7 @@ impl Gl3Renderer {
 
             let bytes: &[u8] = core::slice::from_raw_parts(
                 verts.as_ptr() as *const u8,
-                verts.len() * 4,
+                verts.len() * core::mem::size_of::<f32>(),
             );
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
 
@@ -188,8 +193,8 @@ impl Gl3Renderer {
 
     /// Compile the world shader program.
     fn compile_shaders(gl: &glow::Context) -> Option<glow::Program> {
+        // SAFETY: glow shader compilation calls require unsafe.
         unsafe {
-            // SAFETY(ffi): glow shader compilation calls.
             let program = gl.create_program().ok()?;
 
             let vs_src = r#"#version 300 es
@@ -240,6 +245,9 @@ impl Gl3Renderer {
             if !gl.get_program_link_status(program) {
                 let log = gl.get_program_info_log(program);
                 tracing::error!("Program link error: {}", log);
+                gl.delete_shader(vs);
+                gl.delete_shader(fs);
+                gl.delete_program(program);
                 return None;
             }
 
@@ -258,12 +266,11 @@ impl Default for Gl3Renderer {
 }
 
 impl Renderer for Gl3Renderer {
-    fn init(&mut self, width: i32, height: i32) -> bool {
+    fn init(&mut self, width: i32, height: i32) -> Result<(), String> {
         let gl = match &self.gl {
             Some(gl) => gl,
             None => {
-                tracing::warn!("GL3Renderer::init called without a GL context");
-                return false;
+                return Err("GL3Renderer::init called without a GL context".into());
             }
         };
 
@@ -273,20 +280,19 @@ impl Renderer for Gl3Renderer {
         // Compile shaders
         self.world_program = Self::compile_shaders(gl);
         if self.world_program.is_none() {
-            tracing::error!("Failed to compile world shaders");
-            return false;
+            return Err("Failed to compile world shaders".into());
         }
 
         // Get uniform location
         if let Some(prog) = &self.world_program {
+            // SAFETY: glow uniform lookup requires unsafe.
             unsafe {
-                // SAFETY(ffi): glow uniform lookup.
                 self.u_view_proj = gl.get_uniform_location(*prog, "u_view_proj");
             }
         }
 
+        // SAFETY: glow GL state setup requires unsafe.
         unsafe {
-            // SAFETY(ffi): glow GL state setup.
             gl.viewport(0, 0, width, height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
             gl.enable(glow::DEPTH_TEST);
@@ -297,7 +303,7 @@ impl Renderer for Gl3Renderer {
 
         self.initialized = true;
         tracing::info!("GL3 renderer initialized ({}x{})", width, height);
-        true
+        Ok(())
     }
 
     fn shutdown(&mut self) {
@@ -305,8 +311,8 @@ impl Renderer for Gl3Renderer {
     }
 
     fn begin_registration(&mut self, _map_name: &str) {}
-    fn register_model(&mut self, _name: &str) -> ModelHandle { ModelHandle(0) }
-    fn register_image(&mut self, _name: &str, _img_type: ImageType) -> ImageHandle { ImageHandle(0) }
+    fn register_model(&mut self, _name: &str) -> ModelHandle { ModelHandle::NONE }
+    fn register_image(&mut self, _name: &str, _img_type: ImageType) -> ImageHandle { ImageHandle::NONE }
     fn end_registration(&mut self) {}
 
     fn render_frame(
@@ -321,9 +327,9 @@ impl Renderer for Gl3Renderer {
             None => return,
         };
 
+        // SAFETY: glow GL draw calls require unsafe.
         unsafe {
-            // SAFETY(ffi): glow GL draw calls.
-            gl.viewport(0, 0, fd.width.max(self.width), fd.height.max(self.height));
+            gl.viewport(0, 0, fd.width, fd.height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
@@ -334,8 +340,8 @@ impl Renderer for Gl3Renderer {
         {
             let vp = build_view_projection(fd);
 
+            // SAFETY: glow draw calls require unsafe.
             unsafe {
-                // SAFETY(ffi): glow draw calls.
                 gl.use_program(Some(*prog));
                 gl.uniform_matrix_4_f32_slice(Some(u_loc), false, &vp);
                 gl.bind_vertex_array(Some(mesh.vao));
@@ -353,6 +359,7 @@ impl Renderer for Gl3Renderer {
 
     fn clear_screen(&mut self) {
         if let Some(gl) = &self.gl {
+            // SAFETY: glow GL calls require unsafe — clearing the framebuffer.
             unsafe {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
@@ -398,7 +405,7 @@ fn view_matrix(fd: &RefDef) -> [f32; 16] {
     let (sy, cy) = (yaw.sin(), yaw.cos());
 
     // Basis vectors: eye_right, eye_up, eye_forward
-    let (rx, ry, rz) = (-sy, cy, 0.0f32);
+    let (rx, ry, rz) = (sy, -cy, 0.0f32);
     let (ux, uy, uz) = (-sp * cy, -sp * sy, cp);
     let (fx, fy, fz) = (-cp * cy, -cp * sy, -sp);
 
@@ -419,10 +426,10 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut r = [0.0f32; 16];
     for i in 0..4 {
         for j in 0..4 {
-            r[j * 4 + i] = a[0 * 4 + i] * b[j * 4 + 0]
-                         + a[1 * 4 + i] * b[j * 4 + 1]
-                         + a[2 * 4 + i] * b[j * 4 + 2]
-                         + a[3 * 4 + i] * b[j * 4 + 3];
+            r[j * 4 + i] = a[i] * b[j * 4]
+                         + a[4 + i] * b[j * 4 + 1]
+                         + a[8 + i] * b[j * 4 + 2]
+                         + a[12 + i] * b[j * 4 + 3];
         }
     }
     r
@@ -452,22 +459,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renderer_trait_object() {
-        let renderer = Gl3Renderer::new();
-        let _boxed: Box<dyn Renderer> = Box::new(renderer);
-    }
-
-    #[test]
-    fn renderer_default() {
-        let r = Gl3Renderer::default();
+    fn renderer_new_is_uninitialized() {
+        let r = Gl3Renderer::new();
         assert!(!r.initialized);
         assert_eq!(r.width, 0);
+        assert_eq!(r.height, 0);
+        // Also proves object safety: Gl3Renderer implements Renderer
+        let _boxed: Box<dyn Renderer> = Box::new(r);
     }
 
     #[test]
     fn init_fails_without_context() {
         let mut r = Gl3Renderer::new();
-        assert!(!r.init(800, 600));
+        assert!(r.init(800, 600).is_err());
     }
 
     #[test]
@@ -489,5 +493,111 @@ mod tests {
         assert_eq!(r1, r2);
         assert_eq!(g1, g2);
         assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn face_color_in_range() {
+        // All outputs must be in [0.0, 1.0] for any index and brightness
+        for idx in [0, 1, 42, 255, 1000, usize::MAX / 2] {
+            for &brightness in &[0.0, 0.5, 1.0, 2.0] {
+                let (r, g, b) = face_color(idx, brightness);
+                assert!(r >= 0.0 && r <= 1.0, "r={r} out of range for idx={idx}, brightness={brightness}");
+                assert!(g >= 0.0 && g <= 1.0, "g={g} out of range for idx={idx}, brightness={brightness}");
+                assert!(b >= 0.0 && b <= 1.0, "b={b} out of range for idx={idx}, brightness={brightness}");
+            }
+        }
+    }
+
+    #[test]
+    fn face_color_different_indices_differ() {
+        let c0 = face_color(0, 1.0);
+        let c1 = face_color(1, 1.0);
+        // Different texinfo indices should produce different colors
+        assert_ne!(c0, c1);
+    }
+
+    #[test]
+    fn perspective_matrix_basic_properties() {
+        let fd = RefDef {
+            width: 800,
+            height: 600,
+            fov_y: 73.74,
+            ..Default::default()
+        };
+        let p = perspective_matrix(&fd);
+        // Column-major: p[0] is m00 (x-scale), p[5] is m11 (y-scale)
+        assert!(p[0] > 0.0, "x-scale must be positive");
+        assert!(p[5] > 0.0, "y-scale must be positive");
+        // p[15] should be 0 for a perspective projection (w-component)
+        assert_eq!(p[15], 0.0);
+        // p[11] should be -1 for perspective divide
+        assert_eq!(p[11], -1.0);
+    }
+
+    #[test]
+    fn view_matrix_identity_at_origin() {
+        let fd = RefDef {
+            vieworg: Vec3f::ZERO,
+            viewangles: Vec3f::new(0.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let v = view_matrix(&fd);
+        // With zero position, the translation column (indices 12,13,14) should be ~0
+        assert!(v[12].abs() < 1e-6, "tx={}", v[12]);
+        assert!(v[13].abs() < 1e-6, "ty={}", v[13]);
+        assert!(v[14].abs() < 1e-6, "tz={}", v[14]);
+        // v[15] should be 1.0
+        assert!((v[15] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn build_view_projection_produces_valid_matrix() {
+        let fd = RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y: 73.74,
+            vieworg: Vec3f::new(100.0, 200.0, 50.0),
+            viewangles: Vec3f::new(10.0, 45.0, 0.0),
+            ..Default::default()
+        };
+        let vp = build_view_projection(&fd);
+        // Should not contain NaN or infinity
+        for (i, &val) in vp.iter().enumerate() {
+            assert!(val.is_finite(), "vp[{i}]={val} is not finite");
+        }
+    }
+
+    #[test]
+    fn load_bsp_no_gl_returns_early() {
+        let mut r = Gl3Renderer::new();
+        // No GL context set — load_bsp should return without panicking
+        let bsp = BspData {
+            vertices: vec![],
+            edges: vec![],
+            surface_edges: vec![],
+            faces: vec![],
+            planes: vec![],
+            texinfo: vec![],
+            models: vec![],
+            entities: String::new(),
+            visibility: vec![],
+            nodes: vec![],
+            lightmap_data: vec![],
+            leafs: vec![],
+            leaf_faces: vec![],
+        };
+        r.load_bsp(&bsp);
+        assert!(r.world_mesh.is_none());
+    }
+
+    #[test]
+    fn set_gl_context_stores_context_presence() {
+        let mut r = Gl3Renderer::new();
+        assert!(r.gl.is_none());
+        // We can't create a real glow::Context in unit tests without a
+        // GL backend, but we verify the initial state and that init fails
+        // without one — which implicitly validates set_gl_context's role.
+        assert!(r.init(800, 600).is_err());
     }
 }

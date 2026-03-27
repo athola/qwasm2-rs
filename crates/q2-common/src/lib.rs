@@ -15,6 +15,8 @@ pub mod error;
 pub mod filesystem;
 pub mod netchan;
 pub mod net_msg;
+pub mod player_ctrl;
 pub mod pmove;
 pub mod zone;
 pub use error::{Q2Error, Q2Result};
+pub use q2_shared::CVarHandle;

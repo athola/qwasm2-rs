@@ -97,6 +97,12 @@ impl std::fmt::Debug for ServerWorld {
     }
 }
 
+impl Default for ServerWorld {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServerWorld {
     /// Create a new, empty world. Call `clear()` with the world bounds after
     /// loading a map to build the area tree.

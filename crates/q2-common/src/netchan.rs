@@ -49,10 +49,6 @@ pub struct NetChan {
     pub reliable_buf: NetMsg,
     /// `true` while we have reliable data in `reliable_buf` awaiting acknowledgment.
     pub reliable_pending: bool,
-    /// The reliable-sequence bit we last sent (mirrors `reliable_sequence`).
-    /// The remote echoes this back to acknowledge receipt.
-    pub last_sent_reliable: bool,
-
     // --- Incoming reliable tracking ---
     /// Toggles each time a reliable message is received from the remote side.
     pub incoming_reliable_sequence: u32,
@@ -88,7 +84,6 @@ impl NetChan {
             last_reliable_sequence: 0,
             reliable_buf: NetMsg::new(),
             reliable_pending: false,
-            last_sent_reliable: false,
             incoming_reliable_sequence: 0,
             incoming_reliable_acknowledged: 0,
             message_buf: NetMsg::new(),
@@ -180,7 +175,6 @@ impl NetChan {
         if send_reliable {
             send.write_data(self.reliable_buf.data());
             self.last_reliable_sequence = self.outgoing_sequence;
-            self.last_sent_reliable = true;
         }
 
         // Append unreliable data if there's room.
@@ -475,23 +469,14 @@ mod tests {
         assert!(chan.can_reliable());
     }
 
-    // Additional: can_reliable returns false after queueing
     #[test]
-    fn can_reliable_false_after_queue() {
+    fn can_reliable_true_while_staging_not_promoted() {
         let mut chan = NetChan::new(100);
         chan.queue_reliable(b"stuff");
-        // Data is staged but not yet promoted — can_reliable checks both.
-        // message_buf is not empty, but reliable_buf is empty and pending is false.
-        // Actually can_reliable only checks reliable_pending and reliable_buf.
-        // With our impl, message_buf data means it hasn't been promoted yet,
-        // so can_reliable would say true. But semantically we shouldn't queue
-        // more until the first one goes through... Let's verify the actual behavior.
-        //
-        // After queue_reliable, message_buf has data. can_reliable checks
-        // reliable_pending (false) and reliable_buf.is_empty() (true).
-        // So can_reliable returns true. That's correct — the C code also
-        // allows writing more into the message buffer at any time via
-        // MSG_Write* on &chan->message.
+        // Data is staged in message_buf but not yet promoted to reliable_buf.
+        // can_reliable checks reliable_pending and reliable_buf, both clear,
+        // so it returns true — matching the C code which allows writing more
+        // into &chan->message at any time.
         assert!(chan.can_reliable(), "can still add more to staging buffer");
     }
 }

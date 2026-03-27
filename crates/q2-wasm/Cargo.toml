@@ -1,6 +1,6 @@
 [package]
 name = "q2-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Qwasm2-rs WASM entry point — cdylib target for wasm-pack"
 
@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 q2-shared = { path = "../q2-shared" }
 q2-common = { path = "../q2-common" }
+q2-game = { path = "../q2-game" }
 q2-client = { path = "../q2-client" }
 q2-render = { path = "../q2-render" }
 q2-render-api = { path = "../q2-render-api" }

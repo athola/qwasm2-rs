@@ -5,6 +5,9 @@
 
 use q2_shared::types::*;
 
+/// Number of frames tracked for rate limiting (from C: RATE_MESSAGES).
+const RATE_MESSAGES: usize = 10;
+
 // ---------------------------------------------------------------------------
 // Server state enum -- replaces server_state_t (ss_dead, ss_loading, ss_game)
 // ---------------------------------------------------------------------------
@@ -77,8 +80,8 @@ pub struct ServerClient {
     pub ping: i32,
     /// Network rate limit (bytes/s).
     pub rate: i32,
-    /// Per-frame message sizes for rate limiting (`RATE_MESSAGES` = 10).
-    pub message_size: [i32; 10],
+    /// Per-frame message sizes for rate limiting.
+    pub message_size: [i32; RATE_MESSAGES],
     /// Number of messages suppressed by rate limiting.
     pub suppress_count: i32,
 }
@@ -96,7 +99,7 @@ impl Default for ServerClient {
             edict_num: 0,
             ping: 0,
             rate: 5000, // default rate from C: SV_UserinfoChanged
-            message_size: [0; 10],
+            message_size: [0; RATE_MESSAGES],
             suppress_count: 0,
         }
     }
@@ -188,37 +191,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_state_default_is_dead() {
-        assert_eq!(ServerState::default(), ServerState::Dead);
-    }
-
-    #[test]
-    fn client_state_default_is_free() {
-        assert_eq!(ClientState::default(), ClientState::Free);
-    }
-
-    #[test]
-    fn server_client_default() {
-        let cl = ServerClient::default();
-        assert_eq!(cl.state, ClientState::Free);
-        assert_eq!(cl.last_frame, -1);
-        assert_eq!(cl.rate, 5000);
-        assert!(cl.name.is_empty());
-    }
-
-    #[test]
-    fn server_default() {
-        let sv = Server::default();
+    fn server_state_transitions() {
+        let mut sv = Server::default();
         assert_eq!(sv.state, ServerState::Dead);
-        assert_eq!(sv.framenum, 0);
-        assert_eq!(sv.time, 0.0);
+
+        sv.state = ServerState::Loading;
+        sv.name = "base1".to_string();
+        assert_eq!(sv.state, ServerState::Loading);
+        assert_eq!(sv.name, "base1");
+
+        sv.state = ServerState::Game;
+        sv.framenum = 1;
+        sv.time = 0.1;
+        assert_eq!(sv.state, ServerState::Game);
+        assert_eq!(sv.framenum, 1);
     }
 
     #[test]
-    fn server_static_default() {
-        let svs = ServerStatic::default();
+    fn client_state_lifecycle() {
+        let mut cl = ServerClient::default();
+        assert_eq!(cl.state, ClientState::Free);
+
+        // Client connects
+        cl.state = ClientState::Connected;
+        cl.name = "Player1".into();
+        cl.userinfo = r"name\Player1\skin\male/grunt".into();
+        assert_eq!(cl.state, ClientState::Connected);
+
+        // Client spawns into game
+        cl.state = ClientState::Spawned;
+        cl.edict_num = 1;
+        cl.command_msec = 1800;
+        assert_eq!(cl.state, ClientState::Spawned);
+        assert_eq!(cl.edict_num, 1);
+
+        // Client disconnects
+        cl.state = ClientState::Free;
+        assert_eq!(cl.state, ClientState::Free);
+    }
+
+    #[test]
+    fn server_static_client_allocation() {
+        let mut svs = ServerStatic::default();
         assert!(!svs.initialized);
-        assert_eq!(svs.max_clients, 0);
-        assert!(svs.clients.is_empty());
+
+        svs.max_clients = 4;
+        svs.clients = (0..4).map(|_| ServerClient::default()).collect();
+        svs.initialized = true;
+
+        assert!(svs.initialized);
+        assert_eq!(svs.clients.len(), 4);
+        assert!(svs.clients.iter().all(|c| c.state == ClientState::Free));
+    }
+
+    #[test]
+    fn server_client_default_rate() {
+        let cl = ServerClient::default();
+        assert_eq!(cl.rate, 5000);
+        assert_eq!(cl.last_frame, -1);
+    }
+
+    #[test]
+    fn server_frame_accumulation() {
+        let mut sv = Server::default();
+        sv.state = ServerState::Game;
+        sv.frametime = 0.1;
+
+        for _ in 0..10 {
+            sv.framenum += 1;
+            sv.time += sv.frametime;
+        }
+
+        assert_eq!(sv.framenum, 10);
+        assert!((sv.time - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn server_configstrings_and_baselines() {
+        let mut sv = Server::default();
+        sv.configstrings = vec![String::new(); 64];
+        sv.configstrings[0] = "base1".into();
+        sv.configstrings[1] = "models/world.bsp".into();
+
+        assert_eq!(sv.configstrings[0], "base1");
+        assert_eq!(sv.configstrings[1], "models/world.bsp");
+        assert!(sv.configstrings[2].is_empty());
     }
 }

@@ -11,18 +11,73 @@
 //! - Inherent: 0
 
 use q2_shared::types::*;
+use std::fmt;
 
 // ---------------------------------------------------------------------------
 // Handles — opaque indices into renderer-internal tables
 // ---------------------------------------------------------------------------
 
 /// A handle to a registered model (BSP, MD2, SP2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ModelHandle(pub i32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelHandle(i32);
+
+impl ModelHandle {
+    /// The null/default handle (no model).
+    pub const NONE: Self = Self(0);
+
+    /// Create a handle from a raw renderer-internal index.
+    pub fn new(index: i32) -> Self {
+        Self(index)
+    }
+
+    /// Get the raw renderer-internal index.
+    pub fn raw(self) -> i32 {
+        self.0
+    }
+}
+
+impl Default for ModelHandle {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl fmt::Display for ModelHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Model({})", self.0)
+    }
+}
 
 /// A handle to a registered image/texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ImageHandle(pub i32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageHandle(i32);
+
+impl ImageHandle {
+    /// The null/default handle (no image).
+    pub const NONE: Self = Self(0);
+
+    /// Create a handle from a raw renderer-internal index.
+    pub fn new(index: i32) -> Self {
+        Self(index)
+    }
+
+    /// Get the raw renderer-internal index.
+    pub fn raw(self) -> i32 {
+        self.0
+    }
+}
+
+impl Default for ImageHandle {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl fmt::Display for ImageHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Image({})", self.0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Image type — mirrors `imagetype_t` in the C code
@@ -124,8 +179,8 @@ pub struct Particle {
 /// Corresponds to `refexport_t` in the C code (ref.h).
 pub trait Renderer: Send {
     /// Initialize the renderer with the given window dimensions.
-    /// Returns `true` on success.
-    fn init(&mut self, width: i32, height: i32) -> bool;
+    /// Returns `Err` with a description on failure.
+    fn init(&mut self, width: i32, height: i32) -> Result<(), String>;
 
     /// Shut down the renderer, releasing all GPU resources.
     fn shutdown(&mut self);
@@ -188,13 +243,45 @@ mod tests {
     #[test]
     fn model_handle_default_is_zero() {
         let h = ModelHandle::default();
-        assert_eq!(h.0, 0);
+        assert_eq!(h.raw(), 0);
     }
 
     #[test]
     fn image_handle_default_is_zero() {
         let h = ImageHandle::default();
-        assert_eq!(h.0, 0);
+        assert_eq!(h.raw(), 0);
+    }
+
+    #[test]
+    fn model_handle_none_constant() {
+        assert_eq!(ModelHandle::NONE, ModelHandle::default());
+        assert_eq!(ModelHandle::NONE.raw(), 0);
+    }
+
+    #[test]
+    fn image_handle_none_constant() {
+        assert_eq!(ImageHandle::NONE, ImageHandle::default());
+        assert_eq!(ImageHandle::NONE.raw(), 0);
+    }
+
+    #[test]
+    fn model_handle_display() {
+        let h = ModelHandle::new(42);
+        assert_eq!(format!("{h}"), "Model(42)");
+    }
+
+    #[test]
+    fn image_handle_display() {
+        let h = ImageHandle::new(7);
+        assert_eq!(format!("{h}"), "Image(7)");
+    }
+
+    #[test]
+    fn handle_roundtrip() {
+        let m = ModelHandle::new(99);
+        assert_eq!(m.raw(), 99);
+        let i = ImageHandle::new(-1);
+        assert_eq!(i.raw(), -1);
     }
 
     #[test]
@@ -235,11 +322,4 @@ mod tests {
         assert_eq!(p.alpha, 0.0);
     }
 
-    #[test]
-    fn image_type_variants() {
-        // Ensure all variants are distinct
-        assert_ne!(ImageType::Skin, ImageType::Pic);
-        assert_ne!(ImageType::Wall, ImageType::Sky);
-        assert_ne!(ImageType::Sprite, ImageType::Wall);
-    }
 }

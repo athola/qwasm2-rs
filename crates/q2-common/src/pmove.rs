@@ -166,9 +166,9 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
 
     let forward = Vec3f::new(cp * cy, cp * sy, -sp);
     let right = Vec3f::new(
-        (-1.0 * sr * sp * cy) + (-1.0 * cr * -sy),
-        (-1.0 * sr * sp * sy) + (-1.0 * cr * cy),
-        -1.0 * sr * cp,
+        -(sr * sp * cy) + (cr * sy),
+        -(sr * sp * sy) + -(cr * cy),
+        -sr * cp,
     );
     let up = Vec3f::new(
         cr * sp * cy + -sr * -sy,
@@ -241,8 +241,8 @@ fn pm_slide_move(pm: &mut Pmove, pml: &mut PmLocal) -> bool {
             pml.velocity = pm_clip_velocity(pml.velocity, planes[i], 1.01);
 
             let mut ok = true;
-            for j in 0..numplanes {
-                if j != i && pml.velocity.dot(planes[j]) < 0.0 {
+            for (j, plane) in planes[..numplanes].iter().enumerate() {
+                if j != i && pml.velocity.dot(*plane) < 0.0 {
                     ok = false;
                     break;
                 }
@@ -350,7 +350,7 @@ fn pm_friction(pm: &mut Pmove, pml: &mut PmLocal) {
         && pml
             .ground_surface
             .as_ref()
-            .map_or(true, |s| (s.flags & SURF_SLICK) == 0);
+            .is_none_or(|s| (s.flags & SURF_SLICK) == 0);
     if on_ground_non_slick || pml.ladder {
         let control = if speed < PM_STOPSPEED {
             PM_STOPSPEED
@@ -769,9 +769,9 @@ fn pm_check_duck(pm: &mut Pmove, pml: &PmLocal) {
 
     pm.mins.z = -24.0;
 
-    if pm.s.pm_type == PmType::Dead {
-        pm.s.pm_flags |= PMF_DUCKED;
-    } else if pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0 {
+    if pm.s.pm_type == PmType::Dead
+        || (pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0)
+    {
         pm.s.pm_flags |= PMF_DUCKED;
     } else {
         // Try to stand up if currently ducked.
@@ -939,37 +939,36 @@ fn pm_snap_position(pm: &mut Pmove, pml: &PmLocal) {
     static JITTERBITS: [i32; 8] = [0, 4, 1, 2, 3, 5, 6, 7];
 
     // Snap velocity to eighths.
-    for i in 0..3 {
-        pm.s.velocity[i] = (pml.velocity[i] * 8.0) as i16;
+    for (dst, src) in pm.s.velocity.iter_mut().zip(pml.velocity.as_ref().iter()) {
+        *dst = (*src * 8.0) as i16;
     }
 
     // Compute sign for each axis and snap origin.
     let mut sign = [0i16; 3];
     let mut base = [0i16; 3];
-    for i in 0..3 {
-        if pml.origin[i] >= 0.0 {
-            sign[i] = 1;
+    for (i, (s, orig)) in sign.iter_mut().zip(pml.origin.as_ref().iter()).enumerate() {
+        if *orig >= 0.0 {
+            *s = 1;
         } else {
-            sign[i] = -1;
+            *s = -1;
         }
 
-        pm.s.origin[i] = (pml.origin[i] * 8.0) as i16;
+        pm.s.origin[i] = (*orig * 8.0) as i16;
 
-        if pm.s.origin[i] as f32 * 0.125 == pml.origin[i] {
-            sign[i] = 0;
+        if pm.s.origin[i] as f32 * 0.125 == *orig {
+            *s = 0;
         }
     }
 
     base.copy_from_slice(&pm.s.origin);
 
     // Try all 8 jitter combinations.
-    for j in 0..8 {
-        let bits = JITTERBITS[j];
+    for &bits in &JITTERBITS {
         pm.s.origin.copy_from_slice(&base);
 
-        for i in 0..3 {
+        for (i, &s) in sign.iter().enumerate() {
             if (bits & (1 << i)) != 0 {
-                pm.s.origin[i] += sign[i];
+                pm.s.origin[i] += s;
             }
         }
 
@@ -1056,24 +1055,21 @@ impl Pmove {
         self.waterlevel = 0;
 
         // Fresh local state each frame.
-        let mut pml = PmLocal::default();
-
-        // Convert fixed-point origin/velocity to float.
-        pml.origin = Vec3f::new(
-            self.s.origin[0] as f32 * 0.125,
-            self.s.origin[1] as f32 * 0.125,
-            self.s.origin[2] as f32 * 0.125,
-        );
-        pml.velocity = Vec3f::new(
-            self.s.velocity[0] as f32 * 0.125,
-            self.s.velocity[1] as f32 * 0.125,
-            self.s.velocity[2] as f32 * 0.125,
-        );
-
-        // Save old origin for fallback.
-        pml.previous_origin = self.s.origin;
-
-        pml.frametime = self.cmd.msec as f32 * 0.001;
+        let mut pml = PmLocal {
+            origin: Vec3f::new(
+                self.s.origin[0] as f32 * 0.125,
+                self.s.origin[1] as f32 * 0.125,
+                self.s.origin[2] as f32 * 0.125,
+            ),
+            velocity: Vec3f::new(
+                self.s.velocity[0] as f32 * 0.125,
+                self.s.velocity[1] as f32 * 0.125,
+                self.s.velocity[2] as f32 * 0.125,
+            ),
+            previous_origin: self.s.origin,
+            frametime: self.cmd.msec as f32 * 0.001,
+            ..Default::default()
+        };
 
         pm_clamp_angles(self, &mut pml);
 
@@ -1112,7 +1108,7 @@ impl Pmove {
 
         // Drop timing counter.
         if self.s.pm_time != 0 {
-            let mut msec = (self.cmd.msec >> 3) as u8;
+            let mut msec = self.cmd.msec >> 3;
             if msec == 0 {
                 msec = 1;
             }
@@ -1353,7 +1349,7 @@ mod tests {
                     normal: Vec3f::new(0.0, 0.0, 1.0),
                     dist: 0.0,
                     plane_type: 0,
-                    signbits: 0,
+                    sign_bits: 0,
                 },
                 surface: None,
                 contents: 0,

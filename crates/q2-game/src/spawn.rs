@@ -240,6 +240,77 @@ pub fn sp_light(
 }
 
 // ---------------------------------------------------------------------------
+// Player spawn point finder
+// ---------------------------------------------------------------------------
+
+/// Player spawn classnames in priority order.
+const SPAWN_CLASSNAMES: &[&str] = &[
+    "info_player_start",
+    "info_player_deathmatch",
+    "info_player_coop",
+    "info_player_intermission",
+    "misc_teleporter_dest",
+];
+
+/// Find the best player spawn point from a BSP entity string.
+///
+/// Prefers unnamed `info_player_start` (the default spawn when starting
+/// a map fresh). Named spawns (with `targetname`) are used for level
+/// transitions and are lower priority.
+///
+/// Returns `(origin, yaw_angle)` or `None` if no spawn entity found.
+pub fn find_player_start(entstring: &str) -> Option<(q2_shared::types::Vec3f, f32)> {
+    let entities = parse_entity_string(entstring);
+
+    // Collect spawn candidates
+    struct SpawnCandidate {
+        classname: String,
+        origin: q2_shared::types::Vec3f,
+        targetname: String,
+        angle: f32,
+    }
+
+    let mut spawns: Vec<SpawnCandidate> = Vec::new();
+
+    for ent in &entities {
+        let classname = match ent.get("classname") {
+            Some(c) => c.clone(),
+            None => continue,
+        };
+        let origin = if let Some(origin_str) = ent.get("origin") {
+            let parts: Vec<f32> = origin_str
+                .split_whitespace()
+                .filter_map(|s| s.parse::<f32>().ok())
+                .collect();
+            if parts.len() == 3 {
+                q2_shared::types::Vec3f::new(parts[0], parts[1], parts[2])
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+        let targetname = ent.get("targetname").cloned().unwrap_or_default();
+        let angle = ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+
+        spawns.push(SpawnCandidate { classname, origin, targetname, angle });
+    }
+
+    // Find best spawn by priority: prefer unnamed spawns first
+    for target in SPAWN_CLASSNAMES {
+        if let Some(s) = spawns.iter().find(|s| s.classname == *target && s.targetname.is_empty()) {
+            return Some((s.origin, s.angle));
+        }
+        if let Some(s) = spawns.iter().find(|s| s.classname == *target) {
+            return Some((s.origin, s.angle));
+        }
+    }
+
+    // Fallback: any entity with an origin
+    spawns.first().map(|s| (s.origin, s.angle))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -358,5 +429,74 @@ mod tests {
         assert_eq!(ent.state.origin.y, 200.0);
         assert_eq!(ent.state.origin.z, 300.0);
         assert_eq!(ent.state.angles.y, 45.0);
+    }
+
+    #[test]
+    fn find_player_start_prefers_unnamed() {
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "100 200 300"
+"targetname" "transition_spawn"
+"angle" "45"
+}
+{
+"classname" "info_player_start"
+"origin" "0 0 0"
+"angle" "90"
+}
+"#;
+        let (origin, angle) = find_player_start(input).unwrap();
+        // Should pick the unnamed one
+        assert_eq!(origin, q2_shared::types::Vec3f::new(0.0, 0.0, 0.0));
+        assert_eq!(angle, 90.0);
+    }
+
+    #[test]
+    fn find_player_start_falls_back_to_named() {
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "100 200 300"
+"targetname" "transition_spawn"
+"angle" "45"
+}
+"#;
+        let (origin, angle) = find_player_start(input).unwrap();
+        assert_eq!(origin, q2_shared::types::Vec3f::new(100.0, 200.0, 300.0));
+        assert_eq!(angle, 45.0);
+    }
+
+    #[test]
+    fn find_player_start_priority_order() {
+        let input = r#"
+{
+"classname" "info_player_deathmatch"
+"origin" "50 50 50"
+}
+{
+"classname" "info_player_start"
+"origin" "100 100 100"
+}
+"#;
+        let (origin, _) = find_player_start(input).unwrap();
+        // info_player_start has higher priority than deathmatch
+        assert_eq!(origin, q2_shared::types::Vec3f::new(100.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn find_player_start_none_when_empty() {
+        assert!(find_player_start("").is_none());
+    }
+
+    #[test]
+    fn find_player_start_none_when_no_origin() {
+        let input = r#"
+{
+"classname" "worldspawn"
+"message" "Test Map"
+}
+"#;
+        assert!(find_player_start(input).is_none());
     }
 }

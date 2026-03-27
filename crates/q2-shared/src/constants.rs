@@ -8,8 +8,7 @@ pub const MAX_IMAGES: usize = 256;
 pub const MAX_ITEMS: usize = 256;
 pub const MAX_LIGHTSTYLES: usize = 256;
 pub const MAX_GENERAL: usize = MAX_CLIENTS * 2;
-pub const MAX_CONFIGSTRINGS: usize =
-    MAX_MODELS + MAX_SOUNDS + MAX_IMAGES + MAX_ITEMS + MAX_LIGHTSTYLES + MAX_GENERAL;
+pub const MAX_CONFIGSTRINGS: usize = CS_GENERAL + MAX_GENERAL;
 
 // String/path limits
 pub const MAX_QPATH: usize = 64;
@@ -100,7 +99,7 @@ mod tests {
     fn configstring_offsets_are_contiguous() {
         assert_eq!(CS_SOUNDS, CS_MODELS + MAX_MODELS);
         assert_eq!(CS_IMAGES, CS_SOUNDS + MAX_SOUNDS);
-        assert!(CS_GENERAL + MAX_GENERAL <= MAX_CONFIGSTRINGS + CS_GENERAL); // sanity
+        assert_eq!(CS_GENERAL + MAX_GENERAL, MAX_CONFIGSTRINGS);
     }
 
     #[test]

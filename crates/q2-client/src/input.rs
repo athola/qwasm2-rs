@@ -1,12 +1,5 @@
 use q2_shared::types::*;
 
-/// Key state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyState {
-    Up,
-    Down,
-}
-
 /// Input state
 #[derive(Debug)]
 pub struct InputState {
@@ -111,5 +104,29 @@ mod tests {
         let result = angle_to_short(90.0);
         // 90 degrees = 65536/4 = 16384
         assert_eq!(result, 16384);
+    }
+
+    #[test]
+    fn angle_to_short_180() {
+        // 180 degrees = 65536/2 = 32768, which wraps to -32768 as i16
+        assert_eq!(angle_to_short(180.0), -32768);
+    }
+
+    #[test]
+    fn angle_to_short_270() {
+        // 270 degrees = 65536 * 3/4 = 49152, wraps to -16384 as i16
+        assert_eq!(angle_to_short(270.0), -16384);
+    }
+
+    #[test]
+    fn angle_to_short_360_wraps() {
+        // 360 degrees should wrap back to 0
+        assert_eq!(angle_to_short(360.0), 0);
+    }
+
+    #[test]
+    fn angle_to_short_negative() {
+        // -90 degrees = same as 270 = -16384 as i16
+        assert_eq!(angle_to_short(-90.0), -16384);
     }
 }
