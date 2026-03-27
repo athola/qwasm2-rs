@@ -589,7 +589,7 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
     } else {
         // In the air.
         if PM_AIRACCELERATE != 0.0 {
-            pm_air_accelerate(pml, wishdir, wishspeed, PM_ACCELERATE);
+            pm_air_accelerate(pml, wishdir, wishspeed, PM_AIRACCELERATE);
         } else {
             pm_accelerate(pml, wishdir, wishspeed, 1.0);
         }

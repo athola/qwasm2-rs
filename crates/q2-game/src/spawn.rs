@@ -170,6 +170,7 @@ fn parse_origin(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
         if parts.len() == 3 {
             return q2_shared::types::Vec3f::new(parts[0], parts[1], parts[2]);
         }
+        tracing::debug!("malformed origin string: {:?}", origin_str);
     }
     q2_shared::types::Vec3f::ZERO
 }
@@ -180,6 +181,7 @@ fn parse_angle(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
         if let Ok(yaw) = angle_str.parse::<f32>() {
             return q2_shared::types::Vec3f::new(0.0, yaw, 0.0);
         }
+        tracing::debug!("malformed angle string: {:?}", angle_str);
     }
     q2_shared::types::Vec3f::ZERO
 }
@@ -277,19 +279,14 @@ pub fn find_player_start(entstring: &str) -> Option<(q2_shared::types::Vec3f, f3
             Some(c) => c.clone(),
             None => continue,
         };
-        let origin = if let Some(origin_str) = ent.get("origin") {
-            let parts: Vec<f32> = origin_str
-                .split_whitespace()
-                .filter_map(|s| s.parse::<f32>().ok())
-                .collect();
-            if parts.len() == 3 {
-                q2_shared::types::Vec3f::new(parts[0], parts[1], parts[2])
-            } else {
-                continue;
-            }
-        } else {
+        // Reuse parse_origin; skip entities that have no "origin" key at all.
+        if !ent.contains_key("origin") {
             continue;
-        };
+        }
+        let origin = parse_origin(ent);
+        if origin == q2_shared::types::Vec3f::ZERO && ent.get("origin").is_none_or(|s| s.trim() != "0 0 0") {
+            continue; // malformed origin (parse_origin returned zero as fallback)
+        }
         let targetname = ent.get("targetname").cloned().unwrap_or_default();
         let angle = ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0);
 

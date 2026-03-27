@@ -17,7 +17,7 @@ q2-render-api = { path = "../q2-render-api" }
 q2-platform = { path = "../q2-platform" }
 glow = { workspace = true }
 wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = "0.4"
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "Document",

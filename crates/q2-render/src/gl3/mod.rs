@@ -65,7 +65,8 @@ impl Gl3Renderer {
             (0, bsp.faces.len())
         };
 
-        for face_idx in first_face..first_face + num_faces {
+        let end_face = (first_face + num_faces).min(bsp.faces.len());
+        for face_idx in first_face..end_face {
             let face = &bsp.faces[face_idx];
             let num_edges = face.num_edges as usize;
             if num_edges < 3 {
@@ -161,8 +162,21 @@ impl Gl3Renderer {
         // `isize`. The resulting `&[u8]` borrows `verts` immutably and is
         // consumed by `buffer_data_u8_slice` before `verts` is dropped.
         unsafe {
-            let vao = gl.create_vertex_array().expect("create VAO");
-            let vbo = gl.create_buffer().expect("create VBO");
+            let vao = match gl.create_vertex_array() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("GL3: failed to create VAO: {}", e);
+                    return;
+                }
+            };
+            let vbo = match gl.create_buffer() {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("GL3: failed to create VBO: {}", e);
+                    gl.delete_vertex_array(vao);
+                    return;
+                }
+            };
 
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
@@ -182,6 +196,7 @@ impl Gl3Renderer {
             gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 24, 12);
 
             gl.bind_vertex_array(None);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
             self.world_mesh = Some(GpuMesh {
                 vao,
@@ -192,10 +207,10 @@ impl Gl3Renderer {
     }
 
     /// Compile the world shader program.
-    fn compile_shaders(gl: &glow::Context) -> Option<glow::Program> {
+    fn compile_shaders(gl: &glow::Context) -> Result<glow::Program, String> {
         // SAFETY: glow shader compilation calls require unsafe.
         unsafe {
-            let program = gl.create_program().ok()?;
+            let program = gl.create_program().map_err(|e| format!("create_program failed: {e}"))?;
 
             let vs_src = r#"#version 300 es
                 precision highp float;
@@ -218,25 +233,32 @@ impl Gl3Renderer {
                 }
             "#;
 
-            let vs = gl.create_shader(glow::VERTEX_SHADER).ok()?;
+            let vs = gl.create_shader(glow::VERTEX_SHADER)
+                .map_err(|e| format!("create vertex shader failed: {e}"))?;
             gl.shader_source(vs, vs_src);
             gl.compile_shader(vs);
             if !gl.get_shader_compile_status(vs) {
                 let log = gl.get_shader_info_log(vs);
-                tracing::error!("VS compile error: {}", log);
                 gl.delete_shader(vs);
-                return None;
+                let msg = format!("VS compile error: {}", log);
+                tracing::error!("{}", msg);
+                return Err(msg);
             }
 
-            let fs = gl.create_shader(glow::FRAGMENT_SHADER).ok()?;
+            let fs = gl.create_shader(glow::FRAGMENT_SHADER)
+                .map_err(|e| {
+                    gl.delete_shader(vs);
+                    format!("create fragment shader failed: {e}")
+                })?;
             gl.shader_source(fs, fs_src);
             gl.compile_shader(fs);
             if !gl.get_shader_compile_status(fs) {
                 let log = gl.get_shader_info_log(fs);
-                tracing::error!("FS compile error: {}", log);
                 gl.delete_shader(fs);
                 gl.delete_shader(vs);
-                return None;
+                let msg = format!("FS compile error: {}", log);
+                tracing::error!("{}", msg);
+                return Err(msg);
             }
 
             gl.attach_shader(program, vs);
@@ -244,17 +266,18 @@ impl Gl3Renderer {
             gl.link_program(program);
             if !gl.get_program_link_status(program) {
                 let log = gl.get_program_info_log(program);
-                tracing::error!("Program link error: {}", log);
                 gl.delete_shader(vs);
                 gl.delete_shader(fs);
                 gl.delete_program(program);
-                return None;
+                let msg = format!("Program link error: {}", log);
+                tracing::error!("{}", msg);
+                return Err(msg);
             }
 
             gl.delete_shader(vs);
             gl.delete_shader(fs);
 
-            Some(program)
+            Ok(program)
         }
     }
 }
@@ -278,9 +301,9 @@ impl Renderer for Gl3Renderer {
         self.height = height;
 
         // Compile shaders
-        self.world_program = Self::compile_shaders(gl);
-        if self.world_program.is_none() {
-            return Err("Failed to compile world shaders".into());
+        match Self::compile_shaders(gl) {
+            Ok(prog) => self.world_program = Some(prog),
+            Err(e) => return Err(format!("Failed to compile world shaders: {e}")),
         }
 
         // Get uniform location
@@ -307,6 +330,20 @@ impl Renderer for Gl3Renderer {
     }
 
     fn shutdown(&mut self) {
+        if let Some(gl) = &self.gl {
+            // SAFETY: glow GL deletion calls require unsafe. We delete GPU
+            // objects before clearing state so they are not leaked.
+            unsafe {
+                if let Some(mesh) = self.world_mesh.take() {
+                    gl.delete_vertex_array(mesh.vao);
+                    gl.delete_buffer(mesh._vbo);
+                }
+                if let Some(prog) = self.world_program.take() {
+                    gl.delete_program(prog);
+                }
+            }
+        }
+        self.u_view_proj = None;
         self.initialized = false;
     }
 
@@ -347,7 +384,15 @@ impl Renderer for Gl3Renderer {
                 gl.bind_vertex_array(Some(mesh.vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, mesh.vertex_count);
                 gl.bind_vertex_array(None);
+                gl.use_program(None);
             }
+        } else {
+            tracing::trace!(
+                "GL3: skipping world draw — program={}, mesh={}, uniform={}",
+                self.world_program.is_some(),
+                self.world_mesh.is_some(),
+                self.u_view_proj.is_some(),
+            );
         }
     }
 
@@ -501,9 +546,9 @@ mod tests {
         for idx in [0, 1, 42, 255, 1000, usize::MAX / 2] {
             for &brightness in &[0.0, 0.5, 1.0, 2.0] {
                 let (r, g, b) = face_color(idx, brightness);
-                assert!(r >= 0.0 && r <= 1.0, "r={r} out of range for idx={idx}, brightness={brightness}");
-                assert!(g >= 0.0 && g <= 1.0, "g={g} out of range for idx={idx}, brightness={brightness}");
-                assert!(b >= 0.0 && b <= 1.0, "b={b} out of range for idx={idx}, brightness={brightness}");
+                assert!((0.0..=1.0).contains(&r), "r={r} out of range for idx={idx}, brightness={brightness}");
+                assert!((0.0..=1.0).contains(&g), "g={g} out of range for idx={idx}, brightness={brightness}");
+                assert!((0.0..=1.0).contains(&b), "b={b} out of range for idx={idx}, brightness={brightness}");
             }
         }
     }
@@ -548,6 +593,49 @@ mod tests {
         assert!(v[14].abs() < 1e-6, "tz={}", v[14]);
         // v[15] should be 1.0
         assert!((v[15] - 1.0).abs() < 1e-6);
+    }
+
+    /// Multiply a column-major 4x4 matrix by a vec4, returning vec4.
+    fn mat4_mul_vec4(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
+        [
+            m[0] * v[0] + m[4] * v[1] + m[8]  * v[2] + m[12] * v[3],
+            m[1] * v[0] + m[5] * v[1] + m[9]  * v[2] + m[13] * v[3],
+            m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3],
+            m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3],
+        ]
+    }
+
+    #[test]
+    fn view_matrix_yaw90_maps_world_to_eye_correctly() {
+        // At yaw=90, pitch=0, player at origin:
+        //   Q2 forward (+X) becomes... let's see what the basis vectors give us.
+        //   yaw=90 => sy=1, cy=0; pitch=0 => sp=0, cp=1
+        //   right  = (sy, -cy, 0) = (1, 0, 0)
+        //   up     = (-sp*cy, -sp*sy, cp) = (0, 0, 1)
+        //   fwd    = (-cp*cy, -cp*sy, -sp) = (0, -1, 0)
+        //
+        // A point at (0, 100, 0) — directly ahead in Q2 when facing +Y (yaw=90)
+        // should map to eye-space (0, 0, -100): forward in OpenGL is -Z.
+        let fd = RefDef {
+            vieworg: Vec3f::ZERO,
+            viewangles: Vec3f::new(0.0, 90.0, 0.0),
+            ..Default::default()
+        };
+        let v = view_matrix(&fd);
+        let eps = 1e-4;
+
+        // World point directly "ahead" when facing yaw=90 (i.e. +Y direction)
+        let ahead = mat4_mul_vec4(&v, [0.0, 100.0, 0.0, 1.0]);
+        assert!(ahead[0].abs() < eps, "ahead eye-x should be 0, got {}", ahead[0]);
+        assert!(ahead[1].abs() < eps, "ahead eye-y should be 0, got {}", ahead[1]);
+        assert!((ahead[2] - (-100.0)).abs() < eps, "ahead eye-z should be -100, got {}", ahead[2]);
+
+        // World point at (100, 0, 0) — to the right when facing +Y
+        // Should map to eye-space (100, 0, 0): +X is right in OpenGL.
+        let right = mat4_mul_vec4(&v, [100.0, 0.0, 0.0, 1.0]);
+        assert!((right[0] - 100.0).abs() < eps, "right eye-x should be 100, got {}", right[0]);
+        assert!(right[1].abs() < eps, "right eye-y should be 0, got {}", right[1]);
+        assert!(right[2].abs() < eps, "right eye-z should be 0, got {}", right[2]);
     }
 
     #[test]

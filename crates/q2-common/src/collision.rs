@@ -251,6 +251,7 @@ impl CollisionMap {
             // Empty map — cinematic servers
             self.leafs.push(CLeaf::default());
             self.areas.push(CArea::default());
+            self.init_box_hull();
             return Ok(0);
         }
 
@@ -260,8 +261,8 @@ impl CollisionMap {
             return Err(Q2Error::Drop("BSP file too small".into()));
         }
 
-        let ident = read_u32(data, 0);
-        let version = read_u32(data, 4);
+        let ident = try_read_u32(data, 0)?;
+        let version = try_read_u32(data, 4)?;
 
         if ident != IDBSPHEADER {
             return Err(Q2Error::Drop(format!(
@@ -278,13 +279,11 @@ impl CollisionMap {
         let mut lumps = [(0u32, 0u32); HEADER_LUMPS];
         for (i, lump) in lumps.iter_mut().enumerate().take(HEADER_LUMPS) {
             let base = 8 + i * 8;
-            *lump = (read_u32(data, base), read_u32(data, base + 4));
+            *lump = (try_read_u32(data, base)?, try_read_u32(data, base + 4)?);
         }
 
-        // Simple checksum (sum of all bytes)
-        let checksum = data
-            .iter()
-            .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+        // Com_BlockChecksum: MD4 hash, then XOR the four 32-bit digest words.
+        let checksum = com_block_checksum(data);
 
         // Load lumps in the same order as the C code
         self.load_surfaces(data, lumps[LUMP_TEXINFO])?;
@@ -323,11 +322,11 @@ impl CollisionMap {
         self.planes.reserve(count);
         for i in 0..count {
             let base = ofs + i * DPLANE_SIZE;
-            let nx = read_f32(data, base);
-            let ny = read_f32(data, base + 4);
-            let nz = read_f32(data, base + 8);
-            let dist = read_f32(data, base + 12);
-            let ptype = read_i32(data, base + 16) as u8;
+            let nx = try_read_f32(data, base)?;
+            let ny = try_read_f32(data, base + 4)?;
+            let nz = try_read_f32(data, base + 8)?;
+            let dist = try_read_f32(data, base + 12)?;
+            let ptype = try_read_i32(data, base + 16)? as u8;
 
             let mut bits: u8 = 0;
             if nx < 0.0 {
@@ -367,9 +366,9 @@ impl CollisionMap {
         self.nodes.reserve(count);
         for i in 0..count {
             let base = ofs + i * DNODE_SIZE;
-            let planenum = read_i32(data, base) as usize;
-            let child0 = read_i32(data, base + 4);
-            let child1 = read_i32(data, base + 8);
+            let planenum = try_read_i32(data, base)? as usize;
+            let child0 = try_read_i32(data, base + 4)?;
+            let child1 = try_read_i32(data, base + 8)?;
             self.nodes.push(CNode {
                 plane_idx: planenum,
                 children: [child0, child1],
@@ -396,9 +395,9 @@ impl CollisionMap {
         self.leafs.reserve(count);
         for i in 0..count {
             let base = ofs + i * DLEAF_SIZE;
-            let contents = read_i32(data, base);
-            let cluster = read_i16(data, base + 4);
-            let area = read_i16(data, base + 6);
+            let contents = try_read_i32(data, base)?;
+            let cluster = try_read_i16(data, base + 4)?;
+            let area = try_read_i16(data, base + 6)?;
             // skip mins[3] and maxs[3] (6 shorts = 12 bytes at offset 8..20)
             // dleaf_t layout:
             //   int contents (4), short cluster (2), short area (2),
@@ -406,8 +405,8 @@ impl CollisionMap {
             //   ushort firstleafface (2), ushort numleaffaces (2),
             //   ushort firstleafbrush (2), ushort numleafbrushes (2)
             // Total = 28
-            let first_leaf_brush = read_u16(data, base + 24);
-            let num_leaf_brushes = read_u16(data, base + 26);
+            let first_leaf_brush = try_read_u16(data, base + 24)?;
+            let num_leaf_brushes = try_read_u16(data, base + 26)?;
 
             self.leafs.push(CLeaf {
                 contents,
@@ -460,7 +459,7 @@ impl CollisionMap {
 
         self.leaf_brushes.reserve(count);
         for i in 0..count {
-            self.leaf_brushes.push(read_u16(data, ofs + i * 2));
+            self.leaf_brushes.push(try_read_u16(data, ofs + i * 2)?);
         }
         Ok(())
     }
@@ -482,9 +481,9 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DBRUSH_SIZE;
             self.brushes.push(CBrush {
-                first_brush_side: read_i32(data, base),
-                num_sides: read_i32(data, base + 4),
-                contents: read_i32(data, base + 8),
+                first_brush_side: try_read_i32(data, base)?,
+                num_sides: try_read_i32(data, base + 4)?,
+                contents: try_read_i32(data, base + 8)?,
                 check_count: 0,
             });
         }
@@ -508,8 +507,8 @@ impl CollisionMap {
         self.brush_sides.reserve(count);
         for i in 0..count {
             let base = ofs + i * DBRUSHSIDE_SIZE;
-            let planenum = read_u16(data, base) as usize;
-            let texinfo = read_i16(data, base + 2) as i32;
+            let planenum = try_read_u16(data, base)? as usize;
+            let texinfo = try_read_i16(data, base + 2)? as i32;
 
             if texinfo >= num_texinfo {
                 return Err(Q2Error::Drop("Bad brushside texinfo".into()));
@@ -544,8 +543,8 @@ impl CollisionMap {
             let base = ofs + i * TEXINFO_SIZE;
             // texinfo_t: float vecs[2][4] (32 bytes), int flags (4), int value (4),
             //            char texture[32] (32), int nexttexinfo (4)
-            let flags = read_i32(data, base + 32);
-            let value = read_i32(data, base + 36);
+            let flags = try_read_i32(data, base + 32)?;
+            let value = try_read_i32(data, base + 36)?;
 
             // Read texture name (32 bytes, null terminated)
             let name_start = base + 40;
@@ -580,21 +579,21 @@ impl CollisionMap {
             let base = ofs + i * DMODEL_SIZE;
             // dmodel_t: float mins[3], maxs[3], origin[3], int headnode, int firstface, int numfaces
             let mins = Vec3f::new(
-                read_f32(data, base) - 1.0,
-                read_f32(data, base + 4) - 1.0,
-                read_f32(data, base + 8) - 1.0,
+                try_read_f32(data, base)? - 1.0,
+                try_read_f32(data, base + 4)? - 1.0,
+                try_read_f32(data, base + 8)? - 1.0,
             );
             let maxs = Vec3f::new(
-                read_f32(data, base + 12) + 1.0,
-                read_f32(data, base + 16) + 1.0,
-                read_f32(data, base + 20) + 1.0,
+                try_read_f32(data, base + 12)? + 1.0,
+                try_read_f32(data, base + 16)? + 1.0,
+                try_read_f32(data, base + 20)? + 1.0,
             );
             let origin = Vec3f::new(
-                read_f32(data, base + 24),
-                read_f32(data, base + 28),
-                read_f32(data, base + 32),
+                try_read_f32(data, base + 24)?,
+                try_read_f32(data, base + 28)?,
+                try_read_f32(data, base + 32)?,
             );
-            let head_node = read_i32(data, base + 36);
+            let head_node = try_read_i32(data, base + 36)?;
 
             self.models.push(CModel {
                 mins,
@@ -622,8 +621,8 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DAREA_SIZE;
             self.areas.push(CArea {
-                num_area_portals: read_i32(data, base),
-                first_area_portal: read_i32(data, base + 4),
+                num_area_portals: try_read_i32(data, base)?,
+                first_area_portal: try_read_i32(data, base + 4)?,
                 flood_num: 0,
                 flood_valid: 0,
             });
@@ -649,8 +648,8 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DAREAPORTAL_SIZE;
             self.area_portals.push(CAreaPortal {
-                portal_num: read_i32(data, base),
-                other_area: read_i32(data, base + 4),
+                portal_num: try_read_i32(data, base)?,
+                other_area: try_read_i32(data, base + 4)?,
             });
         }
         Ok(())
@@ -1011,10 +1010,8 @@ impl CollisionMap {
     /// Trace a box through the world BSP.
     ///
     /// Takes `&mut self` because `check_count` is used to avoid testing the
-    /// same brush twice in a single trace (matching the C global). This
-    /// prevents concurrent traces from the same `CollisionMap`; acceptable
-    /// for single-threaded WASM but will need `Cell<i32>` if concurrent
-    /// traces are required later.
+    /// same brush twice in a single trace (matching the C global).
+    /// Single-threaded assumption: concurrent traces are not supported.
     pub fn box_trace(
         &mut self,
         start: Vec3f,
@@ -1597,6 +1594,105 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
 }
 
 // ---------------------------------------------------------------------------
+// MD4 hash — Com_BlockChecksum
+// ---------------------------------------------------------------------------
+
+/// Compute the MD4 digest of `data`, returning 4 x u32 state words.
+fn md4_digest(data: &[u8]) -> [u32; 4] {
+    #[inline(always)]
+    fn ff(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) | (!x & z)
+    }
+    #[inline(always)]
+    fn gg(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) | (x & z) | (y & z)
+    }
+    #[inline(always)]
+    fn hh(x: u32, y: u32, z: u32) -> u32 {
+        x ^ y ^ z
+    }
+
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = Vec::with_capacity(data.len() + 72);
+    msg.extend_from_slice(data);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    let mut state: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+
+    for block in msg.chunks_exact(64) {
+        let mut x = [0u32; 16];
+        for (i, chunk) in block.chunks_exact(4).enumerate() {
+            x[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+
+        let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
+
+        // Round 1 (F)
+        const R1: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        const S1: [u32; 16] = [3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19];
+        for i in 0..16 {
+            let v = a.wrapping_add(ff(b, c, d)).wrapping_add(x[R1[i]]);
+            a = v.rotate_left(S1[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        // Round 2 (G)
+        const R2: [usize; 16] = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
+        const S2: [u32; 16] = [3, 5, 9, 13, 3, 5, 9, 13, 3, 5, 9, 13, 3, 5, 9, 13];
+        for i in 0..16 {
+            let v = a
+                .wrapping_add(gg(b, c, d))
+                .wrapping_add(x[R2[i]])
+                .wrapping_add(0x5a82_7999);
+            a = v.rotate_left(S2[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        // Round 3 (H)
+        const R3: [usize; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
+        const S3: [u32; 16] = [3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15];
+        for i in 0..16 {
+            let v = a
+                .wrapping_add(hh(b, c, d))
+                .wrapping_add(x[R3[i]])
+                .wrapping_add(0x6ed9_eba1);
+            a = v.rotate_left(S3[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+    }
+
+    state
+}
+
+/// `Com_BlockChecksum`: MD4 hash of `data`, then XOR the four 32-bit digest
+/// words into a single u32.
+fn com_block_checksum(data: &[u8]) -> u32 {
+    let digest = md4_digest(data);
+    digest[0] ^ digest[1] ^ digest[2] ^ digest[3]
+}
+
+// ---------------------------------------------------------------------------
 // Helper: compute sign_bits for a plane normal
 // ---------------------------------------------------------------------------
 
@@ -1616,7 +1712,7 @@ pub fn sign_bits_for_plane(normal: Vec3f) -> u8 {
     bits
 }
 
-use crate::binary::{read_f32, read_i16, read_i32, read_u16, read_u32};
+use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16, try_read_u32};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1774,9 +1870,9 @@ mod tests {
     #[test]
     fn read_helpers() {
         let data: Vec<u8> = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-        assert_eq!(read_u16(&data, 0), 0x0201);
-        assert_eq!(read_u32(&data, 0), 0x04030201);
-        assert_eq!(read_i32(&data, 0), 0x04030201);
+        assert_eq!(try_read_u16(&data, 0).unwrap(), 0x0201);
+        assert_eq!(try_read_u32(&data, 0).unwrap(), 0x04030201);
+        assert_eq!(try_read_i32(&data, 0).unwrap(), 0x04030201);
     }
 
     // -----------------------------------------------------------------------
@@ -2037,7 +2133,30 @@ mod tests {
 
         assert!(trace.fraction < 1.0, "should hit the box entity");
         // Hit point should be near x=16 (box +X face)
-        assert!(trace.endpos.x > 14.0 && trace.endpos.x < 18.0,
-            "hit at x={}, expected near 16", trace.endpos.x);
+        assert!(
+            trace.endpos.x > 14.0 && trace.endpos.x < 18.0,
+            "hit at x={}, expected near 16",
+            trace.endpos.x
+        );
+    }
+
+    #[test]
+    fn md4_empty_digest() {
+        // MD4("") = 31d6cfe0 d16ae931 b73c59d7 e0c089c0 (hex bytes)
+        // In LE u32 words: state[0]=0xe0cfd631, state[1]=0x31e96ad1,
+        //                   state[2]=0xd7593cb7, state[3]=0xc089c0e0
+        let digest = md4_digest(b"");
+        assert_eq!(digest[0], 0xe0cf_d631);
+        assert_eq!(digest[1], 0x31e9_6ad1);
+        assert_eq!(digest[2], 0xd759_3cb7);
+        assert_eq!(digest[3], 0xc089_c0e0);
+    }
+
+    #[test]
+    fn com_block_checksum_empty() {
+        // XOR of the four MD4("") digest words.
+        let expected = 0xe0cf_d631_u32 ^ 0x31e9_6ad1 ^ 0xd759_3cb7 ^ 0xc089_c0e0;
+        assert_eq!(expected, 0xc6f6_40b7);
+        assert_eq!(com_block_checksum(b""), expected);
     }
 }

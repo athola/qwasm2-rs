@@ -131,10 +131,14 @@ impl PlayerController {
             self.velocity_z -= GRAVITY * dt;
         }
 
+        // Gravity displacement — saved before step-up can overwrite new_pos.z.
+        let gravity_dz = self.velocity_z * dt;
+
         let mut new_pos = self.pos;
         new_pos.x += wish.x;
         new_pos.y += wish.y;
-        new_pos.z += self.velocity_z * dt;
+        // Gravity is applied via the vertical trace below, not here, so that
+        // step-up resolution doesn't lose the gravity displacement.
 
         // Horizontal trace (slide against walls)
         let h_target = Vec3f::new(new_pos.x, new_pos.y, self.pos.z);
@@ -179,9 +183,10 @@ impl PlayerController {
             new_pos.y = landed.y;
         }
 
-        // Vertical trace (gravity / jump)
-        let v_start = Vec3f::new(new_pos.x, new_pos.y, self.pos.z);
-        let v_end = Vec3f::new(new_pos.x, new_pos.y, new_pos.z);
+        // Vertical trace (gravity / jump) — start from post-horizontal Z so
+        // step-up results are not bypassed by a stale self.pos.z.
+        let v_start = new_pos;
+        let v_end = Vec3f::new(new_pos.x, new_pos.y, new_pos.z + gravity_dz);
         let v_trace = collision.box_trace(
             v_start, v_end, player_mins, player_maxs, 0, MASK_PLAYERSOLID,
         );

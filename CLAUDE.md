@@ -40,7 +40,7 @@ q2-shared (types) → q2-common (services) → q2-game/server/client/render → 
 cargo test --workspace          # Run all tests
 cargo clippy --workspace        # Lint (zero errors required)
 make wasm                       # Build WASM target
-make serve                      # Start dev server
+make serve                      # Serve wasm-pack output via python3 (simple, no gamedata)
 ```
 
 ## Conventions

@@ -39,6 +39,10 @@ fn q2err_to_js(err: q2_common::Q2Error) -> JsValue {
 // Engine — thin orchestrator using PlayerController
 // ---------------------------------------------------------------------------
 
+/// Mouse sensitivity (degrees per pixel of mouse movement).
+#[cfg(target_arch = "wasm32")]
+const MOUSE_SENSITIVITY: f32 = 0.15;
+
 #[cfg(target_arch = "wasm32")]
 struct Engine {
     renderer: Gl3Renderer,
@@ -71,7 +75,7 @@ impl Engine {
 
     /// Run one frame: translate platform input, delegate to PlayerController, render.
     fn tick(&mut self, timestamp: f64, input: &mut q2_platform::wasm::input::WasmInputState) {
-        let dt = ((timestamp - self.last_time) / 1000.0) as f32;
+        let dt = ((timestamp - self.last_time) / 1000.0).min(0.05) as f32;
         self.last_time = timestamp;
 
         // Translate platform-specific WasmInputState → platform-agnostic MoveInput
@@ -82,9 +86,8 @@ impl Engine {
 
         use q2_platform::keymap::*;
 
-        let sensitivity = 0.15;
-        let mut yaw_delta = -(mouse_dx * sensitivity);
-        let mut pitch_delta = -(mouse_dy * sensitivity);
+        let mut yaw_delta = -(mouse_dx * MOUSE_SENSITIVITY);
+        let mut pitch_delta = -(mouse_dy * MOUSE_SENSITIVITY);
 
         // Keyboard look / turn
         let strafe_mode = input.keys[K_ALT as usize];
@@ -294,8 +297,13 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log("Input listeners attached (click canvas for pointer lock)");
 
     // 10. Find player start via game spawn system
-    let (spawn_pos, spawn_yaw) = q2_game::spawn::find_player_start(&bsp.entities)
-        .unwrap_or((Vec3f::ZERO, 0.0));
+    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(&bsp.entities) {
+        Some(s) => s,
+        None => {
+            log("WARNING: No info_player_start found in BSP — spawning at origin (may be inside solid)");
+            (Vec3f::ZERO, 0.0)
+        }
+    };
     log(&format!("Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
         spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw));
 
@@ -308,8 +316,13 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
 
     let engine = Rc::new(RefCell::new(engine));
     let frame_callback = Box::new(move |timestamp: f64| {
-        let mut input = input_state.borrow_mut();
-        engine.borrow_mut().tick(timestamp, &mut input);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut input = input_state.borrow_mut();
+            engine.borrow_mut().tick(timestamp, &mut input);
+        }));
+        if let Err(e) = result {
+            web_sys::console::error_1(&format!("[qwasm2-rs] Frame panic: {:?}", e).into());
+        }
     }) as Box<dyn FnMut(f64)>;
 
     q2_platform::wasm::game_loop::start_game_loop(frame_callback)

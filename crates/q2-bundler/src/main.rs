@@ -92,6 +92,10 @@ function __q2_decode_wasm() {{
     // Strip `export` keywords — can't use them in inline <script type="module">
     // "export function foo()" → "function foo()"
     // "export { initSync, __wbg_init as default };" → "const init = __wbg_init;"
+    //
+    // NOTE: This export stripping is tightly coupled to wasm-pack's current JS
+    // output format. If wasm-pack changes its codegen, this will silently break.
+    // Consider using a regex or AST-based approach for robustness.
     let stripped = js
         .replace("export function ", "function ")
         .replace("export async function ", "async function ");

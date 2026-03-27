@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_state_transitions() {
+    fn server_state_field_assignment() {
         let mut sv = Server::default();
         assert_eq!(sv.state, ServerState::Dead);
 

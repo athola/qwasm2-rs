@@ -107,6 +107,15 @@ impl NetChan {
     /// `reliable_buf` on the next call to `transmit` when the previous
     /// reliable has been acknowledged.
     pub fn queue_reliable(&mut self, data: &[u8]) {
+        if self.message_buf.len() + data.len() > MAX_MSGLEN {
+            tracing::warn!(
+                "Netchan: reliable message overflow ({} + {} > {})",
+                self.message_buf.len(),
+                data.len(),
+                MAX_MSGLEN,
+            );
+            return;
+        }
         self.message_buf.write_data(data);
     }
 

@@ -24,7 +24,7 @@ WebGL2, and runs player movement in the browser.
 
 ```bash
 # Clone and enter the repository
-git clone https://github.com/<owner>/qwasm2-rs.git
+git clone https://github.com/athola/qwasm2-rs.git
 cd qwasm2-rs
 
 # Check prerequisites, build everything, and launch
@@ -78,7 +78,8 @@ Entry points:  q2-wasm (browser)  q2-bin (native)
                            |                    |
                         q2-shared (types, constants)
 
-Standalone:  q2-devserver  q2-bundler  q2-platform  q2-net
+Standalone:  q2-devserver  q2-bundler  q2-platform
+Networking:  q2-net (depends on q2-shared, q2-common)
 ```
 
 ### Trait Boundaries
@@ -104,7 +105,7 @@ function-pointer tables:
 | `q2-server` | Server state, frame loop, world |
 | `q2-client` | Client state, parsing, input, view |
 | `q2-platform` | Platform abstraction (WASM input, GL context) |
-| `q2-net` | P2P networking via WebRTC (matchbox_socket) |
+| `q2-net` | P2P networking via WebRTC (matchbox_socket); depends on q2-shared, q2-common |
 | `q2-wasm` | WASM cdylib entry point |
 | `q2-bin` | Native binary entry point |
 | `q2-devserver` | Axum dev server for local development |
@@ -160,5 +161,6 @@ against the C source before modifying.
 
 ## License
 
-License not yet specified. See individual crate `Cargo.toml` files
-for any per-crate license declarations.
+Dual-licensed under MIT or Apache-2.0 at your option.
+
+> **TODO**: Add `license = "MIT OR Apache-2.0"` to each crate's `Cargo.toml` and add LICENSE files.

@@ -38,11 +38,17 @@ async fn main() {
         tracing::warn!("gamedata/baseq2/pak0.pak NOT FOUND — run: make gamedata-demo");
     }
 
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        eprintln!("Failed to bind to port {}: {}", port, e);
+        eprintln!("Is another process using this port? Try: PORT=8081 make play");
+        std::process::exit(1);
+    });
+
     tracing::info!("q2-devserver listening on http://{}", addr);
 
     let url = format!("http://{}/qwasm2.html", addr);
 
-    // Auto-open browser
+    // Auto-open browser (after bind succeeds so the server is ready)
     #[cfg(target_os = "macos")]
     { let _ = std::process::Command::new("open").arg(&url).spawn(); }
     #[cfg(target_os = "linux")]
@@ -50,6 +56,5 @@ async fn main() {
     #[cfg(target_os = "windows")]
     { let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn(); }
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

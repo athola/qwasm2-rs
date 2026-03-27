@@ -65,82 +65,84 @@ pub struct FileSystem {
     game_dir: String,
 }
 
+/// Parse PAK directory entries from raw bytes. Shared by `Pack::load` and
+/// `Pack::load_from_bytes` to avoid duplicating the parsing logic.
+fn parse_pack_data(name: &str, data: &[u8]) -> Q2Result<HashMap<String, PackFile>> {
+    if data.len() < 12 {
+        return Err(Q2Error::Drop(format!(
+            "{}: data too small for PAK header",
+            name
+        )));
+    }
+
+    let mut cursor = Cursor::new(data);
+
+    let magic = read_u32_le(&mut cursor)?;
+    if magic != PAK_MAGIC {
+        return Err(Q2Error::Drop(format!(
+            "{}: not a PAK file (magic: {:#010x})",
+            name, magic
+        )));
+    }
+
+    let dir_offset = read_u32_le(&mut cursor)?;
+    let dir_len = read_u32_le(&mut cursor)?;
+
+    if dir_len % PAK_DIR_ENTRY_SIZE != 0 {
+        return Err(Q2Error::Drop(format!(
+            "{}: invalid PAK directory length {}",
+            name, dir_len
+        )));
+    }
+
+    let num_files = (dir_len / PAK_DIR_ENTRY_SIZE) as usize;
+    if num_files > MAX_FILES_IN_PACK {
+        return Err(Q2Error::Drop(format!(
+            "{}: too many files ({} > {})",
+            name, num_files, MAX_FILES_IN_PACK
+        )));
+    }
+
+    cursor.seek(SeekFrom::Start(dir_offset as u64)).map_err(|e| {
+        Q2Error::Drop(format!("{}: can't seek to directory: {}", name, e))
+    })?;
+
+    let mut files = HashMap::with_capacity(num_files);
+
+    for _ in 0..num_files {
+        let mut name_buf = [0u8; 56];
+        cursor.read_exact(&mut name_buf).map_err(|e| {
+            Q2Error::Drop(format!("{}: truncated directory: {}", name, e))
+        })?;
+
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(56);
+        let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
+        let normalized = normalize_path(&file_name);
+
+        let offset = read_u32_le(&mut cursor)?;
+        let size = read_u32_le(&mut cursor)?;
+
+        files.insert(
+            normalized.clone(),
+            PackFile {
+                name: normalized,
+                offset,
+                size,
+            },
+        );
+    }
+
+    Ok(files)
+}
+
 impl Pack {
     /// Load a PAK file from disk, parsing its directory.
     pub fn load(path: &Path) -> Q2Result<Self> {
         let data = std::fs::read(path)
             .map_err(|e| Q2Error::Drop(format!("can't open {}: {}", path.display(), e)))?;
 
-        if data.len() < 12 {
-            return Err(Q2Error::Drop(format!(
-                "{}: file too small for PAK header",
-                path.display()
-            )));
-        }
-
-        let mut cursor = Cursor::new(data.as_slice());
-
-        // Read header
-        let magic = read_u32_le(&mut cursor)?;
-        if magic != PAK_MAGIC {
-            return Err(Q2Error::Drop(format!(
-                "{}: not a PAK file (magic: {:#010x})",
-                path.display(),
-                magic
-            )));
-        }
-
-        let dir_offset = read_u32_le(&mut cursor)?;
-        let dir_len = read_u32_le(&mut cursor)?;
-
-        if dir_len % PAK_DIR_ENTRY_SIZE != 0 {
-            return Err(Q2Error::Drop(format!(
-                "{}: invalid PAK directory length {}",
-                path.display(),
-                dir_len
-            )));
-        }
-
-        let num_files = (dir_len / PAK_DIR_ENTRY_SIZE) as usize;
-        if num_files > MAX_FILES_IN_PACK {
-            return Err(Q2Error::Drop(format!(
-                "{}: too many files ({} > {})",
-                path.display(),
-                num_files,
-                MAX_FILES_IN_PACK
-            )));
-        }
-
-        // Seek to directory
-        cursor.seek(SeekFrom::Start(dir_offset as u64)).map_err(|e| {
-            Q2Error::Drop(format!("{}: can't seek to directory: {}", path.display(), e))
-        })?;
-
-        let mut files = HashMap::with_capacity(num_files);
-
-        for _ in 0..num_files {
-            // Read 56-byte name (null-terminated)
-            let mut name_buf = [0u8; 56];
-            cursor.read_exact(&mut name_buf).map_err(|e| {
-                Q2Error::Drop(format!("{}: truncated directory: {}", path.display(), e))
-            })?;
-
-            let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(56);
-            let name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
-            let normalized = normalize_path(&name);
-
-            let offset = read_u32_le(&mut cursor)?;
-            let size = read_u32_le(&mut cursor)?;
-
-            files.insert(
-                normalized.clone(),
-                PackFile {
-                    name: normalized,
-                    offset,
-                    size,
-                },
-            );
-        }
+        let display_name = path.display().to_string();
+        let files = parse_pack_data(&display_name, &data)?;
 
         tracing::info!(
             "Loaded PAK: {} ({} files)",
@@ -157,69 +159,7 @@ impl Pack {
 
     /// Load a PAK from an in-memory byte buffer (for WASM where files are fetched).
     pub fn load_from_bytes(name: &str, data: &[u8]) -> Q2Result<Self> {
-        if data.len() < 12 {
-            return Err(Q2Error::Drop(format!(
-                "{}: data too small for PAK header",
-                name
-            )));
-        }
-
-        let mut cursor = Cursor::new(data);
-
-        let magic = read_u32_le(&mut cursor)?;
-        if magic != PAK_MAGIC {
-            return Err(Q2Error::Drop(format!(
-                "{}: not a PAK file (magic: {:#010x})",
-                name, magic
-            )));
-        }
-
-        let dir_offset = read_u32_le(&mut cursor)?;
-        let dir_len = read_u32_le(&mut cursor)?;
-
-        if dir_len % PAK_DIR_ENTRY_SIZE != 0 {
-            return Err(Q2Error::Drop(format!(
-                "{}: invalid PAK directory length {}",
-                name, dir_len
-            )));
-        }
-
-        let num_files = (dir_len / PAK_DIR_ENTRY_SIZE) as usize;
-        if num_files > MAX_FILES_IN_PACK {
-            return Err(Q2Error::Drop(format!(
-                "{}: too many files ({} > {})",
-                name, num_files, MAX_FILES_IN_PACK
-            )));
-        }
-
-        cursor.seek(SeekFrom::Start(dir_offset as u64)).map_err(|e| {
-            Q2Error::Drop(format!("{}: can't seek to directory: {}", name, e))
-        })?;
-
-        let mut files = HashMap::with_capacity(num_files);
-
-        for _ in 0..num_files {
-            let mut name_buf = [0u8; 56];
-            cursor.read_exact(&mut name_buf).map_err(|e| {
-                Q2Error::Drop(format!("{}: truncated directory: {}", name, e))
-            })?;
-
-            let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(56);
-            let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
-            let normalized = normalize_path(&file_name);
-
-            let offset = read_u32_le(&mut cursor)?;
-            let size = read_u32_le(&mut cursor)?;
-
-            files.insert(
-                normalized.clone(),
-                PackFile {
-                    name: normalized,
-                    offset,
-                    size,
-                },
-            );
-        }
+        let files = parse_pack_data(name, data)?;
 
         tracing::info!("Loaded PAK from memory: {} ({} files)", name, files.len());
 
@@ -288,14 +228,19 @@ impl FileSystem {
 
         // Find and load PAK files in sorted order
         let mut pak_files: Vec<PathBuf> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(ext) = path.extension() {
-                    if ext.eq_ignore_ascii_case("pak") {
-                        pak_files.push(path);
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(ext) = path.extension() {
+                        if ext.eq_ignore_ascii_case("pak") {
+                            pak_files.push(path);
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                tracing::warn!("Unable to read directory {}: {}", dir.display(), e);
             }
         }
         pak_files.sort();

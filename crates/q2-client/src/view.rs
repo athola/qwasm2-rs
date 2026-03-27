@@ -10,6 +10,8 @@ pub fn calc_fov(fov_x: f32, width: f32, height: f32) -> f32 {
 ///
 /// Mirrors Q2's `LerpAngle()`. Without this, interpolating from 350° to 10°
 /// would sweep through 180° instead of taking the short 20° path.
+// Will be used for entity interpolation in the client render loop.
+#[allow(dead_code)]
 fn lerp_angle(a: f32, b: f32, frac: f32) -> f32 {
     let mut delta = b - a;
     if delta > 180.0 {
@@ -22,6 +24,8 @@ fn lerp_angle(a: f32, b: f32, frac: f32) -> f32 {
 }
 
 /// Interpolate between two entity states.
+// Will be used for entity interpolation in the client render loop.
+#[allow(dead_code)]
 pub fn lerp_entity(prev: &EntityState, current: &EntityState, frac: f32) -> (Vec3f, Vec3f) {
     let origin = prev.origin + (current.origin - prev.origin) * frac;
     let angles = Vec3f::new(

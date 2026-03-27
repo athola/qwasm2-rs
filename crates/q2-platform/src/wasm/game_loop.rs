@@ -16,25 +16,29 @@ pub fn start_game_loop(mut callback: FrameCallback) -> Result<(), String> {
         callback(timestamp);
 
         // Schedule next frame
-        request_animation_frame(f.borrow().as_ref().unwrap());
+        if let Err(e) = request_animation_frame(f.borrow().as_ref().unwrap()) {
+            web_sys::console::error_1(&format!("[qwasm2-rs] RAF error: {}", e).into());
+        }
     }) as Box<dyn FnMut(f64)>));
 
-    request_animation_frame(g.borrow().as_ref().unwrap());
+    request_animation_frame(g.borrow().as_ref().unwrap())
+        .map_err(|e| format!("initial RAF failed: {}", e))?;
     Ok(())
 }
 
-fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) {
+fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) -> Result<i32, String> {
     web_sys::window()
-        .expect("no window")
+        .ok_or_else(|| "no window".to_string())?
         .request_animation_frame(f.as_ref().unchecked_ref())
-        .expect("request_animation_frame failed");
+        .map_err(|e| format!("request_animation_frame failed: {:?}", e))
 }
 
 /// Get high-resolution time in milliseconds.
+///
+/// Returns 0.0 if the window or performance API is unavailable.
 pub fn performance_now() -> f64 {
     web_sys::window()
-        .expect("no window")
-        .performance()
-        .expect("no performance")
-        .now()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
 }

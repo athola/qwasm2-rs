@@ -33,7 +33,7 @@ q2-net          P2P networking via WebRTC (matchbox_socket)
 q2-wasm         WASM cdylib entry point (orchestrator)
 q2-bin          Native binary entry point
 q2-devserver    Axum dev server (standalone, no game deps)
-q2-bundler      PAK bundler utility (standalone)
+q2-bundler      Bundles WASM + JS into a single HTML file (standalone)
 ```
 
 ### Trait Boundaries

@@ -26,7 +26,7 @@ impl ClientState {
                 }
                 Ok(SvcOp::Nop) => {}
                 _ => {
-                    tracing::warn!("Unknown server command: {}", cmd);
+                    tracing::warn!("Unknown server command {} — stopping parse (remaining bytes lost)", cmd);
                     return;
                 }
             }
@@ -57,19 +57,26 @@ impl ClientState {
     }
 
     fn parse_config_string(&mut self, msg: &mut NetMsg) {
-        let index = msg.read_short() as usize;
+        let index = msg.read_short();
         let value = msg.read_string();
+        if index < 0 {
+            tracing::warn!("Configstring: negative index {}", index);
+            return;
+        }
+        let index = index as usize;
         if index < self.configstrings.len() {
             self.configstrings[index] = value;
+        } else {
+            tracing::warn!("Configstring: index {} out of range (max {})", index, self.configstrings.len());
         }
     }
 
     fn parse_baseline(&mut self, msg: &mut NetMsg) {
-        // Read entity number from the baseline message.
-        // In the full protocol this uses delta-compressed entity bits;
-        // for now we read a short entity number as a placeholder.
+        // Minimal stub — reads entity number only.
+        // A real server sends delta-compressed entity bits after this;
+        // connecting to a full server will desync here.
         let _entity_num = msg.read_short();
-        // TODO: full delta parsing using net_msg delta functions
+        tracing::debug!("parse_baseline: stub (entity {})", _entity_num);
     }
 
     fn parse_print(&mut self, msg: &mut NetMsg) {
@@ -98,11 +105,15 @@ impl ClientState {
 
     fn parse_playerinfo(&mut self, msg: &mut NetMsg) {
         // TODO: parse delta-compressed player state
+        // WARNING: this stub does not consume message bytes — remaining data will be corrupted
+        tracing::warn!("parse_playerinfo: stub — message stream may be corrupted");
         let _ = msg;
     }
 
     fn parse_packet_entities(&mut self, msg: &mut NetMsg) {
         // TODO: parse delta-compressed entity states
+        // WARNING: this stub does not consume message bytes — remaining data will be corrupted
+        tracing::warn!("parse_packet_entities: stub — message stream may be corrupted");
         let _ = msg;
     }
 }

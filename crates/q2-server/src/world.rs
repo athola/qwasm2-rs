@@ -160,6 +160,7 @@ impl ServerWorld {
     ///
     /// Corresponds to the tail end of `SV_LinkEdict()` in the C codebase
     /// (the part that inserts the entity into an area-node list).
+    // TODO: migrate from raw usize indices to SlotMap generational keys per ADR-001
     pub fn link_entity(&mut self, ent_idx: usize, mins: Vec3f, maxs: Vec3f, solid: Solid) {
         // Unlink first if already linked.
         self.unlink_entity(ent_idx);
@@ -257,6 +258,12 @@ impl ServerWorld {
     ) {
         let node = &self.area_nodes[node_idx];
 
+        debug_assert!(
+            area_type == AREA_SOLID || area_type == AREA_TRIGGERS,
+            "invalid area_type: {}",
+            area_type
+        );
+
         // Choose the correct list based on area_type.
         let list = if area_type == AREA_SOLID {
             &node.solid_edicts
@@ -286,11 +293,16 @@ impl ServerWorld {
         }
 
         let axis = node.axis as usize;
-        if Self::component(maxs, axis) > node.dist {
-            self.area_edicts_r(node.children[0], mins, maxs, area_type, result);
+        let children = node.children;
+        if Self::component(maxs, axis) > node.dist
+            && children[0] < self.area_nodes.len()
+        {
+            self.area_edicts_r(children[0], mins, maxs, area_type, result);
         }
-        if Self::component(mins, axis) < node.dist {
-            self.area_edicts_r(node.children[1], mins, maxs, area_type, result);
+        if Self::component(mins, axis) < node.dist
+            && children[1] < self.area_nodes.len()
+        {
+            self.area_edicts_r(children[1], mins, maxs, area_type, result);
         }
     }
 

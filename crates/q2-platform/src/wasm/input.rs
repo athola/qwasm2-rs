@@ -86,7 +86,7 @@ pub fn setup_input_listeners(
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
             let mut s = state.borrow_mut();
-            s.mouse_buttons |= 1 << event.button();
+            s.mouse_buttons |= 1u8.checked_shl(event.button() as u32).unwrap_or(0);
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
@@ -98,7 +98,7 @@ pub fn setup_input_listeners(
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
             let mut s = state.borrow_mut();
-            s.mouse_buttons &= !(1 << event.button());
+            s.mouse_buttons &= !(1u8.checked_shl(event.button() as u32).unwrap_or(0));
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())

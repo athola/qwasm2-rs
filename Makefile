@@ -55,7 +55,7 @@ prereq-python3: ## Check python3 is available
 		(echo "$(FAIL) python3 not found"; exit 1)
 	@echo "$(OK) python3"
 
-prereqs: prereq-rust prereq-wasm-pack prereq-curl prereq-7z ## Check all build prerequisites
+prereqs: prereq-rust prereq-wasm-pack prereq-curl prereq-7z prereq-python3 ## Check all build prerequisites
 	@echo ""
 	@echo "All build prerequisites satisfied."
 
@@ -74,7 +74,7 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (~47 MB
 	echo "Downloading Quake 2 demo installer..."; \
 	curl -# -L -o "$$tmpdir/q2demo.exe" "$(DEMO_URL)"; \
 	echo "Extracting pak0.pak..."; \
-	(cd "$$tmpdir" && 7z e -y q2demo.exe Install/Data/baseq2/pak0.pak > /dev/null 2>&1); \
+	(cd "$$tmpdir" && 7z e -y q2demo.exe Install/Data/baseq2/pak0.pak > /dev/null); \
 	if [ -f "$$tmpdir/pak0.pak" ]; then \
 		mv "$$tmpdir/pak0.pak" "$(GAMEDATA)/pak0.pak"; \
 		echo "$(OK) $(GAMEDATA)/pak0.pak ($$(du -h "$(GAMEDATA)/pak0.pak" | cut -f1))"; \
@@ -88,8 +88,8 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (~47 MB
 gamedata: gamedata-check ## Alias for gamedata-check
 
 # --- Build pipeline ---
-wasm: prereq-wasm-pack ## Build WASM module (wasm-pack)
-	wasm-pack build --target web $(WASM_CRATE)
+wasm: prereq-wasm-pack ## Build WASM module (wasm-pack, debug)
+	wasm-pack build --dev --target web $(WASM_CRATE)
 
 wasm-release: prereq-wasm-pack ## Build WASM module (release, smaller)
 	wasm-pack build --target web --release $(WASM_CRATE)
@@ -108,6 +108,9 @@ play: prereqs bundle gamedata-check ## Build everything + launch devserver
 	PORT=$(PORT) cargo run -p q2-devserver
 
 play-release: prereqs bundle-release gamedata-check ## Release build + devserver
+	@echo ""
+	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html"
+	@echo ""
 	PORT=$(PORT) cargo run --release -p q2-devserver
 
 devserver: gamedata-check ## Run devserver only (no rebuild)

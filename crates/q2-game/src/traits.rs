@@ -115,6 +115,8 @@ pub trait GameImport: Send + Sync {
     /// Find all entity indices whose bounding boxes intersect the given region.
     ///
     /// * `area_type` — `AREA_SOLID`(1) or `AREA_TRIGGERS`(2).
+    /// * `max_count` — Implementations **must** return at most this many results
+    ///   (truncate the result vec to `max_count`).
     fn box_edicts(
         &self,
         mins: Vec3f,
