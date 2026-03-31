@@ -1725,7 +1725,7 @@ use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16, try_
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1889,7 +1889,7 @@ mod tests {
     ///
     /// Geometry: a solid brush covering x ∈ [-500, 0], y/z ∈ [-500, 500].
     /// One BSP node splits at x=0: front (x>0) → empty leaf, back (x<0) → solid leaf.
-    fn build_minimal_bsp() -> Vec<u8> {
+    pub(crate) fn build_minimal_bsp() -> Vec<u8> {
         let mut buf = vec![0u8; 600];
         let mut cursor = 0usize;
 
@@ -2162,5 +2162,211 @@ mod tests {
         let expected = 0xe0cf_d631_u32 ^ 0x31e9_6ad1 ^ 0xd759_3cb7 ^ 0xc089_c0e0;
         assert_eq!(expected, 0xc6f6_40b7);
         assert_eq!(com_block_checksum(b""), expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // Floor BSP builder — solid slab below z=0
+    // -----------------------------------------------------------------------
+
+    /// Build a BSP with a floor at z=0.
+    ///
+    /// Geometry: solid brush covering x/y ∈ [-500, 500], z ∈ [-500, 0].
+    /// BSP node splits at z=0: front (z>0) → empty, back (z<0) → solid.
+    pub(crate) fn build_floor_bsp() -> Vec<u8> {
+        let mut buf = vec![0u8; 600];
+        let mut cursor = 0usize;
+
+        macro_rules! w_u32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as u32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as i32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as i16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_u16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as u16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
+
+        w_u32!(IDBSPHEADER);
+        w_u32!(BSPVERSION);
+
+        let lump_dir_start = cursor;
+        cursor += 19 * 8;
+        let mut lumps = [(0u32, 0u32); 19];
+
+        // Texinfo (1 × 76 bytes)
+        lumps[5] = (cursor as u32, 76);
+        cursor += 32; // vecs
+        w_i32!(0); w_i32!(0); // flags, value
+        let name = b"solid\0";
+        buf[cursor..cursor + name.len()].copy_from_slice(name);
+        cursor += 32; // texture name
+        w_i32!(-1); // nexttexinfo
+
+        // Leafs (2 × 28 bytes)
+        lumps[8] = (cursor as u32, 56);
+        // Leaf 0: SOLID
+        w_i32!(CONTENTS_SOLID);
+        w_i16!(0i16); w_i16!(1i16); // cluster, area
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
+        w_u16!(0u16); w_u16!(0u16); // faces
+        w_u16!(0u16); w_u16!(1u16); // firstleafbrush, numleafbrushes
+        // Leaf 1: EMPTY
+        w_i32!(0);
+        w_i16!(0i16); w_i16!(1i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_u16!(0u16); w_u16!(0u16);
+        w_u16!(0u16); w_u16!(0u16);
+
+        // Leaf brushes (1 × 2 bytes)
+        lumps[10] = (cursor as u32, 2);
+        w_u16!(0u16);
+
+        // Planes (6 × 20 bytes) — floor slab
+        lumps[1] = (cursor as u32, 120);
+        // Plane 0: +Z at dist=0 (floor surface, split plane)
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_i32!(2);
+        // Plane 1: -Z at dist=500
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(500.0f32); w_i32!(5);
+        // Plane 2: +X at dist=500
+        w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(0);
+        // Plane 3: -X at dist=500
+        w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(3);
+        // Plane 4: +Y at dist=500
+        w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(1);
+        // Plane 5: -Y at dist=500
+        w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(4);
+
+        // Brush (1 × 12 bytes)
+        lumps[14] = (cursor as u32, 12);
+        w_i32!(0); w_i32!(6); w_i32!(CONTENTS_SOLID);
+
+        // Brush sides (6 × 4 bytes)
+        lumps[15] = (cursor as u32, 24);
+        for plane_idx in 0..6u16 {
+            w_u16!(plane_idx);
+            w_i16!(0i16);
+        }
+
+        // Model (1 × 48 bytes)
+        lumps[13] = (cursor as u32, 48);
+        w_f32!(-500.0f32); w_f32!(-500.0f32); w_f32!(-500.0f32); // mins
+        w_f32!(500.0f32); w_f32!(500.0f32); w_f32!(0.0f32);      // maxs
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32);          // origin
+        w_i32!(0); w_i32!(0); w_i32!(0);                          // headnode, firstface, numfaces
+
+        // Node (1 × 28 bytes): split at z=0
+        lumps[4] = (cursor as u32, 28);
+        w_i32!(0);   // planenum (plane 0: +Z at z=0)
+        w_i32!(-2);  // child[0]: front (z>0) → leaf 1 (empty)
+        w_i32!(-1);  // child[1]: back (z<0) → leaf 0 (solid)
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_u16!(0u16); w_u16!(0u16);
+
+        // Areas (2 × 8 bytes)
+        lumps[17] = (cursor as u32, 16);
+        w_i32!(0); w_i32!(0);
+        w_i32!(0); w_i32!(0);
+
+        // Area portals (0 entries)
+        lumps[18] = (cursor as u32, 0);
+
+        buf.truncate(cursor);
+
+        let mut lc = lump_dir_start;
+        for i in 0..19 {
+            buf[lc..lc + 4].copy_from_slice(&lumps[i].0.to_le_bytes());
+            buf[lc + 4..lc + 8].copy_from_slice(&lumps[i].1.to_le_bytes());
+            lc += 8;
+        }
+        buf
+    }
+
+    // -----------------------------------------------------------------------
+    // Box-sweep trace (player-sized bounding box)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bsp_box_sweep_hits_wall() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Player-sized box from (50,0,0) toward (-50,0,0).
+        // The wall is at x=0; with player half-width 16, the box should stop at x≈16.
+        let player_mins = Vec3f::new(-16.0, -16.0, -24.0);
+        let player_maxs = Vec3f::new(16.0, 16.0, 32.0);
+        let trace = cm.box_trace(
+            Vec3f::new(50.0, 0.0, 0.0),
+            Vec3f::new(-50.0, 0.0, 0.0),
+            player_mins, player_maxs,
+            0, CONTENTS_SOLID,
+        );
+
+        assert!(trace.fraction < 1.0, "box sweep should hit the wall");
+        // endpos.x should be near 16 (player center when -16 edge touches x=0)
+        assert!(
+            (trace.endpos.x - 16.0).abs() < 1.0,
+            "expected stop near x=16, got x={}",
+            trace.endpos.x
+        );
+    }
+
+    #[test]
+    fn bsp_box_sweep_floor_stops_fall() {
+        let bsp = build_floor_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Drop a player-sized box from z=100 to z=-100. Floor at z=0.
+        // Player mins.z = -24, so box bottom at z-24. Should stop when z-24 = 0 → z = 24.
+        let player_mins = Vec3f::new(-16.0, -16.0, -24.0);
+        let player_maxs = Vec3f::new(16.0, 16.0, 32.0);
+        let trace = cm.box_trace(
+            Vec3f::new(0.0, 0.0, 100.0),
+            Vec3f::new(0.0, 0.0, -100.0),
+            player_mins, player_maxs,
+            0, CONTENTS_SOLID,
+        );
+
+        assert!(trace.fraction < 1.0, "box should hit the floor");
+        assert!(
+            (trace.endpos.z - 24.0).abs() < 1.0,
+            "expected stop near z=24, got z={}",
+            trace.endpos.z
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BSP loader error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bsp_wrong_version_rejected() {
+        let mut bsp = build_minimal_bsp();
+        // Overwrite version (bytes 4..8) with wrong value 99
+        bsp[4..8].copy_from_slice(&99u32.to_le_bytes());
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "wrong version should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("wrong version"), "error: {err}");
+    }
+
+    #[test]
+    fn bsp_wrong_magic_rejected() {
+        let mut bsp = build_minimal_bsp();
+        // Overwrite magic (bytes 0..4) with garbage
+        bsp[0..4].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "wrong magic should be rejected");
+    }
+
+    #[test]
+    fn bsp_truncated_header_rejected() {
+        // Only 4 bytes — too short for even the header
+        let bsp = vec![0x49, 0x42, 0x53, 0x50]; // "IBSP" magic only
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "truncated BSP should be rejected");
     }
 }

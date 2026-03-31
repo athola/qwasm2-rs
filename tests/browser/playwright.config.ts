@@ -8,6 +8,9 @@ export default defineConfig({
   timeout: 30000,
   use: {
     baseURL: 'http://localhost:3000',
+    launchOptions: {
+      args: ['--use-gl=angle', '--use-angle=swiftshader'],
+    },
   },
   webServer: {
     command: `npx serve "${distDir}" -l 3000 --no-clipboard`,

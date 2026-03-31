@@ -323,4 +323,18 @@ mod tests {
         cs.parse_server_message(&mut msg);
         assert!(msg.remaining_data().is_empty());
     }
+
+    #[test]
+    fn parse_config_string_negative_index_ignored() {
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::ConfigString as i32);
+        msg.write_short(-1); // negative index
+        msg.write_string("should_be_ignored");
+        msg.begin_reading();
+
+        cs.parse_server_message(&mut msg);
+        // No configstring should be modified
+        assert!(cs.configstrings.iter().all(|s| s.is_empty()));
+    }
 }

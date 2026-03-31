@@ -221,6 +221,7 @@ impl PlayerController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collision::tests::{build_floor_bsp, build_minimal_bsp};
 
     #[test]
     fn new_controller_has_spawn_state() {
@@ -288,5 +289,72 @@ mod tests {
         assert!(!pc.on_ground);
         // velocity_z was set to JUMP_VELOCITY then gravity applied for one tick
         assert!(pc.velocity_z > 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Collision-integrated movement tests (use real BSP geometry)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wall_collision_stops_movement() {
+        // Minimal BSP: wall at x=0 (solid for x<0, empty for x>0).
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Player at (50, 0, 0), facing -X (yaw=180). Walk forward with run speed.
+        let mut pc = PlayerController::new(Vec3f::new(50.0, 0.0, 0.0), 180.0);
+        pc.on_ground = true;
+        let input = MoveInput {
+            forward: 1.0, right: 0.0,
+            yaw_delta: 0.0, pitch_delta: 0.0,
+            jump: false, duck: false, run: true,
+        };
+
+        // Run several ticks — enough to walk 50 units into the wall.
+        // Force on_ground each tick since this BSP has no floor.
+        for _ in 0..20 {
+            pc.on_ground = true;
+            pc.tick(0.1, &input, &mut cm);
+        }
+
+        // Player should be stopped by wall. With half-width 16, center stops at x≈16.
+        assert!(
+            pc.pos.x > 14.0,
+            "player should not pass through wall, got x={}",
+            pc.pos.x
+        );
+    }
+
+    #[test]
+    fn ground_detection_on_floor() {
+        // Floor BSP: solid below z=0, empty above.
+        let bsp = build_floor_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Player spawns high above the floor
+        let mut pc = PlayerController::new(Vec3f::new(0.0, 0.0, 200.0), 0.0);
+        pc.on_ground = false;
+        let input = MoveInput {
+            forward: 0.0, right: 0.0,
+            yaw_delta: 0.0, pitch_delta: 0.0,
+            jump: false, duck: false, run: false,
+        };
+
+        // Let player fall for many ticks
+        for _ in 0..50 {
+            pc.tick(0.1, &input, &mut cm);
+        }
+
+        // Player should have landed on the floor.
+        // Player mins.z = -24, so center z ≈ 24 when standing on z=0 surface.
+        assert!(pc.on_ground, "player should be on_ground after falling");
+        assert!(
+            (pc.pos.z - 24.0).abs() < 2.0,
+            "expected z≈24 (standing on floor at z=0), got z={}",
+            pc.pos.z
+        );
+        assert_eq!(pc.velocity_z, 0.0, "velocity should be zeroed on landing");
     }
 }

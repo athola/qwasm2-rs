@@ -266,6 +266,10 @@ window.clearLog = function() {{
 try {{
   await init();
 
+  // Populate Playwright test hooks after WASM init succeeds
+  document.getElementById('wasm-loaded').textContent = 'true';
+  document.getElementById('self-test-result').textContent = self_test();
+
   // Determine pak URL — if served by devserver, fetch from /gamedata/
   const pakUrl = '/gamedata/baseq2/pak0.pak';
 
