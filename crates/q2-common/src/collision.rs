@@ -705,6 +705,7 @@ impl CollisionMap {
 
             // Nodes
             let child_side = -1 - self.empty_leaf;
+            // Safe: indices are ≤ 12 (6 axial planes × 2 sides), well within i32 range.
             let child_other = if i != 5 {
                 (num_nodes + i + 1) as i32
             } else {
@@ -1621,7 +1622,12 @@ fn md4_digest(data: &[u8]) -> [u32; 4] {
     }
     msg.extend_from_slice(&bit_len.to_le_bytes());
 
-    let mut state: [u32; 4] = [0x6745_2301, 0xefcd_ab89, 0x98ba_dcfe, 0x1032_5476];
+    // MD4 initial state words (RFC 1320 §3.3)
+    const MD4_INIT_A: u32 = 0x6745_2301;
+    const MD4_INIT_B: u32 = 0xefcd_ab89;
+    const MD4_INIT_C: u32 = 0x98ba_dcfe;
+    const MD4_INIT_D: u32 = 0x1032_5476;
+    let mut state: [u32; 4] = [MD4_INIT_A, MD4_INIT_B, MD4_INIT_C, MD4_INIT_D];
 
     for block in msg.chunks_exact(64) {
         let mut x = [0u32; 16];
@@ -1895,10 +1901,8 @@ mod tests {
         macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
 
         // ---- Header ----
-        // IBSP magic
-        w_u32!(0x50534249u32);
-        // Version 38
-        w_u32!(38u32);
+        w_u32!(IDBSPHEADER);
+        w_u32!(BSPVERSION);
 
         // ---- Lump directory (19 entries × 8 bytes) ----
         // We'll fill these after writing lump data.

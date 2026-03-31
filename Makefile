@@ -1,6 +1,6 @@
 .PHONY: help all build build-release wasm wasm-release bundle bundle-release \
         play play-release serve devserver clean clean-gamedata \
-        check test lint fmt fmt-check \
+        check test test-browser lint fmt fmt-check \
         gamedata gamedata-check gamedata-demo \
         prereqs prereq-rust prereq-wasm-pack prereq-7z prereq-curl prereq-python3
 
@@ -136,6 +136,10 @@ check: prereq-rust ## Type-check all crates (native + wasm)
 
 test: prereq-rust ## Run native tests
 	cargo test --workspace --lib --bins --tests --exclude q2-wasm
+
+test-browser: bundle ## Run Playwright browser tests (requires npx)
+	cd tests/browser && npx playwright install --with-deps chromium 2>/dev/null; \
+	cd tests/browser && npx playwright test
 
 lint: prereq-rust ## Run clippy lints
 	cargo clippy --all-targets -- -D warnings

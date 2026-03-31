@@ -21,7 +21,9 @@ const PAK_MAGIC: u32 = (b'P' as u32)
     | ((b'C' as u32) << 16)
     | ((b'K' as u32) << 24);
 
-/// Size of a PAK directory entry: 56 bytes name + 4 bytes offset + 4 bytes size
+/// PAK filename field length — fixed at 56 bytes (null-padded) per the Quake
+/// PAK format spec. Total directory entry = 56 name + 4 offset + 4 size = 64.
+const PAK_ENTRY_NAME_LEN: usize = 56;
 const PAK_DIR_ENTRY_SIZE: u32 = 64;
 
 /// Maximum files per PAK
@@ -110,12 +112,12 @@ fn parse_pack_data(name: &str, data: &[u8]) -> Q2Result<HashMap<String, PackFile
     let mut files = HashMap::with_capacity(num_files);
 
     for _ in 0..num_files {
-        let mut name_buf = [0u8; 56];
+        let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
         cursor.read_exact(&mut name_buf).map_err(|e| {
             Q2Error::Drop(format!("{}: truncated directory: {}", name, e))
         })?;
 
-        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(56);
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(PAK_ENTRY_NAME_LEN);
         let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
         let normalized = normalize_path(&file_name);
 
@@ -431,8 +433,7 @@ mod tests {
         // Write directory
         let dir_offset = pak.len() as u32;
         for (name, offset, size) in &entries {
-            // 56-byte name (null-padded)
-            let mut name_buf = [0u8; 56];
+            let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
             let name_bytes = name.as_bytes();
             let copy_len = name_bytes.len().min(55);
             name_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);

@@ -2,9 +2,10 @@
 
 ## Reference Implementation
 
-The original C Quake 2 codebase lives at `~/Qwasm2`. **Always cross-reference
-game design decisions** (physics constants, collision behavior, network protocol,
-entity system, player movement) against the C source before implementing.
+The original C Quake 2 codebase is at [GMH-Code/Qwasm2](https://github.com/GMH-Code/Qwasm2)
+(local clone: `~/Qwasm2`). **Always cross-reference game design decisions**
+(physics constants, collision behavior, network protocol, entity system, player
+movement) against the C source before implementing.
 
 Key C source directories:
 - `~/Qwasm2/src/common/` — collision, pmove, cvar, cmd, filesystem, net_msg
