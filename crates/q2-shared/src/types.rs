@@ -1,7 +1,35 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Type alias for `glam::Vec3`. All crates should use this alias.
 pub type Vec3f = glam::Vec3;
+
+// ---------------------------------------------------------------------------
+// Opaque handle for console variables — canonical definition
+// ---------------------------------------------------------------------------
+
+/// Handle to a cvar (opaque index into `CVarSystem`).
+/// Replaces raw `cvar_t*` pointers from the C code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CVarHandle(usize);
+
+impl CVarHandle {
+    /// Create a handle from a raw index. Only the cvar system should call this.
+    pub fn from_raw(index: usize) -> Self {
+        Self(index)
+    }
+
+    /// Get the raw index. Only the cvar system should call this.
+    pub fn raw(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for CVarHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CVar({})", self.0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Entity state — replaces entity_state_t (shared.h lines 107-131)
@@ -141,7 +169,7 @@ pub struct Plane {
     pub normal: Vec3f,
     pub dist: f32,
     pub plane_type: u8,
-    pub signbits: u8,
+    pub sign_bits: u8,
 }
 
 impl Default for Plane {
@@ -150,7 +178,7 @@ impl Default for Plane {
             normal: Vec3f::ZERO,
             dist: 0.0,
             plane_type: 0,
-            signbits: 0,
+            sign_bits: 0,
         }
     }
 }

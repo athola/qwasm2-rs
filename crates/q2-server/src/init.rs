@@ -77,10 +77,9 @@ impl ServerStatic {
 
         self.max_clients = max_clients;
         self.clients = (0..max_clients)
-            .map(|i| {
-                let mut cl = ServerClient::default();
-                cl.edict_num = i + 1; // 1-based; entity 0 is the world.
-                cl
+            .map(|i| ServerClient {
+                edict_num: i + 1, // 1-based; entity 0 is the world.
+                ..ServerClient::default()
             })
             .collect();
         self.initialized = true;

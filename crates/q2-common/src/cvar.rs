@@ -5,6 +5,7 @@
 //! (graphics settings, gameplay tweaks, network parameters, etc.).
 
 use bitflags::bitflags;
+use q2_shared::CVarHandle;
 use std::collections::HashMap;
 
 bitflags! {
@@ -23,11 +24,6 @@ bitflags! {
         const LATCH      = 1 << 4;
     }
 }
-
-/// Opaque handle returned when registering a cvar.
-/// Replaces raw `cvar_t*` pointers from the C code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CVarHandle(usize);
 
 /// Internal storage for a single console variable.
 #[derive(Debug, Clone)]
@@ -63,7 +59,7 @@ impl CVarSystem {
     pub fn get(&mut self, name: &str, default_value: &str, flags: CVarFlags) -> CVarHandle {
         if let Some(&index) = self.name_to_index.get(name) {
             self.vars[index].flags |= flags;
-            return CVarHandle(index);
+            return CVarHandle::from_raw(index);
         }
 
         let index = self.vars.len();
@@ -78,7 +74,7 @@ impl CVarSystem {
             modified: false,
         });
         self.name_to_index.insert(name.to_owned(), index);
-        CVarHandle(index)
+        CVarHandle::from_raw(index)
     }
 
     /// Set a cvar by name. Respects `NOSET` and `LATCH` flags.
@@ -90,7 +86,7 @@ impl CVarSystem {
                 // Create with empty flags, then set.
                 let handle = self.get(name, value, CVarFlags::empty());
                 // Already has the right value from `get`.
-                self.vars[handle.0].modified = true;
+                self.vars[handle.raw()].modified = true;
                 return;
             }
         };
@@ -120,7 +116,7 @@ impl CVarSystem {
             Some(&i) => i,
             None => {
                 let handle = self.get(name, value, CVarFlags::empty());
-                self.vars[handle.0].modified = true;
+                self.vars[handle.raw()].modified = true;
                 return;
             }
         };
@@ -136,27 +132,27 @@ impl CVarSystem {
 
     /// Get the float value of a cvar.
     pub fn value(&self, handle: CVarHandle) -> f32 {
-        self.vars[handle.0].value
+        self.vars.get(handle.raw()).map_or(0.0, |v| v.value)
     }
 
     /// Get the string value of a cvar.
     pub fn string(&self, handle: CVarHandle) -> &str {
-        &self.vars[handle.0].string
+        self.vars.get(handle.raw()).map_or("", |v| v.string.as_str())
     }
 
     /// Get the name of a cvar.
     pub fn name(&self, handle: CVarHandle) -> &str {
-        &self.vars[handle.0].name
+        self.vars.get(handle.raw()).map_or("", |v| v.name.as_str())
     }
 
     /// Get the flags of a cvar.
     pub fn flags(&self, handle: CVarHandle) -> CVarFlags {
-        self.vars[handle.0].flags
+        self.vars.get(handle.raw()).map_or(CVarFlags::empty(), |v| v.flags)
     }
 
     /// Get the default value string that was used when the cvar was first registered.
     pub fn default_value(&self, handle: CVarHandle) -> &str {
-        &self.vars[handle.0].default_value
+        self.vars.get(handle.raw()).map_or("", |v| v.default_value.as_str())
     }
 
     /// Apply all latched values (called at an appropriate point, e.g. map change).
@@ -191,7 +187,7 @@ impl CVarSystem {
 
     /// Look up a cvar by name, returning its handle if it exists.
     pub fn find(&self, name: &str) -> Option<CVarHandle> {
-        self.name_to_index.get(name).map(|&i| CVarHandle(i))
+        self.name_to_index.get(name).map(|&i| CVarHandle::from_raw(i))
     }
 
     /// Tab-completion: return the first alphabetically sorted cvar name matching

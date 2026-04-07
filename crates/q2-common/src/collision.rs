@@ -103,23 +103,12 @@ pub struct CLeaf {
 }
 
 /// Collision brush (convex solid).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CBrush {
     pub contents: i32,
     pub num_sides: i32,
     pub first_brush_side: i32,
     pub check_count: i32,
-}
-
-impl Default for CBrush {
-    fn default() -> Self {
-        Self {
-            contents: 0,
-            num_sides: 0,
-            first_brush_side: 0,
-            check_count: 0,
-        }
-    }
 }
 
 /// One face of a brush.
@@ -262,6 +251,7 @@ impl CollisionMap {
             // Empty map — cinematic servers
             self.leafs.push(CLeaf::default());
             self.areas.push(CArea::default());
+            self.init_box_hull();
             return Ok(0);
         }
 
@@ -271,8 +261,8 @@ impl CollisionMap {
             return Err(Q2Error::Drop("BSP file too small".into()));
         }
 
-        let ident = read_u32(data, 0);
-        let version = read_u32(data, 4);
+        let ident = try_read_u32(data, 0)?;
+        let version = try_read_u32(data, 4)?;
 
         if ident != IDBSPHEADER {
             return Err(Q2Error::Drop(format!(
@@ -287,15 +277,13 @@ impl CollisionMap {
 
         // Read lump directory
         let mut lumps = [(0u32, 0u32); HEADER_LUMPS];
-        for i in 0..HEADER_LUMPS {
+        for (i, lump) in lumps.iter_mut().enumerate().take(HEADER_LUMPS) {
             let base = 8 + i * 8;
-            lumps[i] = (read_u32(data, base), read_u32(data, base + 4));
+            *lump = (try_read_u32(data, base)?, try_read_u32(data, base + 4)?);
         }
 
-        // Simple checksum (sum of all bytes)
-        let checksum = data
-            .iter()
-            .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+        // Com_BlockChecksum: MD4 hash, then XOR the four 32-bit digest words.
+        let checksum = com_block_checksum(data);
 
         // Load lumps in the same order as the C code
         self.load_surfaces(data, lumps[LUMP_TEXINFO])?;
@@ -320,7 +308,7 @@ impl CollisionMap {
     fn load_planes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DPLANE_SIZE != 0 {
+        if !len.is_multiple_of(DPLANE_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadPlanes: funny lump size".into()));
         }
         let count = len / DPLANE_SIZE;
@@ -334,11 +322,11 @@ impl CollisionMap {
         self.planes.reserve(count);
         for i in 0..count {
             let base = ofs + i * DPLANE_SIZE;
-            let nx = read_f32(data, base);
-            let ny = read_f32(data, base + 4);
-            let nz = read_f32(data, base + 8);
-            let dist = read_f32(data, base + 12);
-            let ptype = read_i32(data, base + 16) as u8;
+            let nx = try_read_f32(data, base)?;
+            let ny = try_read_f32(data, base + 4)?;
+            let nz = try_read_f32(data, base + 8)?;
+            let dist = try_read_f32(data, base + 12)?;
+            let ptype = try_read_i32(data, base + 16)? as u8;
 
             let mut bits: u8 = 0;
             if nx < 0.0 {
@@ -364,7 +352,7 @@ impl CollisionMap {
     fn load_nodes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DNODE_SIZE != 0 {
+        if !len.is_multiple_of(DNODE_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadNodes: funny lump size".into()));
         }
         let count = len / DNODE_SIZE;
@@ -378,9 +366,9 @@ impl CollisionMap {
         self.nodes.reserve(count);
         for i in 0..count {
             let base = ofs + i * DNODE_SIZE;
-            let planenum = read_i32(data, base) as usize;
-            let child0 = read_i32(data, base + 4);
-            let child1 = read_i32(data, base + 8);
+            let planenum = try_read_i32(data, base)? as usize;
+            let child0 = try_read_i32(data, base + 4)?;
+            let child1 = try_read_i32(data, base + 8)?;
             self.nodes.push(CNode {
                 plane_idx: planenum,
                 children: [child0, child1],
@@ -392,7 +380,7 @@ impl CollisionMap {
     fn load_leafs(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DLEAF_SIZE != 0 {
+        if !len.is_multiple_of(DLEAF_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadLeafs: funny lump size".into()));
         }
         let count = len / DLEAF_SIZE;
@@ -407,9 +395,9 @@ impl CollisionMap {
         self.leafs.reserve(count);
         for i in 0..count {
             let base = ofs + i * DLEAF_SIZE;
-            let contents = read_i32(data, base);
-            let cluster = read_i16(data, base + 4);
-            let area = read_i16(data, base + 6);
+            let contents = try_read_i32(data, base)?;
+            let cluster = try_read_i16(data, base + 4)?;
+            let area = try_read_i16(data, base + 6)?;
             // skip mins[3] and maxs[3] (6 shorts = 12 bytes at offset 8..20)
             // dleaf_t layout:
             //   int contents (4), short cluster (2), short area (2),
@@ -417,8 +405,8 @@ impl CollisionMap {
             //   ushort firstleafface (2), ushort numleaffaces (2),
             //   ushort firstleafbrush (2), ushort numleafbrushes (2)
             // Total = 28
-            let first_leaf_brush = read_u16(data, base + 24);
-            let num_leaf_brushes = read_u16(data, base + 26);
+            let first_leaf_brush = try_read_u16(data, base + 24)?;
+            let num_leaf_brushes = try_read_u16(data, base + 26)?;
 
             self.leafs.push(CLeaf {
                 contents,
@@ -456,7 +444,7 @@ impl CollisionMap {
     fn load_leaf_brushes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % 2 != 0 {
+        if !len.is_multiple_of(2) {
             return Err(Q2Error::Drop(
                 "Mod_LoadLeafBrushes: funny lump size".into(),
             ));
@@ -471,7 +459,7 @@ impl CollisionMap {
 
         self.leaf_brushes.reserve(count);
         for i in 0..count {
-            self.leaf_brushes.push(read_u16(data, ofs + i * 2));
+            self.leaf_brushes.push(try_read_u16(data, ofs + i * 2)?);
         }
         Ok(())
     }
@@ -479,7 +467,7 @@ impl CollisionMap {
     fn load_brushes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DBRUSH_SIZE != 0 {
+        if !len.is_multiple_of(DBRUSH_SIZE) {
             return Err(Q2Error::Drop(
                 "Mod_LoadBrushes: funny lump size".into(),
             ));
@@ -493,9 +481,9 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DBRUSH_SIZE;
             self.brushes.push(CBrush {
-                first_brush_side: read_i32(data, base),
-                num_sides: read_i32(data, base + 4),
-                contents: read_i32(data, base + 8),
+                first_brush_side: try_read_i32(data, base)?,
+                num_sides: try_read_i32(data, base + 4)?,
+                contents: try_read_i32(data, base + 8)?,
                 check_count: 0,
             });
         }
@@ -505,7 +493,7 @@ impl CollisionMap {
     fn load_brush_sides(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DBRUSHSIDE_SIZE != 0 {
+        if !len.is_multiple_of(DBRUSHSIDE_SIZE) {
             return Err(Q2Error::Drop(
                 "Mod_LoadBrushSides: funny lump size".into(),
             ));
@@ -519,8 +507,8 @@ impl CollisionMap {
         self.brush_sides.reserve(count);
         for i in 0..count {
             let base = ofs + i * DBRUSHSIDE_SIZE;
-            let planenum = read_u16(data, base) as usize;
-            let texinfo = read_i16(data, base + 2) as i32;
+            let planenum = try_read_u16(data, base)? as usize;
+            let texinfo = try_read_i16(data, base + 2)? as i32;
 
             if texinfo >= num_texinfo {
                 return Err(Q2Error::Drop("Bad brushside texinfo".into()));
@@ -537,7 +525,7 @@ impl CollisionMap {
     fn load_surfaces(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % TEXINFO_SIZE != 0 {
+        if !len.is_multiple_of(TEXINFO_SIZE) {
             return Err(Q2Error::Drop(
                 "Mod_LoadSurfaces: funny lump size".into(),
             ));
@@ -555,8 +543,8 @@ impl CollisionMap {
             let base = ofs + i * TEXINFO_SIZE;
             // texinfo_t: float vecs[2][4] (32 bytes), int flags (4), int value (4),
             //            char texture[32] (32), int nexttexinfo (4)
-            let flags = read_i32(data, base + 32);
-            let value = read_i32(data, base + 36);
+            let flags = try_read_i32(data, base + 32)?;
+            let value = try_read_i32(data, base + 36)?;
 
             // Read texture name (32 bytes, null terminated)
             let name_start = base + 40;
@@ -573,7 +561,7 @@ impl CollisionMap {
     fn load_submodels(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DMODEL_SIZE != 0 {
+        if !len.is_multiple_of(DMODEL_SIZE) {
             return Err(Q2Error::Drop(
                 "Mod_LoadSubmodels: funny lump size".into(),
             ));
@@ -591,21 +579,21 @@ impl CollisionMap {
             let base = ofs + i * DMODEL_SIZE;
             // dmodel_t: float mins[3], maxs[3], origin[3], int headnode, int firstface, int numfaces
             let mins = Vec3f::new(
-                read_f32(data, base) - 1.0,
-                read_f32(data, base + 4) - 1.0,
-                read_f32(data, base + 8) - 1.0,
+                try_read_f32(data, base)? - 1.0,
+                try_read_f32(data, base + 4)? - 1.0,
+                try_read_f32(data, base + 8)? - 1.0,
             );
             let maxs = Vec3f::new(
-                read_f32(data, base + 12) + 1.0,
-                read_f32(data, base + 16) + 1.0,
-                read_f32(data, base + 20) + 1.0,
+                try_read_f32(data, base + 12)? + 1.0,
+                try_read_f32(data, base + 16)? + 1.0,
+                try_read_f32(data, base + 20)? + 1.0,
             );
             let origin = Vec3f::new(
-                read_f32(data, base + 24),
-                read_f32(data, base + 28),
-                read_f32(data, base + 32),
+                try_read_f32(data, base + 24)?,
+                try_read_f32(data, base + 28)?,
+                try_read_f32(data, base + 32)?,
             );
-            let head_node = read_i32(data, base + 36);
+            let head_node = try_read_i32(data, base + 36)?;
 
             self.models.push(CModel {
                 mins,
@@ -620,7 +608,7 @@ impl CollisionMap {
     fn load_areas(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DAREA_SIZE != 0 {
+        if !len.is_multiple_of(DAREA_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadAreas: funny lump size".into()));
         }
         let count = len / DAREA_SIZE;
@@ -633,8 +621,8 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DAREA_SIZE;
             self.areas.push(CArea {
-                num_area_portals: read_i32(data, base),
-                first_area_portal: read_i32(data, base + 4),
+                num_area_portals: try_read_i32(data, base)?,
+                first_area_portal: try_read_i32(data, base + 4)?,
                 flood_num: 0,
                 flood_valid: 0,
             });
@@ -645,7 +633,7 @@ impl CollisionMap {
     fn load_area_portals(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
         let ofs = ofs as usize;
         let len = len as usize;
-        if len % DAREAPORTAL_SIZE != 0 {
+        if !len.is_multiple_of(DAREAPORTAL_SIZE) {
             return Err(Q2Error::Drop(
                 "Mod_LoadAreaPortals: funny lump size".into(),
             ));
@@ -660,8 +648,8 @@ impl CollisionMap {
         for i in 0..count {
             let base = ofs + i * DAREAPORTAL_SIZE;
             self.area_portals.push(CAreaPortal {
-                portal_num: read_i32(data, base),
-                other_area: read_i32(data, base + 4),
+                portal_num: try_read_i32(data, base)?,
+                other_area: try_read_i32(data, base + 4)?,
             });
         }
         Ok(())
@@ -716,15 +704,13 @@ impl CollisionMap {
             });
 
             // Nodes
-            let child_side;
-            let child_other;
-            child_side = -1 - self.empty_leaf;
-
-            if i != 5 {
-                child_other = (num_nodes + i + 1) as i32;
+            let child_side = -1 - self.empty_leaf;
+            // Safe: indices are ≤ 12 (6 axial planes × 2 sides), well within i32 range.
+            let child_other = if i != 5 {
+                (num_nodes + i + 1) as i32
             } else {
-                child_other = -1 - num_leafs as i32;
-            }
+                -1 - num_leafs as i32
+            };
 
             let mut children = [0i32; 2];
             children[side] = child_side;
@@ -764,7 +750,7 @@ impl CollisionMap {
     /// for tracing against this box.
     pub fn headnode_for_box(&mut self, mins: Vec3f, maxs: Vec3f) -> i32 {
         let bp = self.box_planes_start;
-        self.planes[bp + 0].dist = maxs.x;
+        self.planes[bp].dist = maxs.x;
         self.planes[bp + 1].dist = -maxs.x;
         self.planes[bp + 2].dist = mins.x;
         self.planes[bp + 3].dist = -mins.x;
@@ -804,10 +790,11 @@ impl CollisionMap {
             let portal_num = portal.portal_num as usize;
             let other_area = portal.other_area as usize;
 
-            if portal_num < self.portal_open.len() && self.portal_open[portal_num] {
-                if other_area < self.areas.len() {
-                    self.flood_area_r(other_area, flood_num);
-                }
+            if portal_num < self.portal_open.len()
+                && self.portal_open[portal_num]
+                && other_area < self.areas.len()
+            {
+                self.flood_area_r(other_area, flood_num);
             }
         }
     }
@@ -1022,6 +1009,10 @@ impl CollisionMap {
     // -----------------------------------------------------------------------
 
     /// Trace a box through the world BSP.
+    ///
+    /// Takes `&mut self` because `check_count` is used to avoid testing the
+    /// same brush twice in a single trace (matching the C global).
+    /// Single-threaded assumption: concurrent traces are not supported.
     pub fn box_trace(
         &mut self,
         start: Vec3f,
@@ -1095,6 +1086,7 @@ impl CollisionMap {
     }
 
     /// Trace with entity transform (origin + angles).
+    #[allow(clippy::too_many_arguments)]
     pub fn transformed_box_trace(
         &mut self,
         start: Vec3f,
@@ -1244,38 +1236,39 @@ impl CollisionMap {
             return;
         }
 
-        if enter_frac < leave_frac {
-            if enter_frac > -1.0 && enter_frac < state.trace.fraction {
-                let enter_frac = enter_frac.max(0.0);
+        if enter_frac < leave_frac
+            && enter_frac > -1.0
+            && enter_frac < state.trace.fraction
+        {
+            let enter_frac = enter_frac.max(0.0);
 
-                state.trace.fraction = enter_frac;
+            state.trace.fraction = enter_frac;
 
-                if let Some(pidx) = clip_plane_idx {
-                    let cp = &planes[pidx];
-                    state.trace.plane = Plane {
-                        normal: cp.normal,
-                        dist: cp.dist,
-                        plane_type: cp.plane_type,
-                        signbits: cp.sign_bits,
-                    };
-                }
-
-                if let Some(sidx) = lead_side_idx {
-                    let side = &brush_sides[sidx];
-                    if side.surface_idx >= 0 && (side.surface_idx as usize) < surfaces.len() {
-                        let surf = &surfaces[side.surface_idx as usize];
-                        state.trace.surface = Some(Surface {
-                            name: surf.name.clone(),
-                            flags: surf.flags,
-                            value: surf.value,
-                        });
-                    } else {
-                        state.trace.surface = None;
-                    }
-                }
-
-                state.trace.contents = brush.contents;
+            if let Some(pidx) = clip_plane_idx {
+                let cp = &planes[pidx];
+                state.trace.plane = Plane {
+                    normal: cp.normal,
+                    dist: cp.dist,
+                    plane_type: cp.plane_type,
+                    sign_bits: cp.sign_bits,
+                };
             }
+
+            if let Some(sidx) = lead_side_idx {
+                let side = &brush_sides[sidx];
+                if side.surface_idx >= 0 && (side.surface_idx as usize) < surfaces.len() {
+                    let surf = &surfaces[side.surface_idx as usize];
+                    state.trace.surface = Some(Surface {
+                        name: surf.name.clone(),
+                        flags: surf.flags,
+                        value: surf.value,
+                    });
+                } else {
+                    state.trace.surface = None;
+                }
+            }
+
+            state.trace.contents = brush.contents;
         }
     }
 
@@ -1495,6 +1488,22 @@ impl CollisionMap {
         self.models.len()
     }
 
+    pub fn num_brushes(&self) -> usize {
+        self.brushes.len()
+    }
+
+    pub fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn num_leafs(&self) -> usize {
+        self.leafs.len()
+    }
+
+    pub fn num_planes(&self) -> usize {
+        self.planes.len()
+    }
+
     /// Get a specific model.
     pub fn model(&self, index: usize) -> Option<&CModel> {
         self.models.get(index)
@@ -1586,6 +1595,110 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
 }
 
 // ---------------------------------------------------------------------------
+// MD4 hash — Com_BlockChecksum
+// ---------------------------------------------------------------------------
+
+/// Compute the MD4 digest of `data`, returning 4 x u32 state words.
+fn md4_digest(data: &[u8]) -> [u32; 4] {
+    #[inline(always)]
+    fn ff(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) | (!x & z)
+    }
+    #[inline(always)]
+    fn gg(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) | (x & z) | (y & z)
+    }
+    #[inline(always)]
+    fn hh(x: u32, y: u32, z: u32) -> u32 {
+        x ^ y ^ z
+    }
+
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut msg = Vec::with_capacity(data.len() + 72);
+    msg.extend_from_slice(data);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    // MD4 initial state words (RFC 1320 §3.3)
+    const MD4_INIT_A: u32 = 0x6745_2301;
+    const MD4_INIT_B: u32 = 0xefcd_ab89;
+    const MD4_INIT_C: u32 = 0x98ba_dcfe;
+    const MD4_INIT_D: u32 = 0x1032_5476;
+    let mut state: [u32; 4] = [MD4_INIT_A, MD4_INIT_B, MD4_INIT_C, MD4_INIT_D];
+
+    for block in msg.chunks_exact(64) {
+        let mut x = [0u32; 16];
+        for (i, chunk) in block.chunks_exact(4).enumerate() {
+            x[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+
+        let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
+
+        // Round 1 (F)
+        const R1: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        const S1: [u32; 16] = [3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19, 3, 7, 11, 19];
+        for i in 0..16 {
+            let v = a.wrapping_add(ff(b, c, d)).wrapping_add(x[R1[i]]);
+            a = v.rotate_left(S1[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        // Round 2 (G)
+        const R2: [usize; 16] = [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15];
+        const S2: [u32; 16] = [3, 5, 9, 13, 3, 5, 9, 13, 3, 5, 9, 13, 3, 5, 9, 13];
+        for i in 0..16 {
+            let v = a
+                .wrapping_add(gg(b, c, d))
+                .wrapping_add(x[R2[i]])
+                .wrapping_add(0x5a82_7999);
+            a = v.rotate_left(S2[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        // Round 3 (H)
+        const R3: [usize; 16] = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15];
+        const S3: [u32; 16] = [3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15, 3, 9, 11, 15];
+        for i in 0..16 {
+            let v = a
+                .wrapping_add(hh(b, c, d))
+                .wrapping_add(x[R3[i]])
+                .wrapping_add(0x6ed9_eba1);
+            a = v.rotate_left(S3[i]);
+            let t = d;
+            d = c;
+            c = b;
+            b = a;
+            a = t;
+        }
+
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+    }
+
+    state
+}
+
+/// `Com_BlockChecksum`: MD4 hash of `data`, then XOR the four 32-bit digest
+/// words into a single u32.
+fn com_block_checksum(data: &[u8]) -> u32 {
+    let digest = md4_digest(data);
+    digest[0] ^ digest[1] ^ digest[2] ^ digest[3]
+}
+
+// ---------------------------------------------------------------------------
 // Helper: compute sign_bits for a plane normal
 // ---------------------------------------------------------------------------
 
@@ -1605,51 +1718,14 @@ pub fn sign_bits_for_plane(normal: Vec3f) -> u8 {
     bits
 }
 
-// ---------------------------------------------------------------------------
-// Binary read helpers (little-endian)
-// ---------------------------------------------------------------------------
-
-fn read_u16(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-fn read_i16(data: &[u8], offset: usize) -> i16 {
-    i16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-fn read_i32(data: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-fn read_f32(data: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
+use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16, try_read_u32};
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1800,8 +1876,497 @@ mod tests {
     #[test]
     fn read_helpers() {
         let data: Vec<u8> = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06];
-        assert_eq!(read_u16(&data, 0), 0x0201);
-        assert_eq!(read_u32(&data, 0), 0x04030201);
-        assert_eq!(read_i32(&data, 0), 0x04030201);
+        assert_eq!(try_read_u16(&data, 0).unwrap(), 0x0201);
+        assert_eq!(try_read_u32(&data, 0).unwrap(), 0x04030201);
+        assert_eq!(try_read_i32(&data, 0).unwrap(), 0x04030201);
+    }
+
+    // -----------------------------------------------------------------------
+    // Minimal BSP builder for collision tests
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal valid BSP binary in memory.
+    ///
+    /// Geometry: a solid brush covering x ∈ [-500, 0], y/z ∈ [-500, 500].
+    /// One BSP node splits at x=0: front (x>0) → empty leaf, back (x<0) → solid leaf.
+    pub(crate) fn build_minimal_bsp() -> Vec<u8> {
+        let mut buf = vec![0u8; 600];
+        let mut cursor = 0usize;
+
+        // Helper: write little-endian values into buf
+        macro_rules! w_u32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as u32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as i32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as i16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_u16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as u16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
+
+        // ---- Header ----
+        w_u32!(IDBSPHEADER);
+        w_u32!(BSPVERSION);
+
+        // ---- Lump directory (19 entries × 8 bytes) ----
+        // We'll fill these after writing lump data.
+        let lump_dir_start = cursor;
+        cursor += 19 * 8;
+        let _data_start = cursor; // 160
+
+        // Track lump positions
+        let mut lumps = [(0u32, 0u32); 19];
+
+        // ---- Lump 5: Texinfo (1 entry × 76 bytes) ----
+        lumps[5] = (cursor as u32, 76);
+        // vecs[2][4] = 32 bytes of zeros, flags=0, value=0
+        cursor += 32; // vecs
+        w_i32!(0); // flags
+        w_i32!(0); // value
+        // texture name "solid" (32 bytes)
+        let name = b"solid\0";
+        buf[cursor..cursor+name.len()].copy_from_slice(name);
+        cursor += 32;
+        w_i32!(-1); // nexttexinfo
+
+        // ---- Lump 8: Leafs (2 entries × 28 bytes) ----
+        lumps[8] = (cursor as u32, 56);
+        // Leaf 0: SOLID
+        w_i32!(CONTENTS_SOLID); // contents
+        w_i16!(0i16);           // cluster
+        w_i16!(1i16);           // area
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
+        w_u16!(0u16);           // firstleafface
+        w_u16!(0u16);           // numleaffaces
+        w_u16!(0u16);           // firstleafbrush
+        w_u16!(1u16);           // numleafbrushes
+
+        // Leaf 1: EMPTY
+        w_i32!(0);              // contents
+        w_i16!(0i16);           // cluster
+        w_i16!(1i16);           // area
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
+        w_u16!(0u16); w_u16!(0u16); // faces
+        w_u16!(0u16);           // firstleafbrush
+        w_u16!(0u16);           // numleafbrushes
+
+        // ---- Lump 10: Leaf brushes (1 entry × 2 bytes) ----
+        lumps[10] = (cursor as u32, 2);
+        w_u16!(0u16); // brush index 0
+
+        // ---- Lump 1: Planes (6 entries × 20 bytes) ----
+        lumps[1] = (cursor as u32, 120);
+
+        // Plane 0: +X at dist=0 (BSP split + brush +X face)
+        w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_i32!(0);
+
+        // Plane 1: -X at dist=500 (brush -X face: x ≥ -500)
+        w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(3);
+
+        // Plane 2: +Y at dist=500 (brush +Y face)
+        w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(1);
+
+        // Plane 3: -Y at dist=500 (brush -Y face: y ≥ -500)
+        w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(4);
+
+        // Plane 4: +Z at dist=500 (brush +Z face)
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(500.0f32); w_i32!(2);
+
+        // Plane 5: -Z at dist=500 (brush -Z face: z ≥ -500)
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(500.0f32); w_i32!(5);
+
+        // ---- Lump 14: Brushes (1 entry × 12 bytes) ----
+        lumps[14] = (cursor as u32, 12);
+        w_i32!(0);              // first_brush_side
+        w_i32!(6);              // num_sides
+        w_i32!(CONTENTS_SOLID); // contents
+
+        // ---- Lump 15: Brush sides (6 entries × 4 bytes) ----
+        lumps[15] = (cursor as u32, 24);
+        for plane_idx in 0..6u16 {
+            w_u16!(plane_idx); // plane index
+            w_i16!(0i16);     // texinfo index 0
+        }
+
+        // ---- Lump 13: Models (1 entry × 48 bytes) ----
+        lumps[13] = (cursor as u32, 48);
+        // mins
+        w_f32!(-500.0f32); w_f32!(-500.0f32); w_f32!(-500.0f32);
+        // maxs
+        w_f32!(500.0f32); w_f32!(500.0f32); w_f32!(500.0f32);
+        // origin
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32);
+        // headnode, firstface, numfaces
+        w_i32!(0); w_i32!(0); w_i32!(0);
+
+        // ---- Lump 4: Nodes (1 entry × 28 bytes) ----
+        lumps[4] = (cursor as u32, 28);
+        w_i32!(0);   // planenum (plane 0: X at 0)
+        w_i32!(-2);  // child[0]: front → leaf 1 (empty), encoded as -(1+1)
+        w_i32!(-1);  // child[1]: back → leaf 0 (solid), encoded as -(1+0)
+        // mins/maxs/face info (ignored by collision loader)
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_u16!(0u16); w_u16!(0u16);
+
+        // ---- Lump 17: Areas (2 entries × 8 bytes) ----
+        lumps[17] = (cursor as u32, 16);
+        // Area 0 (sentinel)
+        w_i32!(0); w_i32!(0);
+        // Area 1
+        w_i32!(0); w_i32!(0);
+
+        // ---- Lump 18: Area portals (0 entries) ----
+        lumps[18] = (cursor as u32, 0);
+
+        // Truncate buffer to actual size
+        buf.truncate(cursor);
+
+        // ---- Write lump directory ----
+        let mut lc = lump_dir_start;
+        for i in 0..19 {
+            buf[lc..lc+4].copy_from_slice(&lumps[i].0.to_le_bytes());
+            buf[lc+4..lc+8].copy_from_slice(&lumps[i].1.to_le_bytes());
+            lc += 8;
+        }
+
+        buf
+    }
+
+    #[test]
+    fn load_minimal_bsp() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_ok(), "load_map failed: {:?}", result.err());
+        assert_eq!(cm.num_nodes(), 1 + 6); // 1 BSP node + 6 box hull nodes
+        assert_eq!(cm.num_planes(), 6 + 12); // 6 BSP planes + 12 box hull planes
+        assert!(cm.num_brushes() >= 1);
+        assert!(cm.num_leafs() >= 2);
+    }
+
+    #[test]
+    fn bsp_point_contents_solid() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Point in solid region (x < 0)
+        let contents = cm.point_contents(Vec3f::new(-50.0, 0.0, 0.0), 0);
+        assert_eq!(contents, CONTENTS_SOLID, "point at x=-50 should be solid");
+    }
+
+    #[test]
+    fn bsp_point_contents_empty() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Point in empty region (x > 0)
+        let contents = cm.point_contents(Vec3f::new(50.0, 0.0, 0.0), 0);
+        assert_eq!(contents, 0, "point at x=50 should be empty");
+    }
+
+    #[test]
+    fn bsp_trace_hits_solid() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Trace from empty region into solid region
+        let start = Vec3f::new(50.0, 0.0, 0.0);
+        let end = Vec3f::new(-50.0, 0.0, 0.0);
+        let trace = cm.box_trace(start, end, Vec3f::ZERO, Vec3f::ZERO, 0, CONTENTS_SOLID);
+
+        assert!(trace.fraction < 1.0, "trace should hit solid, got fraction={}", trace.fraction);
+        assert_eq!(trace.contents, CONTENTS_SOLID);
+        // Hit point should be near x=0 (the solid boundary)
+        assert!(trace.endpos.x > -1.0, "hit point x={} should be near 0", trace.endpos.x);
+        assert!(trace.endpos.x < 2.0, "hit point x={} should be near 0", trace.endpos.x);
+    }
+
+    #[test]
+    fn bsp_trace_through_empty() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Trace entirely within empty region — should not hit anything
+        let start = Vec3f::new(10.0, 0.0, 0.0);
+        let end = Vec3f::new(100.0, 0.0, 0.0);
+        let trace = cm.box_trace(start, end, Vec3f::ZERO, Vec3f::ZERO, 0, CONTENTS_SOLID);
+
+        assert_eq!(trace.fraction, 1.0);
+        assert!(!trace.allsolid);
+        assert!(!trace.startsolid);
+        assert_eq!(trace.endpos, end);
+    }
+
+    #[test]
+    fn bsp_trace_starts_in_solid() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Trace starting inside solid
+        let start = Vec3f::new(-50.0, 0.0, 0.0);
+        let end = Vec3f::new(-100.0, 0.0, 0.0);
+        let trace = cm.box_trace(start, end, Vec3f::ZERO, Vec3f::ZERO, 0, CONTENTS_SOLID);
+
+        assert!(trace.startsolid, "trace should start in solid");
+        assert!(trace.allsolid, "trace should be entirely in solid");
+    }
+
+    #[test]
+    fn bsp_headnode_for_box_trace() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Create a box entity at origin with extents [-16, -16, -16] to [16, 16, 16]
+        let head = cm.headnode_for_box(
+            Vec3f::new(-16.0, -16.0, -16.0),
+            Vec3f::new(16.0, 16.0, 16.0),
+        );
+
+        // Trace a ray from (100,0,0) toward (0,0,0) — should hit the box
+        let start = Vec3f::new(100.0, 0.0, 0.0);
+        let end = Vec3f::new(0.0, 0.0, 0.0);
+        let trace = cm.box_trace(
+            start, end, Vec3f::ZERO, Vec3f::ZERO,
+            head, CONTENTS_MONSTER,
+        );
+
+        assert!(trace.fraction < 1.0, "should hit the box entity");
+        // Hit point should be near x=16 (box +X face)
+        assert!(
+            trace.endpos.x > 14.0 && trace.endpos.x < 18.0,
+            "hit at x={}, expected near 16",
+            trace.endpos.x
+        );
+    }
+
+    #[test]
+    fn md4_empty_digest() {
+        // MD4("") = 31d6cfe0 d16ae931 b73c59d7 e0c089c0 (hex bytes)
+        // In LE u32 words: state[0]=0xe0cfd631, state[1]=0x31e96ad1,
+        //                   state[2]=0xd7593cb7, state[3]=0xc089c0e0
+        let digest = md4_digest(b"");
+        assert_eq!(digest[0], 0xe0cf_d631);
+        assert_eq!(digest[1], 0x31e9_6ad1);
+        assert_eq!(digest[2], 0xd759_3cb7);
+        assert_eq!(digest[3], 0xc089_c0e0);
+    }
+
+    #[test]
+    fn com_block_checksum_empty() {
+        // XOR of the four MD4("") digest words.
+        let expected = 0xe0cf_d631_u32 ^ 0x31e9_6ad1 ^ 0xd759_3cb7 ^ 0xc089_c0e0;
+        assert_eq!(expected, 0xc6f6_40b7);
+        assert_eq!(com_block_checksum(b""), expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // Floor BSP builder — solid slab below z=0
+    // -----------------------------------------------------------------------
+
+    /// Build a BSP with a floor at z=0.
+    ///
+    /// Geometry: solid brush covering x/y ∈ [-500, 500], z ∈ [-500, 0].
+    /// BSP node splits at z=0: front (z>0) → empty, back (z<0) → solid.
+    pub(crate) fn build_floor_bsp() -> Vec<u8> {
+        let mut buf = vec![0u8; 600];
+        let mut cursor = 0usize;
+
+        macro_rules! w_u32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as u32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as i32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_i16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as i16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_u16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as u16).to_le_bytes()); cursor += 2; } }
+        macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
+
+        w_u32!(IDBSPHEADER);
+        w_u32!(BSPVERSION);
+
+        let lump_dir_start = cursor;
+        cursor += 19 * 8;
+        let mut lumps = [(0u32, 0u32); 19];
+
+        // Texinfo (1 × 76 bytes)
+        lumps[5] = (cursor as u32, 76);
+        cursor += 32; // vecs
+        w_i32!(0); w_i32!(0); // flags, value
+        let name = b"solid\0";
+        buf[cursor..cursor + name.len()].copy_from_slice(name);
+        cursor += 32; // texture name
+        w_i32!(-1); // nexttexinfo
+
+        // Leafs (2 × 28 bytes)
+        lumps[8] = (cursor as u32, 56);
+        // Leaf 0: SOLID
+        w_i32!(CONTENTS_SOLID);
+        w_i16!(0i16); w_i16!(1i16); // cluster, area
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
+        w_u16!(0u16); w_u16!(0u16); // faces
+        w_u16!(0u16); w_u16!(1u16); // firstleafbrush, numleafbrushes
+        // Leaf 1: EMPTY
+        w_i32!(0);
+        w_i16!(0i16); w_i16!(1i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_u16!(0u16); w_u16!(0u16);
+        w_u16!(0u16); w_u16!(0u16);
+
+        // Leaf brushes (1 × 2 bytes)
+        lumps[10] = (cursor as u32, 2);
+        w_u16!(0u16);
+
+        // Planes (6 × 20 bytes) — floor slab
+        lumps[1] = (cursor as u32, 120);
+        // Plane 0: +Z at dist=0 (floor surface, split plane)
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_i32!(2);
+        // Plane 1: -Z at dist=500
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(500.0f32); w_i32!(5);
+        // Plane 2: +X at dist=500
+        w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(0);
+        // Plane 3: -X at dist=500
+        w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(3);
+        // Plane 4: +Y at dist=500
+        w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(1);
+        // Plane 5: -Y at dist=500
+        w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(4);
+
+        // Brush (1 × 12 bytes)
+        lumps[14] = (cursor as u32, 12);
+        w_i32!(0); w_i32!(6); w_i32!(CONTENTS_SOLID);
+
+        // Brush sides (6 × 4 bytes)
+        lumps[15] = (cursor as u32, 24);
+        for plane_idx in 0..6u16 {
+            w_u16!(plane_idx);
+            w_i16!(0i16);
+        }
+
+        // Model (1 × 48 bytes)
+        lumps[13] = (cursor as u32, 48);
+        w_f32!(-500.0f32); w_f32!(-500.0f32); w_f32!(-500.0f32); // mins
+        w_f32!(500.0f32); w_f32!(500.0f32); w_f32!(0.0f32);      // maxs
+        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32);          // origin
+        w_i32!(0); w_i32!(0); w_i32!(0);                          // headnode, firstface, numfaces
+
+        // Node (1 × 28 bytes): split at z=0
+        lumps[4] = (cursor as u32, 28);
+        w_i32!(0);   // planenum (plane 0: +Z at z=0)
+        w_i32!(-2);  // child[0]: front (z>0) → leaf 1 (empty)
+        w_i32!(-1);  // child[1]: back (z<0) → leaf 0 (solid)
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
+        w_u16!(0u16); w_u16!(0u16);
+
+        // Areas (2 × 8 bytes)
+        lumps[17] = (cursor as u32, 16);
+        w_i32!(0); w_i32!(0);
+        w_i32!(0); w_i32!(0);
+
+        // Area portals (0 entries)
+        lumps[18] = (cursor as u32, 0);
+
+        buf.truncate(cursor);
+
+        let mut lc = lump_dir_start;
+        for i in 0..19 {
+            buf[lc..lc + 4].copy_from_slice(&lumps[i].0.to_le_bytes());
+            buf[lc + 4..lc + 8].copy_from_slice(&lumps[i].1.to_le_bytes());
+            lc += 8;
+        }
+        buf
+    }
+
+    // -----------------------------------------------------------------------
+    // Box-sweep trace (player-sized bounding box)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bsp_box_sweep_hits_wall() {
+        let bsp = build_minimal_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Player-sized box from (50,0,0) toward (-50,0,0).
+        // The wall is at x=0; with player half-width 16, the box should stop at x≈16.
+        let player_mins = Vec3f::new(-16.0, -16.0, -24.0);
+        let player_maxs = Vec3f::new(16.0, 16.0, 32.0);
+        let trace = cm.box_trace(
+            Vec3f::new(50.0, 0.0, 0.0),
+            Vec3f::new(-50.0, 0.0, 0.0),
+            player_mins, player_maxs,
+            0, CONTENTS_SOLID,
+        );
+
+        assert!(trace.fraction < 1.0, "box sweep should hit the wall");
+        // endpos.x should be near 16 (player center when -16 edge touches x=0)
+        assert!(
+            (trace.endpos.x - 16.0).abs() < 1.0,
+            "expected stop near x=16, got x={}",
+            trace.endpos.x
+        );
+    }
+
+    #[test]
+    fn bsp_box_sweep_floor_stops_fall() {
+        let bsp = build_floor_bsp();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+
+        // Drop a player-sized box from z=100 to z=-100. Floor at z=0.
+        // Player mins.z = -24, so box bottom at z-24. Should stop when z-24 = 0 → z = 24.
+        let player_mins = Vec3f::new(-16.0, -16.0, -24.0);
+        let player_maxs = Vec3f::new(16.0, 16.0, 32.0);
+        let trace = cm.box_trace(
+            Vec3f::new(0.0, 0.0, 100.0),
+            Vec3f::new(0.0, 0.0, -100.0),
+            player_mins, player_maxs,
+            0, CONTENTS_SOLID,
+        );
+
+        assert!(trace.fraction < 1.0, "box should hit the floor");
+        assert!(
+            (trace.endpos.z - 24.0).abs() < 1.0,
+            "expected stop near z=24, got z={}",
+            trace.endpos.z
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BSP loader error paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bsp_wrong_version_rejected() {
+        let mut bsp = build_minimal_bsp();
+        // Overwrite version (bytes 4..8) with wrong value 99
+        bsp[4..8].copy_from_slice(&99u32.to_le_bytes());
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "wrong version should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("wrong version"), "error: {err}");
+    }
+
+    #[test]
+    fn bsp_wrong_magic_rejected() {
+        let mut bsp = build_minimal_bsp();
+        // Overwrite magic (bytes 0..4) with garbage
+        bsp[0..4].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "wrong magic should be rejected");
+    }
+
+    #[test]
+    fn bsp_truncated_header_rejected() {
+        // Only 4 bytes — too short for even the header
+        let bsp = vec![0x49, 0x42, 0x53, 0x50]; // "IBSP" magic only
+        let mut cm = CollisionMap::new();
+        let result = cm.load_map(&bsp);
+        assert!(result.is_err(), "truncated BSP should be rejected");
     }
 }

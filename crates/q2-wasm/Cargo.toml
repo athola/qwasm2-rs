@@ -1,6 +1,6 @@
 [package]
 name = "q2-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Qwasm2-rs WASM entry point — cdylib target for wasm-pack"
 
@@ -10,15 +10,27 @@ crate-type = ["cdylib"]
 [dependencies]
 q2-shared = { path = "../q2-shared" }
 q2-common = { path = "../q2-common" }
+q2-game = { path = "../q2-game" }
+q2-client = { path = "../q2-client" }
+q2-render = { path = "../q2-render" }
+q2-render-api = { path = "../q2-render-api" }
+q2-platform = { path = "../q2-platform" }
+glow = { workspace = true }
 wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "Document",
     "Element",
+    "Headers",
     "HtmlCanvasElement",
     "HtmlElement",
     "Node",
     "Performance",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
     "WebGl2RenderingContext",
     "Window",
 ] }

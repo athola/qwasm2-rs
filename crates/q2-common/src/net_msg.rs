@@ -2,6 +2,14 @@
 //!
 //! This is the binary wire format for the Quake 2 network protocol.
 //! A cursor-based `Vec<u8>` buffer that supports both writing and reading.
+//!
+//! # Design note
+//!
+//! `NetMsg` combines writing and reading into a single type, mirroring the
+//! original C `sizebuf_t`. In practice a given `NetMsg` instance is used
+//! for either writing (server building a packet) or reading (client parsing
+//! a received packet), never both simultaneously. A future refactor could
+//! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
 use q2_shared::protocol::UpdateFlags;
 use q2_shared::types::{EntityState, UserCmd, Vec3f};
@@ -187,8 +195,8 @@ impl NetMsg {
         &self.data
     }
 
-    /// Current read cursor position.
-    pub fn read_position(&self) -> usize {
+    /// Current read cursor offset in bytes.
+    pub fn read_cursor(&self) -> usize {
         self.read_pos
     }
 
@@ -203,7 +211,10 @@ impl NetMsg {
 
     // ----- Write operations (append to buffer) -----
 
-    /// Write a signed byte (1 byte).
+    /// Write a signed byte (1 byte, sign-extended on read via [`read_char`](Self::read_char)).
+    ///
+    /// Use for values in the range `[-128, 127]`. For unsigned bytes `[0, 255]`,
+    /// use [`write_byte`](Self::write_byte) / [`read_byte`](Self::read_byte).
     pub fn write_char(&mut self, c: i32) {
         self.data.push(c as u8);
     }
@@ -240,8 +251,8 @@ impl NetMsg {
         self.write_short((f * 8.0) as i32);
     }
 
-    /// Write 3 coordinates (a position).
-    pub fn write_pos(&mut self, pos: Vec3f) {
+    /// Write 3 coordinates (a quantised 3D position).
+    pub fn write_position(&mut self, pos: Vec3f) {
         self.write_coord(pos.x);
         self.write_coord(pos.y);
         self.write_coord(pos.z);
@@ -286,7 +297,10 @@ impl NetMsg {
         self.overflowed = false;
     }
 
-    /// Read a signed byte (1 byte). Returns -1 on read past end.
+    /// Read a signed byte (1 byte, sign-extended to `i32`). Returns -1 on read past end.
+    ///
+    /// Counterpart to [`write_char`](Self::write_char). For unsigned reads,
+    /// use [`read_byte`](Self::read_byte).
     pub fn read_char(&mut self) -> i32 {
         if self.read_pos >= self.data.len() {
             self.overflowed = true;
@@ -373,8 +387,8 @@ impl NetMsg {
         self.read_short() as f32 * (1.0 / 8.0)
     }
 
-    /// Read 3 coordinates into a Vec3f.
-    pub fn read_pos(&mut self, pos: &mut Vec3f) {
+    /// Read a quantised 3D position (3 coordinates) into a Vec3f.
+    pub fn read_position(&mut self, pos: &mut Vec3f) {
         pos.x = self.read_coord();
         pos.y = self.read_coord();
         pos.z = self.read_coord();
@@ -810,16 +824,16 @@ mod tests {
     }
 
     #[test]
-    fn write_read_pos() {
+    fn write_read_position() {
         let mut buf = NetMsg::new();
         let pos = Vec3f::new(100.0, 200.0, 50.0);
-        buf.write_pos(pos);
+        buf.write_position(pos);
         buf.begin_reading();
-        let mut read_pos = Vec3f::ZERO;
-        buf.read_pos(&mut read_pos);
-        assert!((read_pos.x - 100.0).abs() < 0.125);
-        assert!((read_pos.y - 200.0).abs() < 0.125);
-        assert!((read_pos.z - 50.0).abs() < 0.125);
+        let mut result = Vec3f::ZERO;
+        buf.read_position(&mut result);
+        assert!((result.x - 100.0).abs() < 0.125);
+        assert!((result.y - 200.0).abs() < 0.125);
+        assert!((result.z - 50.0).abs() < 0.125);
     }
 
     #[test]
@@ -925,8 +939,28 @@ mod tests {
 
         let mut buf = NetMsg::new();
         buf.write_delta_entity(&from, &to, true, true);
-        // Should encode origin and modelindex changes
-        assert!(buf.len() > 0);
+
+        // Must encode at minimum: flag bytes + entity number + origin x/y + modelindex
+        // 1 flag byte + 1 entity number + 2*2 coords + 1 model = at least 8 bytes
+        assert!(buf.len() >= 8, "delta encoding too small: {} bytes", buf.len());
+
+        // Verify the encoded data is decodable: read the flag byte(s) and
+        // check that ORIGIN1, ORIGIN2, and MODEL bits are set.
+        buf.begin_reading();
+        let first_byte = buf.read_byte() as u32;
+        let flags = if first_byte & 0x80 != 0 {
+            // MOREBITS1 set — read second flag byte
+            let second_byte = buf.read_byte() as u32;
+            first_byte | (second_byte << 8)
+        } else {
+            first_byte
+        };
+        let origin1_bit = UpdateFlags::ORIGIN1.bits();
+        let origin2_bit = UpdateFlags::ORIGIN2.bits();
+        let model_bit = UpdateFlags::MODEL.bits();
+        assert_ne!(flags & origin1_bit, 0, "ORIGIN1 flag should be set");
+        assert_ne!(flags & origin2_bit, 0, "ORIGIN2 flag should be set");
+        assert_ne!(flags & model_bit, 0, "MODEL flag should be set");
     }
 
     #[test]

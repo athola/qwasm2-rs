@@ -76,4 +76,21 @@ mod tests {
         assert!((angles.x - 45.0).abs() < 0.001);
         assert!((angles.y - 90.0).abs() < 0.001);
     }
+
+    #[test]
+    fn lerp_entity_angle_wrapping() {
+        // 350° → 10° should interpolate through 0°, not through 180°
+        let prev = EntityState {
+            angles: Vec3f::new(0.0, 350.0, 0.0),
+            ..Default::default()
+        };
+        let current = EntityState {
+            angles: Vec3f::new(0.0, 10.0, 0.0),
+            ..Default::default()
+        };
+        let (_, angles) = lerp_entity(&prev, &current, 0.5);
+        // Midpoint of 350→10 (short path) is 0 (or 360)
+        assert!(angles.y.abs() < 0.001 || (angles.y - 360.0).abs() < 0.001,
+            "expected ~0 or ~360, got {}", angles.y);
+    }
 }

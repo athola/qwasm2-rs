@@ -58,6 +58,10 @@ impl Zone {
     /// This mirrors the original C `Sys_Error("Z_Malloc: failed on allocation")`.
     pub fn alloc(&mut self, tag: MemTag, size: usize) -> &mut [u8] {
         if self.max_bytes != 0 && self.total_bytes + size > self.max_bytes {
+            tracing::error!(
+                "Zone::alloc: out of memory — requested {size} bytes (have {}/{} used)",
+                self.total_bytes, self.max_bytes
+            );
             panic!(
                 "Zone::alloc: out of memory — requested {size} bytes (have {}/{} used)",
                 self.total_bytes, self.max_bytes
