@@ -2,26 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-## Progress (as of 2026-03-26)
+## Progress (as of 2026-04-10)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0: Scaffolding | **DONE** | Workspace, 13 crates, CI, clippy, WASM entry point, bundler |
-| Phase 1 Tasks 1.1–1.6 | **DONE** | types, constants, protocol, errors, cvars, commands, net_msg (76 tests) |
-| Phase 1 Tasks 1.7–1.11 | **TODO** | zone, filesystem, collision, pmove, netchan |
-| Phase 2: Game Logic | TODO | |
-| Phase 3: Server | TODO | |
-| Phase 4: Client | TODO | |
-| Phase 5: Renderer | TODO | |
-| Phase 6: Platform/WASM | TODO | |
-| Phase 7: P2P Networking | TODO | |
+| Phase 1: Common Layer | **DONE** | All 11 tasks complete — types, constants, protocol, errors, cvars, commands, net_msg, zone, filesystem, collision, pmove, netchan (276 tests) |
+| Phase 2: Game Logic | **IN PROGRESS** | Spec + plan written. Existing: entity.rs (SlotMap), traits.rs (GameImport/GameExport), spawn.rs (parser + 4 entries). See `docs/implementation-plan.md` |
+| Phase 3: Server | Partial | state.rs, frame.rs (skeleton), init.rs, world.rs exist |
+| Phase 4: Client | Partial | state.rs, parse.rs, input.rs, view.rs exist |
+| Phase 5: Renderer | Partial | bsp.rs, gl3/ structure exist |
+| Phase 6: Platform/WASM | Partial | WASM input, GL context, game loop abstraction exist |
+| Phase 7: P2P Networking | TODO | q2-net is stub (8 lines) |
 | Phase 8: Integration | TODO | |
 
-**Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile.
+**Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile, `q2-render-api` (Renderer trait).
 
-**Next up:** Task 1.7 (Zone Allocator) → then filesystem, collision, pmove, netchan to complete Phase 1.
+**Next up:** Phase 2 Game Logic — 18 tasks across 4 sprints. See `docs/implementation-plan.md`.
 
-**Critical path to playable:** Phase 1 (remaining) → Phase 5 (renderer — BSP loading + GL3) → Phase 4 (client — input + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
+**Critical path to playable:** Phase 2 (game logic — CP-2) → Phase 3 (server frame loop) → Phase 5 (renderer — BSP loading + GL3) → Phase 4 (client — input + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
 
 **C source reference:** `~/Qwasm2/src/` (Yamagi Quake II with Emscripten WASM port)
 

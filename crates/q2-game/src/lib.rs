@@ -7,6 +7,11 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+pub mod constants;
 pub mod traits;
 pub mod entity;
+pub mod world;
+pub mod physics;
+pub mod combat;
+pub mod items;
 pub mod spawn;
