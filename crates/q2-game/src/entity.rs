@@ -250,6 +250,8 @@ pub struct GameEntityData {
     pub deadflag: DeadFlag,
     pub takedamage: TakeDamage,
     pub dmg: i32,
+    pub radius_dmg: i32,
+    pub dmg_radius: f32,
     pub mass: i32,
 
     // -- movement ----------------------------------------------------------
