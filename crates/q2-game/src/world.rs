@@ -327,6 +327,104 @@ impl GameImport for MockGameImport {
     fn add_command_string(&self, _: &str) {}
 }
 
+// ---------------------------------------------------------------------------
+// Game Main Loop — G_RunFrame, InitGame
+// C ref: g_main.c
+// ---------------------------------------------------------------------------
+
+impl GameWorld {
+    /// Initialize the game — register all spawn functions, set up items.
+    /// C ref: `InitGame` (g_main.c / savegame.c).
+    pub fn init_game(&mut self) {
+        self.init_items();
+        self.register_trigger_spawns();
+        self.register_target_spawns();
+        self.register_func_spawns();
+        self.register_misc_spawns();
+        self.register_monster_spawns();
+    }
+
+    /// Run one game frame — the main game tick.
+    /// C ref: `G_RunFrame` (g_main.c:447-514).
+    pub fn run_frame(&mut self) {
+        self.level.framenum += 1;
+        self.level.time = self.level.framenum as f32 * crate::constants::FRAMETIME;
+
+        // Pick a player for monsters to target this frame.
+        crate::ai::ai_set_sight_client(self);
+
+        // Check exit intermission.
+        if self.level.exitintermission {
+            return;
+        }
+
+        // Collect all entity keys (avoids borrow issues during iteration).
+        let keys: Vec<crate::entity::EntityKey> =
+            self.entities.iter().map(|(k, _)| k).collect();
+
+        for key in keys {
+            let Some(ent) = self.entities.get(key) else {
+                continue;
+            };
+            if !ent.in_use {
+                continue;
+            }
+
+            // Save old origin for lerp.
+            let origin = ent.state.origin;
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.state.old_origin = origin;
+            }
+
+            // Run entity physics + think.
+            self.run_entity(key);
+        }
+    }
+
+    /// Parse an entity string and spawn all entities.
+    /// C ref: `SpawnEntities` (g_spawn.c).
+    pub fn spawn_entities(&mut self, _mapname: &str, entstring: &str, _spawnpoint: &str) {
+        let parsed = crate::spawn::parse_entity_string(entstring);
+
+        for fields in &parsed {
+            let classname = match fields.get("classname") {
+                Some(cn) => cn.clone(),
+                None => continue,
+            };
+
+            // Try spawn table first.
+            let spawn_fn = self.spawn_table.get(&classname).copied();
+
+            if let Some(sfn) = spawn_fn {
+                let Some(key) = self.entities.spawn() else {
+                    break; // Storage full.
+                };
+
+                // Parse origin.
+                if let Some(origin_str) = fields.get("origin") {
+                    let origin = crate::spawn::parse_origin(origin_str);
+                    if let Some(ent) = self.entities.get_mut(key) {
+                        ent.state.origin = origin;
+                    }
+                }
+
+                sfn(&mut self.entities, key, fields);
+
+                // Run monster_start for monster entities.
+                let is_monster = self
+                    .entities
+                    .get(key)
+                    .map(|e| e.monsterinfo.is_some())
+                    .unwrap_or(false);
+                if is_monster {
+                    crate::ai::monster_start(self, key);
+                }
+            }
+            // Unknown classnames are silently skipped (logged in full impl).
+        }
+    }
+}
+
 /// Helper to create a `GameWorld` for testing.
 pub fn test_world() -> GameWorld {
     GameWorld::new(Box::new(MockGameImport), 1024)
@@ -504,5 +602,125 @@ mod tests {
         assert_eq!(trace.fraction, 1.0);
         assert_eq!(trace.endpos, end);
         assert!(!trace.allsolid);
+    }
+
+    // -- Game Main Loop tests --
+
+    #[test]
+    fn init_game_registers_all_spawns() {
+        let mut world = test_world();
+        world.init_game();
+
+        assert!(!world.items.is_empty());
+        assert!(world.spawn_table.get("trigger_multiple").is_some());
+        assert!(world.spawn_table.get("target_explosion").is_some());
+        assert!(world.spawn_table.get("func_door").is_some());
+        assert!(world.spawn_table.get("misc_teleporter").is_some());
+        assert!(world.spawn_table.get("monster_soldier").is_some());
+    }
+
+    #[test]
+    fn run_frame_advances_time() {
+        let mut world = test_world();
+        assert_eq!(world.level.framenum, 0);
+        assert_eq!(world.level.time, 0.0);
+
+        world.run_frame();
+        assert_eq!(world.level.framenum, 1);
+        assert!((world.level.time - 0.1).abs() < 0.001);
+
+        world.run_frame();
+        assert_eq!(world.level.framenum, 2);
+        assert!((world.level.time - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn run_frame_processes_entities() {
+        let mut world = test_world();
+
+        // Noclip entity with velocity should move.
+        let key = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.movetype = crate::constants::MoveType::Noclip;
+            ent.velocity = Vec3f::new(100.0, 0.0, 0.0);
+        }
+
+        world.run_frame();
+
+        let origin = world.entities.get(key).unwrap().state.origin;
+        assert!(origin.x > 0.0);
+    }
+
+    #[test]
+    fn spawn_entities_from_string() {
+        let mut world = test_world();
+        world.init_game();
+
+        let entstring = r#"
+        {
+        "classname" "info_player_start"
+        "origin" "100 200 300"
+        }
+        {
+        "classname" "monster_soldier"
+        "origin" "500 0 0"
+        }
+        "#;
+
+        world.spawn_entities("test", entstring, "");
+
+        // Should have 2 entities.
+        assert_eq!(world.entities.count(), 2);
+
+        // Player start.
+        let ps = world.find_by_classname(None, "info_player_start").unwrap();
+        let pos = world.entities.get(ps).unwrap().state.origin;
+        assert!((pos.x - 100.0).abs() < 0.01);
+
+        // Soldier — should have been initialized with monster_start.
+        let sol = world.find_by_classname(None, "monster_soldier").unwrap();
+        let ent = world.entities.get(sol).unwrap();
+        assert_eq!(ent.game.health, 30);
+        assert!(ent.monsterinfo.is_some());
+        assert!(ent.think.is_some()); // monster_think was set by monster_start
+    }
+
+    /// **CP-2 Checkpoint**: Spawn player + monster_soldier, soldier enters
+    /// stand state, run 10 AI frames without panic.
+    #[test]
+    fn cp2_spawn_player_and_soldier_run_frames() {
+        let mut world = test_world();
+        world.init_game();
+
+        let entstring = r#"
+        {
+        "classname" "info_player_start"
+        "origin" "0 0 0"
+        }
+        {
+        "classname" "monster_soldier"
+        "origin" "200 0 0"
+        }
+        "#;
+
+        world.spawn_entities("base1", entstring, "");
+        assert_eq!(world.entities.count(), 2);
+
+        // Run 10 game frames — no panics.
+        for _ in 0..10 {
+            world.run_frame();
+        }
+
+        // Soldier should still be alive with advancing animation.
+        let sol = world.find_by_classname(None, "monster_soldier").unwrap();
+        let ent = world.entities.get(sol).unwrap();
+        assert_eq!(ent.game.health, 30);
+        assert!(ent.state.frame > 0); // Animation advanced.
+        assert!(ent.game.nextthink > 0.0);
+
+        // Level time should have advanced 10 frames.
+        assert_eq!(world.level.framenum, 10);
+        assert!((world.level.time - 1.0).abs() < 0.01);
     }
 }
