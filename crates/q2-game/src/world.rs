@@ -723,4 +723,260 @@ mod tests {
         assert_eq!(world.level.framenum, 10);
         assert!((world.level.time - 1.0).abs() < 0.01);
     }
+
+    // ===================================================================
+    // Cross-module integration tests
+    // ===================================================================
+
+    /// Rocket hits soldier → direct damage + splash to bystander.
+    #[test]
+    fn integration_rocket_kills_soldier() {
+        let mut world = test_world();
+        world.init_game();
+
+        // Spawn soldier.
+        let soldier = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(soldier).unwrap();
+            ent.game.classname = "monster_soldier".to_string();
+            ent.game.health = 30;
+            ent.game.max_health = 30;
+            ent.game.takedamage = crate::constants::TakeDamage::Yes;
+            ent.state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        }
+
+        // Spawn bystander nearby.
+        let bystander = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(bystander).unwrap();
+            ent.game.health = 200;
+            ent.game.takedamage = crate::constants::TakeDamage::Yes;
+            ent.state.origin = Vec3f::new(120.0, 0.0, 0.0);
+        }
+
+        // Simulate rocket impact on soldier.
+        let attacker = world.spawn().unwrap();
+        world.t_damage(
+            soldier, attacker, attacker,
+            Vec3f::new(1.0, 0.0, 0.0),
+            Vec3f::new(100.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            100, 0,
+            crate::constants::DamageFlags::empty(),
+            crate::constants::MeansOfDeath::Rocket,
+        );
+
+        // Soldier should be dead (30hp - 100dmg).
+        assert!(world.entities.get(soldier).unwrap().game.health <= 0);
+
+        // Radius damage to bystander.
+        world.t_radius_damage(
+            attacker, attacker, 120.0,
+            Some(soldier), 150.0,
+            crate::constants::MeansOfDeath::RocketSplash,
+        );
+
+        // Bystander should have taken splash damage.
+        assert!(world.entities.get(bystander).unwrap().game.health < 200);
+    }
+
+    /// Trigger chain: trigger_relay → target_secret → counter increments.
+    #[test]
+    fn integration_trigger_chain() {
+        use std::sync::atomic::{AtomicI32, Ordering};
+        static ACTIVATIONS: AtomicI32 = AtomicI32::new(0);
+
+        fn count_use(_w: &mut GameWorld, _s: EntityKey, _o: EntityKey, _a: EntityKey) {
+            ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        ACTIVATIONS.store(0, Ordering::Relaxed);
+
+        let mut world = test_world();
+
+        // relay → target_a (counter)
+        let relay = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(relay).unwrap();
+            ent.game.classname = "trigger_relay".to_string();
+            ent.game.target = "counter".to_string();
+        }
+
+        let counter = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(counter).unwrap();
+            ent.game.classname = "target".to_string();
+            ent.game.targetname = "counter".to_string();
+            ent.use_fn = Some(count_use);
+        }
+
+        // Fire relay.
+        world.use_targets(relay, relay);
+
+        assert_eq!(ACTIVATIONS.load(Ordering::Relaxed), 1);
+
+        // Fire again.
+        world.use_targets(relay, relay);
+        assert_eq!(ACTIVATIONS.load(Ordering::Relaxed), 2);
+    }
+
+    /// Player connects, picks up health, takes damage, verifies HUD stats.
+    #[test]
+    fn integration_player_lifecycle() {
+        let mut world = test_world();
+        world.init_game();
+
+        // Create spawn point.
+        let spawn = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(spawn).unwrap();
+            ent.game.classname = "info_player_start".to_string();
+            ent.state.origin = Vec3f::new(0.0, 0.0, 0.0);
+        }
+
+        // Connect and begin.
+        let player = world.client_connect("\\name\\TestPlayer").unwrap();
+        world.client_begin(player);
+
+        assert_eq!(world.entities.get(player).unwrap().game.health, 100);
+
+        // Take damage.
+        let attacker = world.spawn().unwrap();
+        world.t_damage(
+            player, attacker, attacker,
+            Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO,
+            25, 0,
+            crate::constants::DamageFlags::empty(),
+            crate::constants::MeansOfDeath::Blaster,
+        );
+
+        assert_eq!(world.entities.get(player).unwrap().game.health, 75);
+
+        // Update HUD stats.
+        world.update_player_stats(player);
+
+        let stats = world.entities.get(player).unwrap()
+            .client.as_ref().unwrap().ps.stats;
+        assert_eq!(stats[1], 75); // STAT_HEALTH
+    }
+
+    /// Spawn all entity types from a complex entity string, run frames.
+    #[test]
+    fn integration_complex_entity_string() {
+        let mut world = test_world();
+        world.init_game();
+
+        let entstring = r#"
+        {
+        "classname" "info_player_start"
+        "origin" "0 0 0"
+        }
+        {
+        "classname" "monster_soldier_light"
+        "origin" "200 0 0"
+        }
+        {
+        "classname" "monster_tank"
+        "origin" "500 0 0"
+        }
+        {
+        "classname" "monster_gladiator"
+        "origin" "800 0 0"
+        }
+        {
+        "classname" "light"
+        "origin" "0 0 128"
+        }
+        "#;
+
+        world.spawn_entities("test", entstring, "");
+
+        // Should have 5 entities (light might be freed by sp_light).
+        assert!(world.entities.count() >= 4);
+
+        // Run 5 frames — no panics.
+        for _ in 0..5 {
+            world.run_frame();
+        }
+
+        // Verify monsters are alive with correct health.
+        let sol = world.find_by_classname(None, "monster_soldier_light");
+        assert!(sol.is_some());
+        assert_eq!(world.entities.get(sol.unwrap()).unwrap().game.health, 20);
+
+        let tank = world.find_by_classname(None, "monster_tank");
+        assert!(tank.is_some());
+        assert_eq!(world.entities.get(tank.unwrap()).unwrap().game.health, 750);
+    }
+
+    /// Weapon fire creates projectile, projectile moves via physics.
+    #[test]
+    fn integration_weapon_projectile_lifecycle() {
+        let mut world = test_world();
+        world.level.time = 1.0;
+
+        let owner = world.spawn().unwrap();
+
+        // Fire a rocket.
+        world.fire_rocket(
+            owner,
+            Vec3f::ZERO,
+            Vec3f::new(1.0, 0.0, 0.0),
+            100, 650, 150.0, 120,
+        );
+
+        let rocket = world.find_by_classname(None, "rocket").unwrap();
+        let initial_x = world.entities.get(rocket).unwrap().state.origin.x;
+
+        // Run entity physics — rocket should move.
+        world.run_entity(rocket);
+
+        let final_x = world.entities.get(rocket).unwrap().state.origin.x;
+        assert!(final_x > initial_x, "rocket should have moved forward");
+    }
+
+    /// Monster takes damage, pain fires, monster dies.
+    #[test]
+    fn integration_monster_damage_to_death() {
+        let mut world = test_world();
+        world.init_game();
+        world.level.time = 1.0;
+
+        let entstring = r#"
+        {
+        "classname" "monster_soldier"
+        "origin" "100 0 0"
+        }
+        "#;
+        world.spawn_entities("test", entstring, "");
+
+        let sol = world.find_by_classname(None, "monster_soldier").unwrap();
+        assert_eq!(world.entities.get(sol).unwrap().game.health, 30);
+
+        let attacker = world.spawn().unwrap();
+
+        // Hit for 15 — should survive.
+        world.t_damage(
+            sol, attacker, attacker,
+            Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO,
+            15, 0,
+            crate::constants::DamageFlags::empty(),
+            crate::constants::MeansOfDeath::Shotgun,
+        );
+        assert_eq!(world.entities.get(sol).unwrap().game.health, 15);
+
+        // Hit for 20 — should die.
+        world.t_damage(
+            sol, attacker, attacker,
+            Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO,
+            20, 0,
+            crate::constants::DamageFlags::empty(),
+            crate::constants::MeansOfDeath::Shotgun,
+        );
+        assert!(world.entities.get(sol).unwrap().game.health <= 0);
+        assert_eq!(
+            world.entities.get(sol).unwrap().game.deadflag,
+            crate::constants::DeadFlag::Dead
+        );
+    }
 }
