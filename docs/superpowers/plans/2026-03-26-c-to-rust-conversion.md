@@ -7,20 +7,56 @@
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0: Scaffolding | **DONE** | Workspace, 13 crates, CI, clippy, WASM entry point, bundler |
-| Phase 1: Common Layer | **DONE** | All 11 tasks complete — types, constants, protocol, errors, cvars, commands, net_msg, zone, filesystem, collision, pmove, netchan (276 tests) |
-| Phase 2: Game Logic | **IN PROGRESS** | Spec + plan written. Existing: entity.rs (SlotMap), traits.rs (GameImport/GameExport), spawn.rs (parser + 4 entries). See `docs/implementation-plan.md` |
-| Phase 3: Server | Partial | state.rs, frame.rs (skeleton), init.rs, world.rs exist |
-| Phase 4: Client | Partial | state.rs, parse.rs, input.rs, view.rs exist |
-| Phase 5: Renderer | Partial | bsp.rs, gl3/ structure exist |
-| Phase 6: Platform/WASM | Partial | WASM input, GL context, game loop abstraction exist |
-| Phase 7: P2P Networking | TODO | q2-net is stub (8 lines) |
-| Phase 8: Integration | TODO | |
+| Phase 1: Common Layer | **DONE** | All 11 tasks complete (276 tests) |
+| Phase 2: Game Logic | **DONE** (core) | 41 files, 11,507 lines, 208 tests, CP-2 passes. Branch: `game-logic-0.1.1`. Gaps: #14-17 |
+| Phase 3: Server | TODO | Skeleton exists. Issue #18 |
+| Phase 4: Client | TODO | Skeleton exists. Issue #19 |
+| Phase 5: Renderer | TODO | Skeleton exists. Issue #20 |
+| Phase 6: Platform/WASM | TODO | Partial exists. Issue #21 |
+| Phase 7: P2P Networking | TODO | q2-net stub. Issue #22 |
+| Phase 8: Integration | TODO | Issue #23 |
 
 **Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile, `q2-render-api` (Renderer trait).
 
-**Next up:** Phase 2 Game Logic — 18 tasks across 4 sprints. See `docs/implementation-plan.md`.
+**Phase 2 gaps (tracked, not blocking):**
+- #14: Monster attack/pain animation expansion (all 20 types have stand/die; need full state machines)
+- #15: Save/load with serde + callback registry
+- #16: Player weapon state machine + DM rules
+- #17: Full SV_Push with entity displacement rollback
 
-**Critical path to playable:** Phase 2 (game logic — CP-2) → Phase 3 (server frame loop) → Phase 5 (renderer — BSP loading + GL3) → Phase 4 (client — input + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
+**Next session priority — pick one branch to start:**
+
+### Option A: Phase 5 Renderer (critical path to visual output)
+```
+Branch: renderer-0.1.1
+Issue: #20
+Work: BSP/MD2/SP2 loaders, GL3 shaders, world/mesh rendering, textures, lightmaps
+Checkpoints: CP-4a → CP-4b → CP-4c → CP-5 (first frame in browser)
+Est: ~20,000 Rust lines
+```
+
+### Option B: Phase 3 Server (bottom-up, enables real game loop)
+```
+Branch: server-0.1.1
+Issue: #18
+Work: Server state, GameImport impl, frame loop, client handling, entity linking
+Checkpoints: CP-3 (server runs 100 frames)
+Est: ~5,000 Rust lines
+Unlocks: real collision traces for game logic (replaces MockGameImport)
+```
+
+### Option C: Phase 2 gaps (polish before moving on)
+```
+Branch: game-logic-polish-0.1.1
+Issues: #14, #15, #16, #17
+Work: Monster animations, save/load, weapon state, SV_Push rollback
+No new checkpoints — improves existing CP-2
+```
+
+**Recommended order:** Option B (Server) → Option A (Renderer) → Phase 4 (Client) → Phase 6 (WASM). Server is smaller and provides real GameImport for testing game logic with actual collision.
+
+**Critical path to CP-5b (playable in browser):**
+Phase 3 (#18) → Phase 5 (#20) → Phase 4 (#19) → Phase 6 (#21)
 
 **C source reference:** `~/Qwasm2/src/` (Yamagi Quake II with Emscripten WASM port)
 

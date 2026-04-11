@@ -1,10 +1,34 @@
-# Phase 2: Game Logic — Implementation Plan v0.1.0
+# Phase 2: Game Logic — Implementation Plan v0.2.0
 
 **Author**: Claude (attune:project-planning)
 **Date**: 2026-04-10
 **Branch**: `game-logic-0.1.1`
 **Specification**: `docs/specification.md`
-**Estimated Total**: ~18,000 new Rust LOC replacing ~22,000 C LOC
+**Status**: CORE COMPLETE — CP-2 passes, ready for PR to main
+
+## Completion Summary (2026-04-10)
+
+| Sprint | Status | Tasks | Tests Added | Commits |
+|--------|--------|-------|-------------|---------|
+| Sprint 1: Core Framework | **DONE** | 6/6 | +114 | `7b77c53` |
+| Sprint 2: World Entities | **DONE** | 5/5 | +39 | `de5ba67` |
+| Sprint 3: AI + Game Loop | **DONE** | 3/3* | +23 | `90dc60d` |
+| Sprint 4: Player + Monsters | **DONE** | 3/3* | +14 | `2800ace` |
+
+*Sprints 3-4 restructured from original plan — AI/game loop and
+player/monsters combined for CP-2 checkpoint efficiency.
+
+**Final metrics**: 41 files, 11,507 lines, 208 tests, 0 unsafe, 0 clippy warnings.
+
+### Deferred to separate branches (GitHub issues created):
+- #14: Full monster attack/pain animations
+- #15: Save/load system (serde + callback registry)
+- #16: Player weapon state machine + DM rules
+- #17: Full SV_Push with entity displacement rollback
+
+---
+
+**Estimated Total**: ~18,000 new Rust LOC replacing ~22,000 C LOC (11,507 delivered)
 
 ---
 
