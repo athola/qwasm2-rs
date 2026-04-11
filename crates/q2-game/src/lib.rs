@@ -16,6 +16,7 @@ pub mod combat;
 pub mod items;
 pub mod weapons;
 pub mod ai;
+pub mod player;
 pub mod monster;
 pub mod triggers;
 pub mod targets;
