@@ -298,7 +298,7 @@ impl GameWorld {
             }
 
             // Hit something — determine what.
-            let hit_key = trace.ent_index.map(|_| key); // placeholder
+            let hit_key: Option<EntityKey> = None; // Phase 3: map trace.ent_index to EntityKey
             self.sv_impact(key, hit_key, &trace);
 
             // Entity may have been freed by the touch callback.
@@ -418,7 +418,7 @@ impl GameWorld {
         self.gi.link_entity(0); // placeholder index
 
         if trace.fraction < 1.0 {
-            let hit_key = trace.ent_index.map(|_| key); // placeholder
+            let hit_key: Option<EntityKey> = None; // Phase 3: map trace.ent_index to EntityKey
             self.sv_impact(key, hit_key, &trace);
         }
 
@@ -493,9 +493,10 @@ impl GameWorld {
         }
 
         // If on ground with zero velocity, stay put.
+        // C ref: SV_Physics_Toss checks velocity before returning.
         {
             let ent = self.entities.get(key).unwrap();
-            if ent.game.ground_entity.is_some() {
+            if ent.game.ground_entity.is_some() && ent.velocity == Vec3f::ZERO {
                 return;
             }
         }
@@ -742,7 +743,7 @@ impl GameWorld {
         if !trace.startsolid && !trace.allsolid {
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.state.origin = trace.endpos;
-                ent.game.ground_entity = Some(key); // self as ground (simplified)
+                ent.game.ground_entity = None; // Phase 3: set to trace hit entity
                 ent.velocity.z = 0.0;
             }
         }

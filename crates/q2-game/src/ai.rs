@@ -265,6 +265,13 @@ pub fn monster_think(world: &mut GameWorld, key: EntityKey) {
 /// Common monster initialization. C ref: `monster_start` (g_monster.c).
 /// Sets default fields shared by all monsters.
 pub fn monster_start(world: &mut GameWorld, key: EntityKey) {
+    // Extract stand callback before mutating, to avoid borrow conflict.
+    let stand_fn = world
+        .entities
+        .get(key)
+        .and_then(|e| e.monsterinfo.as_ref())
+        .and_then(|mi| mi.stand);
+
     if let Some(ent) = world.entities.get_mut(key) {
         ent.svflags |= SvFlags::MONSTER.bits();
         ent.game.movetype = MoveType::Step;
@@ -280,15 +287,11 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) {
         // Set think to monster animation driver.
         ent.think = Some(monster_think);
         ent.game.nextthink = world.level.time + FRAMETIME;
+    }
 
-        // Call stand state if available.
-        let stand = ent.monsterinfo.as_ref().and_then(|mi| mi.stand);
-        if let Some(stand_fn) = stand {
-            // Can't call through ent — need to release the borrow first.
-            // The stand_fn variable captures the fn pointer by value (Copy).
-            let _ = ent; // release borrow
-            stand_fn(world, key);
-        }
+    // Call stand state after releasing the mutable borrow.
+    if let Some(sfn) = stand_fn {
+        sfn(world, key);
     }
 }
 
