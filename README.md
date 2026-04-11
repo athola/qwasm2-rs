@@ -6,8 +6,9 @@ Loads real Quake 2 game data (PAK files, BSP maps), renders with
 WebGL2, and runs player movement in the browser.
 
 > **Status: alpha.** The engine loads maps, renders BSP geometry, and
-> supports first-person movement. Networking, sound, and game logic are
-> stubbed or in progress. Expect breaking changes.
+> supports first-person movement. Game logic (Phase 2) is complete with
+> physics, combat, 42 items, 11 weapons, 20 monster types, and AI.
+> Server, client, and renderer are in progress. Expect breaking changes.
 
 ## Features
 
@@ -101,7 +102,7 @@ function-pointer tables:
 | `q2-common` | Engine services: collision, pmove, filesystem, cvars |
 | `q2-render-api` | Renderer trait + data types (no implementation) |
 | `q2-render` | GL3/GLES3 renderer backend |
-| `q2-game` | Game logic, entity system (SlotMap), spawn |
+| `q2-game` | Game logic: physics, combat, items, weapons, AI, 20 monsters, player |
 | `q2-server` | Server state, frame loop, world |
 | `q2-client` | Client state, parsing, input, view |
 | `q2-platform` | Platform abstraction (WASM input, GL context) |
@@ -154,6 +155,12 @@ against the C source before modifying.
 
 ## Documentation
 
+- [Conversion Plan](docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md)
+  — phase progress, next-session roadmap, critical path to playable
+- [Phase 2 Specification](docs/specification.md) — game logic
+  requirements and acceptance criteria
+- [Phase 2 Implementation Plan](docs/implementation-plan.md) — task
+  breakdown, dependency graph, sprint results
 - [ADR-001: Crate Decomposition](docs/adr/001-crate-decomposition-and-trait-boundaries.md)
   — workspace structure and trait boundary rationale
 - [CLAUDE.md](CLAUDE.md) — project-level instructions for AI-assisted
