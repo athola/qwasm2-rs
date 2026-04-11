@@ -17,6 +17,7 @@ Key C source directories:
 ## Architecture
 
 13-crate Cargo workspace with strict DAG dependency graph. See `docs/adr/001-crate-decomposition-and-trait-boundaries.md`.
+See `docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md` for phase progress and next-session roadmap.
 
 ```
 q2-shared (types) → q2-common (services) → q2-game/server/client/render → q2-wasm/bin
@@ -27,6 +28,14 @@ q2-shared (types) → q2-common (services) → q2-game/server/client/render → 
 - **Game logic**: `q2-game::traits::GameImport/GameExport` traits replace C function-pointer tables.
 - **Player movement**: `q2-common::player_ctrl::PlayerController` — platform-agnostic physics.
 - **Platform**: `q2-platform` — WASM-specific code gated on `cfg(target_arch = "wasm32")`.
+
+### q2-game patterns
+- **Entity callbacks are `fn` pointers** (not closures) — keeps entities Send+Sync and serializable for save/load.
+- **Callback borrow pattern**: Read `Option<fn>` into a local variable before calling, since callbacks take `&mut GameWorld`.
+- **GameWorld is the central state** — all game code receives `&mut GameWorld`. Replaces C globals (`g_edicts[]`, `level`, `game`).
+- **MockGameImport** (`world::test_world()`) enables unit testing game logic without a real server.
+- **Spawn functions** use `SpawnFn = fn(&mut EntityStorage, EntityKey, &HashMap<String, String>)` signature.
+- Monster/func callback functions should be `pub` to avoid dead_code warnings (they're used as fn-pointer values).
 
 ### Rules
 - No circular dependencies between crates.
@@ -40,6 +49,7 @@ q2-shared (types) → q2-common (services) → q2-game/server/client/render → 
 ```bash
 cargo test --workspace          # Run all tests
 cargo clippy --workspace        # Lint (zero errors required)
+cargo check -p q2-game --target wasm32-unknown-unknown  # Verify WASM compat
 make wasm                       # Build WASM target
 make serve                      # Serve wasm-pack output via python3 (simple, no gamedata)
 ```
@@ -48,3 +58,6 @@ make serve                      # Serve wasm-pack output via python3 (simple, no
 - Commit messages: conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`)
 - No global mutable state. All state is instance-owned or passed by reference.
 - Large algorithmic modules (collision, pmove) are faithful C ports — modify with care and tests.
+- `#[allow(clippy::too_many_arguments)]` on weapon fire functions matching C signatures.
+- `#[allow(clippy::field_reassign_with_default)]` on spawn functions building MoveInfo incrementally.
+- Use `.to_string()` not `.into()` when passing string literals to `SpawnTable::insert()`.
