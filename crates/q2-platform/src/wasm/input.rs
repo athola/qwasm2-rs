@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlCanvasElement, KeyboardEvent, MouseEvent};
+use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent};
 
 pub use crate::keymap::key_code_to_q2;
 
@@ -67,17 +67,48 @@ pub fn setup_input_listeners(
         closure.forget();
     }
 
-    // Mouse move (requires pointer lock for FPS controls)
+    // Mouse move — listen on document so events are received regardless of cursor position.
+    // Only accumulate deltas while pointer lock is active; without lock, movementX/Y can
+    // produce a large spurious jump when the cursor re-enters the viewport boundary.
     {
         let state = state.clone();
+        let document_for_move = document.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
-            let mut s = state.borrow_mut();
-            s.mouse_dx += event.movement_x() as f32;
-            s.mouse_dy += event.movement_y() as f32;
+            if document_for_move.pointer_lock_element().is_some() {
+                let mut s = state.borrow_mut();
+                s.mouse_dx += event.movement_x() as f32;
+                s.mouse_dy += event.movement_y() as f32;
+            }
         }) as Box<dyn FnMut(_)>);
-        canvas
+        document
             .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
             .map_err(|e| format!("mousemove listener: {:?}", e))?;
+        closure.forget();
+    }
+
+    // Flush stale deltas whenever pointer lock changes state (acquire or release).
+    // Prevents a view jump from deltas that accumulated in an unlocked window.
+    {
+        let state = state.clone();
+        let closure = Closure::wrap(Box::new(move |_: Event| {
+            let mut s = state.borrow_mut();
+            s.mouse_dx = 0.0;
+            s.mouse_dy = 0.0;
+        }) as Box<dyn FnMut(_)>);
+        document
+            .add_event_listener_with_callback("pointerlockchange", closure.as_ref().unchecked_ref())
+            .map_err(|e| format!("pointerlockchange listener: {:?}", e))?;
+        closure.forget();
+    }
+
+    // Log pointer lock errors to the browser console for diagnostics.
+    {
+        let closure = Closure::wrap(Box::new(move |_: Event| {
+            web_sys::console::warn_1(&"[qwasm2] Pointer lock request failed (browser policy or missing user gesture)".into());
+        }) as Box<dyn FnMut(_)>);
+        document
+            .add_event_listener_with_callback("pointerlockerror", closure.as_ref().unchecked_ref())
+            .map_err(|e| format!("pointerlockerror listener: {:?}", e))?;
         closure.forget();
     }
 

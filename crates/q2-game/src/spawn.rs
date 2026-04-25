@@ -161,7 +161,19 @@ impl Default for SpawnTable {
 // ---------------------------------------------------------------------------
 
 /// Parse an "origin" string like `"128 64 0"` into a `Vec3f`.
-fn parse_origin(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
+/// Parse an "X Y Z" origin string into a Vec3f.
+pub fn parse_origin(s: &str) -> q2_shared::types::Vec3f {
+    let parts: Vec<f32> = s
+        .split_whitespace()
+        .filter_map(|p| p.parse::<f32>().ok())
+        .collect();
+    if parts.len() == 3 {
+        return q2_shared::types::Vec3f::new(parts[0], parts[1], parts[2]);
+    }
+    q2_shared::types::Vec3f::ZERO
+}
+
+fn parse_origin_from_props(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
     if let Some(origin_str) = props.get("origin") {
         let parts: Vec<f32> = origin_str
             .split_whitespace()
@@ -194,7 +206,7 @@ pub fn sp_info_player_start(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_start".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin_from_props(props);
         ent.state.angles = parse_angle(props);
     }
 }
@@ -207,7 +219,7 @@ pub fn sp_info_player_deathmatch(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_deathmatch".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin_from_props(props);
         ent.state.angles = parse_angle(props);
     }
 }
@@ -235,7 +247,7 @@ pub fn sp_light(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "light".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin_from_props(props);
         // Lights have no runtime behaviour — entity can be freed later.
         let _ = props;
     }
@@ -283,7 +295,7 @@ pub fn find_player_start(entstring: &str) -> Option<(q2_shared::types::Vec3f, f3
         if !ent.contains_key("origin") {
             continue;
         }
-        let origin = parse_origin(ent);
+        let origin = parse_origin_from_props(ent);
         if origin == q2_shared::types::Vec3f::ZERO && ent.get("origin").is_none_or(|s| s.trim() != "0 0 0") {
             continue; // malformed origin (parse_origin returned zero as fallback)
         }

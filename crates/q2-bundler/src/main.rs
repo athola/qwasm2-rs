@@ -182,6 +182,19 @@ fn generate_html(inlined_js: &str) -> String {
     font-size: 12px; color: #888; z-index: 10;
     pointer-events: none;
   }}
+  #crosshair {{
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px; height: 14px;
+    pointer-events: none; z-index: 15;
+  }}
+  #crosshair::before, #crosshair::after {{
+    content: ''; position: absolute;
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }}
+  #crosshair::before {{ left: 0; top: calc(50% - 1px); width: 100%; height: 2px; }}
+  #crosshair::after  {{ top: 0; left: calc(50% - 1px); width: 2px; height: 100%; }}
   #click-prompt {{
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
@@ -194,6 +207,7 @@ fn generate_html(inlined_js: &str) -> String {
 <body>
 <div id="game-container">
   <canvas id="canvas"></canvas>
+  <div id="crosshair"></div>
   <div id="hud"></div>
   <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
   <div id="status-container">
