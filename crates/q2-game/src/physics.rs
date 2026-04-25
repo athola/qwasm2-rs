@@ -3,6 +3,17 @@
 //! Faithful port of `g_phys.c` (1,300 lines, 17 functions) from the C source.
 //! All constants, thresholds, and algorithms match the original exactly.
 //!
+//! # Relationship to `q2-common::pmove`
+//!
+//! This module is **server-side entity physics** (all entity types, all MoveTypes).
+//! `q2-common::pmove` is **client-side player movement prediction** (Pmove struct only).
+//! They share some algorithms (e.g. velocity clipping) but run in separate contexts:
+//! - `pmove` executes on every client tick for prediction
+//! - `physics` executes on the server frame loop for all non-player entities
+//!
+//! No public types or function names overlap. `clip_velocity` here is the server copy
+//! of `pm_clip_velocity` in pmove — kept separate to avoid a crate dependency inversion.
+//!
 //! # Physics dispatch
 //!
 //! `run_entity()` dispatches by `MoveType`:
