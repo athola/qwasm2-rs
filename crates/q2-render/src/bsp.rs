@@ -219,7 +219,7 @@ fn validate_lump(
         )));
     }
 
-    let count = if struct_size > 0 { len / struct_size } else { 0 };
+    let count = len.checked_div(struct_size).unwrap_or(0);
     Ok((off, count))
 }
 
