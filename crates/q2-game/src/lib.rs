@@ -10,3 +10,6 @@
 pub mod traits;
 pub mod entity;
 pub mod spawn;
+pub mod game;
+
+pub use game::GameLogic;

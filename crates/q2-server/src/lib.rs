@@ -11,3 +11,6 @@ pub mod state;
 pub mod frame;
 pub mod init;
 pub mod world;
+pub mod game_iface;
+
+pub use game_iface::ServerGameImport;

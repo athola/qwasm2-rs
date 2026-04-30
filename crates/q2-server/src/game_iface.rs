@@ -1,0 +1,316 @@
+//! Server-side GameImport implementation.
+//!
+//! `ServerGameImport` implements `q2_game::traits::GameImport` so the game
+//! module can call back into the server during a game frame.
+//!
+//! Interior-mutable state (message buffer, configstring updates) is guarded by
+//! a `Mutex` to satisfy the `Send + Sync` bound on `GameImport`.  In the
+//! single-threaded WASM target the lock is always uncontended.
+
+use std::sync::Mutex;
+
+use q2_game::traits::GameImport;
+use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
+
+// ---------------------------------------------------------------------------
+// Interior-mutable state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct GiInner {
+    /// Outbound message buffer (write_* calls enqueue here; flushed by
+    /// multicast/unicast — currently just accumulated for CP-3).
+    msg_buf: Vec<u8>,
+    /// Mirror of Server::configstrings, updated by game calls to configstring().
+    configstrings: Vec<String>,
+}
+
+impl GiInner {
+    fn new() -> Self {
+        Self {
+            msg_buf: Vec::new(),
+            configstrings: vec![String::new(); MAX_CONFIGSTRINGS],
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ServerGameImport
+// ---------------------------------------------------------------------------
+
+/// Server implementation of the `GameImport` trait.
+pub struct ServerGameImport {
+    inner: Mutex<GiInner>,
+}
+
+impl std::fmt::Debug for ServerGameImport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerGameImport").finish_non_exhaustive()
+    }
+}
+
+impl ServerGameImport {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(GiInner::new()),
+        }
+    }
+
+    /// Drain configstring updates set during the most recent game frame.
+    /// Returns `(index, value)` pairs for every slot that was written.
+    pub fn drain_configstring_updates(&self) -> Vec<(usize, String)> {
+        // For now, return all non-empty entries. This will be refined when
+        // delta-compression requires tracking which slots changed.
+        let inner = self.inner.lock().unwrap();
+        inner
+            .configstrings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.is_empty())
+            .map(|(i, s)| (i, s.clone()))
+            .collect()
+    }
+}
+
+impl Default for ServerGameImport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GameImport impl
+// ---------------------------------------------------------------------------
+
+impl GameImport for ServerGameImport {
+    // -- printing ------------------------------------------------------------
+
+    fn bprintf(&self, _printlevel: i32, msg: &str) {
+        tracing::info!("[bprintf] {}", msg.trim_end());
+    }
+
+    fn dprintf(&self, msg: &str) {
+        tracing::debug!("[dprintf] {}", msg.trim_end());
+    }
+
+    fn cprintf(&self, ent_idx: Option<usize>, _printlevel: i32, msg: &str) {
+        tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
+    }
+
+    fn centerprintf(&self, ent_idx: Option<usize>, msg: &str) {
+        tracing::debug!(ent = ?ent_idx, "[centerprintf] {}", msg.trim_end());
+    }
+
+    // -- sound ---------------------------------------------------------------
+
+    fn sound(
+        &self,
+        _ent_idx: Option<usize>,
+        _channel: i32,
+        _sound_index: i32,
+        _volume: f32,
+        _attenuation: f32,
+        _time_ofs: f32,
+    ) {
+    }
+
+    // -- asset indexing ------------------------------------------------------
+
+    fn model_index(&self, _name: &str) -> i32 {
+        0
+    }
+
+    fn sound_index(&self, _name: &str) -> i32 {
+        0
+    }
+
+    fn image_index(&self, _name: &str) -> i32 {
+        0
+    }
+
+    fn set_model(&self, _ent_idx: usize, _name: &str) {}
+
+    // -- collision -----------------------------------------------------------
+
+    fn trace(
+        &self,
+        _start: Vec3f,
+        _mins: Vec3f,
+        _maxs: Vec3f,
+        _end: Vec3f,
+        _pass_ent: Option<usize>,
+        _content_mask: i32,
+    ) -> Trace {
+        // CP-3: no BSP loaded — return an unobstructed trace (fraction = 1.0).
+        Trace::default()
+    }
+
+    fn point_contents(&self, _point: Vec3f) -> i32 {
+        0
+    }
+
+    fn in_pvs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
+        false
+    }
+
+    fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
+        false
+    }
+
+    // -- entity linking ------------------------------------------------------
+
+    fn link_entity(&self, _ent_idx: usize) {
+        // Deferred: entity bounds must be read from the game storage.
+        // Requires a shared reference to EntityStorage or a bounds callback.
+    }
+
+    fn unlink_entity(&self, _ent_idx: usize) {}
+
+    fn box_edicts(
+        &self,
+        _mins: Vec3f,
+        _maxs: Vec3f,
+        _max_count: usize,
+        _area_type: i32,
+    ) -> Vec<usize> {
+        Vec::new()
+    }
+
+    // -- configstrings -------------------------------------------------------
+
+    fn configstring(&self, num: i32, string: &str) {
+        if num < 0 {
+            return;
+        }
+        let idx = num as usize;
+        let mut inner = self.inner.lock().unwrap();
+        if idx < inner.configstrings.len() {
+            inner.configstrings[idx] = string.to_string();
+        }
+    }
+
+    // -- network writing (buffered; flushed on multicast/unicast) -----------
+
+    fn write_byte(&self, c: i32) {
+        self.inner.lock().unwrap().msg_buf.push(c as u8);
+    }
+
+    fn write_short(&self, c: i32) {
+        let mut inner = self.inner.lock().unwrap();
+        let bytes = (c as i16).to_le_bytes();
+        inner.msg_buf.extend_from_slice(&bytes);
+    }
+
+    fn write_long(&self, c: i32) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.msg_buf.extend_from_slice(&c.to_le_bytes());
+    }
+
+    fn write_float(&self, f: f32) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.msg_buf.extend_from_slice(&f.to_le_bytes());
+    }
+
+    fn write_string(&self, s: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.msg_buf.extend_from_slice(s.as_bytes());
+        inner.msg_buf.push(0); // null-terminate
+    }
+
+    fn write_position(&self, pos: Vec3f) {
+        let mut inner = self.inner.lock().unwrap();
+        let encode = |f: f32| -> i16 { (f * 8.0) as i16 };
+        inner.msg_buf.extend_from_slice(&encode(pos.x).to_le_bytes());
+        inner.msg_buf.extend_from_slice(&encode(pos.y).to_le_bytes());
+        inner.msg_buf.extend_from_slice(&encode(pos.z).to_le_bytes());
+    }
+
+    fn write_dir(&self, dir: Vec3f) {
+        // Quantise to the nearest BYTEDIRS entry (256 directions).
+        // For CP-3 just write a single dummy byte.
+        let _ = dir;
+        self.inner.lock().unwrap().msg_buf.push(0);
+    }
+
+    fn write_angle(&self, f: f32) {
+        let byte = ((f * 256.0 / 360.0) as i32 & 255) as u8;
+        self.inner.lock().unwrap().msg_buf.push(byte);
+    }
+
+    // -- multicast / unicast (flush message buffer) -------------------------
+
+    fn multicast(&self, _origin: Vec3f, _to: Multicast) {
+        self.inner.lock().unwrap().msg_buf.clear();
+    }
+
+    fn unicast(&self, _ent_idx: usize, _reliable: bool) {
+        self.inner.lock().unwrap().msg_buf.clear();
+    }
+
+    // -- command args --------------------------------------------------------
+
+    fn argc(&self) -> i32 {
+        0
+    }
+
+    fn argv(&self, _n: i32) -> String {
+        String::new()
+    }
+
+    fn args(&self) -> String {
+        String::new()
+    }
+
+    fn add_command_string(&self, _text: &str) {}
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configstring_stored() {
+        let gi = ServerGameImport::new();
+        gi.configstring(0, "base1");
+        gi.configstring(1, "models/world.bsp");
+
+        let updates = gi.drain_configstring_updates();
+        let map: std::collections::HashMap<_, _> = updates.into_iter().collect();
+        assert_eq!(map[&0], "base1");
+        assert_eq!(map[&1], "models/world.bsp");
+    }
+
+    #[test]
+    fn write_byte_then_unicast_clears_buf() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(42);
+        gi.write_byte(99);
+        {
+            let inner = gi.inner.lock().unwrap();
+            assert_eq!(inner.msg_buf.len(), 2);
+        }
+        gi.unicast(0, true);
+        {
+            let inner = gi.inner.lock().unwrap();
+            assert!(inner.msg_buf.is_empty());
+        }
+    }
+
+    #[test]
+    fn write_string_null_terminates() {
+        let gi = ServerGameImport::new();
+        gi.write_string("hello");
+        let inner = gi.inner.lock().unwrap();
+        assert_eq!(inner.msg_buf.last(), Some(&0u8));
+    }
+
+    #[test]
+    fn send_sync_bound() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ServerGameImport>();
+    }
+}

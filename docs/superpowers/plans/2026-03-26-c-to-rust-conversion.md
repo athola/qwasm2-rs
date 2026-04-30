@@ -9,8 +9,8 @@
 | Phase 0: Scaffolding | **DONE** | Workspace, 13 crates, CI, clippy, WASM entry point, bundler |
 | Phase 1 Tasks 1.1–1.6 | **DONE** | types, constants, protocol, errors, cvars, commands, net_msg (76 tests) |
 | Phase 1 Tasks 1.7–1.11 | **TODO** | zone, filesystem, collision, pmove, netchan |
-| Phase 2: Game Logic | TODO | |
-| Phase 3: Server | TODO | |
+| Phase 2: Game Logic | **DONE** | GameLogic, EntityStorage, SpawnTable, GameExport trait impl (CP-2 reached) |
+| Phase 3: Server | **CP-3 reached** | state, frame loop, GameImport bridge, ServerWorld — networking (client_handler, send/recv) deferred to Phase 4 |
 | Phase 4: Client | TODO | |
 | Phase 5: Renderer | TODO | |
 | Phase 6: Platform/WASM | TODO | |
