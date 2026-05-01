@@ -215,7 +215,10 @@ impl EntityStorage {
         if self.entities.len() >= self.max_entities {
             return None;
         }
-        let ent = Entity { in_use: true, ..Entity::default() };
+        let ent = Entity {
+            in_use: true,
+            ..Entity::default()
+        };
         Some(self.entities.insert(ent))
     }
 

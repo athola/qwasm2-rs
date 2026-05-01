@@ -15,10 +15,8 @@ use q2_shared::{Plane, Surface, Trace, Vec3f};
 const DIST_EPSILON: f32 = 0.03125;
 
 // BSP file magic and version
-const IDBSPHEADER: u32 = (b'I' as u32)
-    | ((b'B' as u32) << 8)
-    | ((b'S' as u32) << 16)
-    | ((b'P' as u32) << 24);
+const IDBSPHEADER: u32 =
+    (b'I' as u32) | ((b'B' as u32) << 8) | ((b'S' as u32) << 16) | ((b'P' as u32) << 24);
 const BSPVERSION: u32 = 38;
 
 // Lump indices
@@ -419,9 +417,7 @@ impl CollisionMap {
 
         // Validate leaf 0 is solid
         if self.leafs[0].contents != CONTENTS_SOLID {
-            return Err(Q2Error::Drop(
-                "Map leaf 0 is not CONTENTS_SOLID".into(),
-            ));
+            return Err(Q2Error::Drop("Map leaf 0 is not CONTENTS_SOLID".into()));
         }
 
         self.solid_leaf = 0;
@@ -433,9 +429,7 @@ impl CollisionMap {
             }
         }
         if self.empty_leaf == -1 {
-            return Err(Q2Error::Drop(
-                "Map does not have an empty leaf".into(),
-            ));
+            return Err(Q2Error::Drop("Map does not have an empty leaf".into()));
         }
 
         Ok(())
@@ -445,9 +439,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(2) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadLeafBrushes: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadLeafBrushes: funny lump size".into()));
         }
         let count = len / 2;
         if count < 1 {
@@ -468,9 +460,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(DBRUSH_SIZE) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadBrushes: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadBrushes: funny lump size".into()));
         }
         let count = len / DBRUSH_SIZE;
         if count > MAX_MAP_BRUSHES {
@@ -494,9 +484,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(DBRUSHSIDE_SIZE) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadBrushSides: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadBrushSides: funny lump size".into()));
         }
         let count = len / DBRUSHSIDE_SIZE;
         if count > MAX_MAP_BRUSHSIDES {
@@ -526,9 +514,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(TEXINFO_SIZE) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadSurfaces: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadSurfaces: funny lump size".into()));
         }
         let count = len / TEXINFO_SIZE;
         if count < 1 {
@@ -562,9 +548,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(DMODEL_SIZE) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadSubmodels: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadSubmodels: funny lump size".into()));
         }
         let count = len / DMODEL_SIZE;
         if count < 1 {
@@ -634,9 +618,7 @@ impl CollisionMap {
         let ofs = ofs as usize;
         let len = len as usize;
         if !len.is_multiple_of(DAREAPORTAL_SIZE) {
-            return Err(Q2Error::Drop(
-                "Mod_LoadAreaPortals: funny lump size".into(),
-            ));
+            return Err(Q2Error::Drop("Mod_LoadAreaPortals: funny lump size".into()));
         }
         let count = len / DAREAPORTAL_SIZE;
         if count > MAX_MAP_AREAPORTALS {
@@ -956,7 +938,14 @@ impl CollisionMap {
     ) -> (Vec<usize>, i32) {
         let mut result = Vec::new();
         let mut top_node = -1i32;
-        self.box_leafnums_r(head_node, &mins, &maxs, max_count, &mut result, &mut top_node);
+        self.box_leafnums_r(
+            head_node,
+            &mins,
+            &maxs,
+            max_count,
+            &mut result,
+            &mut top_node,
+        );
         (result, top_node)
     }
 
@@ -991,14 +980,7 @@ impl CollisionMap {
                 if *top_node == -1 {
                     *top_node = nodenum;
                 }
-                self.box_leafnums_r(
-                    node.children[0],
-                    mins,
-                    maxs,
-                    max_count,
-                    result,
-                    top_node,
-                );
+                self.box_leafnums_r(node.children[0], mins, maxs, max_count, result, top_node);
                 nodenum = node.children[1];
             }
         }
@@ -1046,8 +1028,7 @@ impl CollisionMap {
             let c1 = start + mins - Vec3f::ONE;
             let c2 = start + maxs + Vec3f::ONE;
 
-            let (leaf_list, _top_node) =
-                self.box_leafnums_headnode(c1, c2, 1024, head_node);
+            let (leaf_list, _top_node) = self.box_leafnums_headnode(c1, c2, 1024, head_node);
 
             for &leaf_idx in &leaf_list {
                 self.test_in_leaf(leaf_idx, &mut state);
@@ -1236,10 +1217,7 @@ impl CollisionMap {
             return;
         }
 
-        if enter_frac < leave_frac
-            && enter_frac > -1.0
-            && enter_frac < state.trace.fraction
-        {
+        if enter_frac < leave_frac && enter_frac > -1.0 && enter_frac < state.trace.fraction {
             let enter_frac = enter_frac.max(0.0);
 
             state.trace.fraction = enter_frac;
@@ -1580,16 +1558,8 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
     let (sr, cr) = roll.sin_cos();
 
     let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(
-        -sr * sp * cy + cr * sy,
-        -sr * sp * sy - cr * cy,
-        -sr * cp,
-    );
-    let up = Vec3f::new(
-        cr * sp * cy + sr * sy,
-        cr * sp * sy - sr * cy,
-        cr * cp,
-    );
+    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
+    let up = Vec3f::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
 
     (forward, right, up)
 }
@@ -1894,11 +1864,36 @@ pub(crate) mod tests {
         let mut cursor = 0usize;
 
         // Helper: write little-endian values into buf
-        macro_rules! w_u32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as u32).to_le_bytes()); cursor += 4; } }
-        macro_rules! w_i32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as i32).to_le_bytes()); cursor += 4; } }
-        macro_rules! w_i16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as i16).to_le_bytes()); cursor += 2; } }
-        macro_rules! w_u16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as u16).to_le_bytes()); cursor += 2; } }
-        macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_u32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as u32).to_le_bytes());
+                cursor += 4;
+            };
+        }
+        macro_rules! w_i32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as i32).to_le_bytes());
+                cursor += 4;
+            };
+        }
+        macro_rules! w_i16 {
+            ($v:expr) => {
+                buf[cursor..cursor + 2].copy_from_slice(&($v as i16).to_le_bytes());
+                cursor += 2;
+            };
+        }
+        macro_rules! w_u16 {
+            ($v:expr) => {
+                buf[cursor..cursor + 2].copy_from_slice(&($v as u16).to_le_bytes());
+                cursor += 2;
+            };
+        }
+        macro_rules! w_f32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as f32).to_le_bytes());
+                cursor += 4;
+            };
+        }
 
         // ---- Header ----
         w_u32!(IDBSPHEADER);
@@ -1919,9 +1914,9 @@ pub(crate) mod tests {
         cursor += 32; // vecs
         w_i32!(0); // flags
         w_i32!(0); // value
-        // texture name "solid" (32 bytes)
+                   // texture name "solid" (32 bytes)
         let name = b"solid\0";
-        buf[cursor..cursor+name.len()].copy_from_slice(name);
+        buf[cursor..cursor + name.len()].copy_from_slice(name);
         cursor += 32;
         w_i32!(-1); // nexttexinfo
 
@@ -1929,24 +1924,33 @@ pub(crate) mod tests {
         lumps[8] = (cursor as u32, 56);
         // Leaf 0: SOLID
         w_i32!(CONTENTS_SOLID); // contents
-        w_i16!(0i16);           // cluster
-        w_i16!(1i16);           // area
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
-        w_u16!(0u16);           // firstleafface
-        w_u16!(0u16);           // numleaffaces
-        w_u16!(0u16);           // firstleafbrush
-        w_u16!(1u16);           // numleafbrushes
+        w_i16!(0i16); // cluster
+        w_i16!(1i16); // area
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // mins
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // maxs
+        w_u16!(0u16); // firstleafface
+        w_u16!(0u16); // numleaffaces
+        w_u16!(0u16); // firstleafbrush
+        w_u16!(1u16); // numleafbrushes
 
         // Leaf 1: EMPTY
-        w_i32!(0);              // contents
-        w_i16!(0i16);           // cluster
-        w_i16!(1i16);           // area
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
-        w_u16!(0u16); w_u16!(0u16); // faces
-        w_u16!(0u16);           // firstleafbrush
-        w_u16!(0u16);           // numleafbrushes
+        w_i32!(0); // contents
+        w_i16!(0i16); // cluster
+        w_i16!(1i16); // area
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // mins
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // maxs
+        w_u16!(0u16);
+        w_u16!(0u16); // faces
+        w_u16!(0u16); // firstleafbrush
+        w_u16!(0u16); // numleafbrushes
 
         // ---- Lump 10: Leaf brushes (1 entry × 2 bytes) ----
         lumps[10] = (cursor as u32, 2);
@@ -1956,63 +1960,102 @@ pub(crate) mod tests {
         lumps[1] = (cursor as u32, 120);
 
         // Plane 0: +X at dist=0 (BSP split + brush +X face)
-        w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_i32!(0);
+        w_f32!(1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_i32!(0);
 
         // Plane 1: -X at dist=500 (brush -X face: x ≥ -500)
-        w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(3);
+        w_f32!(-1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(3);
 
         // Plane 2: +Y at dist=500 (brush +Y face)
-        w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(1);
+        w_f32!(0.0f32);
+        w_f32!(1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(1);
 
         // Plane 3: -Y at dist=500 (brush -Y face: y ≥ -500)
-        w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(4);
+        w_f32!(0.0f32);
+        w_f32!(-1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(4);
 
         // Plane 4: +Z at dist=500 (brush +Z face)
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(500.0f32); w_i32!(2);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(1.0f32);
+        w_f32!(500.0f32);
+        w_i32!(2);
 
         // Plane 5: -Z at dist=500 (brush -Z face: z ≥ -500)
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(500.0f32); w_i32!(5);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(-1.0f32);
+        w_f32!(500.0f32);
+        w_i32!(5);
 
         // ---- Lump 14: Brushes (1 entry × 12 bytes) ----
         lumps[14] = (cursor as u32, 12);
-        w_i32!(0);              // first_brush_side
-        w_i32!(6);              // num_sides
+        w_i32!(0); // first_brush_side
+        w_i32!(6); // num_sides
         w_i32!(CONTENTS_SOLID); // contents
 
         // ---- Lump 15: Brush sides (6 entries × 4 bytes) ----
         lumps[15] = (cursor as u32, 24);
         for plane_idx in 0..6u16 {
             w_u16!(plane_idx); // plane index
-            w_i16!(0i16);     // texinfo index 0
+            w_i16!(0i16); // texinfo index 0
         }
 
         // ---- Lump 13: Models (1 entry × 48 bytes) ----
         lumps[13] = (cursor as u32, 48);
         // mins
-        w_f32!(-500.0f32); w_f32!(-500.0f32); w_f32!(-500.0f32);
+        w_f32!(-500.0f32);
+        w_f32!(-500.0f32);
+        w_f32!(-500.0f32);
         // maxs
-        w_f32!(500.0f32); w_f32!(500.0f32); w_f32!(500.0f32);
+        w_f32!(500.0f32);
+        w_f32!(500.0f32);
+        w_f32!(500.0f32);
         // origin
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
         // headnode, firstface, numfaces
-        w_i32!(0); w_i32!(0); w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
 
         // ---- Lump 4: Nodes (1 entry × 28 bytes) ----
         lumps[4] = (cursor as u32, 28);
-        w_i32!(0);   // planenum (plane 0: X at 0)
-        w_i32!(-2);  // child[0]: front → leaf 1 (empty), encoded as -(1+1)
-        w_i32!(-1);  // child[1]: back → leaf 0 (solid), encoded as -(1+0)
-        // mins/maxs/face info (ignored by collision loader)
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_u16!(0u16); w_u16!(0u16);
+        w_i32!(0); // planenum (plane 0: X at 0)
+        w_i32!(-2); // child[0]: front → leaf 1 (empty), encoded as -(1+1)
+        w_i32!(-1); // child[1]: back → leaf 0 (solid), encoded as -(1+0)
+                    // mins/maxs/face info (ignored by collision loader)
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_u16!(0u16);
+        w_u16!(0u16);
 
         // ---- Lump 17: Areas (2 entries × 8 bytes) ----
         lumps[17] = (cursor as u32, 16);
         // Area 0 (sentinel)
-        w_i32!(0); w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
         // Area 1
-        w_i32!(0); w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
 
         // ---- Lump 18: Area portals (0 entries) ----
         lumps[18] = (cursor as u32, 0);
@@ -2023,8 +2066,8 @@ pub(crate) mod tests {
         // ---- Write lump directory ----
         let mut lc = lump_dir_start;
         for i in 0..19 {
-            buf[lc..lc+4].copy_from_slice(&lumps[i].0.to_le_bytes());
-            buf[lc+4..lc+8].copy_from_slice(&lumps[i].1.to_le_bytes());
+            buf[lc..lc + 4].copy_from_slice(&lumps[i].0.to_le_bytes());
+            buf[lc + 4..lc + 8].copy_from_slice(&lumps[i].1.to_le_bytes());
             lc += 8;
         }
 
@@ -2076,11 +2119,23 @@ pub(crate) mod tests {
         let end = Vec3f::new(-50.0, 0.0, 0.0);
         let trace = cm.box_trace(start, end, Vec3f::ZERO, Vec3f::ZERO, 0, CONTENTS_SOLID);
 
-        assert!(trace.fraction < 1.0, "trace should hit solid, got fraction={}", trace.fraction);
+        assert!(
+            trace.fraction < 1.0,
+            "trace should hit solid, got fraction={}",
+            trace.fraction
+        );
         assert_eq!(trace.contents, CONTENTS_SOLID);
         // Hit point should be near x=0 (the solid boundary)
-        assert!(trace.endpos.x > -1.0, "hit point x={} should be near 0", trace.endpos.x);
-        assert!(trace.endpos.x < 2.0, "hit point x={} should be near 0", trace.endpos.x);
+        assert!(
+            trace.endpos.x > -1.0,
+            "hit point x={} should be near 0",
+            trace.endpos.x
+        );
+        assert!(
+            trace.endpos.x < 2.0,
+            "hit point x={} should be near 0",
+            trace.endpos.x
+        );
     }
 
     #[test]
@@ -2130,10 +2185,7 @@ pub(crate) mod tests {
         // Trace a ray from (100,0,0) toward (0,0,0) — should hit the box
         let start = Vec3f::new(100.0, 0.0, 0.0);
         let end = Vec3f::new(0.0, 0.0, 0.0);
-        let trace = cm.box_trace(
-            start, end, Vec3f::ZERO, Vec3f::ZERO,
-            head, CONTENTS_MONSTER,
-        );
+        let trace = cm.box_trace(start, end, Vec3f::ZERO, Vec3f::ZERO, head, CONTENTS_MONSTER);
 
         assert!(trace.fraction < 1.0, "should hit the box entity");
         // Hit point should be near x=16 (box +X face)
@@ -2176,11 +2228,36 @@ pub(crate) mod tests {
         let mut buf = vec![0u8; 600];
         let mut cursor = 0usize;
 
-        macro_rules! w_u32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as u32).to_le_bytes()); cursor += 4; } }
-        macro_rules! w_i32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as i32).to_le_bytes()); cursor += 4; } }
-        macro_rules! w_i16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as i16).to_le_bytes()); cursor += 2; } }
-        macro_rules! w_u16 { ($v:expr) => { buf[cursor..cursor+2].copy_from_slice(&($v as u16).to_le_bytes()); cursor += 2; } }
-        macro_rules! w_f32 { ($v:expr) => { buf[cursor..cursor+4].copy_from_slice(&($v as f32).to_le_bytes()); cursor += 4; } }
+        macro_rules! w_u32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as u32).to_le_bytes());
+                cursor += 4;
+            };
+        }
+        macro_rules! w_i32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as i32).to_le_bytes());
+                cursor += 4;
+            };
+        }
+        macro_rules! w_i16 {
+            ($v:expr) => {
+                buf[cursor..cursor + 2].copy_from_slice(&($v as i16).to_le_bytes());
+                cursor += 2;
+            };
+        }
+        macro_rules! w_u16 {
+            ($v:expr) => {
+                buf[cursor..cursor + 2].copy_from_slice(&($v as u16).to_le_bytes());
+                cursor += 2;
+            };
+        }
+        macro_rules! w_f32 {
+            ($v:expr) => {
+                buf[cursor..cursor + 4].copy_from_slice(&($v as f32).to_le_bytes());
+                cursor += 4;
+            };
+        }
 
         w_u32!(IDBSPHEADER);
         w_u32!(BSPVERSION);
@@ -2192,7 +2269,8 @@ pub(crate) mod tests {
         // Texinfo (1 × 76 bytes)
         lumps[5] = (cursor as u32, 76);
         cursor += 32; // vecs
-        w_i32!(0); w_i32!(0); // flags, value
+        w_i32!(0);
+        w_i32!(0); // flags, value
         let name = b"solid\0";
         buf[cursor..cursor + name.len()].copy_from_slice(name);
         cursor += 32; // texture name
@@ -2202,18 +2280,32 @@ pub(crate) mod tests {
         lumps[8] = (cursor as u32, 56);
         // Leaf 0: SOLID
         w_i32!(CONTENTS_SOLID);
-        w_i16!(0i16); w_i16!(1i16); // cluster, area
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // mins
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16); // maxs
-        w_u16!(0u16); w_u16!(0u16); // faces
-        w_u16!(0u16); w_u16!(1u16); // firstleafbrush, numleafbrushes
-        // Leaf 1: EMPTY
+        w_i16!(0i16);
+        w_i16!(1i16); // cluster, area
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // mins
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16); // maxs
+        w_u16!(0u16);
+        w_u16!(0u16); // faces
+        w_u16!(0u16);
+        w_u16!(1u16); // firstleafbrush, numleafbrushes
+                      // Leaf 1: EMPTY
         w_i32!(0);
-        w_i16!(0i16); w_i16!(1i16);
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_u16!(0u16); w_u16!(0u16);
-        w_u16!(0u16); w_u16!(0u16);
+        w_i16!(0i16);
+        w_i16!(1i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_u16!(0u16);
+        w_u16!(0u16);
+        w_u16!(0u16);
+        w_u16!(0u16);
 
         // Leaf brushes (1 × 2 bytes)
         lumps[10] = (cursor as u32, 2);
@@ -2222,21 +2314,47 @@ pub(crate) mod tests {
         // Planes (6 × 20 bytes) — floor slab
         lumps[1] = (cursor as u32, 120);
         // Plane 0: +Z at dist=0 (floor surface, split plane)
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_i32!(2);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(1.0f32);
+        w_f32!(0.0f32);
+        w_i32!(2);
         // Plane 1: -Z at dist=500
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(500.0f32); w_i32!(5);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(-1.0f32);
+        w_f32!(500.0f32);
+        w_i32!(5);
         // Plane 2: +X at dist=500
-        w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(0);
+        w_f32!(1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(0);
         // Plane 3: -X at dist=500
-        w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(3);
+        w_f32!(-1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(3);
         // Plane 4: +Y at dist=500
-        w_f32!(0.0f32); w_f32!(1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(1);
+        w_f32!(0.0f32);
+        w_f32!(1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(1);
         // Plane 5: -Y at dist=500
-        w_f32!(0.0f32); w_f32!(-1.0f32); w_f32!(0.0f32); w_f32!(500.0f32); w_i32!(4);
+        w_f32!(0.0f32);
+        w_f32!(-1.0f32);
+        w_f32!(0.0f32);
+        w_f32!(500.0f32);
+        w_i32!(4);
 
         // Brush (1 × 12 bytes)
         lumps[14] = (cursor as u32, 12);
-        w_i32!(0); w_i32!(6); w_i32!(CONTENTS_SOLID);
+        w_i32!(0);
+        w_i32!(6);
+        w_i32!(CONTENTS_SOLID);
 
         // Brush sides (6 × 4 bytes)
         lumps[15] = (cursor as u32, 24);
@@ -2247,24 +2365,39 @@ pub(crate) mod tests {
 
         // Model (1 × 48 bytes)
         lumps[13] = (cursor as u32, 48);
-        w_f32!(-500.0f32); w_f32!(-500.0f32); w_f32!(-500.0f32); // mins
-        w_f32!(500.0f32); w_f32!(500.0f32); w_f32!(0.0f32);      // maxs
-        w_f32!(0.0f32); w_f32!(0.0f32); w_f32!(0.0f32);          // origin
-        w_i32!(0); w_i32!(0); w_i32!(0);                          // headnode, firstface, numfaces
+        w_f32!(-500.0f32);
+        w_f32!(-500.0f32);
+        w_f32!(-500.0f32); // mins
+        w_f32!(500.0f32);
+        w_f32!(500.0f32);
+        w_f32!(0.0f32); // maxs
+        w_f32!(0.0f32);
+        w_f32!(0.0f32);
+        w_f32!(0.0f32); // origin
+        w_i32!(0);
+        w_i32!(0);
+        w_i32!(0); // headnode, firstface, numfaces
 
         // Node (1 × 28 bytes): split at z=0
         lumps[4] = (cursor as u32, 28);
-        w_i32!(0);   // planenum (plane 0: +Z at z=0)
-        w_i32!(-2);  // child[0]: front (z>0) → leaf 1 (empty)
-        w_i32!(-1);  // child[1]: back (z<0) → leaf 0 (solid)
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_i16!(0i16); w_i16!(0i16); w_i16!(0i16);
-        w_u16!(0u16); w_u16!(0u16);
+        w_i32!(0); // planenum (plane 0: +Z at z=0)
+        w_i32!(-2); // child[0]: front (z>0) → leaf 1 (empty)
+        w_i32!(-1); // child[1]: back (z<0) → leaf 0 (solid)
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_i16!(0i16);
+        w_u16!(0u16);
+        w_u16!(0u16);
 
         // Areas (2 × 8 bytes)
         lumps[17] = (cursor as u32, 16);
-        w_i32!(0); w_i32!(0);
-        w_i32!(0); w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
+        w_i32!(0);
 
         // Area portals (0 entries)
         lumps[18] = (cursor as u32, 0);
@@ -2297,8 +2430,10 @@ pub(crate) mod tests {
         let trace = cm.box_trace(
             Vec3f::new(50.0, 0.0, 0.0),
             Vec3f::new(-50.0, 0.0, 0.0),
-            player_mins, player_maxs,
-            0, CONTENTS_SOLID,
+            player_mins,
+            player_maxs,
+            0,
+            CONTENTS_SOLID,
         );
 
         assert!(trace.fraction < 1.0, "box sweep should hit the wall");
@@ -2323,8 +2458,10 @@ pub(crate) mod tests {
         let trace = cm.box_trace(
             Vec3f::new(0.0, 0.0, 100.0),
             Vec3f::new(0.0, 0.0, -100.0),
-            player_mins, player_maxs,
-            0, CONTENTS_SOLID,
+            player_mins,
+            player_maxs,
+            0,
+            CONTENTS_SOLID,
         );
 
         assert!(trace.fraction < 1.0, "box should hit the floor");

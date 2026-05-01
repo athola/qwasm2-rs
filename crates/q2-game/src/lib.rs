@@ -7,9 +7,9 @@
 //! - Performance: 0
 //! - Inherent: 0
 
-pub mod traits;
 pub mod entity;
-pub mod spawn;
 pub mod game;
+pub mod spawn;
+pub mod traits;
 
 pub use game::GameLogic;

@@ -72,7 +72,12 @@ impl PlayerController {
         let start = self.pos;
         let end = Vec3f::new(start.x, start.y, start.z - 1000.0);
         let trace = collision.box_trace(
-            start, end, PLAYER_MINS_STAND, PLAYER_MAXS_STAND, 0, MASK_PLAYERSOLID,
+            start,
+            end,
+            PLAYER_MINS_STAND,
+            PLAYER_MAXS_STAND,
+            0,
+            MASK_PLAYERSOLID,
         );
         if trace.fraction < 1.0 {
             self.pos = trace.endpos;
@@ -97,7 +102,11 @@ impl PlayerController {
         self.pitch = self.pitch.clamp(-89.0, 89.0);
 
         // Movement wish vector
-        let move_speed = if input.run { MOVE_SPEED * 2.0 } else { MOVE_SPEED };
+        let move_speed = if input.run {
+            MOVE_SPEED * 2.0
+        } else {
+            MOVE_SPEED
+        };
         let speed = move_speed * dt;
 
         let yaw_rad = self.yaw.to_radians();
@@ -123,8 +132,16 @@ impl PlayerController {
         // Crouch
         self.ducked = input.duck;
 
-        let player_mins = if self.ducked { PLAYER_MINS_DUCK } else { PLAYER_MINS_STAND };
-        let player_maxs = if self.ducked { PLAYER_MAXS_DUCK } else { PLAYER_MAXS_STAND };
+        let player_mins = if self.ducked {
+            PLAYER_MINS_DUCK
+        } else {
+            PLAYER_MINS_STAND
+        };
+        let player_maxs = if self.ducked {
+            PLAYER_MAXS_DUCK
+        } else {
+            PLAYER_MAXS_STAND
+        };
 
         // Gravity
         if !self.on_ground {
@@ -143,7 +160,12 @@ impl PlayerController {
         // Horizontal trace (slide against walls)
         let h_target = Vec3f::new(new_pos.x, new_pos.y, self.pos.z);
         let trace = collision.box_trace(
-            self.pos, h_target, player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+            self.pos,
+            h_target,
+            player_mins,
+            player_maxs,
+            0,
+            MASK_PLAYERSOLID,
         );
         let landed = Vec3f::new(
             self.pos.x + (h_target.x - self.pos.x) * trace.fraction,
@@ -157,13 +179,19 @@ impl PlayerController {
             let step_trace = collision.box_trace(
                 Vec3f::new(landed.x, landed.y, landed.z),
                 step_start,
-                player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+                player_mins,
+                player_maxs,
+                0,
+                MASK_PLAYERSOLID,
             );
             let step_z = landed.z + (step_start.z - landed.z) * step_trace.fraction;
             let slide_trace = collision.box_trace(
                 Vec3f::new(landed.x, landed.y, step_z),
                 Vec3f::new(h_target.x, h_target.y, step_z),
-                player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+                player_mins,
+                player_maxs,
+                0,
+                MASK_PLAYERSOLID,
             );
             let stepped = Vec3f::new(
                 landed.x + (h_target.x - landed.x) * slide_trace.fraction,
@@ -173,7 +201,10 @@ impl PlayerController {
             let down_trace = collision.box_trace(
                 stepped,
                 Vec3f::new(stepped.x, stepped.y, landed.z),
-                player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+                player_mins,
+                player_maxs,
+                0,
+                MASK_PLAYERSOLID,
             );
             new_pos.x = stepped.x;
             new_pos.y = stepped.y;
@@ -188,7 +219,12 @@ impl PlayerController {
         let v_start = new_pos;
         let v_end = Vec3f::new(new_pos.x, new_pos.y, new_pos.z + gravity_dz);
         let v_trace = collision.box_trace(
-            v_start, v_end, player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+            v_start,
+            v_end,
+            player_mins,
+            player_maxs,
+            0,
+            MASK_PLAYERSOLID,
         );
         new_pos.z = v_start.z + (v_end.z - v_start.z) * v_trace.fraction;
 
@@ -201,11 +237,16 @@ impl PlayerController {
         let ground_trace = collision.box_trace(
             new_pos,
             Vec3f::new(new_pos.x, new_pos.y, new_pos.z - 1.0),
-            player_mins, player_maxs, 0, MASK_PLAYERSOLID,
+            player_mins,
+            player_maxs,
+            0,
+            MASK_PLAYERSOLID,
         );
         if ground_trace.fraction < 1.0 {
             self.on_ground = true;
-            if self.velocity_z < 0.0 { self.velocity_z = 0.0; }
+            if self.velocity_z < 0.0 {
+                self.velocity_z = 0.0;
+            }
         } else {
             self.on_ground = false;
         }
@@ -249,9 +290,13 @@ mod tests {
     fn look_clamps_pitch() {
         let mut pc = PlayerController::new(Vec3f::ZERO, 0.0);
         let input = MoveInput {
-            forward: 0.0, right: 0.0,
-            yaw_delta: 0.0, pitch_delta: 200.0,
-            jump: false, duck: false, run: false,
+            forward: 0.0,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 200.0,
+            jump: false,
+            duck: false,
+            run: false,
         };
         // Empty collision map — no geometry, traces return fraction=1.0
         let mut cm = CollisionMap::new();
@@ -264,9 +309,13 @@ mod tests {
         let mut pc = PlayerController::new(Vec3f::new(0.0, 0.0, 500.0), 0.0);
         pc.on_ground = false;
         let input = MoveInput {
-            forward: 0.0, right: 0.0,
-            yaw_delta: 0.0, pitch_delta: 0.0,
-            jump: false, duck: false, run: false,
+            forward: 0.0,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+            jump: false,
+            duck: false,
+            run: false,
         };
         let mut cm = CollisionMap::new();
         let z_before = pc.pos.z;
@@ -280,9 +329,13 @@ mod tests {
         let mut pc = PlayerController::new(Vec3f::ZERO, 0.0);
         pc.on_ground = true;
         let input = MoveInput {
-            forward: 0.0, right: 0.0,
-            yaw_delta: 0.0, pitch_delta: 0.0,
-            jump: true, duck: false, run: false,
+            forward: 0.0,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+            jump: true,
+            duck: false,
+            run: false,
         };
         let mut cm = CollisionMap::new();
         pc.tick(0.016, &input, &mut cm);
@@ -306,9 +359,13 @@ mod tests {
         let mut pc = PlayerController::new(Vec3f::new(50.0, 0.0, 0.0), 180.0);
         pc.on_ground = true;
         let input = MoveInput {
-            forward: 1.0, right: 0.0,
-            yaw_delta: 0.0, pitch_delta: 0.0,
-            jump: false, duck: false, run: true,
+            forward: 1.0,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+            jump: false,
+            duck: false,
+            run: true,
         };
 
         // Run several ticks — enough to walk 50 units into the wall.
@@ -337,9 +394,13 @@ mod tests {
         let mut pc = PlayerController::new(Vec3f::new(0.0, 0.0, 200.0), 0.0);
         pc.on_ground = false;
         let input = MoveInput {
-            forward: 0.0, right: 0.0,
-            yaw_delta: 0.0, pitch_delta: 0.0,
-            jump: false, duck: false, run: false,
+            forward: 0.0,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+            jump: false,
+            duck: false,
+            run: false,
         };
 
         // Let player fall for many ticks

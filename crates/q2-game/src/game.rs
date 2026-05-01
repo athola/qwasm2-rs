@@ -6,7 +6,10 @@
 use crate::entity::{ClientData, EntityKey, EntityStorage};
 use crate::spawn::{parse_entity_string, SpawnTable};
 use crate::traits::{GameExport, GameImport};
-use q2_shared::{constants::{CS_MAXCLIENTS, MAX_EDICTS}, types::UserCmd};
+use q2_shared::{
+    constants::{CS_MAXCLIENTS, MAX_EDICTS},
+    types::UserCmd,
+};
 
 pub struct GameLogic {
     storage: EntityStorage,
@@ -72,7 +75,11 @@ impl GameExport for GameLogic {
                 }
             }
         }
-        tracing::debug!(map = mapname, count = entities.len(), "spawn_entities complete");
+        tracing::debug!(
+            map = mapname,
+            count = entities.len(),
+            "spawn_entities complete"
+        );
     }
 
     fn client_connect(&mut self, ent_idx: usize, _userinfo: &str) -> bool {
@@ -136,19 +143,33 @@ mod tests {
         fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
         fn centerprintf(&self, _: Option<usize>, _: &str) {}
         fn sound(&self, _: Option<usize>, _: i32, _: i32, _: f32, _: f32, _: f32) {}
-        fn model_index(&self, _: &str) -> i32 { 0 }
-        fn sound_index(&self, _: &str) -> i32 { 0 }
-        fn image_index(&self, _: &str) -> i32 { 0 }
+        fn model_index(&self, _: &str) -> i32 {
+            0
+        }
+        fn sound_index(&self, _: &str) -> i32 {
+            0
+        }
+        fn image_index(&self, _: &str) -> i32 {
+            0
+        }
         fn set_model(&self, _: usize, _: &str) {}
         fn trace(&self, _: Vec3f, _: Vec3f, _: Vec3f, _: Vec3f, _: Option<usize>, _: i32) -> Trace {
             Trace::default()
         }
-        fn point_contents(&self, _: Vec3f) -> i32 { 0 }
-        fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool { false }
-        fn in_phs(&self, _: Vec3f, _: Vec3f) -> bool { false }
+        fn point_contents(&self, _: Vec3f) -> i32 {
+            0
+        }
+        fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {
+            false
+        }
+        fn in_phs(&self, _: Vec3f, _: Vec3f) -> bool {
+            false
+        }
         fn link_entity(&self, _: usize) {}
         fn unlink_entity(&self, _: usize) {}
-        fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> { Vec::new() }
+        fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> {
+            Vec::new()
+        }
         fn configstring(&self, _: i32, _: &str) {}
         fn write_byte(&self, _: i32) {}
         fn write_short(&self, _: i32) {}
@@ -160,9 +181,15 @@ mod tests {
         fn write_angle(&self, _: f32) {}
         fn multicast(&self, _: Vec3f, _: Multicast) {}
         fn unicast(&self, _: usize, _: bool) {}
-        fn argc(&self) -> i32 { 0 }
-        fn argv(&self, _: i32) -> String { String::new() }
-        fn args(&self) -> String { String::new() }
+        fn argc(&self) -> i32 {
+            0
+        }
+        fn argv(&self, _: i32) -> String {
+            String::new()
+        }
+        fn args(&self) -> String {
+            String::new()
+        }
         fn add_command_string(&self, _: &str) {}
     }
 

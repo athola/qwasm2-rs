@@ -1,3 +1,5 @@
+[![CI](https://github.com/athola/qwasm2-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/athola/qwasm2-rs/actions/workflows/ci.yml)
+
 # qwasm2-rs
 
 Quake 2 engine rewrite in Rust, targeting WebAssembly.
@@ -5,9 +7,22 @@ Quake 2 engine rewrite in Rust, targeting WebAssembly.
 Loads real Quake 2 game data (PAK files, BSP maps), renders with
 WebGL2, and runs player movement in the browser.
 
-> **Status: alpha.** The engine loads maps, renders BSP geometry, and
-> supports first-person movement. Networking, sound, and game logic are
-> stubbed or in progress. Expect breaking changes.
+> **Status: alpha.** The server frame loop, game logic, and Q2 wire-protocol
+> delta machinery are implemented. The renderer and full WASM platform
+> integration are in progress. Expect breaking changes.
+
+## Progress
+
+| Checkpoint | What it proves | Status |
+|------------|----------------|--------|
+| CP-0 Scaffold | Workspace compiles to WASM | done |
+| CP-1 Types & Physics | Types serialize, collision traces pass | done |
+| CP-2 Game Logic | Entity spawn, GameExport trait, AI frame | done |
+| CP-3 Server | Frame loop runs, GameImport bridge wired | done |
+| CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
+| CP-5 First Frame | Textured BSP map renders in browser | next |
+| CP-5b Playable | WASD + mouselook, HUD, rendered world | — |
+| CP-7 Multiplayer | Two browser tabs connect via Matchbox | — |
 
 ## Features
 
@@ -15,6 +30,12 @@ WebGL2, and runs player movement in the browser.
   (compiler-enforced subsystem boundaries)
 - BSP map loading and rendering via WebGL2 / GLES3
 - Player movement faithful to the original C `pmove` code
+- `PakReader` trait with lazy WASM backend — avoids copying the full
+  PAK (~100 MB) into linear memory until individual assets are requested
+- Q2 wire-protocol delta machinery: `parse_frame`, player-state delta,
+  packet-entity delta (30 tests)
+- Server frame loop with `GameImport`/`GameExport` bridge replacing C
+  function-pointer tables
 - Single-file HTML bundle (`dist/qwasm2.html`) — no install needed
   for end users
 - Automatic demo game data download (`make gamedata`)
@@ -84,14 +105,15 @@ Networking:  q2-net (depends on q2-shared, q2-common)
 
 ### Trait Boundaries
 
-Three traits enforce the key abstraction seams, replacing the C
-function-pointer tables:
+Four traits enforce the key abstraction seams, replacing the C
+function-pointer tables and backend coupling:
 
 | Trait | Crate | Replaces |
 |-------|-------|----------|
 | `Renderer` | q2-render-api | Renderer backend interface |
 | `GameImport` | q2-game | `game_import_t` (server → game callbacks) |
 | `GameExport` | q2-game | `game_export_t` (game → server interface) |
+| `PakReader` | q2-common | PAK archive byte-range reader (disk / in-mem / JS heap) |
 
 ### Project Structure
 
@@ -105,7 +127,7 @@ function-pointer tables:
 | `q2-server` | Server state, frame loop, world |
 | `q2-client` | Client state, parsing, input, view |
 | `q2-platform` | Platform abstraction (WASM input, GL context) |
-| `q2-net` | P2P networking via WebRTC (matchbox_socket); depends on q2-shared, q2-common |
+| `q2-net` | P2P networking via WebRTC (matchbox_socket) |
 | `q2-wasm` | WASM cdylib entry point |
 | `q2-bin` | Native binary entry point |
 | `q2-devserver` | Axum dev server for local development |
@@ -162,5 +184,3 @@ against the C source before modifying.
 ## License
 
 Dual-licensed under MIT or Apache-2.0 at your option.
-
-> **TODO**: Add `license = "MIT OR Apache-2.0"` to each crate's `Cargo.toml` and add LICENSE files.

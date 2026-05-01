@@ -107,12 +107,24 @@ impl Engine {
         // Movement axes
         let mut forward: f32 = 0.0;
         let mut right: f32 = 0.0;
-        if input.keys[b'w' as usize] || input.keys[K_UPARROW as usize] { forward += 1.0; }
-        if input.keys[b's' as usize] || input.keys[K_DOWNARROW as usize] { forward -= 1.0; }
-        if input.keys[b'a' as usize] || input.keys[b',' as usize] { right -= 1.0; }
-        if input.keys[b'd' as usize] || input.keys[b'.' as usize] { right += 1.0; }
-        if input.keys[K_LEFTARROW as usize] && strafe_mode { right -= 1.0; }
-        if input.keys[K_RIGHTARROW as usize] && strafe_mode { right += 1.0; }
+        if input.keys[b'w' as usize] || input.keys[K_UPARROW as usize] {
+            forward += 1.0;
+        }
+        if input.keys[b's' as usize] || input.keys[K_DOWNARROW as usize] {
+            forward -= 1.0;
+        }
+        if input.keys[b'a' as usize] || input.keys[b',' as usize] {
+            right -= 1.0;
+        }
+        if input.keys[b'd' as usize] || input.keys[b'.' as usize] {
+            right += 1.0;
+        }
+        if input.keys[K_LEFTARROW as usize] && strafe_mode {
+            right -= 1.0;
+        }
+        if input.keys[K_RIGHTARROW as usize] && strafe_mode {
+            right += 1.0;
+        }
 
         let move_input = MoveInput {
             forward,
@@ -228,30 +240,38 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     // 2. Initialize renderer
     let mut renderer = Gl3Renderer::new();
     renderer.set_gl_context(gl);
-    renderer.init(width, height)
+    renderer
+        .init(width, height)
         .map_err(|e| JsValue::from_str(&format!("GL3 init failed: {e}")))?;
     log("GL3 renderer initialized");
 
     // 3. Fetch pak0.pak — keep bytes in JS heap; don't copy to Rust yet.
     log(&format!("Fetching {}...", pak_url));
     let pak_array = fetch_array_buffer(&pak_url).await?;
-    log(&format!("pak0.pak fetched: {} bytes ({:.1} MB)",
-        pak_array.length(), pak_array.length() as f64 / (1024.0 * 1024.0)));
+    log(&format!(
+        "pak0.pak fetched: {} bytes ({:.1} MB)",
+        pak_array.length(),
+        pak_array.length() as f64 / (1024.0 * 1024.0)
+    ));
 
     // 4. Index PAK directory into Rust; asset bytes stay in JS heap.
     //    Individual files are sliced from the JS Uint8Array on demand via
     //    JsPakReader — only the bytes for the current asset cross the boundary.
     let mut fs = q2_common::filesystem::FileSystem::new("baseq2");
     let reader = q2_platform::wasm::pak::JsPakReader::new(pak_array);
-    let pak = q2_common::filesystem::Pack::open("pak0.pak", Box::new(reader))
-        .map_err(q2err_to_js)?;
+    let pak =
+        q2_common::filesystem::Pack::open("pak0.pak", Box::new(reader)).map_err(q2err_to_js)?;
     let file_count = pak.files.len();
     fs.add_pack(pak);
-    log(&format!("Filesystem: {} files indexed from pak0.pak", file_count));
+    log(&format!(
+        "Filesystem: {} files indexed from pak0.pak",
+        file_count
+    ));
 
     // 5. List available maps
     let maps = fs.list_files("bsp");
-    let map_list: Vec<&str> = maps.iter()
+    let map_list: Vec<&str> = maps
+        .iter()
         .filter(|m| m.starts_with("maps/"))
         .map(|s| s.as_str())
         .collect();
@@ -276,8 +296,13 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     // 7. Parse BSP
     let bsp = q2_render::bsp::BspData::load(&bsp_data)
         .map_err(|e| JsValue::from_str(&format!("BSP parse error: {}", e)))?;
-    log(&format!("BSP parsed: {} verts, {} faces, {} texinfos, {} models",
-        bsp.vertices.len(), bsp.faces.len(), bsp.texinfo.len(), bsp.models.len()));
+    log(&format!(
+        "BSP parsed: {} verts, {} faces, {} texinfos, {} models",
+        bsp.vertices.len(),
+        bsp.faces.len(),
+        bsp.texinfo.len(),
+        bsp.models.len()
+    ));
 
     // 7b. Upload BSP geometry to GPU
     renderer.load_bsp(&bsp);
@@ -286,7 +311,8 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     // 8. Load collision map
     let mut collision = q2_common::collision::CollisionMap::new();
     collision.load_map(&bsp_data).map_err(q2err_to_js)?;
-    log(&format!("Collision map loaded: {} models, {} brushes, {} nodes, {} leafs, {} planes",
+    log(&format!(
+        "Collision map loaded: {} models, {} brushes, {} nodes, {} leafs, {} planes",
         collision.num_models(),
         collision.num_brushes(),
         collision.num_nodes(),
@@ -307,8 +333,10 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
             (Vec3f::ZERO, 0.0)
         }
     };
-    log(&format!("Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
-        spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw));
+    log(&format!(
+        "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
+        spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw
+    ));
 
     let mut engine = Engine::new(renderer, collision, width, height, spawn_pos, spawn_yaw);
     engine.player.snap_to_ground(&mut engine.collision);
@@ -368,7 +396,8 @@ fn log(msg: &str) {
         if let Some(document) = window.document() {
             if let Some(el) = document.get_element_by_id("status") {
                 let current = el.inner_html();
-                let escaped = msg.replace('&', "&amp;")
+                let escaped = msg
+                    .replace('&', "&amp;")
                     .replace('<', "&lt;")
                     .replace('>', "&gt;");
                 el.set_inner_html(&format!(

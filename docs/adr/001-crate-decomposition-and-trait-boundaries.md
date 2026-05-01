@@ -38,7 +38,7 @@ q2-bundler      Bundles WASM + JS into a single HTML file (standalone)
 
 ### Trait Boundaries
 
-Three trait interfaces enforce the key abstraction boundaries:
+Four trait interfaces enforce the key abstraction boundaries:
 
 1. **`Renderer`** (q2-render-api) - 14 methods covering init, registration,
    rendering, 2D drawing. `Send`-safe, object-safe. Backends implement this
@@ -50,6 +50,12 @@ Three trait interfaces enforce the key abstraction boundaries:
 
 3. **`GameExport`** (q2-game) - Game interface exposed to server: init,
    spawn_entities, client lifecycle, run_frame. Replaces C `game_export_t`.
+
+4. **`PakReader`** (q2-common) - Byte-range reader for PAK archive backends.
+   `DiskPakReader` (native) opens the file per read. `InMemPakReader` slices
+   an in-memory `Vec<u8>` (tests). `JsPakReader` (q2-platform, WASM only)
+   slices a JS-heap `Uint8Array` — avoids copying the full PAK (~100 MB) into
+   WASM linear memory until individual assets are requested.
 
 ### Dependency DAG
 

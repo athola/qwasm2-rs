@@ -294,14 +294,10 @@ impl ServerWorld {
 
         let axis = node.axis as usize;
         let children = node.children;
-        if Self::component(maxs, axis) > node.dist
-            && children[0] < self.area_nodes.len()
-        {
+        if Self::component(maxs, axis) > node.dist && children[0] < self.area_nodes.len() {
             self.area_edicts_r(children[0], mins, maxs, area_type, result);
         }
-        if Self::component(mins, axis) < node.dist
-            && children[1] < self.area_nodes.len()
-        {
+        if Self::component(mins, axis) < node.dist && children[1] < self.area_nodes.len() {
             self.area_edicts_r(children[1], mins, maxs, area_type, result);
         }
     }

@@ -60,7 +60,8 @@ impl Zone {
         if self.max_bytes != 0 && self.total_bytes + size > self.max_bytes {
             tracing::error!(
                 "Zone::alloc: out of memory — requested {size} bytes (have {}/{} used)",
-                self.total_bytes, self.max_bytes
+                self.total_bytes,
+                self.max_bytes
             );
             panic!(
                 "Zone::alloc: out of memory — requested {size} bytes (have {}/{} used)",
@@ -183,7 +184,10 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             zone.alloc(MemTag::Temp, 1);
         }));
-        assert!(result.is_err(), "expected a panic when max_bytes is exceeded");
+        assert!(
+            result.is_err(),
+            "expected a panic when max_bytes is exceeded"
+        );
     }
 
     /// Freeing a tag that was never allocated must be a no-op (no panic).

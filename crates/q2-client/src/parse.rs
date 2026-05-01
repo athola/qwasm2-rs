@@ -1,8 +1,8 @@
-use q2_shared::protocol::*;
-use q2_shared::constants::*;
-use q2_shared::types::*;
-use q2_common::net_msg::NetMsg;
 use crate::state::{CEntity, ClientFrame, ClientState, ConnState};
+use q2_common::net_msg::NetMsg;
+use q2_shared::constants::*;
+use q2_shared::protocol::*;
+use q2_shared::types::*;
 
 impl ClientState {
     /// Parse a complete server message buffer (may contain multiple opcodes).
@@ -37,10 +37,7 @@ impl ClientState {
                     return;
                 }
                 _ => {
-                    tracing::warn!(
-                        "Unknown server command {} — stopping parse",
-                        cmd
-                    );
+                    tracing::warn!("Unknown server command {} — stopping parse", cmd);
                     return;
                 }
             }
@@ -239,10 +236,18 @@ fn read_delta_entity(
     e.number = number;
     e.old_origin = from.origin;
 
-    if bits.contains(UpdateFlags::MODEL) { e.modelindex = msg.read_byte(); }
-    if bits.contains(UpdateFlags::MODEL2) { e.modelindex2 = msg.read_byte(); }
-    if bits.contains(UpdateFlags::MODEL3) { e.modelindex3 = msg.read_byte(); }
-    if bits.contains(UpdateFlags::MODEL4) { e.modelindex4 = msg.read_byte(); }
+    if bits.contains(UpdateFlags::MODEL) {
+        e.modelindex = msg.read_byte();
+    }
+    if bits.contains(UpdateFlags::MODEL2) {
+        e.modelindex2 = msg.read_byte();
+    }
+    if bits.contains(UpdateFlags::MODEL3) {
+        e.modelindex3 = msg.read_byte();
+    }
+    if bits.contains(UpdateFlags::MODEL4) {
+        e.modelindex4 = msg.read_byte();
+    }
 
     // FRAME: FRAME8+FRAME16 = short (our encoder), FRAME8 only = byte.
     if bits.contains(UpdateFlags::FRAME8) && bits.contains(UpdateFlags::FRAME16) {
@@ -280,14 +285,26 @@ fn read_delta_entity(
         e.renderfx = msg.read_short();
     }
 
-    if bits.contains(UpdateFlags::ORIGIN1) { e.origin.x = msg.read_coord(); }
-    if bits.contains(UpdateFlags::ORIGIN2) { e.origin.y = msg.read_coord(); }
-    if bits.contains(UpdateFlags::ORIGIN3) { e.origin.z = msg.read_coord(); }
+    if bits.contains(UpdateFlags::ORIGIN1) {
+        e.origin.x = msg.read_coord();
+    }
+    if bits.contains(UpdateFlags::ORIGIN2) {
+        e.origin.y = msg.read_coord();
+    }
+    if bits.contains(UpdateFlags::ORIGIN3) {
+        e.origin.z = msg.read_coord();
+    }
 
     // Angles encoded as 16-bit (write_angle16 convention in our encoder).
-    if bits.contains(UpdateFlags::ANGLE1) { e.angles.x = msg.read_angle16(); }
-    if bits.contains(UpdateFlags::ANGLE2) { e.angles.y = msg.read_angle16(); }
-    if bits.contains(UpdateFlags::ANGLE3) { e.angles.z = msg.read_angle16(); }
+    if bits.contains(UpdateFlags::ANGLE1) {
+        e.angles.x = msg.read_angle16();
+    }
+    if bits.contains(UpdateFlags::ANGLE2) {
+        e.angles.y = msg.read_angle16();
+    }
+    if bits.contains(UpdateFlags::ANGLE3) {
+        e.angles.z = msg.read_angle16();
+    }
 
     if bits.contains(UpdateFlags::OLDORIGIN) {
         e.old_origin.x = msg.read_coord();
@@ -295,7 +312,9 @@ fn read_delta_entity(
         e.old_origin.z = msg.read_coord();
     }
 
-    if bits.contains(UpdateFlags::SOUND) { e.sound = msg.read_byte(); }
+    if bits.contains(UpdateFlags::SOUND) {
+        e.sound = msg.read_byte();
+    }
 
     if bits.contains(UpdateFlags::EVENT) {
         e.event = msg.read_byte();
@@ -303,7 +322,9 @@ fn read_delta_entity(
         e.event = 0; // events are cleared each frame
     }
 
-    if bits.contains(UpdateFlags::SOLID) { e.solid = msg.read_short(); }
+    if bits.contains(UpdateFlags::SOLID) {
+        e.solid = msg.read_short();
+    }
 
     e
 }
@@ -317,7 +338,10 @@ fn pm_type_from_byte(b: i32) -> PmType {
         3 => PmType::Gib,
         4 => PmType::Freeze,
         _ => {
-            tracing::warn!("pm_type_from_byte: unknown pm_type {}, defaulting to Normal", b);
+            tracing::warn!(
+                "pm_type_from_byte: unknown pm_type {}, defaulting to Normal",
+                b
+            );
             PmType::Normal
         }
     }
@@ -457,21 +481,20 @@ fn read_packet_entities(
         }
 
         // Determine delta base.
-        let from: EntityState = if old_idx < old_entities.len()
-            && old_entities[old_idx].number == newnum
-        {
-            let f = old_entities[old_idx].clone();
-            old_idx += 1;
-            f
-        } else {
-            // New entity — delta from its stored baseline.
-            let baseline_idx = newnum as usize;
-            if baseline_idx < baselines.len() {
-                baselines[baseline_idx].baseline.clone()
+        let from: EntityState =
+            if old_idx < old_entities.len() && old_entities[old_idx].number == newnum {
+                let f = old_entities[old_idx].clone();
+                old_idx += 1;
+                f
             } else {
-                EntityState::default()
-            }
-        };
+                // New entity — delta from its stored baseline.
+                let baseline_idx = newnum as usize;
+                if baseline_idx < baselines.len() {
+                    baselines[baseline_idx].baseline.clone()
+                } else {
+                    EntityState::default()
+                }
+            };
 
         result.push(read_delta_entity(msg, &from, newnum, bits));
     }
@@ -489,8 +512,8 @@ fn read_packet_entities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use q2_common::net_msg::NetMsg;
     use crate::state::ClientState;
+    use q2_common::net_msg::NetMsg;
 
     /// Build a complete frame message that parses without error.
     /// deltaframe=-1 means uncompressed (no delta base required).
@@ -753,9 +776,9 @@ mod tests {
         let zero_ps = PlayerState::default();
 
         msg.write_byte(SvcOp::Frame as i32);
-        msg.write_long(1);  // serverframe
+        msg.write_long(1); // serverframe
         msg.write_long(-1); // deltaframe (uncompressed)
-        msg.write_byte(0);  // suppress
+        msg.write_byte(0); // suppress
 
         // Write 4 bytes of areabits
         msg.write_byte(4);
@@ -877,9 +900,21 @@ mod tests {
 
     #[test]
     fn packet_entities_remove_roundtrip() {
-        let ent1 = EntityState { number: 1, modelindex: 2, ..Default::default() };
-        let ent2 = EntityState { number: 3, modelindex: 4, ..Default::default() };
-        let ent3 = EntityState { number: 5, modelindex: 6, ..Default::default() };
+        let ent1 = EntityState {
+            number: 1,
+            modelindex: 2,
+            ..Default::default()
+        };
+        let ent2 = EntityState {
+            number: 3,
+            modelindex: 4,
+            ..Default::default()
+        };
+        let ent3 = EntityState {
+            number: 5,
+            modelindex: 6,
+            ..Default::default()
+        };
 
         // Old frame has 1, 3, 5. New frame has only 1 and 5 (3 removed).
         let old = vec![ent1.clone(), ent2.clone(), ent3.clone()];
@@ -889,8 +924,7 @@ mod tests {
         msg.write_packet_entities_list(&old, &new);
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
-        let decoded =
-            read_packet_entities(&mut msg, &old, &vec![CEntity::default(); MAX_EDICTS]);
+        let decoded = read_packet_entities(&mut msg, &old, &vec![CEntity::default(); MAX_EDICTS]);
 
         // Entity 3 must be absent from result.
         assert_eq!(decoded.len(), 2);

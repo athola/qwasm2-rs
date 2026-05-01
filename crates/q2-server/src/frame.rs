@@ -13,12 +13,7 @@ impl Server {
     /// Advances timing, bumps the frame counter, and drives the game frame.
     /// `frametime_us` is elapsed wall-clock time in microseconds since the
     /// last frame.
-    pub fn frame(
-        &mut self,
-        svs: &mut ServerStatic,
-        frametime_us: u32,
-        game: &mut dyn GameExport,
-    ) {
+    pub fn frame(&mut self, svs: &mut ServerStatic, frametime_us: u32, game: &mut dyn GameExport) {
         if self.state == ServerState::Dead {
             return;
         }
@@ -57,16 +52,22 @@ mod tests {
     }
 
     impl GameExport for NullGame {
-        fn api_version(&self) -> i32 { 3 }
+        fn api_version(&self) -> i32 {
+            3
+        }
         fn init(&mut self, _: &dyn q2_game::traits::GameImport) {}
         fn shutdown(&mut self) {}
         fn spawn_entities(&mut self, _: &str, _: &str, _: &str) {}
-        fn client_connect(&mut self, _: usize, _: &str) -> bool { true }
+        fn client_connect(&mut self, _: usize, _: &str) -> bool {
+            true
+        }
         fn client_begin(&mut self, _: usize) {}
         fn client_disconnect(&mut self, _: usize) {}
         fn client_command(&mut self, _: usize) {}
         fn client_think(&mut self, _: usize, _: &UserCmd) {}
-        fn run_frame(&mut self) { self.frames_run += 1; }
+        fn run_frame(&mut self) {
+            self.frames_run += 1;
+        }
         fn server_command(&mut self) {}
     }
 
@@ -121,6 +122,9 @@ mod tests {
         let mut game = NullGame { frames_run: 0 };
 
         sv.frame(&mut svs, 16_667, &mut game);
-        assert_eq!(game.frames_run, 1, "run_frame must be called each active frame");
+        assert_eq!(
+            game.frames_run, 1,
+            "run_frame must be called each active frame"
+        );
     }
 }

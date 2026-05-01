@@ -8,10 +8,10 @@
 |-------|--------|-------|
 | Phase 0: Scaffolding | **DONE** | Workspace, 13 crates, CI, clippy, WASM entry point, bundler |
 | Phase 1 Tasks 1.1–1.6 | **DONE** | types, constants, protocol, errors, cvars, commands, net_msg (76 tests) |
-| Phase 1 Tasks 1.7–1.11 | **TODO** | zone, filesystem, collision, pmove, netchan |
+| Phase 1 Tasks 1.7–1.11 | **DONE** | zone (9 tests), filesystem + PakReader lazy WASM backend (17 tests), collision (27 tests), pmove (8 tests), netchan (10 tests) |
 | Phase 2: Game Logic | **DONE** | GameLogic, EntityStorage, SpawnTable, GameExport trait impl (CP-2 reached) |
 | Phase 3: Server | **CP-3 reached** | state, frame loop, GameImport bridge, ServerWorld — networking (client_handler, send/recv) deferred to Phase 4 |
-| Phase 4: Client | TODO | |
+| Phase 4: Client | **In progress** | delta machinery done: parse_frame, player-state delta, packet-entity delta (24 parse tests + 6 state tests) — entity interpolation, prediction, view not started |
 | Phase 5: Renderer | TODO | |
 | Phase 6: Platform/WASM | TODO | |
 | Phase 7: P2P Networking | TODO | |
@@ -19,9 +19,9 @@
 
 **Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile.
 
-**Next up:** Task 1.7 (Zone Allocator) → then filesystem, collision, pmove, netchan to complete Phase 1.
+**Next up:** Phase 5 (renderer — BSP loading + GL3). Phase 1 is complete; Phase 3 reached CP-3; Phase 4 delta parsing is done.
 
-**Critical path to playable:** Phase 1 (remaining) → Phase 5 (renderer — BSP loading + GL3) → Phase 4 (client — input + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
+**Critical path to playable:** Phase 5 (renderer — BSP loading + GL3) → Phase 4 remaining (entity interpolation + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
 
 **C source reference:** `~/Qwasm2/src/` (Yamagi Quake II with Emscripten WASM port)
 
@@ -1422,7 +1422,7 @@ git commit -m "feat(q2-common): implement NetMsg buffer replacing sizebuf_t and 
 
 The C zone allocator uses tagged `malloc` for bulk cleanup. In Rust, this becomes tag-based `Vec` pools.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1437,7 +1437,7 @@ fn tag_alloc_and_free() {
 }
 ```
 
-- [ ] **Step 2: Implement, test, commit**
+- [x] **Step 2: Implement, test, commit**
 
 ```bash
 git commit -m "feat(q2-common): implement tagged zone allocator with bulk free"
@@ -1453,7 +1453,7 @@ git commit -m "feat(q2-common): implement tagged zone allocator with bulk free"
 
 Reads from directories and `.pak` files, with search path ordering.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```rust
 #[test]
@@ -1475,9 +1475,9 @@ fn search_path_priority() {
 }
 ```
 
-- [ ] **Step 2: Implement, test, commit**
+- [x] **Step 2: Implement, test, commit**
 
-PAK format is trivial: 12-byte header + flat file entries. Use `std::io::Cursor` for in-memory reads. For WASM, the filesystem backend will be swapped to IndexedDB in Phase 6.
+PAK format: 12-byte header + flat file entries. WASM lazy loading uses the `PakReader` trait (`JsPakReader` in `q2-platform`), which slices individual assets from a JS-heap `Uint8Array` on demand — avoids copying the full PAK into WASM memory at startup. IndexedDB persistence is a separate Phase 6 concern.
 
 ```bash
 git commit -m "feat(q2-common): implement virtual filesystem with PAK support"
@@ -1493,7 +1493,7 @@ git commit -m "feat(q2-common): implement virtual filesystem with PAK support"
 
 BSP collision detection. This is the most math-heavy common module.
 
-- [ ] **Step 1: Write tests for known collision scenarios**
+- [x] **Step 1: Write tests for known collision scenarios**
 
 ```rust
 #[test]
@@ -1515,11 +1515,11 @@ fn box_trace_open_space() {
 }
 ```
 
-- [ ] **Step 2: Implement BSP traversal, trace, point contents**
+- [x] **Step 2: Implement BSP traversal, trace, point contents**
 
 This is a mostly mechanical translation — the math is identical, just with `glam::Vec3` ops instead of manual float arrays. Start with c2rust output of collision.c, then refactor to safe Rust.
 
-- [ ] **Step 3: Run, commit**
+- [x] **Step 3: Run, commit**
 
 ```bash
 git commit -m "feat(q2-common): implement BSP collision model (CM_BoxTrace, CM_PointContents)"
@@ -1535,7 +1535,7 @@ git commit -m "feat(q2-common): implement BSP collision model (CM_BoxTrace, CM_P
 
 Shared between client (prediction) and server (authoritative). Must produce identical results.
 
-- [ ] **Step 1: Write tests**
+- [x] **Step 1: Write tests**
 
 ```rust
 #[test]
@@ -1550,7 +1550,7 @@ fn pmove_gravity() {
 }
 ```
 
-- [ ] **Step 2: Implement, test, commit**
+- [x] **Step 2: Implement, test, commit**
 
 ```bash
 git commit -m "feat(q2-common): implement player movement prediction (Pmove)"
@@ -1566,7 +1566,7 @@ git commit -m "feat(q2-common): implement player movement prediction (Pmove)"
 
 This is the Quake 2 reliable/unreliable protocol layer. In Phase 7, we'll bridge this to Matchbox channels, but the protocol logic stays.
 
-- [ ] **Step 1: Write tests for reliable message delivery**
+- [x] **Step 1: Write tests for reliable message delivery**
 
 ```rust
 #[test]
@@ -1584,7 +1584,7 @@ fn netchan_reliable_delivery() {
 }
 ```
 
-- [ ] **Step 2: Implement, test, commit**
+- [x] **Step 2: Implement, test, commit**
 
 ```bash
 git commit -m "feat(q2-common): implement Netchan reliable/unreliable protocol"
@@ -2016,7 +2016,12 @@ git commit -m "feat(q2-server): implement spatial partitioning replacing link_t 
 
 Replaces global `cl`/`cls` with owned structs.
 
-- [ ] **Step 1-6: Implement client state, server message parsing, entity interpolation, prediction, effects, view setup**
+- [x] **Step 1: Client state structs** (`state.rs`: `ClientState`, `ClientFrame`, `CEntity`, `ConnState`)
+- [x] **Step 2: Server message parsing** (`parse.rs`: `parse_server_message`, all svc_* opcodes)
+- [x] **Step 3: Full Q2 delta protocol** — `parse_frame`, `read_player_state`, `read_delta_entity`, `read_packet_entities`, ring-buffer frame storage (24 parse tests)
+- [ ] **Step 4: Entity interpolation** — lerp entity positions/angles between frames
+- [ ] **Step 5: Client-side prediction** — run Pmove locally, reconcile with server state
+- [ ] **Step 6: Effects and view setup** — particle effects, weapon bob, view angles
 
 ```bash
 git commit -m "feat(q2-client): implement client state, parsing, prediction, and rendering setup"

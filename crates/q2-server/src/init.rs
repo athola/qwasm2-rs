@@ -36,13 +36,11 @@ impl Server {
         self.models.resize(MAX_MODELS, String::new());
 
         // Allocate configstrings and set the map name.
-        self.configstrings
-            .resize(MAX_CONFIGSTRINGS, String::new());
+        self.configstrings.resize(MAX_CONFIGSTRINGS, String::new());
         self.configstrings[CS_NAME] = map_name.to_string();
 
         // Allocate entity baselines.
-        self.baselines
-            .resize(MAX_EDICTS, EntityState::default());
+        self.baselines.resize(MAX_EDICTS, EntityState::default());
 
         // Demote any spawned clients back to connected so they will
         // re-enter via ClientBegin after the map loads.

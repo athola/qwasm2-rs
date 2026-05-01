@@ -24,10 +24,8 @@ use std::path::{Path, PathBuf};
 use crate::error::{Q2Error, Q2Result};
 
 // PAK file magic: "PACK" as little-endian u32
-const PAK_MAGIC: u32 = (b'P' as u32)
-    | ((b'A' as u32) << 8)
-    | ((b'C' as u32) << 16)
-    | ((b'K' as u32) << 24);
+const PAK_MAGIC: u32 =
+    (b'P' as u32) | ((b'A' as u32) << 8) | ((b'C' as u32) << 16) | ((b'K' as u32) << 24);
 
 /// PAK filename field length — fixed at 56 bytes (null-padded) per the Quake
 /// PAK format spec. Total directory entry = 56 name + 4 offset + 4 size = 64.
@@ -63,17 +61,16 @@ struct DiskPakReader {
 
 impl PakReader for DiskPakReader {
     fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
-        let file = std::fs::File::open(&self.path).map_err(|e| {
-            Q2Error::Drop(format!("open {}: {}", self.path.display(), e))
-        })?;
+        let file = std::fs::File::open(&self.path)
+            .map_err(|e| Q2Error::Drop(format!("open {}: {}", self.path.display(), e)))?;
         let mut reader = io::BufReader::new(file);
-        reader.seek(SeekFrom::Start(offset as u64)).map_err(|e| {
-            Q2Error::Drop(format!("seek in {}: {}", self.path.display(), e))
-        })?;
+        reader
+            .seek(SeekFrom::Start(offset as u64))
+            .map_err(|e| Q2Error::Drop(format!("seek in {}: {}", self.path.display(), e)))?;
         let mut buf = vec![0u8; len as usize];
-        reader.read_exact(&mut buf).map_err(|e| {
-            Q2Error::Drop(format!("read from {}: {}", self.path.display(), e))
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| Q2Error::Drop(format!("read from {}: {}", self.path.display(), e)))?;
         Ok(buf)
     }
 }
@@ -89,9 +86,9 @@ struct InMemPakReader {
 impl PakReader for InMemPakReader {
     fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
         let start = offset as usize;
-        let end = start.checked_add(len as usize).ok_or_else(|| {
-            Q2Error::Drop("InMemPakReader: offset overflow".into())
-        })?;
+        let end = start
+            .checked_add(len as usize)
+            .ok_or_else(|| Q2Error::Drop("InMemPakReader: offset overflow".into()))?;
         if end > self.data.len() {
             return Err(Q2Error::Drop(format!(
                 "InMemPakReader: read [{start}, {end}) out of bounds (len={})",
@@ -166,13 +163,22 @@ impl Pack {
         let files = parse_pack_directory(name, &dir_bytes)?;
 
         tracing::info!("{name}: {} files indexed", files.len());
-        Ok(Pack { name: name.to_string(), files, reader })
+        Ok(Pack {
+            name: name.to_string(),
+            files,
+            reader,
+        })
     }
 
     /// Load a PAK file from disk.
     pub fn load(path: &Path) -> Q2Result<Self> {
         let display = path.display().to_string();
-        Pack::open(&display, Box::new(DiskPakReader { path: path.to_path_buf() }))
+        Pack::open(
+            &display,
+            Box::new(DiskPakReader {
+                path: path.to_path_buf(),
+            }),
+        )
     }
 
     /// Load a PAK from an in-memory byte buffer.
@@ -181,7 +187,12 @@ impl Pack {
     /// `Pack::open` with a `JsPakReader` (from `q2-platform`) to keep the
     /// full PAK in the JS heap and only copy individual assets on demand.
     pub fn load_from_bytes(name: &str, data: &[u8]) -> Q2Result<Self> {
-        Pack::open(name, Box::new(InMemPakReader { data: data.to_vec() }))
+        Pack::open(
+            name,
+            Box::new(InMemPakReader {
+                data: data.to_vec(),
+            }),
+        )
     }
 
     /// Read a file from this PAK archive.
@@ -230,10 +241,7 @@ impl FileSystem {
     /// PAK files are loaded in alphabetical order (pak0.pak, pak1.pak, ...).
     pub fn add_game_directory(&mut self, dir: &Path) -> Q2Result<()> {
         if !dir.is_dir() {
-            return Err(Q2Error::Drop(format!(
-                "not a directory: {}",
-                dir.display()
-            )));
+            return Err(Q2Error::Drop(format!("not a directory: {}", dir.display())));
         }
 
         let mut pak_files: Vec<PathBuf> = Vec::new();
@@ -261,7 +269,8 @@ impl FileSystem {
             }
         }
 
-        self.search_paths.push(SearchPath::Directory(dir.to_path_buf()));
+        self.search_paths
+            .push(SearchPath::Directory(dir.to_path_buf()));
 
         tracing::info!(
             "Added game directory: {} ({} paks)",
@@ -373,7 +382,7 @@ impl FileSystem {
 
 /// Parse PAK directory entries from raw directory bytes (not the full file).
 fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<String, PackFile>> {
-    if dir_bytes.len() as u32 % PAK_DIR_ENTRY_SIZE != 0 {
+    if !(dir_bytes.len() as u32).is_multiple_of(PAK_DIR_ENTRY_SIZE) {
         return Err(Q2Error::Drop(format!(
             "{pak_name}: invalid PAK directory length {}",
             dir_bytes.len()
@@ -392,11 +401,14 @@ fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<St
 
     for _ in 0..num_files {
         let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
-        cursor.read_exact(&mut name_buf).map_err(|e| {
-            Q2Error::Drop(format!("{pak_name}: truncated directory: {e}"))
-        })?;
+        cursor
+            .read_exact(&mut name_buf)
+            .map_err(|e| Q2Error::Drop(format!("{pak_name}: truncated directory: {e}")))?;
 
-        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(PAK_ENTRY_NAME_LEN);
+        let name_end = name_buf
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(PAK_ENTRY_NAME_LEN);
         let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
         let normalized = normalize_path(&file_name);
 
@@ -405,7 +417,11 @@ fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<St
 
         files.insert(
             normalized.clone(),
-            PackFile { name: normalized, offset, size },
+            PackFile {
+                name: normalized,
+                offset,
+                size,
+            },
         );
     }
 
@@ -490,12 +506,18 @@ mod tests {
 
     #[test]
     fn normalize_path_converts_backslashes() {
-        assert_eq!(normalize_path("models\\player\\male.md2"), "models/player/male.md2");
+        assert_eq!(
+            normalize_path("models\\player\\male.md2"),
+            "models/player/male.md2"
+        );
     }
 
     #[test]
     fn normalize_path_lowercases() {
-        assert_eq!(normalize_path("Models/Player/MALE.MD2"), "models/player/male.md2");
+        assert_eq!(
+            normalize_path("Models/Player/MALE.MD2"),
+            "models/player/male.md2"
+        );
     }
 
     #[test]

@@ -153,7 +153,11 @@ impl Gl3Renderer {
         }
 
         let vertex_count = (verts.len() / 6) as i32;
-        tracing::info!("GL3: uploading {} triangles ({} verts)", vertex_count / 3, vertex_count);
+        tracing::info!(
+            "GL3: uploading {} triangles ({} verts)",
+            vertex_count / 3,
+            vertex_count
+        );
 
         // SAFETY: All glow GL calls require unsafe. `verts` is a live
         // `Vec<f32>` whose backing allocation is valid for the duration of this
@@ -210,7 +214,9 @@ impl Gl3Renderer {
     fn compile_shaders(gl: &glow::Context) -> Result<glow::Program, String> {
         // SAFETY: glow shader compilation calls require unsafe.
         unsafe {
-            let program = gl.create_program().map_err(|e| format!("create_program failed: {e}"))?;
+            let program = gl
+                .create_program()
+                .map_err(|e| format!("create_program failed: {e}"))?;
 
             let vs_src = r#"#version 300 es
                 precision highp float;
@@ -233,7 +239,8 @@ impl Gl3Renderer {
                 }
             "#;
 
-            let vs = gl.create_shader(glow::VERTEX_SHADER)
+            let vs = gl
+                .create_shader(glow::VERTEX_SHADER)
                 .map_err(|e| format!("create vertex shader failed: {e}"))?;
             gl.shader_source(vs, vs_src);
             gl.compile_shader(vs);
@@ -245,11 +252,10 @@ impl Gl3Renderer {
                 return Err(msg);
             }
 
-            let fs = gl.create_shader(glow::FRAGMENT_SHADER)
-                .map_err(|e| {
-                    gl.delete_shader(vs);
-                    format!("create fragment shader failed: {e}")
-                })?;
+            let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| {
+                gl.delete_shader(vs);
+                format!("create fragment shader failed: {e}")
+            })?;
             gl.shader_source(fs, fs_src);
             gl.compile_shader(fs);
             if !gl.get_shader_compile_status(fs) {
@@ -348,8 +354,12 @@ impl Renderer for Gl3Renderer {
     }
 
     fn begin_registration(&mut self, _map_name: &str) {}
-    fn register_model(&mut self, _name: &str) -> ModelHandle { ModelHandle::NONE }
-    fn register_image(&mut self, _name: &str, _img_type: ImageType) -> ImageHandle { ImageHandle::NONE }
+    fn register_model(&mut self, _name: &str) -> ModelHandle {
+        ModelHandle::NONE
+    }
+    fn register_image(&mut self, _name: &str, _img_type: ImageType) -> ImageHandle {
+        ImageHandle::NONE
+    }
     fn end_registration(&mut self) {}
 
     fn render_frame(
@@ -433,10 +443,22 @@ fn perspective_matrix(fd: &RefDef) -> [f32; 16] {
     let nf = 1.0 / (near - far);
 
     [
-        f / aspect, 0.0,  0.0,                    0.0,
-        0.0,        f,    0.0,                    0.0,
-        0.0,        0.0,  (far + near) * nf,     -1.0,
-        0.0,        0.0,  2.0 * far * near * nf,  0.0,
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (far + near) * nf,
+        -1.0,
+        0.0,
+        0.0,
+        2.0 * far * near * nf,
+        0.0,
     ]
 }
 
@@ -457,12 +479,21 @@ fn view_matrix(fd: &RefDef) -> [f32; 16] {
     let (tx, ty, tz) = (fd.vieworg.x, fd.vieworg.y, fd.vieworg.z);
 
     [
-        rx,  ux,  fx,  0.0,
-        ry,  uy,  fy,  0.0,
-        rz,  uz,  fz,  0.0,
-        -(rx*tx + ry*ty + rz*tz),
-        -(ux*tx + uy*ty + uz*tz),
-        -(fx*tx + fy*ty + fz*tz),
+        rx,
+        ux,
+        fx,
+        0.0,
+        ry,
+        uy,
+        fy,
+        0.0,
+        rz,
+        uz,
+        fz,
+        0.0,
+        -(rx * tx + ry * ty + rz * tz),
+        -(ux * tx + uy * ty + uz * tz),
+        -(fx * tx + fy * ty + fz * tz),
         1.0,
     ]
 }
@@ -472,9 +503,9 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     for i in 0..4 {
         for j in 0..4 {
             r[j * 4 + i] = a[i] * b[j * 4]
-                         + a[4 + i] * b[j * 4 + 1]
-                         + a[8 + i] * b[j * 4 + 2]
-                         + a[12 + i] * b[j * 4 + 3];
+                + a[4 + i] * b[j * 4 + 1]
+                + a[8 + i] * b[j * 4 + 2]
+                + a[12 + i] * b[j * 4 + 3];
         }
     }
     r
@@ -522,10 +553,7 @@ mod tests {
     #[test]
     fn mat4_identity_mul() {
         let id = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         let r = mat4_mul(&id, &id);
         assert_eq!(r, id);
@@ -546,9 +574,18 @@ mod tests {
         for idx in [0, 1, 42, 255, 1000, usize::MAX / 2] {
             for &brightness in &[0.0, 0.5, 1.0, 2.0] {
                 let (r, g, b) = face_color(idx, brightness);
-                assert!((0.0..=1.0).contains(&r), "r={r} out of range for idx={idx}, brightness={brightness}");
-                assert!((0.0..=1.0).contains(&g), "g={g} out of range for idx={idx}, brightness={brightness}");
-                assert!((0.0..=1.0).contains(&b), "b={b} out of range for idx={idx}, brightness={brightness}");
+                assert!(
+                    (0.0..=1.0).contains(&r),
+                    "r={r} out of range for idx={idx}, brightness={brightness}"
+                );
+                assert!(
+                    (0.0..=1.0).contains(&g),
+                    "g={g} out of range for idx={idx}, brightness={brightness}"
+                );
+                assert!(
+                    (0.0..=1.0).contains(&b),
+                    "b={b} out of range for idx={idx}, brightness={brightness}"
+                );
             }
         }
     }
@@ -598,8 +635,8 @@ mod tests {
     /// Multiply a column-major 4x4 matrix by a vec4, returning vec4.
     fn mat4_mul_vec4(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
         [
-            m[0] * v[0] + m[4] * v[1] + m[8]  * v[2] + m[12] * v[3],
-            m[1] * v[0] + m[5] * v[1] + m[9]  * v[2] + m[13] * v[3],
+            m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3],
+            m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3],
             m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3],
             m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3],
         ]
@@ -626,16 +663,40 @@ mod tests {
 
         // World point directly "ahead" when facing yaw=90 (i.e. +Y direction)
         let ahead = mat4_mul_vec4(&v, [0.0, 100.0, 0.0, 1.0]);
-        assert!(ahead[0].abs() < eps, "ahead eye-x should be 0, got {}", ahead[0]);
-        assert!(ahead[1].abs() < eps, "ahead eye-y should be 0, got {}", ahead[1]);
-        assert!((ahead[2] - (-100.0)).abs() < eps, "ahead eye-z should be -100, got {}", ahead[2]);
+        assert!(
+            ahead[0].abs() < eps,
+            "ahead eye-x should be 0, got {}",
+            ahead[0]
+        );
+        assert!(
+            ahead[1].abs() < eps,
+            "ahead eye-y should be 0, got {}",
+            ahead[1]
+        );
+        assert!(
+            (ahead[2] - (-100.0)).abs() < eps,
+            "ahead eye-z should be -100, got {}",
+            ahead[2]
+        );
 
         // World point at (100, 0, 0) — to the right when facing +Y
         // Should map to eye-space (100, 0, 0): +X is right in OpenGL.
         let right = mat4_mul_vec4(&v, [100.0, 0.0, 0.0, 1.0]);
-        assert!((right[0] - 100.0).abs() < eps, "right eye-x should be 100, got {}", right[0]);
-        assert!(right[1].abs() < eps, "right eye-y should be 0, got {}", right[1]);
-        assert!(right[2].abs() < eps, "right eye-z should be 0, got {}", right[2]);
+        assert!(
+            (right[0] - 100.0).abs() < eps,
+            "right eye-x should be 100, got {}",
+            right[0]
+        );
+        assert!(
+            right[1].abs() < eps,
+            "right eye-y should be 0, got {}",
+            right[1]
+        );
+        assert!(
+            right[2].abs() < eps,
+            "right eye-z should be 0, got {}",
+            right[2]
+        );
     }
 
     #[test]

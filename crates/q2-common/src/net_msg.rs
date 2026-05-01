@@ -765,19 +765,45 @@ impl NetMsg {
     pub fn write_player_state(&mut self, old: &PlayerState, new: &PlayerState) {
         let mut flags = PlayerStateFlags::empty();
 
-        if new.pmove.pm_type != old.pmove.pm_type { flags |= PlayerStateFlags::M_TYPE; }
-        if new.pmove.origin != old.pmove.origin { flags |= PlayerStateFlags::M_ORIGIN; }
-        if new.pmove.velocity != old.pmove.velocity { flags |= PlayerStateFlags::M_VELOCITY; }
-        if new.pmove.pm_time != old.pmove.pm_time { flags |= PlayerStateFlags::M_TIME; }
-        if new.pmove.pm_flags != old.pmove.pm_flags { flags |= PlayerStateFlags::M_FLAGS; }
-        if new.pmove.gravity != old.pmove.gravity { flags |= PlayerStateFlags::M_GRAVITY; }
-        if new.pmove.delta_angles != old.pmove.delta_angles { flags |= PlayerStateFlags::M_DELTA_ANGLES; }
-        if new.viewoffset != old.viewoffset { flags |= PlayerStateFlags::VIEWOFFSET; }
-        if new.viewangles != old.viewangles { flags |= PlayerStateFlags::VIEWANGLES; }
-        if new.kick_angles != old.kick_angles { flags |= PlayerStateFlags::KICKANGLES; }
-        if new.blend != old.blend { flags |= PlayerStateFlags::BLEND; }
-        if new.fov != old.fov { flags |= PlayerStateFlags::FOV; }
-        if new.rdflags != old.rdflags { flags |= PlayerStateFlags::RDFLAGS; }
+        if new.pmove.pm_type != old.pmove.pm_type {
+            flags |= PlayerStateFlags::M_TYPE;
+        }
+        if new.pmove.origin != old.pmove.origin {
+            flags |= PlayerStateFlags::M_ORIGIN;
+        }
+        if new.pmove.velocity != old.pmove.velocity {
+            flags |= PlayerStateFlags::M_VELOCITY;
+        }
+        if new.pmove.pm_time != old.pmove.pm_time {
+            flags |= PlayerStateFlags::M_TIME;
+        }
+        if new.pmove.pm_flags != old.pmove.pm_flags {
+            flags |= PlayerStateFlags::M_FLAGS;
+        }
+        if new.pmove.gravity != old.pmove.gravity {
+            flags |= PlayerStateFlags::M_GRAVITY;
+        }
+        if new.pmove.delta_angles != old.pmove.delta_angles {
+            flags |= PlayerStateFlags::M_DELTA_ANGLES;
+        }
+        if new.viewoffset != old.viewoffset {
+            flags |= PlayerStateFlags::VIEWOFFSET;
+        }
+        if new.viewangles != old.viewangles {
+            flags |= PlayerStateFlags::VIEWANGLES;
+        }
+        if new.kick_angles != old.kick_angles {
+            flags |= PlayerStateFlags::KICKANGLES;
+        }
+        if new.blend != old.blend {
+            flags |= PlayerStateFlags::BLEND;
+        }
+        if new.fov != old.fov {
+            flags |= PlayerStateFlags::FOV;
+        }
+        if new.rdflags != old.rdflags {
+            flags |= PlayerStateFlags::RDFLAGS;
+        }
         // gunindex always sent (mirrors C server behaviour)
         flags |= PlayerStateFlags::WEAPONINDEX;
         if new.gunframe != old.gunframe
@@ -894,23 +920,20 @@ impl NetMsg {
 
         for new_ent in new_entities {
             // Entities in old that come before this new entity number are REMOVED.
-            while old_idx < old_entities.len()
-                && old_entities[old_idx].number < new_ent.number
-            {
+            while old_idx < old_entities.len() && old_entities[old_idx].number < new_ent.number {
                 self.write_entity_remove(old_entities[old_idx].number);
                 old_idx += 1;
             }
 
             // Determine delta base: old entity with same number (if any) or zero.
-            let (from, is_new) = if old_idx < old_entities.len()
-                && old_entities[old_idx].number == new_ent.number
-            {
-                let from = old_entities[old_idx].clone();
-                old_idx += 1;
-                (from, false)
-            } else {
-                (EntityState::default(), true)
-            };
+            let (from, is_new) =
+                if old_idx < old_entities.len() && old_entities[old_idx].number == new_ent.number {
+                    let from = old_entities[old_idx].clone();
+                    old_idx += 1;
+                    (from, false)
+                } else {
+                    (EntityState::default(), true)
+                };
 
             self.write_delta_entity(&from, new_ent, is_new, is_new);
         }
@@ -1135,7 +1158,11 @@ mod tests {
 
         // Must encode at minimum: flag bytes + entity number + origin x/y + modelindex
         // 1 flag byte + 1 entity number + 2*2 coords + 1 model = at least 8 bytes
-        assert!(buf.len() >= 8, "delta encoding too small: {} bytes", buf.len());
+        assert!(
+            buf.len() >= 8,
+            "delta encoding too small: {} bytes",
+            buf.len()
+        );
 
         // Verify the encoded data is decodable: read the flag byte(s) and
         // check that ORIGIN1, ORIGIN2, and MODEL bits are set.

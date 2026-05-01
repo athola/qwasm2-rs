@@ -7,15 +7,15 @@
 //! - Performance: 0
 //! - Inherent: 0
 
-pub mod state;
-pub mod parse;
 pub mod input;
+pub mod parse;
+pub mod state;
 pub mod view;
 
 #[cfg(test)]
 mod tests {
-    use super::state::*;
     use super::input::*;
+    use super::state::*;
     use super::view::*;
     use q2_shared::types::*;
 
@@ -90,7 +90,10 @@ mod tests {
         };
         let (_, angles) = lerp_entity(&prev, &current, 0.5);
         // Midpoint of 350→10 (short path) is 0 (or 360)
-        assert!(angles.y.abs() < 0.001 || (angles.y - 360.0).abs() < 0.001,
-            "expected ~0 or ~360, got {}", angles.y);
+        assert!(
+            angles.y.abs() < 0.001 || (angles.y - 360.0).abs() < 0.001,
+            "expected ~0 or ~360, got {}",
+            angles.y
+        );
     }
 }

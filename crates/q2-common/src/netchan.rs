@@ -166,7 +166,11 @@ impl NetChan {
 
         // Word 1: sequence | reliable-flag in bit 31.
         let w1 = (self.outgoing_sequence & !SEQUENCE_RELIABLE_BIT)
-            | if send_reliable { SEQUENCE_RELIABLE_BIT } else { 0 };
+            | if send_reliable {
+                SEQUENCE_RELIABLE_BIT
+            } else {
+                0
+            };
 
         // Word 2: incoming_sequence | incoming_reliable_sequence in bit 31.
         let w2 = (self.incoming_sequence & !SEQUENCE_RELIABLE_BIT)
@@ -392,10 +396,7 @@ mod tests {
             peek.begin_reading();
             let w1 = peek.read_long() as u32;
             let has_reliable = (w1 & SEQUENCE_RELIABLE_BIT) != 0;
-            assert!(
-                has_reliable,
-                "retransmit should carry reliable flag again"
-            );
+            assert!(has_reliable, "retransmit should carry reliable flag again");
         }
 
         // Now deliver the retransmit to B. B should get the reliable data.

@@ -117,13 +117,7 @@ pub trait GameImport: Send + Sync {
     /// * `area_type` — `AREA_SOLID`(1) or `AREA_TRIGGERS`(2).
     /// * `max_count` — Implementations **must** return at most this many results
     ///   (truncate the result vec to `max_count`).
-    fn box_edicts(
-        &self,
-        mins: Vec3f,
-        maxs: Vec3f,
-        max_count: usize,
-        area_type: i32,
-    ) -> Vec<usize>;
+    fn box_edicts(&self, mins: Vec3f, maxs: Vec3f, max_count: usize, area_type: i32) -> Vec<usize>;
 
     // -- configstrings -----------------------------------------------------
 
@@ -242,9 +236,15 @@ mod tests {
             _time_ofs: f32,
         ) {
         }
-        fn model_index(&self, _name: &str) -> i32 { 0 }
-        fn sound_index(&self, _name: &str) -> i32 { 0 }
-        fn image_index(&self, _name: &str) -> i32 { 0 }
+        fn model_index(&self, _name: &str) -> i32 {
+            0
+        }
+        fn sound_index(&self, _name: &str) -> i32 {
+            0
+        }
+        fn image_index(&self, _name: &str) -> i32 {
+            0
+        }
         fn set_model(&self, _ent_idx: usize, _name: &str) {}
         fn trace(
             &self,
@@ -257,9 +257,15 @@ mod tests {
         ) -> Trace {
             Trace::default()
         }
-        fn point_contents(&self, _point: Vec3f) -> i32 { 0 }
-        fn in_pvs(&self, _p1: Vec3f, _p2: Vec3f) -> bool { false }
-        fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool { false }
+        fn point_contents(&self, _point: Vec3f) -> i32 {
+            0
+        }
+        fn in_pvs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
+            false
+        }
+        fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
+            false
+        }
         fn link_entity(&self, _ent_idx: usize) {}
         fn unlink_entity(&self, _ent_idx: usize) {}
         fn box_edicts(
@@ -282,9 +288,15 @@ mod tests {
         fn write_angle(&self, _f: f32) {}
         fn multicast(&self, _origin: Vec3f, _to: Multicast) {}
         fn unicast(&self, _ent_idx: usize, _reliable: bool) {}
-        fn argc(&self) -> i32 { 0 }
-        fn argv(&self, _n: i32) -> String { String::new() }
-        fn args(&self) -> String { String::new() }
+        fn argc(&self) -> i32 {
+            0
+        }
+        fn argv(&self, _n: i32) -> String {
+            String::new()
+        }
+        fn args(&self) -> String {
+            String::new()
+        }
         fn add_command_string(&self, _text: &str) {}
     }
 

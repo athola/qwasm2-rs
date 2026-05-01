@@ -137,7 +137,9 @@ impl CVarSystem {
 
     /// Get the string value of a cvar.
     pub fn string(&self, handle: CVarHandle) -> &str {
-        self.vars.get(handle.raw()).map_or("", |v| v.string.as_str())
+        self.vars
+            .get(handle.raw())
+            .map_or("", |v| v.string.as_str())
     }
 
     /// Get the name of a cvar.
@@ -147,12 +149,16 @@ impl CVarSystem {
 
     /// Get the flags of a cvar.
     pub fn flags(&self, handle: CVarHandle) -> CVarFlags {
-        self.vars.get(handle.raw()).map_or(CVarFlags::empty(), |v| v.flags)
+        self.vars
+            .get(handle.raw())
+            .map_or(CVarFlags::empty(), |v| v.flags)
     }
 
     /// Get the default value string that was used when the cvar was first registered.
     pub fn default_value(&self, handle: CVarHandle) -> &str {
-        self.vars.get(handle.raw()).map_or("", |v| v.default_value.as_str())
+        self.vars
+            .get(handle.raw())
+            .map_or("", |v| v.default_value.as_str())
     }
 
     /// Apply all latched values (called at an appropriate point, e.g. map change).
@@ -187,7 +193,9 @@ impl CVarSystem {
 
     /// Look up a cvar by name, returning its handle if it exists.
     pub fn find(&self, name: &str) -> Option<CVarHandle> {
-        self.name_to_index.get(name).map(|&i| CVarHandle::from_raw(i))
+        self.name_to_index
+            .get(name)
+            .map(|&i| CVarHandle::from_raw(i))
     }
 
     /// Tab-completion: return the first alphabetically sorted cvar name matching

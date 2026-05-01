@@ -89,7 +89,7 @@ pub enum ImageType {
     Skin,
     Sprite,
     Wall,
-    Pic,  // 2D image (HUD, menu)
+    Pic, // 2D image (HUD, menu)
     Sky,
 }
 
@@ -321,5 +321,4 @@ mod tests {
         assert_eq!(p.color, 0);
         assert_eq!(p.alpha, 0.0);
     }
-
 }

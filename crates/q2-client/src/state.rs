@@ -1,5 +1,5 @@
-use q2_shared::types::*;
 use q2_shared::constants::*;
+use q2_shared::types::*;
 
 /// Client connection states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

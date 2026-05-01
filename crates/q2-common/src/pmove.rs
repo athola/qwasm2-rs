@@ -170,11 +170,7 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
         -(sr * sp * sy) + -(cr * cy),
         -sr * cp,
     );
-    let up = Vec3f::new(
-        cr * sp * cy + -sr * -sy,
-        cr * sp * sy + -sr * cy,
-        cr * cp,
-    );
+    let up = Vec3f::new(cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp);
     (forward, right, up)
 }
 
@@ -701,8 +697,7 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
 
             // Hitting solid ground ends a waterjump.
             if (pm.s.pm_flags & PMF_TIME_WATERJUMP) != 0 {
-                pm.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                pm.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 pm.s.pm_time = 0;
             }
 
@@ -769,9 +764,7 @@ fn pm_check_duck(pm: &mut Pmove, pml: &PmLocal) {
 
     pm.mins.z = -24.0;
 
-    if pm.s.pm_type == PmType::Dead
-        || (pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0)
-    {
+    if pm.s.pm_type == PmType::Dead || (pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0) {
         pm.s.pm_flags |= PMF_DUCKED;
     } else {
         // Try to stand up if currently ducked.
@@ -1014,9 +1007,7 @@ fn pm_initial_snap_position(pm: &mut Pmove, pml: &mut PmLocal) {
 
 fn pm_clamp_angles(pm: &mut Pmove, pml: &mut PmLocal) {
     if (pm.s.pm_flags & PMF_TIME_TELEPORT) != 0 {
-        pm.viewangles.y = short2angle(
-            pm.cmd.angles[YAW].wrapping_add(pm.s.delta_angles[YAW]),
-        );
+        pm.viewangles.y = short2angle(pm.cmd.angles[YAW].wrapping_add(pm.s.delta_angles[YAW]));
         pm.viewangles.x = 0.0;
         pm.viewangles.z = 0.0;
     } else {
@@ -1114,8 +1105,7 @@ impl Pmove {
             }
 
             if msec >= self.s.pm_time {
-                self.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                self.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 self.s.pm_time = 0;
             } else {
                 self.s.pm_time -= msec;
@@ -1128,8 +1118,7 @@ impl Pmove {
             // Waterjump — no control, but falls.
             pml.velocity.z -= self.s.gravity as f32 * pml.frametime;
             if pml.velocity.z < 0.0 {
-                self.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                self.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 self.s.pm_time = 0;
             }
             pm_step_slide_move(self, &mut pml);
@@ -1195,17 +1184,15 @@ mod tests {
             ground_entity: true,
             watertype: 0,
             waterlevel: 0,
-            trace: Box::new(|_start, _mins, _maxs, end| {
-                Trace {
-                    allsolid: false,
-                    startsolid: false,
-                    fraction: 1.0,
-                    endpos: end,
-                    plane: Plane::default(),
-                    surface: None,
-                    contents: 0,
-                    ent_index: None,
-                }
+            trace: Box::new(|_start, _mins, _maxs, end| Trace {
+                allsolid: false,
+                startsolid: false,
+                fraction: 1.0,
+                endpos: end,
+                plane: Plane::default(),
+                surface: None,
+                contents: 0,
+                ent_index: None,
             }),
             pointcontents: Box::new(|_| 0),
         }
@@ -1282,10 +1269,7 @@ mod tests {
         let wishdir = Vec3f::new(1.0, 0.0, 0.0);
         pm_accelerate(&mut pml, wishdir, 300.0, PM_ACCELERATE);
 
-        assert!(
-            pml.velocity.length() > 0.0,
-            "acceleration should add speed"
-        );
+        assert!(pml.velocity.length() > 0.0, "acceleration should add speed");
         assert!(pml.velocity.x > 0.0, "should accelerate in +X");
     }
 
@@ -1323,7 +1307,7 @@ mod tests {
         pm_snap_position(&mut pm, &pml);
 
         // Verify origin snapped to 1/8 grid.
-        assert_eq!(pm.s.origin[0], 80);  // 10.0 * 8
+        assert_eq!(pm.s.origin[0], 80); // 10.0 * 8
         assert_eq!(pm.s.origin[1], 160); // 20.0 * 8
         assert_eq!(pm.s.origin[2], 0);
         assert_eq!(pm.s.velocity[0], 800); // 100.0 * 8

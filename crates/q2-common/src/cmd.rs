@@ -31,8 +31,7 @@ impl CmdSystem {
 
     /// Register a console command with its handler.
     pub fn add_command(&mut self, name: &str, handler: impl Fn(&[&str]) + 'static) {
-        self.commands
-            .insert(name.to_owned(), Box::new(handler));
+        self.commands.insert(name.to_owned(), Box::new(handler));
     }
 
     /// Remove a registered command.

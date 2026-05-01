@@ -10,8 +10,8 @@ use q2_game::{
     GameLogic,
 };
 use q2_server::{
-    ServerGameImport,
     state::{Server, ServerState, ServerStatic},
+    ServerGameImport,
 };
 use q2_shared::constants::CS_MAXCLIENTS;
 
@@ -101,7 +101,9 @@ fn cp3_configstring_written_by_game_survives_frame() {
     gi.configstring(0, "cp3_test");
 
     let updates = gi.drain_configstring_updates();
-    let found = updates.iter().any(|(idx, val)| *idx == 0 && val == "cp3_test");
+    let found = updates
+        .iter()
+        .any(|(idx, val)| *idx == 0 && val == "cp3_test");
     assert!(found, "configstring(0, ...) must be readable via drain");
 }
 

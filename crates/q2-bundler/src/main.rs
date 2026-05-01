@@ -7,7 +7,7 @@
 //! Output: dist/qwasm2.html (single file, works when opened or served)
 
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
 use std::path::Path;
 
@@ -29,16 +29,24 @@ fn main() -> Result<()> {
     }
 
     // Read files
-    let js_glue = fs::read_to_string(&js_path)
-        .with_context(|| format!("reading {}", js_path.display()))?;
-    let wasm_bytes = fs::read(&wasm_path)
-        .with_context(|| format!("reading {}", wasm_path.display()))?;
+    let js_glue =
+        fs::read_to_string(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
+    let wasm_bytes =
+        fs::read(&wasm_path).with_context(|| format!("reading {}", wasm_path.display()))?;
 
     let wasm_size = wasm_bytes.len();
     let wasm_base64 = BASE64.encode(&wasm_bytes);
 
-    println!("WASM binary: {} bytes ({:.1} KB)", wasm_size, wasm_size as f64 / 1024.0);
-    println!("Base64 encoded: {} bytes ({:.1} KB)", wasm_base64.len(), wasm_base64.len() as f64 / 1024.0);
+    println!(
+        "WASM binary: {} bytes ({:.1} KB)",
+        wasm_size,
+        wasm_size as f64 / 1024.0
+    );
+    println!(
+        "Base64 encoded: {} bytes ({:.1} KB)",
+        wasm_base64.len(),
+        wasm_base64.len() as f64 / 1024.0
+    );
 
     // Patch the JS glue to load WASM from base64 instead of fetch
     // The wasm-pack generated JS has a function like:
@@ -55,7 +63,11 @@ fn main() -> Result<()> {
     fs::write(&output_path, &html)?;
 
     let html_size = html.len();
-    println!("Output: {} ({:.1} KB)", output_path.display(), html_size as f64 / 1024.0);
+    println!(
+        "Output: {} ({:.1} KB)",
+        output_path.display(),
+        html_size as f64 / 1024.0
+    );
     println!("Done! Open dist/qwasm2.html in a browser.");
 
     Ok(())
@@ -106,26 +118,25 @@ function __q2_decode_wasm() {{
         stripped
             .replace(
                 "export { initSync, __wbg_init as default };",
-                "const init = __wbg_init;"
+                "const init = __wbg_init;",
             )
             // Also handle variations in the export syntax
-            .replace(
-                "export { initSync }",
-                ""
-            )
+            .replace("export { initSync }", "")
     } else {
         stripped
     };
 
     // Replace the fetch call to use our inlined WASM
     let patched = if stripped.contains("import.meta.url") {
-        stripped.replace(
-            "new URL('q2_wasm_bg.wasm', import.meta.url)",
-            "__q2_decode_wasm()"
-        ).replace(
-            r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
-            "__q2_decode_wasm()"
-        )
+        stripped
+            .replace(
+                "new URL('q2_wasm_bg.wasm', import.meta.url)",
+                "__q2_decode_wasm()",
+            )
+            .replace(
+                r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
+                "__q2_decode_wasm()",
+            )
     } else {
         stripped
     };

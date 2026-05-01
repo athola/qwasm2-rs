@@ -120,4 +120,3 @@ pub fn setup_input_listeners(
 
     Ok(state)
 }
-

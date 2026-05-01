@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "q2-bin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "q2-client",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "q2-bundler"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1957,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "q2-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "q2-common",
  "q2-shared",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "q2-common"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bitflags 2.11.0",
  "q2-shared",
@@ -1977,7 +1977,7 @@ dependencies = [
 
 [[package]]
 name = "q2-devserver"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "tokio",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "q2-game"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bincode",
  "q2-common",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "q2-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "matchbox_socket",
  "q2-common",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "q2-platform"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glow",
  "js-sys",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "q2-render"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glow",
  "q2-common",
@@ -2035,14 +2035,14 @@ dependencies = [
 
 [[package]]
 name = "q2-render-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "q2-shared",
 ]
 
 [[package]]
 name = "q2-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "q2-common",
  "q2-game",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "q2-shared"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bincode",
  "bitflags 2.11.0",
@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "q2-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glow",
  "js-sys",

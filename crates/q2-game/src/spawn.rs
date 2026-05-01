@@ -128,7 +128,10 @@ impl SpawnTable {
     pub fn new() -> Self {
         let mut table = HashMap::new();
 
-        table.insert("info_player_start".to_string(), sp_info_player_start as SpawnFn);
+        table.insert(
+            "info_player_start".to_string(),
+            sp_info_player_start as SpawnFn,
+        );
         table.insert(
             "info_player_deathmatch".to_string(),
             sp_info_player_deathmatch as SpawnFn,
@@ -213,11 +216,7 @@ pub fn sp_info_player_deathmatch(
 }
 
 /// Spawn function for `worldspawn`.
-pub fn sp_worldspawn(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    props: &HashMap<String, String>,
-) {
+pub fn sp_worldspawn(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "worldspawn".to_string();
         if let Some(msg) = props.get("message") {
@@ -228,11 +227,7 @@ pub fn sp_worldspawn(
 
 /// Spawn function for `light` — lights are stripped at runtime (no entity
 /// needed), but we record the classname so the spawn system doesn't warn.
-pub fn sp_light(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    props: &HashMap<String, String>,
-) {
+pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "light".to_string();
         ent.state.origin = parse_origin(props);
@@ -284,18 +279,28 @@ pub fn find_player_start(entstring: &str) -> Option<(q2_shared::types::Vec3f, f3
             continue;
         }
         let origin = parse_origin(ent);
-        if origin == q2_shared::types::Vec3f::ZERO && ent.get("origin").is_none_or(|s| s.trim() != "0 0 0") {
+        if origin == q2_shared::types::Vec3f::ZERO
+            && ent.get("origin").is_none_or(|s| s.trim() != "0 0 0")
+        {
             continue; // malformed origin (parse_origin returned zero as fallback)
         }
         let targetname = ent.get("targetname").cloned().unwrap_or_default();
         let angle = ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0);
 
-        spawns.push(SpawnCandidate { classname, origin, targetname, angle });
+        spawns.push(SpawnCandidate {
+            classname,
+            origin,
+            targetname,
+            angle,
+        });
     }
 
     // Find best spawn by priority: prefer unnamed spawns first
     for target in SPAWN_CLASSNAMES {
-        if let Some(s) = spawns.iter().find(|s| s.classname == *target && s.targetname.is_empty()) {
+        if let Some(s) = spawns
+            .iter()
+            .find(|s| s.classname == *target && s.targetname.is_empty())
+        {
             return Some((s.origin, s.angle));
         }
         if let Some(s) = spawns.iter().find(|s| s.classname == *target) {

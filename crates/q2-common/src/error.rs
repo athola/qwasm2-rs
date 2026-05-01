@@ -74,8 +74,10 @@ mod tests {
 
     #[test]
     fn error_io_is_not_recoverable() {
-        let err =
-            Q2Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"));
+        let err = Q2Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "file not found",
+        ));
         assert!(!err.is_recoverable());
     }
 

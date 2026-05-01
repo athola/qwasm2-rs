@@ -37,31 +37,41 @@ pub fn read_f32(data: &[u8], off: usize) -> f32 {
 
 #[inline]
 pub fn try_read_u16(data: &[u8], off: usize) -> Q2Result<u16> {
-    let b = data.get(off..off + 2).ok_or(Q2Error::Drop("u16 read out of bounds".into()))?;
+    let b = data
+        .get(off..off + 2)
+        .ok_or(Q2Error::Drop("u16 read out of bounds".into()))?;
     Ok(u16::from_le_bytes([b[0], b[1]]))
 }
 
 #[inline]
 pub fn try_read_i16(data: &[u8], off: usize) -> Q2Result<i16> {
-    let b = data.get(off..off + 2).ok_or(Q2Error::Drop("i16 read out of bounds".into()))?;
+    let b = data
+        .get(off..off + 2)
+        .ok_or(Q2Error::Drop("i16 read out of bounds".into()))?;
     Ok(i16::from_le_bytes([b[0], b[1]]))
 }
 
 #[inline]
 pub fn try_read_u32(data: &[u8], off: usize) -> Q2Result<u32> {
-    let b = data.get(off..off + 4).ok_or(Q2Error::Drop("u32 read out of bounds".into()))?;
+    let b = data
+        .get(off..off + 4)
+        .ok_or(Q2Error::Drop("u32 read out of bounds".into()))?;
     Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 #[inline]
 pub fn try_read_i32(data: &[u8], off: usize) -> Q2Result<i32> {
-    let b = data.get(off..off + 4).ok_or(Q2Error::Drop("i32 read out of bounds".into()))?;
+    let b = data
+        .get(off..off + 4)
+        .ok_or(Q2Error::Drop("i32 read out of bounds".into()))?;
     Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 #[inline]
 pub fn try_read_f32(data: &[u8], off: usize) -> Q2Result<f32> {
-    let b = data.get(off..off + 4).ok_or(Q2Error::Drop("f32 read out of bounds".into()))?;
+    let b = data
+        .get(off..off + 4)
+        .ok_or(Q2Error::Drop("f32 read out of bounds".into()))?;
     Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
