@@ -11,8 +11,9 @@
 //! a received packet), never both simultaneously. A future refactor could
 //! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
-use q2_shared::protocol::UpdateFlags;
-use q2_shared::types::{EntityState, UserCmd, Vec3f};
+use q2_shared::constants::MAX_STATS;
+use q2_shared::protocol::{PlayerStateFlags, SvcOp, UpdateFlags};
+use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
 // ---------------------------------------------------------------------------
 // BYTEDIRS — 162 pre-computed vertex normals for direction compression
@@ -535,16 +536,17 @@ impl NetMsg {
             flags |= UpdateFlags::NUMBER16;
         }
 
-        // Determine how many flag bytes we need beyond the first.
-        let bits = flags.bits();
-        if bits & 0x0000_FF00 != 0 {
-            flags |= UpdateFlags::MOREBITS1;
+        // Determine extension bytes in descending order so each added MOREBITS
+        // flag can propagate into the byte below it.  E.g. MOREBITS3 ends up
+        // in byte 2; the subsequent check must see it and set MOREBITS2.
+        if flags.bits() & 0xFF00_0000 != 0 {
+            flags |= UpdateFlags::MOREBITS3;
         }
-        if bits & 0x00FF_0000 != 0 {
+        if flags.bits() & 0x00FF_0000 != 0 {
             flags |= UpdateFlags::MOREBITS2;
         }
-        if bits & 0xFF00_0000 != 0 {
-            flags |= UpdateFlags::MOREBITS3;
+        if flags.bits() & 0x0000_FF00 != 0 {
+            flags |= UpdateFlags::MOREBITS1;
         }
 
         let bits = flags.bits();
@@ -749,6 +751,197 @@ impl NetMsg {
         }
 
         cmd
+    }
+
+    // -------------------------------------------------------------------------
+    // Player state delta encoding
+    // -------------------------------------------------------------------------
+
+    /// Write a delta-compressed player state to the message.
+    ///
+    /// Writes the `svc_playerinfo` opcode byte followed by `PlayerStateFlags`
+    /// and only the fields that differ between `old` and `new`. The statbits
+    /// mask uses u32 to avoid i32 shift-overflow on bit 31.
+    pub fn write_player_state(&mut self, old: &PlayerState, new: &PlayerState) {
+        let mut flags = PlayerStateFlags::empty();
+
+        if new.pmove.pm_type != old.pmove.pm_type { flags |= PlayerStateFlags::M_TYPE; }
+        if new.pmove.origin != old.pmove.origin { flags |= PlayerStateFlags::M_ORIGIN; }
+        if new.pmove.velocity != old.pmove.velocity { flags |= PlayerStateFlags::M_VELOCITY; }
+        if new.pmove.pm_time != old.pmove.pm_time { flags |= PlayerStateFlags::M_TIME; }
+        if new.pmove.pm_flags != old.pmove.pm_flags { flags |= PlayerStateFlags::M_FLAGS; }
+        if new.pmove.gravity != old.pmove.gravity { flags |= PlayerStateFlags::M_GRAVITY; }
+        if new.pmove.delta_angles != old.pmove.delta_angles { flags |= PlayerStateFlags::M_DELTA_ANGLES; }
+        if new.viewoffset != old.viewoffset { flags |= PlayerStateFlags::VIEWOFFSET; }
+        if new.viewangles != old.viewangles { flags |= PlayerStateFlags::VIEWANGLES; }
+        if new.kick_angles != old.kick_angles { flags |= PlayerStateFlags::KICKANGLES; }
+        if new.blend != old.blend { flags |= PlayerStateFlags::BLEND; }
+        if new.fov != old.fov { flags |= PlayerStateFlags::FOV; }
+        if new.rdflags != old.rdflags { flags |= PlayerStateFlags::RDFLAGS; }
+        // gunindex always sent (mirrors C server behaviour)
+        flags |= PlayerStateFlags::WEAPONINDEX;
+        if new.gunframe != old.gunframe
+            || new.gunoffset != old.gunoffset
+            || new.gunangles != old.gunangles
+        {
+            flags |= PlayerStateFlags::WEAPONFRAME;
+        }
+
+        self.write_byte(SvcOp::PlayerInfo as i32);
+        self.write_short(flags.bits() as i32);
+
+        if flags.contains(PlayerStateFlags::M_TYPE) {
+            self.write_byte(new.pmove.pm_type as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_ORIGIN) {
+            self.write_short(new.pmove.origin[0] as i32);
+            self.write_short(new.pmove.origin[1] as i32);
+            self.write_short(new.pmove.origin[2] as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_VELOCITY) {
+            self.write_short(new.pmove.velocity[0] as i32);
+            self.write_short(new.pmove.velocity[1] as i32);
+            self.write_short(new.pmove.velocity[2] as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_TIME) {
+            self.write_byte(new.pmove.pm_time as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_FLAGS) {
+            self.write_byte(new.pmove.pm_flags as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_GRAVITY) {
+            self.write_short(new.pmove.gravity as i32);
+        }
+        if flags.contains(PlayerStateFlags::M_DELTA_ANGLES) {
+            self.write_short(new.pmove.delta_angles[0] as i32);
+            self.write_short(new.pmove.delta_angles[1] as i32);
+            self.write_short(new.pmove.delta_angles[2] as i32);
+        }
+        if flags.contains(PlayerStateFlags::VIEWOFFSET) {
+            self.write_char((new.viewoffset.x * 4.0) as i32);
+            self.write_char((new.viewoffset.y * 4.0) as i32);
+            self.write_char((new.viewoffset.z * 4.0) as i32);
+        }
+        if flags.contains(PlayerStateFlags::VIEWANGLES) {
+            self.write_angle16(new.viewangles.x);
+            self.write_angle16(new.viewangles.y);
+            self.write_angle16(new.viewangles.z);
+        }
+        if flags.contains(PlayerStateFlags::KICKANGLES) {
+            self.write_char((new.kick_angles.x * 4.0) as i32);
+            self.write_char((new.kick_angles.y * 4.0) as i32);
+            self.write_char((new.kick_angles.z * 4.0) as i32);
+        }
+        if flags.contains(PlayerStateFlags::WEAPONINDEX) {
+            self.write_byte(new.gunindex);
+        }
+        if flags.contains(PlayerStateFlags::WEAPONFRAME) {
+            self.write_byte(new.gunframe);
+            self.write_char((new.gunoffset.x * 4.0) as i32);
+            self.write_char((new.gunoffset.y * 4.0) as i32);
+            self.write_char((new.gunoffset.z * 4.0) as i32);
+            self.write_char((new.gunangles.x * 4.0) as i32);
+            self.write_char((new.gunangles.y * 4.0) as i32);
+            self.write_char((new.gunangles.z * 4.0) as i32);
+        }
+        if flags.contains(PlayerStateFlags::BLEND) {
+            self.write_byte((new.blend[0] * 255.0) as i32);
+            self.write_byte((new.blend[1] * 255.0) as i32);
+            self.write_byte((new.blend[2] * 255.0) as i32);
+            self.write_byte((new.blend[3] * 255.0) as i32);
+        }
+        if flags.contains(PlayerStateFlags::FOV) {
+            self.write_byte(new.fov as i32);
+        }
+        if flags.contains(PlayerStateFlags::RDFLAGS) {
+            self.write_byte(new.rdflags);
+        }
+
+        // Stats: always write the statbits mask, then only changed slots.
+        let mut statbits: u32 = 0;
+        for i in 0..MAX_STATS {
+            if new.stats[i] != old.stats[i] {
+                statbits |= 1u32 << i;
+            }
+        }
+        self.write_long(statbits as i32);
+        for i in 0..MAX_STATS {
+            if statbits & (1u32 << i) != 0 {
+                self.write_short(new.stats[i] as i32);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Packet entity list encoding
+    // -------------------------------------------------------------------------
+
+    /// Write a delta-compressed entity list followed by the `svc_packetentities`
+    /// opcode and terminated by entity number 0.
+    ///
+    /// Both `old_entities` and `new_entities` **must** be sorted by entity number
+    /// (ascending). Entities in `old_entities` but absent from `new_entities` are
+    /// written with the REMOVE flag; entities that appear in both with identical
+    /// state are omitted (the reader copies them forward from the old frame).
+    pub fn write_packet_entities_list(
+        &mut self,
+        old_entities: &[EntityState],
+        new_entities: &[EntityState],
+    ) {
+        self.write_byte(SvcOp::PacketEntities as i32);
+
+        let mut old_idx = 0usize;
+
+        for new_ent in new_entities {
+            // Entities in old that come before this new entity number are REMOVED.
+            while old_idx < old_entities.len()
+                && old_entities[old_idx].number < new_ent.number
+            {
+                self.write_entity_remove(old_entities[old_idx].number);
+                old_idx += 1;
+            }
+
+            // Determine delta base: old entity with same number (if any) or zero.
+            let (from, is_new) = if old_idx < old_entities.len()
+                && old_entities[old_idx].number == new_ent.number
+            {
+                let from = old_entities[old_idx].clone();
+                old_idx += 1;
+                (from, false)
+            } else {
+                (EntityState::default(), true)
+            };
+
+            self.write_delta_entity(&from, new_ent, is_new, is_new);
+        }
+
+        // Any remaining old entities are removed.
+        while old_idx < old_entities.len() {
+            self.write_entity_remove(old_entities[old_idx].number);
+            old_idx += 1;
+        }
+
+        // Terminator: entity number 0 with no flags.
+        self.write_byte(0); // flags byte = 0
+        self.write_byte(0); // entity number = 0
+    }
+
+    /// Write entity bits encoding a REMOVE for the given entity number.
+    fn write_entity_remove(&mut self, number: i32) {
+        let mut flags = UpdateFlags::REMOVE;
+        if number >= 256 {
+            flags |= UpdateFlags::NUMBER16 | UpdateFlags::MOREBITS1;
+        }
+        let bits = flags.bits();
+        self.write_byte(bits as i32 & 0xFF);
+        if flags.contains(UpdateFlags::MOREBITS1) {
+            self.write_byte((bits >> 8) as i32 & 0xFF);
+        }
+        if flags.contains(UpdateFlags::NUMBER16) {
+            self.write_short(number);
+        } else {
+            self.write_byte(number);
+        }
     }
 }
 

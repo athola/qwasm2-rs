@@ -2014,6 +2014,7 @@ version = "0.1.1"
 dependencies = [
  "glow",
  "js-sys",
+ "q2-common",
  "q2-render-api",
  "q2-shared",
  "tracing",

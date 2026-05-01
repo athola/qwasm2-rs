@@ -31,8 +31,9 @@ pub struct ClientState {
     /// View/render state
     pub viewangles: Vec3f,
     pub refdef: RefDefState,
-    /// Player state
+    /// Current and historical frames from server (ring buffer indexed by serverframe & UPDATE_MASK)
     pub frame: ClientFrame,
+    pub frames: Vec<ClientFrame>,
     pub predicted_origin: Vec3f,
     pub predicted_angles: Vec3f,
     /// Entity state (indexed by entity number)
@@ -60,6 +61,7 @@ impl Default for ClientState {
             viewangles: Vec3f::ZERO,
             refdef: RefDefState::default(),
             frame: ClientFrame::default(),
+            frames: (0..UPDATE_BACKUP).map(|_| ClientFrame::default()).collect(),
             predicted_origin: Vec3f::ZERO,
             predicted_angles: Vec3f::ZERO,
             entities: vec![CEntity::default(); MAX_EDICTS],
@@ -75,16 +77,19 @@ impl Default for ClientState {
     }
 }
 
-/// Frame state received from server
+/// Frame state received from server.
+///
+/// `entities` is sorted by entity number; this replaces the C parse_entities
+/// ring-buffer index with a per-frame Vec so there is no global shared state.
 #[derive(Debug, Clone, Default)]
 pub struct ClientFrame {
     pub valid: bool,
     pub serverframe: i32,
     pub servertime: i32,
     pub deltaframe: i32,
+    pub areabits: [u8; MAX_MAP_AREAS / 8],
     pub playerstate: PlayerState,
-    pub num_entities: i32,
-    pub parse_entities: i32,
+    pub entities: Vec<EntityState>,
 }
 
 /// View setup

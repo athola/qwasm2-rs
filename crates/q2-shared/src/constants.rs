@@ -1,6 +1,7 @@
 // Per-level limits
 pub const PROTOCOL_VERSION: i32 = 34;
 pub const MAX_CLIENTS: usize = 256;
+pub const MAX_MAP_AREAS: usize = 256;
 pub const MAX_EDICTS: usize = 1024;
 pub const MAX_MODELS: usize = 256;
 pub const MAX_SOUNDS: usize = 256;
