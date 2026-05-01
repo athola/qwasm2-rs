@@ -18,11 +18,13 @@ use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 
 #[derive(Debug)]
 struct GiInner {
-    /// Outbound message buffer (write_* calls enqueue here; flushed by
-    /// multicast/unicast — currently just accumulated for CP-3).
+    /// Outbound message buffer accumulating write_* calls; discarded (not sent)
+    /// when multicast/unicast is called until proper routing is implemented.
     msg_buf: Vec<u8>,
     /// Mirror of Server::configstrings, updated by game calls to configstring().
     configstrings: Vec<String>,
+    /// Tracks which configstring slots were written since the last drain.
+    dirty: Vec<bool>,
 }
 
 impl GiInner {
@@ -30,6 +32,7 @@ impl GiInner {
         Self {
             msg_buf: Vec::new(),
             configstrings: vec![String::new(); MAX_CONFIGSTRINGS],
+            dirty: vec![false; MAX_CONFIGSTRINGS],
         }
     }
 }
@@ -56,19 +59,24 @@ impl ServerGameImport {
         }
     }
 
-    /// Drain configstring updates set during the most recent game frame.
-    /// Returns `(index, value)` pairs for every slot that was written.
+    /// Drain configstring updates written since the last call.
+    ///
+    /// Returns `(index, value)` pairs for every slot that was written via
+    /// `configstring()`, including slots cleared to an empty string (valid Q2
+    /// protocol to erase a slot).  Clears the dirty flags so subsequent calls
+    /// return only new writes.
     pub fn drain_configstring_updates(&self) -> Vec<(usize, String)> {
-        // For now, return all non-empty entries. This will be refined when
-        // delta-compression requires tracking which slots changed.
-        let inner = self.inner.lock().unwrap();
-        inner
-            .configstrings
+        let mut inner = self.inner.lock().unwrap();
+        let updates: Vec<(usize, String)> = inner
+            .dirty
             .iter()
             .enumerate()
-            .filter(|(_, s)| !s.is_empty())
-            .map(|(i, s)| (i, s.clone()))
-            .collect()
+            .filter_map(|(i, &d)| if d { Some((i, inner.configstrings[i].clone())) } else { None })
+            .collect();
+        for (i, _) in &updates {
+            inner.dirty[*i] = false;
+        }
+        updates
     }
 }
 
@@ -160,8 +168,7 @@ impl GameImport for ServerGameImport {
     // -- entity linking ------------------------------------------------------
 
     fn link_entity(&self, _ent_idx: usize) {
-        // Deferred: entity bounds must be read from the game storage.
-        // Requires a shared reference to EntityStorage or a bounds callback.
+        // TODO: implement once EntityStorage is accessible here (tracked in #31).
     }
 
     fn unlink_entity(&self, _ent_idx: usize) {}
@@ -186,6 +193,7 @@ impl GameImport for ServerGameImport {
         let mut inner = self.inner.lock().unwrap();
         if idx < inner.configstrings.len() {
             inner.configstrings[idx] = string.to_string();
+            inner.dirty[idx] = true;
         }
     }
 
@@ -232,8 +240,8 @@ impl GameImport for ServerGameImport {
     }
 
     fn write_dir(&self, dir: Vec3f) {
-        // Quantise to the nearest BYTEDIRS entry (256 directions).
-        // For CP-3 just write a single dummy byte.
+        // Stub: should quantise to the nearest BYTEDIRS entry (162 directions).
+        // Writing byte 0 keeps the stream aligned until quantization is wired up.
         let _ = dir;
         self.inner.lock().unwrap().msg_buf.push(0);
     }

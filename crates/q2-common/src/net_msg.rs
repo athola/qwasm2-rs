@@ -201,6 +201,11 @@ impl NetMsg {
         self.read_pos
     }
 
+    /// Whether a read operation has tried to read past the end of the buffer.
+    pub fn is_overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     /// Return a slice of all data from the current read position to the end.
     pub fn remaining_data(&self) -> &[u8] {
         if self.read_pos >= self.data.len() {
@@ -371,6 +376,7 @@ impl NetMsg {
         let mut result = Vec::new();
         loop {
             if self.read_pos >= self.data.len() {
+                self.overflowed = true;
                 break;
             }
             let b = self.data[self.read_pos];

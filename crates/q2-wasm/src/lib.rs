@@ -261,7 +261,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     let reader = q2_platform::wasm::pak::JsPakReader::new(pak_array);
     let pak =
         q2_common::filesystem::Pack::open("pak0.pak", Box::new(reader)).map_err(q2err_to_js)?;
-    let file_count = pak.files.len();
+    let file_count = pak.file_count();
     fs.add_pack(pak);
     log(&format!(
         "Filesystem: {} files indexed from pak0.pak",

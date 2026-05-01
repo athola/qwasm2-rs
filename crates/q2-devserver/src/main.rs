@@ -156,9 +156,12 @@ async fn serve_file_plain(path: &std::path::Path) -> Response<Body> {
             .header("Content-Type", "application/octet-stream")
             .body(Body::from(bytes))
             .unwrap(),
-        Err(_) => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .unwrap(),
+        Err(err) => {
+            tracing::warn!("serve_file_plain: failed to read {}: {}", path.display(), err);
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap()
+        }
     }
 }

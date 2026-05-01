@@ -126,8 +126,7 @@ pub struct PackFile {
 pub struct Pack {
     /// Display name (path for disk packs, URL or name for WASM packs).
     pub name: String,
-    /// Files in this pack, keyed by normalized name.
-    pub files: HashMap<String, PackFile>,
+    pub(crate) files: HashMap<String, PackFile>,
     reader: Box<dyn PakReader>,
 }
 
@@ -141,6 +140,11 @@ impl std::fmt::Debug for Pack {
 }
 
 impl Pack {
+    /// Number of files indexed in this pack.
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
     /// Open a PAK from any `PakReader` backend.
     ///
     /// Reads only the header (12 bytes) and directory to build the index.

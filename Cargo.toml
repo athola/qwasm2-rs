@@ -17,6 +17,10 @@ members = [
     "crates/q2-pak-repack",
 ]
 
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+
 [workspace.dependencies]
 glam = { version = "0.29", features = ["serde"] }
 bitflags = "2"

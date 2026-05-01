@@ -124,10 +124,22 @@ impl ClientState {
         let _suppress = msg.read_byte();
         let servertime = serverframe * 100;
 
-        // areabits: length-prefixed raw bytes
-        let areabits_len = (msg.read_byte() as usize).min(MAX_MAP_AREAS / 8);
+        // areabits: length-prefixed raw bytes.  Cap to MAX_MAP_AREAS/8 but
+        // consume the full wire length to keep the stream aligned.
+        let raw_areabits_len = msg.read_byte() as usize;
+        let capped_areabits_len = raw_areabits_len.min(MAX_MAP_AREAS / 8);
+        if raw_areabits_len > MAX_MAP_AREAS / 8 {
+            tracing::warn!(
+                "parse_frame: areabits_len {} > max {}, capping",
+                raw_areabits_len,
+                MAX_MAP_AREAS / 8
+            );
+        }
         let mut areabits = [0u8; MAX_MAP_AREAS / 8];
-        msg.read_data(&mut areabits[..areabits_len]);
+        msg.read_data(&mut areabits[..capped_areabits_len]);
+        for _ in capped_areabits_len..raw_areabits_len {
+            msg.read_byte();
+        }
 
         // Locate the old frame for delta (or None for uncompressed frame).
         let old_frame: Option<ClientFrame> = if deltaframe > 0 {
@@ -454,11 +466,22 @@ fn read_packet_entities(
     loop {
         let (newnum, bits) = parse_entity_bits(msg);
 
+        // Truncated stream — all further reads return -1/0, so stop now rather
+        // than spinning through spurious MOREBITS expansions.
+        if msg.is_overflowed() {
+            tracing::error!("read_packet_entities: stream overflowed, aborting");
+            break;
+        }
+
         if newnum >= MAX_EDICTS as i32 {
             tracing::error!(
                 "read_packet_entities: entity number {} >= MAX_EDICTS",
                 newnum
             );
+            // Consume the delta payload before aborting so callers that
+            // inspect remaining_data() see an aligned stream (matches the
+            // parse_baseline pattern).
+            read_delta_entity(msg, &EntityState::default(), newnum, bits);
             break;
         }
 
@@ -971,14 +994,16 @@ mod tests {
         let mut cs = ClientState::default();
         cs.state = ConnState::Active;
 
-        // Inject PlayerInfo (17) as top-level opcode — protocol violation.
+        // Inject PlayerInfo (17) as top-level opcode followed by Disconnect.
+        // If the parser correctly aborts on the violation it must NOT reach
+        // the Disconnect opcode — state stays Active.
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::PlayerInfo as i32);
+        msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
         cs.parse_server_message(&mut msg);
-        // Parser must have stopped (not panicked, not consumed further data).
-        assert_eq!(cs.state, ConnState::Active); // unchanged
+        assert_eq!(cs.state, ConnState::Active);
     }
 
     #[test]
@@ -988,9 +1013,100 @@ mod tests {
 
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::PacketEntities as i32);
+        msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
         cs.parse_server_message(&mut msg);
         assert_eq!(cs.state, ConnState::Active);
+    }
+
+    // I3: entity number >= 256 exercises the NUMBER16 path (MOREBITS1 + read_short).
+    #[test]
+    fn entity_number16_roundtrip() {
+        let from = EntityState::default();
+        let to = EntityState {
+            number: 300,
+            modelindex: 9,
+            ..Default::default()
+        };
+
+        let mut msg = NetMsg::new();
+        msg.write_delta_entity(&from, &to, true, false);
+        msg.begin_reading();
+        let (num, bits) = parse_entity_bits(&mut msg);
+
+        assert_eq!(num, 300);
+        assert!(bits.contains(UpdateFlags::NUMBER16));
+        let decoded = read_delta_entity(&mut msg, &from, num, bits);
+        assert_eq!(decoded.number, 300);
+        assert_eq!(decoded.modelindex, 9);
+    }
+
+    // I4: WEAPONFRAME group encodes gunframe + 6 packed gunoffset/gunangle bytes.
+    #[test]
+    fn player_state_weaponframe_roundtrip() {
+        let old_ps = PlayerState::default();
+        let mut new_ps = PlayerState::default();
+        new_ps.gunframe = 7;
+        new_ps.gunoffset = Vec3f::new(2.0, -1.0, 0.5);
+        new_ps.gunangles = Vec3f::new(15.0, -10.0, 5.0);
+
+        let mut msg = NetMsg::new();
+        msg.write_player_state(&old_ps, &new_ps);
+        msg.begin_reading();
+        let _ = msg.read_byte(); // consume PlayerInfo opcode
+        let decoded = read_player_state(&mut msg, None);
+
+        assert_eq!(decoded.gunframe, 7);
+        // gunoffset/gunangles stored as (val * 4) as i8 → 0.25 resolution
+        assert!((decoded.gunoffset.x - 2.0).abs() < 0.26);
+        assert!((decoded.gunoffset.y - (-1.0)).abs() < 0.26);
+        assert!((decoded.gunangles.x - 15.0).abs() < 0.26);
+        assert!((decoded.gunangles.y - (-10.0)).abs() < 0.26);
+    }
+
+    // S1: SOLID flag lives in bits 24-31, forcing the MOREBITS3 expansion (4-byte header).
+    #[test]
+    fn entity_morebits3_solid_roundtrip() {
+        let from = EntityState::default();
+        let to = EntityState {
+            number: 1,
+            solid: 31744,
+            ..Default::default()
+        };
+
+        let mut msg = NetMsg::new();
+        msg.write_delta_entity(&from, &to, true, false);
+        msg.begin_reading();
+        let (_, bits) = parse_entity_bits(&mut msg);
+
+        assert!(bits.contains(UpdateFlags::SOLID));
+        let decoded = read_delta_entity(&mut msg, &from, 1, bits);
+        assert_eq!(decoded.solid, 31744);
+    }
+
+    // S2: SKIN8+SKIN16 combo → 4-byte read; EFFECTS8+EFFECTS16 combo → 4-byte read.
+    #[test]
+    fn entity_skin_effects_wide_roundtrip() {
+        let from = EntityState::default();
+        let to = EntityState {
+            number: 2,
+            skinnum: 300,   // >= 256 → SKIN8|SKIN16 → write_long
+            effects: 300,   // >= 256 → EFFECTS8|EFFECTS16 → write_long
+            ..Default::default()
+        };
+
+        let mut msg = NetMsg::new();
+        msg.write_delta_entity(&from, &to, true, false);
+        msg.begin_reading();
+        let (num, bits) = parse_entity_bits(&mut msg);
+
+        assert!(bits.contains(UpdateFlags::SKIN8));
+        assert!(bits.contains(UpdateFlags::SKIN16));
+        assert!(bits.contains(UpdateFlags::EFFECTS8));
+        assert!(bits.contains(UpdateFlags::EFFECTS16));
+        let decoded = read_delta_entity(&mut msg, &from, num, bits);
+        assert_eq!(decoded.skinnum, 300);
+        assert_eq!(decoded.effects, 300);
     }
 }

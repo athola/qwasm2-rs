@@ -7,7 +7,7 @@ use crate::entity::{ClientData, EntityKey, EntityStorage};
 use crate::spawn::{parse_entity_string, SpawnTable};
 use crate::traits::{GameExport, GameImport};
 use q2_shared::{
-    constants::{CS_MAXCLIENTS, MAX_EDICTS},
+    constants::{CS_MAXCLIENTS, MAX_CLIENTS, MAX_EDICTS},
     types::UserCmd,
 };
 
@@ -25,14 +25,12 @@ impl GameLogic {
             storage: EntityStorage::new(MAX_EDICTS),
             spawn_table: SpawnTable::new(),
             framenum: 0,
-            player_slots: Vec::new(),
+            player_slots: vec![None; MAX_CLIENTS],
         }
     }
 
     fn ensure_slot(&mut self, idx: usize) {
-        if self.player_slots.len() <= idx {
-            self.player_slots.resize(idx + 1, None);
-        }
+        debug_assert!(idx < MAX_CLIENTS, "player index {} out of range", idx);
     }
 }
 
@@ -55,7 +53,7 @@ impl GameExport for GameLogic {
 
     fn shutdown(&mut self) {
         self.storage = EntityStorage::new(MAX_EDICTS);
-        self.player_slots.clear();
+        self.player_slots.fill(None);
         self.framenum = 0;
     }
 
@@ -253,6 +251,6 @@ mod tests {
         game.shutdown();
         assert_eq!(game.framenum, 0);
         assert_eq!(game.storage.count(), 0);
-        assert!(game.player_slots.is_empty());
+        assert!(game.player_slots.iter().all(|s| s.is_none()));
     }
 }

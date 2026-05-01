@@ -31,8 +31,13 @@ pub struct ClientState {
     /// View/render state
     pub viewangles: Vec3f,
     pub refdef: RefDefState,
-    /// Current and historical frames from server (ring buffer indexed by serverframe & UPDATE_MASK)
+    /// The most recently completed frame, used for rendering.  Mirrors `cl.frame`
+    /// from the C source.  Also stored in `frames[serverframe & UPDATE_MASK]` for
+    /// delta reference — the duplication is intentional: `frame` gives renderers
+    /// O(1) access without needing to carry the frame index around.
     pub frame: ClientFrame,
+    /// Ring buffer of received frames indexed by `serverframe & UPDATE_MASK`.
+    /// Holds UPDATE_BACKUP entries for delta decompression.
     pub frames: Vec<ClientFrame>,
     pub predicted_origin: Vec3f,
     pub predicted_angles: Vec3f,

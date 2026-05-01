@@ -53,7 +53,7 @@ fn main() -> Result<()> {
 
     let src_mb = src.len() as f64 / 1_000_000.0;
     let out_mb = out.len() as f64 / 1_000_000.0;
-    let retained = retained_count(&out);
+    let retained = entry_count(&out);
     let total = entry_count(&src);
 
     if allowlist.is_some() {
@@ -203,9 +203,6 @@ fn entry_count(pak: &[u8]) -> usize {
     dir_len / ENTRY_SIZE
 }
 
-fn retained_count(pak: &[u8]) -> usize {
-    entry_count(pak)
-}
 
 // ---------------------------------------------------------------------------
 // Tests

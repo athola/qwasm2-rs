@@ -1,6 +1,6 @@
 [package]
 name = "q2-pak-repack"
-version = "0.1.2"
+version.workspace = true
 edition = "2021"
 description = "Filter a Quake 2 PAK file by extension allowlist, producing a smaller web-optimized PAK"
 

@@ -101,6 +101,17 @@ yet implemented.
 - The three standalone crates (devserver, bundler, bin) add workspace
   complexity but don't participate in the engine dependency graph.
 
+## Wire Protocol Deviations from C Original
+
+The Rust implementation encodes entity angles as 16-bit values (`write_angle16` /
+`read_angle16`, range 0–65535 mapped to 0–360°) rather than the 8-bit encoding
+used by the original C protocol.  This is a deliberate precision upgrade for the
+internal WASM client/server path.
+
+**Implication:** The encoded bitstream is not wire-compatible with the original
+Quake 2 network protocol.  Interoperability with vanilla Q2 clients/servers is
+not a goal for this codebase.
+
 ## Review Triggers
 
 Re-evaluate this ADR when:
