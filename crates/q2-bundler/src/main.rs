@@ -282,7 +282,7 @@ try {{
   document.getElementById('self-test-result').textContent = self_test();
 
   // Determine pak URL — if served by devserver, fetch from /gamedata/
-  const pakUrl = '/gamedata/baseq2/pak0.pak';
+  const pakUrl = '/gamedata/baseq2/pak0-web.pak';
 
   await start_game('canvas', pakUrl);
 }} catch (e) {{

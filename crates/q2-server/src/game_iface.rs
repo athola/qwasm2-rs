@@ -373,7 +373,10 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_byte(1);
         gi.write_byte(2);
-        gi.multicast(q2_shared::types::Vec3f::new(0.0, 0.0, 0.0), q2_shared::types::Multicast::All);
+        gi.multicast(
+            q2_shared::types::Vec3f::new(0.0, 0.0, 0.0),
+            q2_shared::types::Multicast::All,
+        );
         let inner = gi.inner.lock().unwrap();
         assert!(inner.msg_buf.is_empty());
     }
@@ -400,7 +403,10 @@ mod tests {
         gi.configstring(3, "first");
         gi.configstring(3, "second");
         let updates = gi.drain_configstring_updates();
-        let found = updates.iter().find(|(i, _)| *i == 3).map(|(_, v)| v.as_str());
+        let found = updates
+            .iter()
+            .find(|(i, _)| *i == 3)
+            .map(|(_, v)| v.as_str());
         assert_eq!(found, Some("second"));
     }
 }

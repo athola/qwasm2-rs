@@ -39,6 +39,9 @@ WebGL2, and runs player movement in the browser.
 - Single-file HTML bundle (`dist/qwasm2.html`) — no install needed
   for end users
 - Automatic demo game data download (`make gamedata`)
+- Web-optimized `pak0-web.pak` produced by `make pak-web` — Brotli-compressed
+  at level 11 and served with content negotiation; browsers receive ~26 MB
+  instead of ~47 MB raw
 - Native and WASM build targets from the same codebase
 
 ## Quick Start
@@ -78,11 +81,17 @@ Run `make prereqs` to verify all tools are present.
 | `make bundle` | WASM + single-file HTML bundle |
 | `make build` | Native build (all crates) |
 | `make devserver` | Run dev server without rebuilding |
+| `make serve` | Serve wasm-pack output via Python (no gamedata required) |
 | `make gamedata` | Download Quake 2 demo pak0.pak |
+| `make pak-web` | Repack game data and Brotli-compress for web delivery |
+| `make check` | Type-check native + WASM targets without full build |
 | `make test` | Run all native tests |
+| `make test-browser` | Run Playwright browser tests (requires npx) |
 | `make lint` | Clippy lints (zero warnings) |
 | `make fmt` | Format code |
+| `make fmt-check` | Check formatting without modifying files |
 | `make clean` | Remove build artifacts |
+| `make clean-gamedata` | Remove downloaded game data |
 
 ## Architecture
 
@@ -99,7 +108,7 @@ Entry points:  q2-wasm (browser)  q2-bin (native)
                            |                    |
                         q2-shared (types, constants)
 
-Standalone:  q2-devserver  q2-bundler  q2-platform
+Standalone:  q2-devserver  q2-bundler  q2-platform  q2-pak-repack
 Networking:  q2-net (depends on q2-shared, q2-common)
 ```
 
@@ -130,8 +139,9 @@ function-pointer tables and backend coupling:
 | `q2-net` | P2P networking via WebRTC (matchbox_socket) |
 | `q2-wasm` | WASM cdylib entry point |
 | `q2-bin` | Native binary entry point |
-| `q2-devserver` | Axum dev server for local development |
+| `q2-devserver` | Axum dev server for local development (Brotli content negotiation) |
 | `q2-bundler` | Packs WASM + HTML into a single file |
+| `q2-pak-repack` | CLI tool: filter and Brotli-compress PAK files for web delivery |
 
 ## Game Data
 
@@ -140,10 +150,17 @@ get started is with the free demo data:
 
 ```bash
 make gamedata       # downloads + extracts demo pak0.pak (~47 MB)
+make pak-web        # repack + Brotli-compress → pak0-web.pak{,.br}
 ```
 
+`make play` runs both steps automatically. The devserver then serves
+`pak0-web.pak.br` (Brotli, ~26 MB) to browsers that advertise
+`Accept-Encoding: br`, and falls back to the uncompressed `pak0-web.pak`
+otherwise.
+
 To use the full game, copy your `pak0.pak` (and optionally `pak1.pak`,
-`pak2.pak`) from a Quake 2 installation into `gamedata/baseq2/`.
+`pak2.pak`) from a Quake 2 installation into `gamedata/baseq2/`, then
+run `make pak-web` to produce the web-optimized variant.
 
 ## Development
 

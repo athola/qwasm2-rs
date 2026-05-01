@@ -2,6 +2,7 @@
         play play-release serve devserver clean clean-gamedata \
         check test test-browser lint fmt fmt-check \
         gamedata gamedata-check gamedata-demo \
+        pak-web prereq-pak-repack \
         prereqs prereq-rust prereq-wasm-pack prereq-7z prereq-curl prereq-python3
 
 # --- Config ---
@@ -14,6 +15,10 @@ PORT         := 8080
 
 # Demo pak0.pak source
 DEMO_URL     := https://deponie.yamagi.org/quake2/idstuff/q2-314-demo-x86.exe
+
+# Web pak: extension filter for future use when transcoding audio/textures (e.g. --allow bsp,cfg,opus,webp).
+# Currently unused — pak-web copies all assets and Brotli-compresses for web delivery.
+PAK_WEB_ALLOW :=
 
 # Status markers (override for CI: make OK='[ok]' FAIL='[FAIL]')
 OK           := ✓
@@ -55,7 +60,11 @@ prereq-python3: ## Check python3 is available
 		(echo "$(FAIL) python3 not found"; exit 1)
 	@echo "$(OK) python3"
 
-prereqs: prereq-rust prereq-wasm-pack prereq-curl prereq-7z prereq-python3 ## Check all build prerequisites
+prereq-pak-repack: ## Check q2-pak-repack builds
+	@cargo build -p q2-pak-repack --quiet 2>&1 | grep -E "^error" && exit 1 || true
+	@echo "$(OK) q2-pak-repack"
+
+prereqs: prereq-rust prereq-wasm-pack prereq-curl prereq-7z prereq-python3 prereq-pak-repack ## Check all build prerequisites
 	@echo ""
 	@echo "All build prerequisites satisfied."
 
@@ -87,6 +96,14 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (~47 MB
 
 gamedata: gamedata-check ## Alias for gamedata-check
 
+pak-web: prereq-pak-repack gamedata-check ## Build web pak: all assets, Brotli-compressed (~26 MB wire size)
+	cargo run -p q2-pak-repack --release -- \
+		--in "$(GAMEDATA)/pak0.pak" \
+		--out "$(GAMEDATA)/pak0-web.pak" \
+		--all \
+		--brotli
+	@echo "$(OK) $(GAMEDATA)/pak0-web.pak ready"
+
 # --- Build pipeline ---
 wasm: prereq-wasm-pack ## Build WASM module (wasm-pack, debug)
 	wasm-pack build --dev --target web $(WASM_CRATE)
@@ -101,13 +118,13 @@ bundle-release: wasm-release ## Release WASM + bundle into dist/qwasm2.html
 	cargo run --release -p q2-bundler
 
 # --- Play / Serve ---
-play: prereqs bundle gamedata-check ## Build everything + launch devserver
+play: prereqs bundle gamedata-check pak-web ## Build everything + launch devserver
 	@echo ""
 	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html"
 	@echo ""
 	PORT=$(PORT) cargo run -p q2-devserver
 
-play-release: prereqs bundle-release gamedata-check ## Release build + devserver
+play-release: prereqs bundle-release gamedata-check pak-web ## Release build + devserver
 	@echo ""
 	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html"
 	@echo ""
@@ -154,6 +171,7 @@ fmt-check: prereq-rust ## Check formatting
 clean: ## Remove build artifacts
 	cargo clean
 	rm -rf "$(WASM_PKG)" "$(DIST)"
+	rm -f "$(GAMEDATA)/pak0-web.pak" "$(GAMEDATA)/pak0-web.pak.br"
 
 clean-gamedata: ## Remove downloaded game data
 	rm -rf gamedata/

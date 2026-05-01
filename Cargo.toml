@@ -14,6 +14,7 @@ members = [
     "crates/q2-devserver",
     "crates/q2-wasm",
     "crates/q2-bundler",
+    "crates/q2-pak-repack",
 ]
 
 [workspace.dependencies]
