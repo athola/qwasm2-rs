@@ -232,19 +232,22 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
         .map_err(|e| JsValue::from_str(&format!("GL3 init failed: {e}")))?;
     log("GL3 renderer initialized");
 
-    // 3. Fetch pak0.pak
+    // 3. Fetch pak0.pak — keep bytes in JS heap; don't copy to Rust yet.
     log(&format!("Fetching {}...", pak_url));
-    let pak_data = fetch_bytes(&pak_url).await?;
-    log(&format!("pak0.pak loaded: {} bytes ({:.1} MB)",
-        pak_data.len(), pak_data.len() as f64 / (1024.0 * 1024.0)));
+    let pak_array = fetch_array_buffer(&pak_url).await?;
+    log(&format!("pak0.pak fetched: {} bytes ({:.1} MB)",
+        pak_array.length(), pak_array.length() as f64 / (1024.0 * 1024.0)));
 
-    // 4. Load PAK into virtual filesystem
+    // 4. Index PAK directory into Rust; asset bytes stay in JS heap.
+    //    Individual files are sliced from the JS Uint8Array on demand via
+    //    JsPakReader — only the bytes for the current asset cross the boundary.
     let mut fs = q2_common::filesystem::FileSystem::new("baseq2");
-    let pak = q2_common::filesystem::Pack::load_from_bytes("pak0.pak", &pak_data)
+    let reader = q2_platform::wasm::pak::JsPakReader::new(pak_array);
+    let pak = q2_common::filesystem::Pack::open("pak0.pak", Box::new(reader))
         .map_err(q2err_to_js)?;
     let file_count = pak.files.len();
     fs.add_pack(pak);
-    log(&format!("Filesystem: {} files from pak0.pak", file_count));
+    log(&format!("Filesystem: {} files indexed from pak0.pak", file_count));
 
     // 5. List available maps
     let maps = fs.list_files("bsp");
@@ -335,9 +338,12 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Fetch a URL as raw bytes.
+/// Fetch a URL and return the response body as a JS-heap `Uint8Array`.
+///
+/// The returned array is NOT copied into Rust memory — callers decide how
+/// much (if any) of the data to pull into WASM linear memory.
 #[cfg(target_arch = "wasm32")]
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+async fn fetch_array_buffer(url: &str) -> Result<js_sys::Uint8Array, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let resp: web_sys::Response = JsFuture::from(window.fetch_with_str(url))
         .await?
@@ -352,8 +358,7 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     }
 
     let array_buffer = JsFuture::from(resp.array_buffer()?).await?;
-    let uint8_array = js_sys::Uint8Array::new(&array_buffer);
-    Ok(uint8_array.to_vec())
+    Ok(js_sys::Uint8Array::new(&array_buffer))
 }
 
 #[cfg(target_arch = "wasm32")]

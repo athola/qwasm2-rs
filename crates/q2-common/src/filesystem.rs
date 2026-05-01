@@ -6,6 +6,14 @@
 //! - Unified `load_file` / `open_file` interface
 //! - Case-insensitive filename matching
 //!
+//! # Backend design
+//!
+//! `PakReader` abstracts the source of raw bytes.  Native builds use
+//! `DiskPakReader` (file per-read).  The WASM build uses `JsPakReader`
+//! (defined in `q2-platform`) which holds the full PAK as a JS-heap
+//! `Uint8Array` and slices individual assets into WASM memory on demand —
+//! avoiding an upfront 100 MB copy.
+//!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0
 
@@ -29,6 +37,75 @@ const PAK_DIR_ENTRY_SIZE: u32 = 64;
 /// Maximum files per PAK
 const MAX_FILES_IN_PACK: usize = 4096;
 
+// ---------------------------------------------------------------------------
+// PakReader trait
+// ---------------------------------------------------------------------------
+
+/// Source of raw bytes for a PAK archive.
+///
+/// Implementations can back a PAK with a disk file, an in-memory `Vec<u8>`,
+/// or (on WASM) a JS-heap `Uint8Array` — the latter avoids copying the full
+/// PAK into Rust memory until individual assets are requested.
+pub trait PakReader: Send + Sync {
+    /// Copy bytes `[offset, offset + len)` from the PAK source into a new
+    /// `Vec<u8>`.  Implementations should validate bounds and return
+    /// `Q2Error::Drop` on failure.
+    fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>>;
+}
+
+// ---------------------------------------------------------------------------
+// Bundled backend: disk (native)
+// ---------------------------------------------------------------------------
+
+struct DiskPakReader {
+    path: PathBuf,
+}
+
+impl PakReader for DiskPakReader {
+    fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
+        let file = std::fs::File::open(&self.path).map_err(|e| {
+            Q2Error::Drop(format!("open {}: {}", self.path.display(), e))
+        })?;
+        let mut reader = io::BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset as u64)).map_err(|e| {
+            Q2Error::Drop(format!("seek in {}: {}", self.path.display(), e))
+        })?;
+        let mut buf = vec![0u8; len as usize];
+        reader.read_exact(&mut buf).map_err(|e| {
+            Q2Error::Drop(format!("read from {}: {}", self.path.display(), e))
+        })?;
+        Ok(buf)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bundled backend: in-memory (tests + legacy load_from_bytes)
+// ---------------------------------------------------------------------------
+
+struct InMemPakReader {
+    data: Vec<u8>,
+}
+
+impl PakReader for InMemPakReader {
+    fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
+        let start = offset as usize;
+        let end = start.checked_add(len as usize).ok_or_else(|| {
+            Q2Error::Drop("InMemPakReader: offset overflow".into())
+        })?;
+        if end > self.data.len() {
+            return Err(Q2Error::Drop(format!(
+                "InMemPakReader: read [{start}, {end}) out of bounds (len={})",
+                self.data.len()
+            )));
+        }
+        Ok(self.data[start..end].to_vec())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PackFile
+// ---------------------------------------------------------------------------
+
 /// A file entry within a PAK archive.
 #[derive(Debug, Clone)]
 pub struct PackFile {
@@ -40,16 +117,82 @@ pub struct PackFile {
     pub size: u32,
 }
 
+// ---------------------------------------------------------------------------
+// Pack
+// ---------------------------------------------------------------------------
+
 /// A loaded PAK archive.
-#[derive(Debug)]
+///
+/// The directory index is always in Rust memory.  Asset bytes are fetched
+/// on demand through the `PakReader` backend — for WASM builds this means
+/// individual files are sliced from a JS-heap buffer rather than pre-copied.
 pub struct Pack {
-    /// Path to the .pak file on disk (empty for in-memory packs)
-    pub path: PathBuf,
-    /// Files in this pack, keyed by normalized name
+    /// Display name (path for disk packs, URL or name for WASM packs).
+    pub name: String,
+    /// Files in this pack, keyed by normalized name.
     pub files: HashMap<String, PackFile>,
-    /// In-memory PAK data (for WASM where we fetch the whole file)
-    data: Option<Vec<u8>>,
+    reader: Box<dyn PakReader>,
 }
+
+impl std::fmt::Debug for Pack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pack")
+            .field("name", &self.name)
+            .field("file_count", &self.files.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Pack {
+    /// Open a PAK from any `PakReader` backend.
+    ///
+    /// Reads only the header (12 bytes) and directory to build the index.
+    /// Asset bytes are not loaded until `read_file` is called.
+    pub fn open(name: &str, reader: Box<dyn PakReader>) -> Q2Result<Self> {
+        // Parse header
+        let header = reader.read_slice(0, 12)?;
+        let mut cur = Cursor::new(&header);
+        let magic = read_u32_le(&mut cur)?;
+        if magic != PAK_MAGIC {
+            return Err(Q2Error::Drop(format!(
+                "{name}: not a PAK file (magic: {magic:#010x})"
+            )));
+        }
+        let dir_offset = read_u32_le(&mut cur)?;
+        let dir_len = read_u32_le(&mut cur)?;
+
+        // Parse directory
+        let dir_bytes = reader.read_slice(dir_offset, dir_len)?;
+        let files = parse_pack_directory(name, &dir_bytes)?;
+
+        tracing::info!("{name}: {} files indexed", files.len());
+        Ok(Pack { name: name.to_string(), files, reader })
+    }
+
+    /// Load a PAK file from disk.
+    pub fn load(path: &Path) -> Q2Result<Self> {
+        let display = path.display().to_string();
+        Pack::open(&display, Box::new(DiskPakReader { path: path.to_path_buf() }))
+    }
+
+    /// Load a PAK from an in-memory byte buffer.
+    ///
+    /// Copies the buffer into an `InMemPakReader`.  On WASM, prefer
+    /// `Pack::open` with a `JsPakReader` (from `q2-platform`) to keep the
+    /// full PAK in the JS heap and only copy individual assets on demand.
+    pub fn load_from_bytes(name: &str, data: &[u8]) -> Q2Result<Self> {
+        Pack::open(name, Box::new(InMemPakReader { data: data.to_vec() }))
+    }
+
+    /// Read a file from this PAK archive.
+    pub fn read_file(&self, entry: &PackFile) -> Q2Result<Vec<u8>> {
+        self.reader.read_slice(entry.offset, entry.size)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SearchPath / FileSystem
+// ---------------------------------------------------------------------------
 
 /// A search path entry — either a directory or a PAK file.
 #[derive(Debug)]
@@ -67,143 +210,6 @@ pub struct FileSystem {
     game_dir: String,
 }
 
-/// Parse PAK directory entries from raw bytes. Shared by `Pack::load` and
-/// `Pack::load_from_bytes` to avoid duplicating the parsing logic.
-fn parse_pack_data(name: &str, data: &[u8]) -> Q2Result<HashMap<String, PackFile>> {
-    if data.len() < 12 {
-        return Err(Q2Error::Drop(format!(
-            "{}: data too small for PAK header",
-            name
-        )));
-    }
-
-    let mut cursor = Cursor::new(data);
-
-    let magic = read_u32_le(&mut cursor)?;
-    if magic != PAK_MAGIC {
-        return Err(Q2Error::Drop(format!(
-            "{}: not a PAK file (magic: {:#010x})",
-            name, magic
-        )));
-    }
-
-    let dir_offset = read_u32_le(&mut cursor)?;
-    let dir_len = read_u32_le(&mut cursor)?;
-
-    if dir_len % PAK_DIR_ENTRY_SIZE != 0 {
-        return Err(Q2Error::Drop(format!(
-            "{}: invalid PAK directory length {}",
-            name, dir_len
-        )));
-    }
-
-    let num_files = (dir_len / PAK_DIR_ENTRY_SIZE) as usize;
-    if num_files > MAX_FILES_IN_PACK {
-        return Err(Q2Error::Drop(format!(
-            "{}: too many files ({} > {})",
-            name, num_files, MAX_FILES_IN_PACK
-        )));
-    }
-
-    cursor.seek(SeekFrom::Start(dir_offset as u64)).map_err(|e| {
-        Q2Error::Drop(format!("{}: can't seek to directory: {}", name, e))
-    })?;
-
-    let mut files = HashMap::with_capacity(num_files);
-
-    for _ in 0..num_files {
-        let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
-        cursor.read_exact(&mut name_buf).map_err(|e| {
-            Q2Error::Drop(format!("{}: truncated directory: {}", name, e))
-        })?;
-
-        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(PAK_ENTRY_NAME_LEN);
-        let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
-        let normalized = normalize_path(&file_name);
-
-        let offset = read_u32_le(&mut cursor)?;
-        let size = read_u32_le(&mut cursor)?;
-
-        files.insert(
-            normalized.clone(),
-            PackFile {
-                name: normalized,
-                offset,
-                size,
-            },
-        );
-    }
-
-    Ok(files)
-}
-
-impl Pack {
-    /// Load a PAK file from disk, parsing its directory.
-    pub fn load(path: &Path) -> Q2Result<Self> {
-        let data = std::fs::read(path)
-            .map_err(|e| Q2Error::Drop(format!("can't open {}: {}", path.display(), e)))?;
-
-        let display_name = path.display().to_string();
-        let files = parse_pack_data(&display_name, &data)?;
-
-        tracing::info!(
-            "Loaded PAK: {} ({} files)",
-            path.display(),
-            files.len()
-        );
-
-        Ok(Pack {
-            path: path.to_path_buf(),
-            files,
-            data: None,
-        })
-    }
-
-    /// Load a PAK from an in-memory byte buffer (for WASM where files are fetched).
-    pub fn load_from_bytes(name: &str, data: &[u8]) -> Q2Result<Self> {
-        let files = parse_pack_data(name, data)?;
-
-        tracing::info!("Loaded PAK from memory: {} ({} files)", name, files.len());
-
-        Ok(Pack {
-            path: PathBuf::from(name),
-            files,
-            data: Some(data.to_vec()),
-        })
-    }
-
-    /// Read a file from this PAK archive.
-    pub fn read_file(&self, entry: &PackFile) -> Q2Result<Vec<u8>> {
-        let start = entry.offset as usize;
-        let end = start + entry.size as usize;
-
-        // In-memory mode (WASM)
-        if let Some(ref data) = self.data {
-            if end > data.len() {
-                return Err(Q2Error::Drop(format!(
-                    "{}: file '{}' extends past end of PAK",
-                    self.path.display(),
-                    entry.name
-                )));
-            }
-            return Ok(data[start..end].to_vec());
-        }
-
-        // Disk mode (native)
-        let file = std::fs::File::open(&self.path)
-            .map_err(|e| Q2Error::Drop(format!("can't open {}: {}", self.path.display(), e)))?;
-        let mut reader = io::BufReader::new(file);
-        reader
-            .seek(SeekFrom::Start(entry.offset as u64))
-            .map_err(|e| Q2Error::Drop(format!("seek error: {}", e)))?;
-        let mut buf = vec![0u8; entry.size as usize];
-        reader
-            .read_exact(&mut buf)
-            .map_err(|e| Q2Error::Drop(format!("read error: {}", e)))?;
-        Ok(buf)
-    }
-}
-
 impl FileSystem {
     /// Create a new empty filesystem.
     pub fn new(game_dir: &str) -> Self {
@@ -213,7 +219,9 @@ impl FileSystem {
         }
     }
 
-    /// Add a pre-loaded PAK directly (for WASM where data is fetched into memory).
+    /// Add a pre-loaded PAK directly.
+    ///
+    /// Use this on WASM to register a `Pack` backed by a `JsPakReader`.
     pub fn add_pack(&mut self, pack: Pack) {
         self.search_paths.push(SearchPath::Pack(pack));
     }
@@ -228,7 +236,6 @@ impl FileSystem {
             )));
         }
 
-        // Find and load PAK files in sorted order
         let mut pak_files: Vec<PathBuf> = Vec::new();
         match std::fs::read_dir(dir) {
             Ok(entries) => {
@@ -247,21 +254,14 @@ impl FileSystem {
         }
         pak_files.sort();
 
-        // Add PAK files first (lower priority than loose files)
         for pak_path in &pak_files {
             match Pack::load(pak_path) {
-                Ok(pack) => {
-                    self.search_paths.push(SearchPath::Pack(pack));
-                }
-                Err(e) => {
-                    tracing::warn!("Skipping {}: {}", pak_path.display(), e);
-                }
+                Ok(pack) => self.search_paths.push(SearchPath::Pack(pack)),
+                Err(e) => tracing::warn!("Skipping {}: {}", pak_path.display(), e),
             }
         }
 
-        // Add directory itself (higher priority — searched before PAKs)
-        self.search_paths
-            .push(SearchPath::Directory(dir.to_path_buf()));
+        self.search_paths.push(SearchPath::Directory(dir.to_path_buf()));
 
         tracing::info!(
             "Added game directory: {} ({} paks)",
@@ -273,22 +273,16 @@ impl FileSystem {
     }
 
     /// Load an entire file into memory, searching all paths.
-    /// Returns the file contents or an error if not found.
     pub fn load_file(&self, path: &str) -> Q2Result<Vec<u8>> {
         let normalized = normalize_path(path);
 
-        // Search in reverse order (last added = highest priority)
         for sp in self.search_paths.iter().rev() {
             match sp {
                 SearchPath::Directory(dir) => {
                     let full_path = dir.join(&normalized);
                     if full_path.is_file() {
                         let data = std::fs::read(&full_path).map_err(|e| {
-                            Q2Error::Drop(format!(
-                                "can't read {}: {}",
-                                full_path.display(),
-                                e
-                            ))
+                            Q2Error::Drop(format!("can't read {}: {}", full_path.display(), e))
                         })?;
                         return Ok(data);
                     }
@@ -373,6 +367,51 @@ impl FileSystem {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Parse PAK directory entries from raw directory bytes (not the full file).
+fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<String, PackFile>> {
+    if dir_bytes.len() as u32 % PAK_DIR_ENTRY_SIZE != 0 {
+        return Err(Q2Error::Drop(format!(
+            "{pak_name}: invalid PAK directory length {}",
+            dir_bytes.len()
+        )));
+    }
+
+    let num_files = dir_bytes.len() / PAK_DIR_ENTRY_SIZE as usize;
+    if num_files > MAX_FILES_IN_PACK {
+        return Err(Q2Error::Drop(format!(
+            "{pak_name}: too many files ({num_files} > {MAX_FILES_IN_PACK})"
+        )));
+    }
+
+    let mut cursor = Cursor::new(dir_bytes);
+    let mut files = HashMap::with_capacity(num_files);
+
+    for _ in 0..num_files {
+        let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
+        cursor.read_exact(&mut name_buf).map_err(|e| {
+            Q2Error::Drop(format!("{pak_name}: truncated directory: {e}"))
+        })?;
+
+        let name_end = name_buf.iter().position(|&b| b == 0).unwrap_or(PAK_ENTRY_NAME_LEN);
+        let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
+        let normalized = normalize_path(&file_name);
+
+        let offset = read_u32_le(&mut cursor)?;
+        let size = read_u32_le(&mut cursor)?;
+
+        files.insert(
+            normalized.clone(),
+            PackFile { name: normalized, offset, size },
+        );
+    }
+
+    Ok(files)
+}
+
 /// Normalize a path: lowercase, forward slashes, strip leading ./
 fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
@@ -410,6 +449,10 @@ fn walk_dir_recursive(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,11 +460,8 @@ mod tests {
     /// Create a minimal valid PAK file in memory.
     fn create_test_pak(files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut pak = Vec::new();
-
-        // Reserve space for header (12 bytes)
         pak.extend_from_slice(&[0u8; 12]);
 
-        // Write file data and record entries
         let mut entries = Vec::new();
         for (name, data) in files {
             let offset = pak.len() as u32;
@@ -430,7 +470,6 @@ mod tests {
             entries.push((name.to_string(), offset, size));
         }
 
-        // Write directory
         let dir_offset = pak.len() as u32;
         for (name, offset, size) in &entries {
             let mut name_buf = [0u8; PAK_ENTRY_NAME_LEN];
@@ -443,12 +482,9 @@ mod tests {
         }
 
         let dir_len = (entries.len() as u32) * PAK_DIR_ENTRY_SIZE;
-
-        // Patch header
         pak[0..4].copy_from_slice(&PAK_MAGIC.to_le_bytes());
         pak[4..8].copy_from_slice(&dir_offset.to_le_bytes());
         pak[8..12].copy_from_slice(&dir_len.to_le_bytes());
-
         pak
     }
 
@@ -465,6 +501,18 @@ mod tests {
     #[test]
     fn normalize_path_strips_dot_slash() {
         assert_eq!(normalize_path("./maps/base1.bsp"), "maps/base1.bsp");
+    }
+
+    #[test]
+    fn pak_open_from_bytes_indexes_directory() {
+        let pak_data = create_test_pak(&[
+            ("maps/test.bsp", b"BSP_DATA_HERE"),
+            ("textures/wall.wal", b"WAL_DATA"),
+        ]);
+        let pack = Pack::load_from_bytes("test.pak", &pak_data).unwrap();
+        assert_eq!(pack.files.len(), 2);
+        assert!(pack.files.contains_key("maps/test.bsp"));
+        assert!(pack.files.contains_key("textures/wall.wal"));
     }
 
     #[test]
@@ -500,12 +548,27 @@ mod tests {
     }
 
     #[test]
-    fn pak_invalid_magic_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let pak_path = dir.path().join("bad.pak");
-        std::fs::write(&pak_path, b"NOT_A_PAK_FILE_AT_ALL").unwrap();
+    fn pak_read_file_from_bytes() {
+        let content = b"ASSET_CONTENT_XYZ";
+        let pak_data = create_test_pak(&[("sounds/boom.wav", content)]);
+        let pack = Pack::load_from_bytes("demo.pak", &pak_data).unwrap();
+        let entry = pack.files.get("sounds/boom.wav").unwrap();
+        assert_eq!(pack.read_file(entry).unwrap(), content);
+    }
 
-        assert!(Pack::load(&pak_path).is_err());
+    #[test]
+    fn pak_invalid_magic_rejected() {
+        assert!(Pack::load_from_bytes("bad.pak", b"NOT_A_PAK_FILE_AT_ALL").is_err());
+    }
+
+    #[test]
+    fn pak_open_only_reads_header_and_directory() {
+        // Verify that open() doesn't require full data beyond the directory.
+        // Specifically: extra trailing bytes (simulating large asset payloads) are ignored.
+        let pak_data = create_test_pak(&[("maps/a.bsp", b"large_asset_bytes_here")]);
+        // Truncate trailing bytes would cause read_file to fail, but open() must succeed.
+        let pack = Pack::load_from_bytes("lazy.pak", &pak_data).unwrap();
+        assert!(pack.files.contains_key("maps/a.bsp"));
     }
 
     #[test]
@@ -545,17 +608,13 @@ mod tests {
         let game_dir = dir.path().join("baseq2");
         std::fs::create_dir_all(game_dir.join("maps")).unwrap();
 
-        // Put one version in PAK
         let pak_data = create_test_pak(&[("maps/test.bsp", b"FROM_PAK")]);
         std::fs::write(game_dir.join("pak0.pak"), &pak_data).unwrap();
-
-        // Put another version as loose file
         std::fs::write(game_dir.join("maps/test.bsp"), b"FROM_DIR").unwrap();
 
         let mut fs = FileSystem::new("baseq2");
         fs.add_game_directory(&game_dir).unwrap();
 
-        // Directory should win (higher priority)
         let data = fs.load_file("maps/test.bsp").unwrap();
         assert_eq!(data, b"FROM_DIR");
     }
@@ -592,7 +651,6 @@ mod tests {
         let mut fs = FileSystem::new("baseq2");
         fs.add_game_directory(&game_dir).unwrap();
 
-        // Lookup with different case should still work
         assert!(fs.file_exists("maps/test.bsp"));
     }
 
@@ -612,5 +670,29 @@ mod tests {
         assert_eq!(bsp_files.len(), 2);
         assert!(bsp_files.iter().any(|f| f.contains("a.bsp")));
         assert!(bsp_files.iter().any(|f| f.contains("b.bsp")));
+    }
+
+    #[test]
+    fn custom_pak_reader_composes_with_filesystem() {
+        // Verify the trait boundary: a custom PakReader plugs in without changes
+        // to FileSystem or Pack.
+        let content = b"CUSTOM_BACKEND_DATA";
+        let pak_data = create_test_pak(&[("data/config.cfg", content)]);
+
+        struct VecReader(Vec<u8>);
+        impl PakReader for VecReader {
+            fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
+                let s = offset as usize;
+                let e = s + len as usize;
+                if e > self.0.len() {
+                    return Err(Q2Error::Drop("out of bounds".into()));
+                }
+                Ok(self.0[s..e].to_vec())
+            }
+        }
+
+        let pack = Pack::open("custom.pak", Box::new(VecReader(pak_data))).unwrap();
+        let entry = pack.files.get("data/config.cfg").unwrap();
+        assert_eq!(pack.read_file(entry).unwrap(), content);
     }
 }
