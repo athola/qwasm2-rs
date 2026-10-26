@@ -668,8 +668,10 @@ mod tests {
 
     #[test]
     fn parse_disconnect_sets_state() {
-        let mut cs = ClientState::default();
-        cs.state = ConnState::Active;
+        let mut cs = ClientState {
+            state: ConnState::Active,
+            ..Default::default()
+        };
 
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::Disconnect as i32);
@@ -681,8 +683,10 @@ mod tests {
 
     #[test]
     fn parse_nop_is_harmless() {
-        let mut cs = ClientState::default();
-        cs.state = ConnState::Active;
+        let mut cs = ClientState {
+            state: ConnState::Active,
+            ..Default::default()
+        };
 
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::Nop as i32);
@@ -825,9 +829,11 @@ mod tests {
     #[test]
     fn player_state_delta_roundtrip() {
         let old_ps = PlayerState::default();
-        let mut new_ps = PlayerState::default();
-        new_ps.viewangles = Vec3f::new(10.0, 45.0, 0.0);
-        new_ps.fov = 90.0;
+        let mut new_ps = PlayerState {
+            viewangles: Vec3f::new(10.0, 45.0, 0.0),
+            fov: 90.0,
+            ..Default::default()
+        };
         new_ps.pmove.origin = [100, 200, 300];
         new_ps.pmove.gravity = -800;
         new_ps.stats[STAT_HEALTH] = 100;
@@ -961,8 +967,10 @@ mod tests {
         let mut cs = ClientState::default();
 
         // Frame 1: uncompressed, set fov=75.
-        let mut ps1 = PlayerState::default();
-        ps1.fov = 75.0;
+        let ps1 = PlayerState {
+            fov: 75.0,
+            ..Default::default()
+        };
         let mut msg = NetMsg::new();
         write_empty_frame(&mut msg, 1, -1, Some(&ps1), &[]);
         msg.begin_reading();
@@ -991,8 +999,10 @@ mod tests {
 
     #[test]
     fn player_info_as_standalone_opcode_is_rejected() {
-        let mut cs = ClientState::default();
-        cs.state = ConnState::Active;
+        let mut cs = ClientState {
+            state: ConnState::Active,
+            ..Default::default()
+        };
 
         // Inject PlayerInfo (17) as top-level opcode followed by Disconnect.
         // If the parser correctly aborts on the violation it must NOT reach
@@ -1008,8 +1018,10 @@ mod tests {
 
     #[test]
     fn packet_entities_as_standalone_opcode_is_rejected() {
-        let mut cs = ClientState::default();
-        cs.state = ConnState::Active;
+        let mut cs = ClientState {
+            state: ConnState::Active,
+            ..Default::default()
+        };
 
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::PacketEntities as i32);
@@ -1046,10 +1058,12 @@ mod tests {
     #[test]
     fn player_state_weaponframe_roundtrip() {
         let old_ps = PlayerState::default();
-        let mut new_ps = PlayerState::default();
-        new_ps.gunframe = 7;
-        new_ps.gunoffset = Vec3f::new(2.0, -1.0, 0.5);
-        new_ps.gunangles = Vec3f::new(15.0, -10.0, 5.0);
+        let new_ps = PlayerState {
+            gunframe: 7,
+            gunoffset: Vec3f::new(2.0, -1.0, 0.5),
+            gunangles: Vec3f::new(15.0, -10.0, 5.0),
+            ..Default::default()
+        };
 
         let mut msg = NetMsg::new();
         msg.write_player_state(&old_ps, &new_ps);
@@ -1091,8 +1105,8 @@ mod tests {
         let from = EntityState::default();
         let to = EntityState {
             number: 2,
-            skinnum: 300,   // >= 256 → SKIN8|SKIN16 → write_long
-            effects: 300,   // >= 256 → EFFECTS8|EFFECTS16 → write_long
+            skinnum: 300, // >= 256 → SKIN8|SKIN16 → write_long
+            effects: 300, // >= 256 → EFFECTS8|EFFECTS16 → write_long
             ..Default::default()
         };
 

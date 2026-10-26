@@ -2065,9 +2065,9 @@ pub(crate) mod tests {
 
         // ---- Write lump directory ----
         let mut lc = lump_dir_start;
-        for i in 0..19 {
-            buf[lc..lc + 4].copy_from_slice(&lumps[i].0.to_le_bytes());
-            buf[lc + 4..lc + 8].copy_from_slice(&lumps[i].1.to_le_bytes());
+        for (ofs, len) in lumps {
+            buf[lc..lc + 4].copy_from_slice(&ofs.to_le_bytes());
+            buf[lc + 4..lc + 8].copy_from_slice(&len.to_le_bytes());
             lc += 8;
         }
 
@@ -2405,9 +2405,9 @@ pub(crate) mod tests {
         buf.truncate(cursor);
 
         let mut lc = lump_dir_start;
-        for i in 0..19 {
-            buf[lc..lc + 4].copy_from_slice(&lumps[i].0.to_le_bytes());
-            buf[lc + 4..lc + 8].copy_from_slice(&lumps[i].1.to_le_bytes());
+        for (ofs, len) in lumps {
+            buf[lc..lc + 4].copy_from_slice(&ofs.to_le_bytes());
+            buf[lc + 4..lc + 8].copy_from_slice(&len.to_le_bytes());
             lc += 8;
         }
         buf

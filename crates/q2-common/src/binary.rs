@@ -84,10 +84,10 @@ mod tests {
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&42u16.to_le_bytes());
         buf[2..4].copy_from_slice(&(-7i16).to_le_bytes());
-        buf[4..8].copy_from_slice(&3.14f32.to_le_bytes());
+        buf[4..8].copy_from_slice(&2.5f32.to_le_bytes());
         assert_eq!(read_u16(&buf, 0), 42);
         assert_eq!(read_i16(&buf, 2), -7);
-        assert!((read_f32(&buf, 4) - 3.14).abs() < 0.001);
+        assert!((read_f32(&buf, 4) - 2.5).abs() < 0.001);
     }
 
     #[test]
@@ -95,10 +95,10 @@ mod tests {
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&42u16.to_le_bytes());
         buf[2..4].copy_from_slice(&(-7i16).to_le_bytes());
-        buf[4..8].copy_from_slice(&3.14f32.to_le_bytes());
+        buf[4..8].copy_from_slice(&2.5f32.to_le_bytes());
         assert_eq!(try_read_u16(&buf, 0).unwrap(), 42);
         assert_eq!(try_read_i16(&buf, 2).unwrap(), -7);
-        assert!((try_read_f32(&buf, 4).unwrap() - 3.14).abs() < 0.001);
+        assert!((try_read_f32(&buf, 4).unwrap() - 2.5).abs() < 0.001);
     }
 
     #[test]

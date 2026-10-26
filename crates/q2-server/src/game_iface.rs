@@ -71,7 +71,13 @@ impl ServerGameImport {
             .dirty
             .iter()
             .enumerate()
-            .filter_map(|(i, &d)| if d { Some((i, inner.configstrings[i].clone())) } else { None })
+            .filter_map(|(i, &d)| {
+                if d {
+                    Some((i, inner.configstrings[i].clone()))
+                } else {
+                    None
+                }
+            })
             .collect();
         for (i, _) in &updates {
             inner.dirty[*i] = false;

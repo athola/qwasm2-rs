@@ -87,10 +87,14 @@ mod tests {
 
     #[test]
     fn server_frame_increments() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
-        let mut svs = ServerStatic::default();
-        svs.initialized = true;
+        let mut sv = Server {
+            state: ServerState::Game,
+            ..Default::default()
+        };
+        let mut svs = ServerStatic {
+            initialized: true,
+            ..Default::default()
+        };
         let mut game = NullGame { frames_run: 0 };
 
         for _ in 0..3 {
@@ -105,8 +109,10 @@ mod tests {
 
     #[test]
     fn frame_advances_realtime() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
+        let mut sv = Server {
+            state: ServerState::Game,
+            ..Default::default()
+        };
         let mut svs = ServerStatic::default();
         let mut game = NullGame { frames_run: 0 };
 
@@ -116,8 +122,10 @@ mod tests {
 
     #[test]
     fn run_game_called_on_active_server() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
+        let mut sv = Server {
+            state: ServerState::Game,
+            ..Default::default()
+        };
         let mut svs = ServerStatic::default();
         let mut game = NullGame { frames_run: 0 };
 

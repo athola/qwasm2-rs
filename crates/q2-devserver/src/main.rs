@@ -157,7 +157,11 @@ async fn serve_file_plain(path: &std::path::Path) -> Response<Body> {
             .body(Body::from(bytes))
             .unwrap(),
         Err(err) => {
-            tracing::warn!("serve_file_plain: failed to read {}: {}", path.display(), err);
+            tracing::warn!(
+                "serve_file_plain: failed to read {}: {}",
+                path.display(),
+                err
+            );
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())

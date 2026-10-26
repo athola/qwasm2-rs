@@ -1021,10 +1021,10 @@ mod tests {
     #[test]
     fn write_read_float() {
         let mut buf = NetMsg::new();
-        buf.write_float(3.14);
+        buf.write_float(2.5);
         buf.begin_reading();
         let val = buf.read_float();
-        assert!((val - 3.14).abs() < 0.001);
+        assert!((val - 2.5).abs() < 0.001);
     }
 
     #[test]
@@ -1102,7 +1102,7 @@ mod tests {
         buf.write_byte(42);
         buf.write_short(1234);
         buf.write_long(-1);
-        buf.write_float(3.14);
+        buf.write_float(2.5);
         buf.write_string("hello");
         buf.write_coord(100.5);
         buf.write_angle(180.0);
@@ -1111,7 +1111,7 @@ mod tests {
         assert_eq!(buf.read_byte(), 42);
         assert_eq!(buf.read_short(), 1234);
         assert_eq!(buf.read_long(), -1);
-        assert!((buf.read_float() - 3.14).abs() < 0.001);
+        assert!((buf.read_float() - 2.5).abs() < 0.001);
         assert_eq!(buf.read_string(), "hello");
         assert!((buf.read_coord() - 100.5).abs() < 0.125);
         assert!((buf.read_angle() - 180.0).abs() < 1.5);
@@ -1154,10 +1154,12 @@ mod tests {
     #[test]
     fn delta_entity_changed_fields() {
         let from = EntityState::default();
-        let mut to = EntityState::default();
-        to.number = 1;
-        to.origin = Vec3f::new(100.0, 200.0, 0.0);
-        to.modelindex = 5;
+        let to = EntityState {
+            number: 1,
+            origin: Vec3f::new(100.0, 200.0, 0.0),
+            modelindex: 5,
+            ..Default::default()
+        };
 
         let mut buf = NetMsg::new();
         buf.write_delta_entity(&from, &to, true, true);

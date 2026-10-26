@@ -253,9 +253,11 @@ mod tests {
 
     #[test]
     fn server_frame_accumulation() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
-        sv.frametime = 0.1;
+        let mut sv = Server {
+            state: ServerState::Game,
+            frametime: 0.1,
+            ..Default::default()
+        };
 
         for _ in 0..10 {
             sv.framenum += 1;
@@ -268,8 +270,10 @@ mod tests {
 
     #[test]
     fn server_configstrings_and_baselines() {
-        let mut sv = Server::default();
-        sv.configstrings = vec![String::new(); 64];
+        let mut sv = Server {
+            configstrings: vec![String::new(); 64],
+            ..Default::default()
+        };
         sv.configstrings[0] = "base1".into();
         sv.configstrings[1] = "models/world.bsp".into();
 

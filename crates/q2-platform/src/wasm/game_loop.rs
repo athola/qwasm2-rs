@@ -6,9 +6,12 @@ use wasm_bindgen::JsCast;
 /// Callback type for the game frame.
 pub type FrameCallback = Box<dyn FnMut(f64)>;
 
+/// Self-referential slot: the RAF closure reschedules itself through it.
+type RafSlot = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+
 /// Start the requestAnimationFrame game loop.
 pub fn start_game_loop(mut callback: FrameCallback) -> Result<(), String> {
-    let f: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
+    let f: RafSlot = Rc::new(RefCell::new(None));
     let g = f.clone();
 
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move |timestamp: f64| {
