@@ -27,10 +27,13 @@ impl GameWorld {
             0.0
         };
 
-        // Apply view offset to player state.
+        // Apply view offset to player state: eye height comes from the
+        // entity's viewheight (C SV_CalcViewOffset), which pmove lowers when
+        // ducking.
         if let Some(ent) = self.entities.get_mut(key) {
+            let height = ent.game.viewheight;
             if let Some(ref mut client) = ent.client {
-                client.ps.viewoffset = Vec3f::new(0.0, 0.0, 22.0 + bob);
+                client.ps.viewoffset = Vec3f::new(0.0, 0.0, height + bob);
             }
         }
     }
@@ -45,6 +48,7 @@ mod tests {
     fn view_offset_default_height() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key); // viewheight 22
         world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
 
         world.update_player_view(key);
@@ -59,6 +63,19 @@ mod tests {
             .ps
             .viewoffset;
         assert!((offset.z - 22.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn view_offset_follows_the_entity_viewheight_like_sv_calcviewoffset() {
+        // pmove sets viewheight to -2 when ducked; the eye must drop with it.
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.entities.get_mut(key).unwrap().game.viewheight = -2.0;
+
+        world.update_player_view(key);
+
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.client.as_ref().unwrap().ps.viewoffset.z, -2.0);
     }
 
     #[test]
