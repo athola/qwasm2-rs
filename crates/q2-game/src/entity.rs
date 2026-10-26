@@ -148,7 +148,6 @@ pub struct GameEntityData {
 pub struct Entity {
     /// Networked state (sent to clients).
     pub state: EntityState,
-    pub in_use: bool,
     pub solid: Solid,
     pub svflags: u32,
 
@@ -172,7 +171,6 @@ impl Default for Entity {
     fn default() -> Self {
         Entity {
             state: EntityState::default(),
-            in_use: false,
             solid: Solid::Not,
             svflags: 0,
             mins: Vec3f::ZERO,
@@ -215,11 +213,7 @@ impl EntityStorage {
         if self.entities.len() >= self.max_entities {
             return None;
         }
-        let ent = Entity {
-            in_use: true,
-            ..Entity::default()
-        };
-        Some(self.entities.insert(ent))
+        Some(self.entities.insert(Entity::default()))
     }
 
     /// Remove an entity and free its slot for reuse.
@@ -265,8 +259,8 @@ mod tests {
     fn entity_create_and_lookup() {
         let mut storage = EntityStorage::new(64);
         let key = storage.spawn().expect("should spawn");
+        // Liveness is slot presence in the SlotMap (no separate in_use flag).
         let ent = storage.get(key).expect("should exist");
-        assert!(ent.in_use);
         assert_eq!(ent.solid, Solid::Not);
         assert_eq!(storage.count(), 1);
     }
