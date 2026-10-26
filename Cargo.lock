@@ -720,6 +720,7 @@ dependencies = [
  "anyhow",
  "brotli",
  "clap",
+ "tempfile",
 ]
 
 [[package]]

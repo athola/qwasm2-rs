@@ -16,10 +16,6 @@ PORT         := 8080
 # Demo pak0.pak source
 DEMO_URL     := https://deponie.yamagi.org/quake2/idstuff/q2-314-demo-x86.exe
 
-# Web pak: extension filter for future use when transcoding audio/textures (e.g. --allow bsp,cfg,opus,webp).
-# Currently unused — pak-web copies all assets and Brotli-compresses for web delivery.
-PAK_WEB_ALLOW :=
-
 # Status markers (override for CI: make OK='[ok]' FAIL='[FAIL]')
 OK           := ✓
 FAIL         := ✗
@@ -100,7 +96,6 @@ pak-web: prereq-pak-repack gamedata-check ## Build web pak: all assets, Brotli-c
 	cargo run -p q2-pak-repack --release -- \
 		--in "$(GAMEDATA)/pak0.pak" \
 		--out "$(GAMEDATA)/pak0-web.pak" \
-		--all \
 		--brotli
 	@echo "$(OK) $(GAMEDATA)/pak0-web.pak ready"
 

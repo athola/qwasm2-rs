@@ -16,3 +16,6 @@ brotli = "7"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"
