@@ -29,7 +29,10 @@ impl Server {
         self.state = ServerState::Loading;
         self.name = map_name.to_string();
         self.framenum = 0;
-        self.time = 0.0;
+        // C SV_SpawnServer: realtime restarts and the first game frame is
+        // due at 1000 ms (sv_init.c:210, :244).
+        self.time = 1000;
+        svs.realtime = 0;
 
         // Reset model list (slot 0 is unused; slot 1 will be the world model).
         self.models.clear();
@@ -94,13 +97,15 @@ mod tests {
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
         svs.init_game(4);
+        svs.realtime = 5000;
 
         sv.map(&mut svs, "base1").expect("map() should succeed");
 
         assert_eq!(sv.state, ServerState::Game);
         assert_eq!(sv.name, "base1");
         assert_eq!(sv.framenum, 0);
-        assert_eq!(sv.time, 0.0);
+        assert_eq!(sv.time, 1000, "first game frame is due at 1000 ms");
+        assert_eq!(svs.realtime, 0, "realtime restarts with the map");
         assert_eq!(sv.configstrings[CS_NAME], "base1");
         assert_eq!(sv.configstrings.len(), MAX_CONFIGSTRINGS);
         assert_eq!(sv.baselines.len(), MAX_EDICTS);

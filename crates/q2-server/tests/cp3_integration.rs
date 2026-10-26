@@ -56,15 +56,17 @@ fn cp3_server_runs_100_frames() {
     assert!(accepted, "client_connect must accept the connection");
     game.client_begin(0);
 
-    // 7. Run 100 server frames at 10 Hz (100 ms per frame = 100,000 µs).
-    for _ in 0..100 {
+    // 7. Call the server at 10 Hz (100 ms = 100,000 µs per call). map() sets
+    //    sv.time = 1000 like C SV_SpawnServer, so the first call only clamps
+    //    realtime up to 900 ms; each later call runs exactly one game frame.
+    for _ in 0..101 {
         sv.frame(&mut svs, 100_000, &mut game);
     }
 
     // 8. Verify frame counters.
     assert_eq!(sv.framenum, 100, "server must have run exactly 100 frames");
-    assert!(sv.time > 0.0, "server time must advance");
-    assert!(svs.realtime > 0.0, "realtime must advance");
+    assert_eq!(sv.time, 100 * 100, "sv.time is framenum * 100 ms");
+    assert_eq!(svs.realtime, sv.time, "realtime tracks game time at 10 Hz");
 }
 
 #[test]
@@ -81,17 +83,21 @@ fn cp3_client_disconnect_does_not_panic() {
     game.client_connect(0, "");
     game.client_begin(0);
 
-    // Run a few frames, then disconnect.
+    // Run a few 60 Hz calls, then disconnect.
     for _ in 0..5 {
         sv.frame(&mut svs, 16_667, &mut game);
     }
+    let framenum_before = sv.framenum;
     game.client_disconnect(0);
 
-    // Server must continue running after disconnect.
-    for _ in 0..5 {
+    // Server must keep running game frames after the disconnect.
+    for _ in 0..10 {
         sv.frame(&mut svs, 16_667, &mut game);
     }
-    assert_eq!(sv.framenum, 10);
+    assert!(
+        sv.framenum > framenum_before,
+        "game frames must continue after disconnect"
+    );
 }
 
 #[test]

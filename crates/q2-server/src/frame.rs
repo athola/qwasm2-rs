@@ -7,33 +7,57 @@ use q2_game::traits::GameExport;
 
 use crate::state::{Server, ServerState, ServerStatic};
 
+/// Length of one game frame in milliseconds (10 Hz, C `sv.framenum * 100`).
+const FRAME_MSEC: u32 = 100;
+
 impl Server {
-    /// Run one server frame.
+    /// Run one server frame (`SV_Frame`).
     ///
-    /// Advances timing, bumps the frame counter, and drives the game frame.
     /// `frametime_us` is elapsed wall-clock time in microseconds since the
-    /// last frame.
+    /// last call. Game frames run at a fixed 10 Hz: a call runs at most one
+    /// game frame, and only once `svs.realtime` has reached `self.time`. The
+    /// client derives server time as `framenum * 100` ms, so bumping
+    /// `framenum` on every call would run the game at the caller's rate.
     pub fn frame(&mut self, svs: &mut ServerStatic, frametime_us: u32, game: &mut dyn GameExport) {
         if self.state == ServerState::Dead {
             return;
         }
 
-        self.frametime = frametime_us as f32 / 1_000_000.0;
-        svs.realtime += self.frametime;
-
-        // framenum must always increment — delta compression depends on it.
-        self.framenum += 1;
-        self.time += self.frametime;
+        svs.realtime = svs.realtime.wrapping_add(frametime_us / 1000);
 
         // TODO(#10): SV_CheckTimeouts — drop clients that haven't sent packets.
         // TODO(#10): SV_ReadPackets   — process incoming client packets.
+
+        // Not time for the next game frame yet.
+        if svs.realtime < self.time {
+            // Never let realtime fall more than one frame behind.
+            if self.time - svs.realtime > FRAME_MSEC {
+                svs.realtime = self.time - FRAME_MSEC;
+            }
+            return;
+        }
+
         // TODO(#10): SV_CalcPings     — update per-client ping estimates.
         // TODO(#10): SV_GiveMsec      — refresh command-millisecond budgets.
 
-        game.run_frame();
+        self.run_game_frame(svs, game);
 
         // TODO(#10): SV_SendClientMessages — push state to connected clients.
         // TODO(#10): SV_PrepWorldFrame     — clear per-frame entity events.
+    }
+
+    /// Advance one 100 ms game tick (`SV_RunGameFrame`).
+    fn run_game_frame(&mut self, svs: &mut ServerStatic, game: &mut dyn GameExport) {
+        // framenum must always increment — delta compression depends on it.
+        self.framenum += 1;
+        self.time = (self.framenum as u32).wrapping_mul(FRAME_MSEC);
+
+        game.run_frame();
+
+        // Never get more than one tick behind.
+        if self.time < svs.realtime {
+            svs.realtime = self.time;
+        }
     }
 }
 
@@ -71,6 +95,18 @@ mod tests {
         fn server_command(&mut self) {}
     }
 
+    fn running_server() -> (Server, ServerStatic, NullGame) {
+        let sv = Server {
+            state: ServerState::Game,
+            ..Default::default()
+        };
+        let svs = ServerStatic {
+            initialized: true,
+            ..Default::default()
+        };
+        (sv, svs, NullGame { frames_run: 0 })
+    }
+
     #[test]
     fn frame_noop_when_dead() {
         let mut sv = Server::default();
@@ -80,59 +116,82 @@ mod tests {
         sv.frame(&mut svs, 16_000, &mut game);
 
         assert_eq!(sv.framenum, 0);
-        assert_eq!(sv.time, 0.0);
-        assert_eq!(svs.realtime, 0.0);
+        assert_eq!(sv.time, 0);
+        assert_eq!(svs.realtime, 0);
         assert_eq!(game.frames_run, 0);
     }
 
     #[test]
-    fn server_frame_increments() {
-        let mut sv = Server {
-            state: ServerState::Game,
-            ..Default::default()
-        };
-        let mut svs = ServerStatic {
-            initialized: true,
-            ..Default::default()
-        };
-        let mut game = NullGame { frames_run: 0 };
+    fn game_frames_run_at_10hz_regardless_of_call_rate() {
+        // Sixty 60 Hz calls after a map load (sv.time = 1000, realtime = 0).
+        // C adds usec / 1000 (16 ms) per call and runs one game frame each
+        // time realtime catches up with sv.time.
+        let (mut sv, mut svs, mut game) = running_server();
+        sv.time = 1000;
 
-        for _ in 0..3 {
+        for _ in 0..60 {
             sv.frame(&mut svs, 16_667, &mut game);
         }
 
-        assert_eq!(sv.framenum, 3);
-        assert_eq!(game.frames_run, 3);
-        let expected = 3.0 * (16_667.0 / 1_000_000.0);
-        assert!((sv.time - expected).abs() < 1e-4);
+        assert_eq!(sv.framenum, 10);
+        assert_eq!(game.frames_run, 10);
+        assert_eq!(sv.time, 1000, "time must be framenum * 100 ms");
     }
 
     #[test]
-    fn frame_advances_realtime() {
-        let mut sv = Server {
-            state: ServerState::Game,
-            ..Default::default()
-        };
-        let mut svs = ServerStatic::default();
-        let mut game = NullGame { frames_run: 0 };
+    fn frame_before_due_time_runs_no_game_frame() {
+        let (mut sv, mut svs, mut game) = running_server();
+        sv.time = 100;
 
-        sv.frame(&mut svs, 100_000, &mut game);
-        assert!((svs.realtime - 0.1).abs() < 1e-6);
+        sv.frame(&mut svs, 50_000, &mut game);
+
+        assert_eq!(sv.framenum, 0);
+        assert_eq!(game.frames_run, 0);
+        assert_eq!(svs.realtime, 50);
+    }
+
+    #[test]
+    fn frame_runs_at_most_one_game_frame_per_call() {
+        // A one-second hitch: C never catches up with several frames; it
+        // runs one and clamps realtime to sv.time ("sv highclamp").
+        let (mut sv, mut svs, mut game) = running_server();
+
+        sv.frame(&mut svs, 1_000_000, &mut game);
+
+        assert_eq!(sv.framenum, 1);
+        assert_eq!(game.frames_run, 1);
+        assert_eq!(sv.time, 100);
+        assert_eq!(svs.realtime, 100);
+    }
+
+    #[test]
+    fn realtime_far_behind_is_clamped_to_one_frame_before_time() {
+        // "sv lowclamp": realtime is never left more than 100 ms behind.
+        let (mut sv, mut svs, mut game) = running_server();
+        sv.time = 1000;
+
+        sv.frame(&mut svs, 16_000, &mut game);
+
+        assert_eq!(svs.realtime, 900);
+        assert_eq!(game.frames_run, 0);
+    }
+
+    #[test]
+    fn frame_with_zero_elapsed_time_runs_due_frame_only_once() {
+        let (mut sv, mut svs, mut game) = running_server();
+
+        sv.frame(&mut svs, 0, &mut game);
+        sv.frame(&mut svs, 0, &mut game);
+
+        assert_eq!(game.frames_run, 1, "second call is not due until 100 ms");
     }
 
     #[test]
     fn run_game_called_on_active_server() {
-        let mut sv = Server {
-            state: ServerState::Game,
-            ..Default::default()
-        };
-        let mut svs = ServerStatic::default();
-        let mut game = NullGame { frames_run: 0 };
+        let (mut sv, mut svs, mut game) = running_server();
 
-        sv.frame(&mut svs, 16_667, &mut game);
-        assert_eq!(
-            game.frames_run, 1,
-            "run_frame must be called each active frame"
-        );
+        sv.frame(&mut svs, 100_000, &mut game);
+        assert_eq!(game.frames_run, 1, "run_frame must be called when due");
+        assert_eq!(sv.framenum, 1);
     }
 }
