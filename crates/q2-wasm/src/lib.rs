@@ -326,7 +326,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log("Input listeners attached (click canvas for pointer lock)");
 
     // 10. Find player start via game spawn system
-    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(&bsp.entities) {
+    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(&bsp.entities, "") {
         Some(s) => s,
         None => {
             log("WARNING: No info_player_start found in BSP — spawning at origin (may be inside solid)");
