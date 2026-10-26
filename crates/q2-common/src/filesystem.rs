@@ -47,7 +47,7 @@ const MAX_PAKS: u32 = 100;
 /// Implementations can back a PAK with a disk file, an in-memory `Vec<u8>`,
 /// or (on WASM) a JS-heap `Uint8Array` — the latter avoids copying the full
 /// PAK into Rust memory until individual assets are requested.
-pub trait PakReader: Send + Sync {
+pub trait PakReader {
     /// Copy bytes `[offset, offset + len)` from the PAK source into a new
     /// `Vec<u8>`.  Implementations should validate bounds and return
     /// `Q2Error::Drop` on failure.
@@ -850,6 +850,28 @@ mod tests {
         fs.add_game_directory(&game_dir).unwrap();
 
         assert_eq!(fs.list_files("bsp"), vec!["maps/a.bsp".to_string()]);
+    }
+
+    #[test]
+    fn pak_reader_accepts_single_threaded_backend() {
+        // The engine has no worker threads; a backend holding a !Send handle
+        // (like a JS-heap Uint8Array on wasm) must plug in without unsafe.
+        struct RcReader(std::rc::Rc<Vec<u8>>);
+        impl PakReader for RcReader {
+            fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
+                let s = offset as usize;
+                let e = s
+                    .checked_add(len as usize)
+                    .filter(|&e| e <= self.0.len())
+                    .ok_or_else(|| Q2Error::Drop("out of bounds".into()))?;
+                Ok(self.0[s..e].to_vec())
+            }
+        }
+
+        let pak_data = create_test_pak(&[("a.txt", b"RC")]);
+        let pack = Pack::open("rc.pak", Box::new(RcReader(std::rc::Rc::new(pak_data)))).unwrap();
+        let entry = pack.files.get("a.txt").unwrap();
+        assert_eq!(pack.read_file(entry).unwrap(), b"RC");
     }
 
     /// Records the largest `read_slice` length requested.
