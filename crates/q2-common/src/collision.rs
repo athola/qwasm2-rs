@@ -915,21 +915,31 @@ impl CollisionMap {
     }
 
     /// Set an area portal open or closed and recalculate connectivity.
-    pub fn set_area_portal_state(&mut self, portal_num: usize, open: bool) {
-        if portal_num < self.portal_open.len() {
-            self.portal_open[portal_num] = open;
-            self.flood_area_connections();
+    ///
+    /// Like C CM_SetAreaPortalState, a portal number past the map's portal
+    /// count is ERR_DROP rather than a silent no-op.
+    pub fn set_area_portal_state(&mut self, portal_num: usize, open: bool) -> Q2Result<()> {
+        if portal_num > self.area_portals.len() || portal_num >= self.portal_open.len() {
+            return Err(Q2Error::Drop("areaportal > numareaportals".into()));
         }
+        self.portal_open[portal_num] = open;
+        self.flood_area_connections();
+        Ok(())
     }
 
     /// Check if two areas are connected (can see / hear each other).
-    pub fn areas_connected(&self, area1: i32, area2: i32) -> bool {
-        let a1 = area1 as usize;
-        let a2 = area2 as usize;
-        if a1 >= self.areas.len() || a2 >= self.areas.len() {
-            return false;
+    ///
+    /// C CM_AreasConnected raises ERR_DROP for an area past the map's area
+    /// count; negative and == count are rejected too, since C reads past
+    /// the array for those.
+    pub fn areas_connected(&self, area1: i32, area2: i32) -> Q2Result<bool> {
+        let (Ok(a1), Ok(a2)) = (usize::try_from(area1), usize::try_from(area2)) else {
+            return Err(Q2Error::Drop("area > numareas".into()));
+        };
+        match (self.areas.get(a1), self.areas.get(a2)) {
+            (Some(x), Some(y)) => Ok(x.flood_num == y.flood_num),
+            _ => Err(Q2Error::Drop("area > numareas".into())),
         }
-        self.areas[a1].flood_num == self.areas[a2].flood_num
     }
 
     // -----------------------------------------------------------------------
@@ -2953,11 +2963,28 @@ pub(crate) mod tests {
         let mut cm = CollisionMap::new();
         cm.load_map(&bsp).unwrap();
 
-        assert!(!cm.areas_connected(1, 2));
-        cm.set_area_portal_state(1, true);
-        assert!(cm.areas_connected(1, 2));
-        cm.set_area_portal_state(1, false);
-        assert!(!cm.areas_connected(1, 2));
+        assert!(!cm.areas_connected(1, 2).unwrap());
+        cm.set_area_portal_state(1, true).unwrap();
+        assert!(cm.areas_connected(1, 2).unwrap());
+        cm.set_area_portal_state(1, false).unwrap();
+        assert!(!cm.areas_connected(1, 2).unwrap());
+
+        // C CM_SetAreaPortalState: "areaportal > numareaportals" is ERR_DROP;
+        // portalnum == numareaportals (2 here) is accepted.
+        assert!(cm.set_area_portal_state(2, true).is_ok());
+        assert!(matches!(
+            cm.set_area_portal_state(3, true),
+            Err(Q2Error::Drop(_))
+        ));
+
+        // C CM_AreasConnected: "area > numareas" is ERR_DROP. Rust also
+        // rejects negative and == numareas (3 here), which C reads past.
+        for (a1, a2) in [(1, 3), (3, 1), (-1, 1), (1, -1)] {
+            assert!(
+                matches!(cm.areas_connected(a1, a2), Err(Q2Error::Drop(_))),
+                "areas ({a1}, {a2})"
+            );
+        }
     }
 
     #[test]
