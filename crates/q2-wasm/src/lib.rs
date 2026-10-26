@@ -358,14 +358,11 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log(&format!("Map: {} — engine running", map_name));
 
     let engine = Rc::new(RefCell::new(engine));
+    // No catch_unwind: wasm32-unknown-unknown aborts on panic, so a frame
+    // panic traps the module; the panic hook (wasm_main) logs it.
     let frame_callback = Box::new(move |timestamp: f64| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut input = input_state.borrow_mut();
-            engine.borrow_mut().tick(timestamp, &mut input);
-        }));
-        if let Err(e) = result {
-            web_sys::console::error_1(&format!("[qwasm2-rs] Frame panic: {:?}", e).into());
-        }
+        let mut input = input_state.borrow_mut();
+        engine.borrow_mut().tick(timestamp, &mut input);
     }) as Box<dyn FnMut(f64)>;
 
     q2_platform::wasm::game_loop::start_game_loop(frame_callback)
