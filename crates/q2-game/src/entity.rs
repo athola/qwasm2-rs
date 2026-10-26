@@ -206,6 +206,9 @@ pub struct ClientRespawn {
 #[derive(Debug, Clone, Default)]
 pub struct ClientData {
     pub ps: PlayerState,
+    /// Last pmove result, to tell pmove to snap when something else moved
+    /// the player (C `gclient_t.old_pmove`).
+    pub old_pmove: PmoveState,
     pub ping: i32,
     pub pers: ClientPersistent,
     pub resp: ClientRespawn,
@@ -287,6 +290,8 @@ pub struct GameEntityData {
     pub gravity: f32,        // per-entity gravity multiplier
     pub watertype: i32,
     pub waterlevel: i32,
+    /// Eye height above the origin (C `edict_t.viewheight`).
+    pub viewheight: f32,
 }
 
 // ---------------------------------------------------------------------------

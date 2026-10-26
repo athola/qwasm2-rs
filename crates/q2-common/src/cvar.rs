@@ -318,7 +318,7 @@ impl CVarSystem {
 /// whitespace is skipped and the longest decimal prefix is used, so `" 3"`
 /// is 3 and `"1.5abc"` is 1.5. Non-finite results (`nan`, `inf`, overflow)
 /// become 0 so they cannot poison physics cvars. Hex floats are not parsed.
-fn parse_value(text: &str) -> f32 {
+pub fn parse_value(text: &str) -> f32 {
     let text = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
     let bytes = text.as_bytes();
     let digits_from = |mut i: usize| {

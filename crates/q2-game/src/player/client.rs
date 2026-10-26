@@ -2,11 +2,25 @@
 //!
 //! C ref: `player/client.c` (2,501 lines)
 
+use std::rc::Rc;
+
+use q2_common::pmove::Pmove;
+use q2_shared::constants::{MASK_DEADSOLID, MASK_PLAYERSOLID};
 use q2_shared::types::*;
 
 use crate::constants::*;
 use crate::entity::{ClientData, ClientPersistent, EntityKey};
 use crate::world::GameWorld;
+
+/// C ANGLE2SHORT.
+fn angle2short(degrees: f32) -> i16 {
+    ((degrees * 65536.0 / 360.0) as i32 & 65535) as i16
+}
+
+/// C SHORT2ANGLE.
+fn short2angle(s: i16) -> f32 {
+    f32::from(s) * (360.0 / 65536.0)
+}
 
 /// Maximum health for a player.
 const PLAYER_MAX_HEALTH: i32 = 100;
@@ -50,27 +64,81 @@ impl GameWorld {
     }
 
     /// Place a connected client into the game world at a spawn point.
-    /// C ref: `PutClientInServer` / `ClientBegin` (player/client.c).
+    /// C ref: `PutClientInServer` (player/client.c), single-player part.
     pub fn begin_client(&mut self, key: EntityKey) {
-        // Find a spawn point by searching live entities.
-        let spawn_pos = self
-            .find_by_classname(None, "info_player_start")
-            .or_else(|| self.find_by_classname(None, "info_player_deathmatch"))
+        let (spawn_origin, spawn_angles) = self
+            .select_spawn_point()
             .and_then(|k| self.entities.get(k))
-            .map(|e| e.state.origin)
-            .unwrap_or(Vec3f::ZERO);
+            .map(|e| (e.state.origin + Vec3f::new(0.0, 0.0, 9.0), e.state.angles))
+            .unwrap_or_else(|| {
+                tracing::error!(spawnpoint = %self.game.spawnpoint, "Couldn't find spawn point");
+                (Vec3f::ZERO, Vec3f::ZERO)
+            });
 
         if let Some(ent) = self.entities.get_mut(key) {
-            ent.state.origin = spawn_pos;
             ent.in_use = true;
+            ent.game.takedamage = TakeDamage::Aim;
+            ent.game.movetype = MoveType::Walk;
+            ent.game.viewheight = 22.0;
+            ent.game.classname = "player".to_string();
+            ent.game.mass = 200;
+            ent.solid = Solid::Bbox;
+            ent.clipmask = MASK_PLAYERSOLID;
+            ent.mins = PLAYER_MINS;
+            ent.maxs = PLAYER_MAXS;
+            ent.velocity = Vec3f::ZERO;
+            // 255: "use the skin specified model"; anything else makes
+            // ClientThink treat the player as gibs.
+            ent.state.modelindex = 255;
+            ent.state.origin = spawn_origin + Vec3f::new(0.0, 0.0, 1.0); // off the ground
+            ent.state.angles = Vec3f::new(0.0, spawn_angles.y, 0.0);
 
-            // Give starting weapon (blaster).
             if let Some(ref mut client) = ent.client {
+                client.ps = PlayerState {
+                    fov: 90.0,
+                    viewangles: ent.state.angles,
+                    ..Default::default()
+                };
+                for i in 0..3 {
+                    client.ps.pmove.origin[i] = (spawn_origin[i] * 8.0) as i32 as i16;
+                    client.ps.pmove.delta_angles[i] =
+                        angle2short(spawn_angles[i] - client.resp.cmd_angles[i]);
+                }
+                // Give starting weapon (blaster).
                 client.pers.inventory[7] = 1; // blaster at item index 7
             }
         }
 
         self.link_entity(key);
+    }
+
+    /// C SelectSpawnPoint, single-player part. With no `game.spawnpoint`
+    /// the first start without a targetname is used, else any start; with
+    /// one, only the start whose targetname matches (case-insensitively).
+    /// C raises gi.error when nothing matches; here the caller logs it.
+    fn select_spawn_point(&self) -> Option<EntityKey> {
+        let wanted = self.game.spawnpoint.as_str();
+        // By entity number, the order C's G_Find walks g_edicts.
+        let starts = || {
+            (0..self.game.maxentities.max(0) as usize)
+                .filter_map(|n| self.entities.key_for_number(n))
+                .filter_map(|k| self.entities.get(k).map(|e| (k, e)))
+                .filter(|(_, e)| e.in_use && e.game.classname == "info_player_start")
+        };
+        let chosen = if wanted.is_empty() {
+            starts().find(|(_, e)| e.game.targetname.is_empty())
+        } else {
+            starts().find(|(_, e)| e.game.targetname.eq_ignore_ascii_case(wanted))
+        };
+        chosen
+            .or_else(|| {
+                if wanted.is_empty() {
+                    starts().next()
+                } else {
+                    None
+                }
+            })
+            .map(|(k, _)| k)
     }
 
     /// Handle client disconnection. Free the player entity.
@@ -89,37 +157,98 @@ impl GameWorld {
         self.free_entity(key);
     }
 
-    /// Process a client's input command for one frame.
-    /// C ref: `ClientThink` (player/client.c).
+    /// Move the player by one user command with pmove, tracing through the
+    /// server. C ref: `ClientThink` (player/client.c).
+    ///
+    /// Not yet ported (#12): pmove's touch list and G_TouchTriggers, and the
+    /// identity of the ground entity (the Rust pmove only reports whether
+    /// there is ground, so it is recorded as the world).
     pub fn think_client(&mut self, key: EntityKey, cmd: &UserCmd) {
+        let Some(number) = self.number_of(key) else {
+            return;
+        };
+        let (state, snap_initial, mask) = {
+            let Some(ent) = self.entities.get_mut(key) else {
+                return;
+            };
+            let Some(client) = ent.client.as_mut() else {
+                return;
+            };
+            client.ps.pmove.pm_type = if ent.game.movetype == MoveType::Noclip {
+                PmType::Spectator
+            } else if ent.state.modelindex != 255 {
+                PmType::Gib
+            } else if ent.game.deadflag != DeadFlag::No {
+                PmType::Dead
+            } else {
+                PmType::Normal
+            };
+            client.ps.pmove.gravity = DEFAULT_GRAVITY as i16; // sv_gravity
+
+            let mut state = client.ps.pmove;
+            for i in 0..3 {
+                // Through i32 so an overflowing short wraps as in C.
+                state.origin[i] = (ent.state.origin[i] * 8.0) as i32 as i16;
+                state.velocity[i] = (ent.velocity[i] * 8.0) as i32 as i16;
+            }
+            let mask = if ent.game.health > 0 {
+                MASK_PLAYERSOLID
+            } else {
+                MASK_DEADSOLID
+            };
+            (state, state != client.old_pmove, mask)
+        };
+
+        let (gi_trace, gi_contents) = (Rc::clone(&self.gi), Rc::clone(&self.gi));
+        let mut pm = Pmove {
+            s: state,
+            cmd: *cmd,
+            snap_initial,
+            viewangles: Vec3f::ZERO,
+            viewheight: 0.0,
+            mins: Vec3f::ZERO,
+            maxs: Vec3f::ZERO,
+            ground_entity: false,
+            watertype: 0,
+            waterlevel: 0,
+            airaccelerate: 0.0,
+            trace: Box::new(move |start, mins, maxs, end| {
+                gi_trace.trace(start, mins, maxs, end, Some(number), mask)
+            }),
+            pointcontents: Box::new(move |point| gi_contents.point_contents(point)),
+        };
+        pm.run();
+
+        let world = self.entities.key_for_number(0);
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
-
-        // Apply movement from UserCmd to velocity (simplified).
-        // Full implementation uses pmove for prediction-compatible movement.
-        let yaw = ent.state.angles.y.to_radians();
-        let forward = Vec3f::new(yaw.cos(), yaw.sin(), 0.0);
-        let right = Vec3f::new(-yaw.sin(), yaw.cos(), 0.0);
-
-        let fmove = cmd.forwardmove as f32;
-        let smove = cmd.sidemove as f32;
-        let umove = cmd.upmove as f32;
-
-        ent.velocity = forward * fmove + right * smove + Vec3f::new(0.0, 0.0, umove);
-
-        // Apply view angles from command.
-        ent.state.angles = Vec3f::new(
-            cmd.angles[0] as f32 * (360.0 / 65536.0),
-            cmd.angles[1] as f32 * (360.0 / 65536.0),
-            cmd.angles[2] as f32 * (360.0 / 65536.0),
-        );
-
-        // Handle buttons (attack, use).
-        if cmd.buttons & 1 != 0 {
-            // Attack button — would trigger weapon fire.
-            // Connected to weapon system in full implementation.
+        for i in 0..3 {
+            ent.state.origin[i] = f32::from(pm.s.origin[i]) * 0.125;
+            ent.velocity[i] = f32::from(pm.s.velocity[i]) * 0.125;
         }
+        ent.mins = pm.mins;
+        ent.maxs = pm.maxs;
+        ent.game.viewheight = pm.viewheight;
+        ent.game.waterlevel = pm.waterlevel;
+        ent.game.watertype = pm.watertype;
+        ent.game.ground_entity = if pm.ground_entity { world } else { None };
+        let dead = ent.game.deadflag != DeadFlag::No;
+        if let Some(client) = ent.client.as_mut() {
+            client.ps.pmove = pm.s;
+            client.old_pmove = pm.s;
+            for i in 0..3 {
+                client.resp.cmd_angles[i] = short2angle(cmd.angles[i]);
+            }
+            if dead {
+                client.ps.viewangles.x = -15.0;
+                client.ps.viewangles.z = 40.0;
+            } else {
+                client.ps.viewangles = pm.viewangles;
+            }
+        }
+
+        self.link_entity(key);
     }
 
     /// Per-frame setup for a client at the start of the server frame.
@@ -225,26 +354,68 @@ mod tests {
     }
 
     #[test]
-    fn client_think_applies_movement() {
+    fn begin_client_uses_the_untargeted_start_like_select_spawn_point() {
+        // demo1 lists a "base2" arrival start first; with no spawnpoint C
+        // skips starts that have a targetname.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "demo1",
+            concat!(
+                "{ \"classname\" \"worldspawn\" }\n",
+                "{ \"classname\" \"info_player_start\" \"targetname\" \"base2\" \"origin\" \"-1768 1536 128\" }\n",
+                "{ \"classname\" \"info_player_start\" \"angle\" \"135\" \"origin\" \"128 -320 32\" }",
+            ),
+            "",
+        );
+        let key = world.connect_client(1, "").unwrap();
+        world.begin_client(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(128.0, -320.0, 42.0));
+        assert_eq!(ent.state.angles.y, 135.0);
+
+        // With a spawnpoint, only the start it names is used.
+        world.game.spawnpoint = "BASE2".to_string(); // compared case-insensitively
+        world.disconnect_client(key);
+        let key = world.connect_client(1, "").unwrap();
+        world.begin_client(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(-1768.0, 1536.0, 138.0));
+    }
+
+    #[test]
+    fn think_client_runs_pmove_with_c_gravity_and_records_the_result() {
+        // The mock's traces never hit, so the player is airborne: pmove must
+        // apply sv_gravity (800) and the entity follows pm.s back out.
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
-        world.entities.get_mut(key).unwrap().state.angles.y = 0.0;
-
+        world.begin_client(key);
         let cmd = UserCmd {
-            forwardmove: 200,
-            sidemove: 0,
-            upmove: 0,
-            msec: 16,
-            buttons: 0,
-            angles: [0, 0, 0],
-            impulse: 0,
-            lightlevel: 0,
+            msec: 100,
+            ..Default::default()
         };
 
         world.think_client(key, &cmd);
 
-        let v = world.entities.get(key).unwrap().velocity;
-        assert!(v.x > 0.0); // Moving forward
+        let ent = world.entities.get(key).unwrap();
+        let client = ent.client.as_ref().unwrap();
+        assert_eq!(client.ps.pmove.pm_type, PmType::Normal);
+        assert_eq!(client.ps.pmove.gravity, 800);
+        assert_eq!(client.old_pmove, client.ps.pmove);
+        assert!(ent.velocity.z < 0.0, "falling: {:?}", ent.velocity);
+        assert_eq!(
+            ent.state.origin.z,
+            f32::from(client.ps.pmove.origin[2]) * 0.125
+        );
+    }
+
+    #[test]
+    fn think_client_treats_a_player_without_model_255_as_gibs_like_c() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.think_client(key, &UserCmd::default());
+        let client = world.entities.get(key).unwrap().client.clone().unwrap();
+        assert_eq!(client.ps.pmove.pm_type, PmType::Gib);
     }
 
     #[test]

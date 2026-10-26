@@ -196,6 +196,73 @@ fn origin_from_props(props: &HashMap<String, String>) -> Option<q2_shared::types
     props.get("origin").and_then(|s| parse_origin(s))
 }
 
+/// C `strtol(s, NULL, 10)`: optional sign and leading digits, 0 if none.
+fn strtol(s: &str) -> i32 {
+    let t = s.trim_start();
+    let (sign, digits) = match t.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let n = digits
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .fold(0i64, |n, d| {
+            (n * 10 + i64::from(d - b'0')).min(i64::from(u32::MAX))
+        });
+    (sign * n).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// C `sscanf("%f %f %f")`: missing components stay 0.
+fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
+    let mut v = [0.0f32; 3];
+    for (slot, part) in v.iter_mut().zip(s.split_whitespace()) {
+        *slot = q2_common::cvar::parse_value(part);
+    }
+    q2_shared::types::Vec3f::from_array(v)
+}
+
+/// Set the generic entity fields from an entity-string block, as C
+/// ED_ParseEdict does for every entity before its spawn function runs.
+/// Fields this port has no slot for yet (`model`, `sounds`, `deathtarget`,
+/// `map`, the spawn-temp keys) are left to the spawn functions.
+pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<String, String>) {
+    use q2_common::cvar::parse_value as strtod;
+    for (key, value) in fields {
+        let g = &mut ent.game;
+        match key.to_ascii_lowercase().as_str() {
+            "classname" => g.classname = value.clone(),
+            "spawnflags" => g.spawnflags = strtol(value),
+            "speed" => g.speed = strtod(value),
+            "accel" => g.accel = strtod(value),
+            "decel" => g.decel = strtod(value),
+            "target" => g.target = value.clone(),
+            "targetname" => g.targetname = value.clone(),
+            "pathtarget" => g.pathtarget = value.clone(),
+            "killtarget" => g.killtarget = value.clone(),
+            "combattarget" => g.combattarget = value.clone(),
+            "message" => g.message = value.clone(),
+            "team" => g.team = value.clone(),
+            "wait" => g.wait = strtod(value),
+            "delay" => g.delay = strtod(value),
+            "random" => g.random = strtod(value),
+            "move_origin" => g.move_origin = scan_vector(value),
+            "move_angles" => g.move_angles = scan_vector(value),
+            "style" => g.style = strtol(value),
+            "count" => g.count = strtol(value),
+            "health" => g.health = strtol(value),
+            "dmg" => g.dmg = strtol(value),
+            "mass" => g.mass = strtol(value),
+            "volume" => g.volume = strtod(value),
+            "attenuation" => g.attenuation = strtod(value),
+            "origin" => ent.state.origin = scan_vector(value),
+            "angles" => ent.state.angles = scan_vector(value),
+            // F_ANGLEHACK: a single yaw.
+            "angle" => ent.state.angles = q2_shared::types::Vec3f::new(0.0, strtod(value), 0.0),
+            _ => {}
+        }
+    }
+}
+
 /// Parse an "angle" string into entity angles (Quake convention: yaw only).
 fn parse_angle(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
     if let Some(angle_str) = props.get("angle") {

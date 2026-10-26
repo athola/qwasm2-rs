@@ -46,6 +46,9 @@ pub struct LevelLocals {
 /// Persistent game state — survives level changes.
 #[derive(Debug, Clone)]
 pub struct GameLocals {
+    /// Target name of the start to use (C `game.spawnpoint`), from the
+    /// previous level's exit; empty for a fresh map.
+    pub spawnpoint: String,
     pub maxclients: i32,
     pub maxentities: i32,
     pub serverflags: i32,
@@ -56,6 +59,7 @@ pub struct GameLocals {
 impl Default for GameLocals {
     fn default() -> Self {
         Self {
+            spawnpoint: String::new(),
             maxclients: 1,
             maxentities: 1024,
             serverflags: 0,
@@ -502,7 +506,8 @@ impl GameWorld {
 
     /// Parse an entity string and spawn all entities.
     /// C ref: `SpawnEntities` (g_spawn.c).
-    pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, _spawnpoint: &str) {
+    pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str) {
+        self.game.spawnpoint = spawnpoint.to_string();
         // C SpawnEntities: a new map starts from zeroed edicts and level.
         self.entities = EntityStorage::new(self.game.maxentities.max(0) as usize);
         self.entities
@@ -546,12 +551,8 @@ impl GameWorld {
                     break; // Storage full.
                 };
 
-                // Parse origin.
-                if let Some(origin_str) = fields.get("origin") {
-                    let origin = crate::spawn::parse_origin(origin_str).unwrap_or_default();
-                    if let Some(ent) = self.entities.get_mut(key) {
-                        ent.state.origin = origin;
-                    }
+                if let Some(ent) = self.entities.get_mut(key) {
+                    crate::spawn::apply_spawn_fields(ent, fields);
                 }
 
                 sfn(&mut self.entities, key, fields);
@@ -687,6 +688,32 @@ mod tests {
         world.link_entity(freed);
         let numbers: Vec<usize> = gi.links.borrow().iter().map(|l| l.number).collect();
         assert_eq!(numbers.len(), 2, "world and freed entities are not linked");
+    }
+
+    #[test]
+    fn spawn_entities_fills_generic_fields_like_ed_parse_edict() {
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            concat!(
+                "{ \"classname\" \"worldspawn\" }\n",
+                "{ \"classname\" \"info_player_start\" \"targetname\" \"from_base2\" ",
+                "\"target\" \"t1\" \"spawnflags\" \"3\" \"wait\" \"2.5\" ",
+                "\"angle\" \"90\" \"health\" \"40x\" \"move_origin\" \"1 2 3\" }",
+            ),
+            "",
+        );
+        let key = world
+            .find_by_targetname(None, "from_base2")
+            .expect("targetname parsed");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.target, "t1");
+        assert_eq!(ent.game.spawnflags, 3);
+        assert_eq!(ent.game.wait, 2.5);
+        assert_eq!(ent.state.angles, Vec3f::new(0.0, 90.0, 0.0)); // F_ANGLEHACK
+        assert_eq!(ent.game.health, 40); // strtol stops at the 'x'
+        assert_eq!(ent.game.move_origin, Vec3f::new(1.0, 2.0, 3.0));
     }
 
     #[test]

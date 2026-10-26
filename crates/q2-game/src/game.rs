@@ -149,7 +149,8 @@ mod tests {
         let ent = world.entities.get(key).unwrap();
         assert!(ent.in_use);
         assert_eq!(ent.game.classname, "player");
-        assert_eq!(ent.state.origin, q2_shared::Vec3f::new(64.0, 0.0, 24.0));
+        // SelectSpawnPoint lifts 9 units, PutClientInServer 1 more.
+        assert_eq!(ent.state.origin, q2_shared::Vec3f::new(64.0, 0.0, 34.0));
         assert!(gi.links.borrow().iter().any(|l| l.number == 2));
 
         world.client_disconnect(2);
