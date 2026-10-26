@@ -1,7 +1,8 @@
 [package]
 name = "q2-platform"
-version = "0.1.2"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 q2-common = { path = "../q2-common" }

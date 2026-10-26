@@ -1,7 +1,8 @@
 [package]
 name = "q2-wasm"
-version = "0.1.2"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Qwasm2-rs WASM entry point — cdylib target for wasm-pack"
 
 [lib]
