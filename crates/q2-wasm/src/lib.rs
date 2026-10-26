@@ -281,7 +281,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
 
     // 6. Load first map's BSP
-    let map_name = if map_list.iter().any(|m| *m == "maps/demo1.bsp") {
+    let map_name = if map_list.contains(&"maps/demo1.bsp") {
         "maps/demo1.bsp"
     } else if let Some(first) = map_list.first() {
         first
