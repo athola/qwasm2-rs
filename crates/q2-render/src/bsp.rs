@@ -7,9 +7,8 @@
 //! and `gl3/gl3_model.c` / `files/models.c` for the loading logic.
 
 use q2_common::bsp_file::{
-    BspHeader, Lump, LUMP_EDGES, LUMP_FACES, LUMP_LEAFFACES, LUMP_LEAFS, LUMP_LIGHTING,
-    LUMP_MODELS, LUMP_NODES, LUMP_PLANES, LUMP_SURFEDGES, LUMP_TEXINFO, LUMP_VERTEXES,
-    LUMP_VISIBILITY,
+    BspHeader, Lump, LUMP_EDGES, LUMP_FACES, LUMP_LEAFFACES, LUMP_LIGHTING, LUMP_SURFEDGES,
+    LUMP_VERTEXES, LUMP_VISIBILITY,
 };
 use q2_common::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
@@ -18,11 +17,6 @@ use q2_shared::types::Vec3f;
 const DISK_VERTEX_SIZE: usize = 12; // 3 * f32
 const DISK_EDGE_SIZE: usize = 4; // 2 * u16
 const DISK_FACE_SIZE: usize = 20; // u16 + i16 + i32 + i16 + i16 + 4*u8 + i32
-const DISK_PLANE_SIZE: usize = 20; // 3*f32 + f32 + i32
-const DISK_NODE_SIZE: usize = 28; // i32 + 2*i32 + 6*i16 + u16 + u16
-const DISK_TEXINFO_SIZE: usize = 76; // 2*4*f32 + i32 + i32 + 32 + i32
-const DISK_LEAF_SIZE: usize = 28; // i32 + i16 + i16 + 6*i16 + 4*u16
-const DISK_MODEL_SIZE: usize = 48; // 9*f32 + i32 + i32 + i32
 
 // ---------------------------------------------------------------------------
 // Parsed BSP types
@@ -151,13 +145,6 @@ fn try_read_vec3(data: &[u8], off: usize) -> Q2Result<Vec3f> {
     ))
 }
 
-/// Read a null-terminated string of up to `max_len` bytes.
-fn read_cstring(data: &[u8], off: usize, max_len: usize) -> String {
-    let slice = &data[off..off + max_len];
-    let end = slice.iter().position(|&b| b == 0).unwrap_or(max_len);
-    String::from_utf8_lossy(&slice[..end]).into_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Lump validation helper
 // ---------------------------------------------------------------------------
@@ -193,18 +180,16 @@ fn validate_lump(
 // Individual lump loaders
 // ---------------------------------------------------------------------------
 
-fn load_planes(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspPlane>> {
-    let (off, count) = validate_lump(data, lump, DISK_PLANE_SIZE, "planes")?;
-    let mut planes = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = off + i * DISK_PLANE_SIZE;
-        planes.push(BspPlane {
-            normal: try_read_vec3(data, base)?,
-            dist: try_read_f32(data, base + 12)?,
-            plane_type: try_read_i32(data, base + 16)?,
-        });
-    }
-    Ok(planes)
+fn load_planes(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspPlane>> {
+    Ok(header
+        .planes(data)?
+        .into_iter()
+        .map(|p| BspPlane {
+            normal: p.normal,
+            dist: p.dist,
+            plane_type: p.plane_type,
+        })
+        .collect())
 }
 
 fn load_vertices(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspVertex>> {
@@ -224,51 +209,33 @@ fn load_visibility(data: &[u8], lump: &Lump) -> Q2Result<Vec<u8>> {
     Ok(data[off..off + len].to_vec())
 }
 
-fn load_nodes(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspNode>> {
-    let (off, count) = validate_lump(data, lump, DISK_NODE_SIZE, "nodes")?;
-    let mut nodes = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = off + i * DISK_NODE_SIZE;
-        nodes.push(BspNode {
-            plane_idx: try_read_i32(data, base)?,
-            children: [try_read_i32(data, base + 4)?, try_read_i32(data, base + 8)?],
-            mins: [
-                try_read_i16(data, base + 12)?,
-                try_read_i16(data, base + 14)?,
-                try_read_i16(data, base + 16)?,
-            ],
-            maxs: [
-                try_read_i16(data, base + 18)?,
-                try_read_i16(data, base + 20)?,
-                try_read_i16(data, base + 22)?,
-            ],
-            first_face: try_read_u16(data, base + 24)?,
-            num_faces: try_read_u16(data, base + 26)?,
-        });
-    }
-    Ok(nodes)
+fn load_nodes(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspNode>> {
+    Ok(header
+        .nodes(data)?
+        .into_iter()
+        .map(|n| BspNode {
+            plane_idx: n.plane_num,
+            children: n.children,
+            mins: n.mins,
+            maxs: n.maxs,
+            first_face: n.first_face,
+            num_faces: n.num_faces,
+        })
+        .collect())
 }
 
-fn load_texinfo(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspTexInfo>> {
-    let (off, count) = validate_lump(data, lump, DISK_TEXINFO_SIZE, "texinfo")?;
-    let mut infos = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = off + i * DISK_TEXINFO_SIZE;
-        let mut vecs = [[0.0f32; 4]; 2];
-        for (row, vecs_row) in vecs.iter_mut().enumerate() {
-            for (col, val) in vecs_row.iter_mut().enumerate() {
-                *val = try_read_f32(data, base + (row * 4 + col) * 4)?;
-            }
-        }
-        infos.push(BspTexInfo {
-            vecs,
-            flags: try_read_i32(data, base + 32)?,
-            value: try_read_i32(data, base + 36)?,
-            texture: read_cstring(data, base + 40, 32),
-            next_texinfo: try_read_i32(data, base + 72)?,
-        });
-    }
-    Ok(infos)
+fn load_texinfo(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspTexInfo>> {
+    Ok(header
+        .texinfo(data)?
+        .into_iter()
+        .map(|t| BspTexInfo {
+            vecs: t.vecs,
+            flags: t.flags,
+            value: t.value,
+            texture: t.texture,
+            next_texinfo: t.next_texinfo,
+        })
+        .collect())
 }
 
 fn load_faces(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspFace>> {
@@ -299,24 +266,20 @@ fn load_lightmap(data: &[u8], lump: &Lump) -> Q2Result<Vec<u8>> {
     Ok(data[off..off + len].to_vec())
 }
 
-fn load_leafs(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspLeaf>> {
-    let (off, count) = validate_lump(data, lump, DISK_LEAF_SIZE, "leafs")?;
-    let mut leafs = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = off + i * DISK_LEAF_SIZE;
-        leafs.push(BspLeaf {
-            contents: try_read_i32(data, base)?,
-            cluster: try_read_i16(data, base + 4)?,
-            area: try_read_i16(data, base + 6)?,
-            // mins/maxs at base+8..base+20 are for frustum culling; we skip them
-            // (they are not stored in BspLeaf — used at render time by the node tree)
-            first_leaf_face: try_read_u16(data, base + 20)?,
-            num_leaf_faces: try_read_u16(data, base + 22)?,
-            first_leaf_brush: try_read_u16(data, base + 24)?,
-            num_leaf_brushes: try_read_u16(data, base + 26)?,
-        });
-    }
-    Ok(leafs)
+fn load_leafs(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspLeaf>> {
+    Ok(header
+        .leafs(data)?
+        .into_iter()
+        .map(|l| BspLeaf {
+            contents: l.contents,
+            cluster: l.cluster,
+            area: l.area,
+            first_leaf_face: l.first_leaf_face,
+            num_leaf_faces: l.num_leaf_faces,
+            first_leaf_brush: l.first_leaf_brush,
+            num_leaf_brushes: l.num_leaf_brushes,
+        })
+        .collect())
 }
 
 fn load_leaf_faces(data: &[u8], lump: &Lump) -> Q2Result<Vec<u16>> {
@@ -349,22 +312,21 @@ fn load_surface_edges(data: &[u8], lump: &Lump) -> Q2Result<Vec<i32>> {
     Ok(se)
 }
 
-fn load_models(data: &[u8], lump: &Lump) -> Q2Result<Vec<BspModel>> {
-    let (off, count) = validate_lump(data, lump, DISK_MODEL_SIZE, "models")?;
-    let mut models = Vec::with_capacity(count);
-    for i in 0..count {
-        let base = off + i * DISK_MODEL_SIZE;
-        models.push(BspModel {
+fn load_models(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspModel>> {
+    let spread = Vec3f::new(1.0, 1.0, 1.0);
+    Ok(header
+        .models(data)?
+        .into_iter()
+        .map(|m| BspModel {
             // Spread the bounds by one unit like gl3_model.c Mod_LoadSubmodels.
-            mins: try_read_vec3(data, base)? - Vec3f::new(1.0, 1.0, 1.0),
-            maxs: try_read_vec3(data, base + 12)? + Vec3f::new(1.0, 1.0, 1.0),
-            origin: try_read_vec3(data, base + 24)?,
-            head_node: try_read_i32(data, base + 36)?,
-            first_face: try_read_i32(data, base + 40)?,
-            num_faces: try_read_i32(data, base + 44)?,
-        });
-    }
-    Ok(models)
+            mins: m.mins - spread,
+            maxs: m.maxs + spread,
+            origin: m.origin,
+            head_node: m.head_node,
+            first_face: m.first_face,
+            num_faces: m.num_faces,
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -381,18 +343,18 @@ impl BspData {
         let lumps = &header.lumps;
 
         // Load each lump
-        let planes = load_planes(data, &lumps[LUMP_PLANES])?;
+        let planes = load_planes(&header, data)?;
         let vertices = load_vertices(data, &lumps[LUMP_VERTEXES])?;
         let visibility = load_visibility(data, &lumps[LUMP_VISIBILITY])?;
-        let nodes = load_nodes(data, &lumps[LUMP_NODES])?;
-        let texinfo = load_texinfo(data, &lumps[LUMP_TEXINFO])?;
+        let nodes = load_nodes(&header, data)?;
+        let texinfo = load_texinfo(&header, data)?;
         let faces = load_faces(data, &lumps[LUMP_FACES])?;
         let lightmap_data = load_lightmap(data, &lumps[LUMP_LIGHTING])?;
-        let leafs = load_leafs(data, &lumps[LUMP_LEAFS])?;
+        let leafs = load_leafs(&header, data)?;
         let leaf_faces = load_leaf_faces(data, &lumps[LUMP_LEAFFACES])?;
         let edges = load_edges(data, &lumps[LUMP_EDGES])?;
         let surface_edges = load_surface_edges(data, &lumps[LUMP_SURFEDGES])?;
-        let models = load_models(data, &lumps[LUMP_MODELS])?;
+        let models = load_models(&header, data)?;
 
         Ok(BspData {
             planes,
@@ -523,11 +485,11 @@ mod tests {
         for i in [0i32, 0, 1] {
             record.extend_from_slice(&i.to_le_bytes());
         }
-        let lump = Lump {
-            offset: 0,
-            length: DISK_MODEL_SIZE,
-        };
-        let models = load_models(&record, &lump).unwrap();
+        let mut data = make_minimal_bsp();
+        let at = 8 + q2_common::bsp_file::LUMP_MODELS * 8;
+        data[at + 4..at + 8].copy_from_slice(&(record.len() as u32).to_le_bytes());
+        data.extend_from_slice(&record);
+        let models = BspData::load(&data).unwrap().models;
         assert_eq!(models[0].mins, Vec3f::new(-1.0, -1.0, -1.0));
         assert_eq!(models[0].maxs, Vec3f::new(11.0, 11.0, 11.0));
         assert_eq!(models[0].origin, Vec3f::new(5.0, 5.0, 5.0));

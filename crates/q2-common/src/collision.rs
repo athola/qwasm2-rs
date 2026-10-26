@@ -16,8 +16,8 @@ use q2_shared::{EntityState, Plane, Surface, Trace, Vec3f};
 const DIST_EPSILON: f32 = 0.03125;
 
 use crate::bsp_file::{
-    BspHeader, Lump, LUMP_AREAPORTALS, LUMP_AREAS, LUMP_BRUSHES, LUMP_BRUSHSIDES, LUMP_LEAFBRUSHES,
-    LUMP_LEAFS, LUMP_MODELS, LUMP_NODES, LUMP_PLANES, LUMP_TEXINFO,
+    BspHeader, DLeaf, DModel, DNode, DPlane, DTexinfo, Lump, LUMP_AREAPORTALS, LUMP_AREAS,
+    LUMP_BRUSHES, LUMP_BRUSHSIDES, LUMP_LEAFBRUSHES,
 };
 
 // Map limits
@@ -36,13 +36,8 @@ const MAX_MAP_LEAFBRUSHES: usize = 65536;
 use q2_shared::constants::{CONTENTS_MONSTER, CONTENTS_SOLID, MASK_PLAYERSOLID};
 
 // On-disk struct sizes (bytes)
-const DPLANE_SIZE: usize = 20; // 3 floats + 1 float + 1 int
-const DNODE_SIZE: usize = 28; // 1 int + 2 int + 6 short + 2 ushort
-const DLEAF_SIZE: usize = 28; // 1 int + 2 short + 6 short + 4 ushort
 const DBRUSH_SIZE: usize = 12; // 3 int
 const DBRUSHSIDE_SIZE: usize = 4; // 1 ushort + 1 short
-const DMODEL_SIZE: usize = 48; // 9 float + 3 int
-const TEXINFO_SIZE: usize = 76; // 8 float + 2 int + 32 char + 1 int
 const DAREA_SIZE: usize = 8; // 2 int
 const DAREAPORTAL_SIZE: usize = 8; // 2 int
 
@@ -276,14 +271,14 @@ impl CollisionMap {
         let checksum = com_block_checksum(data);
 
         // Load lumps in the same order as the C code
-        self.load_surfaces(data, lumps[LUMP_TEXINFO])?;
-        self.load_leafs(data, lumps[LUMP_LEAFS])?;
+        self.load_surfaces(header.texinfo(data)?)?;
+        self.load_leafs(header.leafs(data)?)?;
         self.load_leaf_brushes(data, lumps[LUMP_LEAFBRUSHES])?;
-        self.load_planes(data, lumps[LUMP_PLANES])?;
+        self.load_planes(header.planes(data)?)?;
         self.load_brushes(data, lumps[LUMP_BRUSHES])?;
         self.load_brush_sides(data, lumps[LUMP_BRUSHSIDES])?;
-        self.load_submodels(data, lumps[LUMP_MODELS])?;
-        self.load_nodes(data, lumps[LUMP_NODES])?;
+        self.load_submodels(header.models(data)?)?;
+        self.load_nodes(header.nodes(data)?)?;
         self.load_areas(data, lumps[LUMP_AREAS])?;
         self.load_area_portals(data, lumps[LUMP_AREAPORTALS])?;
         self.entity_string = header.entity_string(data)?;
@@ -297,121 +292,72 @@ impl CollisionMap {
         Ok(checksum)
     }
 
-    fn load_planes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
-        let Lump {
-            offset: ofs,
-            length: len,
-        } = lump;
-        if !len.is_multiple_of(DPLANE_SIZE) {
-            return Err(Q2Error::Drop("Mod_LoadPlanes: funny lump size".into()));
-        }
-        let count = len / DPLANE_SIZE;
-        if count < 1 {
+    fn load_planes(&mut self, planes: Vec<DPlane>) -> Q2Result<()> {
+        if planes.is_empty() {
             return Err(Q2Error::Drop("Map with no planes".into()));
         }
-        if count > MAX_MAP_PLANES {
+        if planes.len() > MAX_MAP_PLANES {
             return Err(Q2Error::Drop("Map has too many planes".into()));
         }
 
-        self.planes.reserve(count);
-        for i in 0..count {
-            let base = ofs + i * DPLANE_SIZE;
-            let nx = try_read_f32(data, base)?;
-            let ny = try_read_f32(data, base + 4)?;
-            let nz = try_read_f32(data, base + 8)?;
-            let dist = try_read_f32(data, base + 12)?;
-            let ptype = try_read_i32(data, base + 16)? as u8;
-
+        self.planes.reserve(planes.len());
+        for p in planes {
             let mut bits: u8 = 0;
-            if nx < 0.0 {
+            if p.normal.x < 0.0 {
                 bits |= 1;
             }
-            if ny < 0.0 {
+            if p.normal.y < 0.0 {
                 bits |= 2;
             }
-            if nz < 0.0 {
+            if p.normal.z < 0.0 {
                 bits |= 4;
             }
 
             self.planes.push(CPlane {
-                normal: Vec3f::new(nx, ny, nz),
-                dist,
-                plane_type: ptype,
+                normal: p.normal,
+                dist: p.dist,
+                plane_type: p.plane_type as u8,
                 sign_bits: bits,
             });
         }
         Ok(())
     }
 
-    fn load_nodes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
-        let Lump {
-            offset: ofs,
-            length: len,
-        } = lump;
-        if !len.is_multiple_of(DNODE_SIZE) {
-            return Err(Q2Error::Drop("Mod_LoadNodes: funny lump size".into()));
-        }
-        let count = len / DNODE_SIZE;
-        if count < 1 {
+    fn load_nodes(&mut self, nodes: Vec<DNode>) -> Q2Result<()> {
+        if nodes.is_empty() {
             return Err(Q2Error::Drop("Map has no nodes".into()));
         }
-        if count > MAX_MAP_NODES {
+        if nodes.len() > MAX_MAP_NODES {
             return Err(Q2Error::Drop("Map has too many nodes".into()));
         }
 
-        self.nodes.reserve(count);
-        for i in 0..count {
-            let base = ofs + i * DNODE_SIZE;
-            let planenum = try_read_i32(data, base)? as usize;
-            let child0 = try_read_i32(data, base + 4)?;
-            let child1 = try_read_i32(data, base + 8)?;
+        self.nodes.reserve(nodes.len());
+        for n in nodes {
             self.nodes.push(CNode {
-                plane_idx: planenum,
-                children: [child0, child1],
+                plane_idx: n.plane_num as usize,
+                children: n.children,
             });
         }
         Ok(())
     }
 
-    fn load_leafs(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
-        let Lump {
-            offset: ofs,
-            length: len,
-        } = lump;
-        if !len.is_multiple_of(DLEAF_SIZE) {
-            return Err(Q2Error::Drop("Mod_LoadLeafs: funny lump size".into()));
-        }
-        let count = len / DLEAF_SIZE;
-        if count < 1 {
+    fn load_leafs(&mut self, leafs: Vec<DLeaf>) -> Q2Result<()> {
+        if leafs.is_empty() {
             return Err(Q2Error::Drop("Map with no leafs".into()));
         }
-        if count > MAX_MAP_LEAFS {
+        if leafs.len() > MAX_MAP_LEAFS {
             return Err(Q2Error::Drop("Map has too many leafs".into()));
         }
 
         self.leafs.clear();
-        self.leafs.reserve(count);
-        for i in 0..count {
-            let base = ofs + i * DLEAF_SIZE;
-            let contents = try_read_i32(data, base)?;
-            let cluster = try_read_i16(data, base + 4)?;
-            let area = try_read_i16(data, base + 6)?;
-            // skip mins[3] and maxs[3] (6 shorts = 12 bytes at offset 8..20)
-            // dleaf_t layout:
-            //   int contents (4), short cluster (2), short area (2),
-            //   short mins[3] (6), short maxs[3] (6),
-            //   ushort firstleafface (2), ushort numleaffaces (2),
-            //   ushort firstleafbrush (2), ushort numleafbrushes (2)
-            // Total = 28
-            let first_leaf_brush = try_read_u16(data, base + 24)?;
-            let num_leaf_brushes = try_read_u16(data, base + 26)?;
-
+        self.leafs.reserve(leafs.len());
+        for l in leafs {
             self.leafs.push(CLeaf {
-                contents,
-                cluster,
-                area,
-                first_leaf_brush,
-                num_leaf_brushes,
+                contents: l.contents,
+                cluster: l.cluster,
+                area: l.area,
+                first_leaf_brush: l.first_leaf_brush,
+                num_leaf_brushes: l.num_leaf_brushes,
             });
         }
 
@@ -516,86 +462,42 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_surfaces(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
-        let Lump {
-            offset: ofs,
-            length: len,
-        } = lump;
-        if !len.is_multiple_of(TEXINFO_SIZE) {
-            return Err(Q2Error::Drop("Mod_LoadSurfaces: funny lump size".into()));
-        }
-        let count = len / TEXINFO_SIZE;
-        if count < 1 {
+    fn load_surfaces(&mut self, texinfo: Vec<DTexinfo>) -> Q2Result<()> {
+        if texinfo.is_empty() {
             return Err(Q2Error::Drop("Map with no surfaces".into()));
         }
-        if count > MAX_MAP_TEXINFO {
+        if texinfo.len() > MAX_MAP_TEXINFO {
             return Err(Q2Error::Drop("Map has too many surfaces".into()));
         }
 
-        self.surfaces.reserve(count);
-        for i in 0..count {
-            let base = ofs + i * TEXINFO_SIZE;
-            // texinfo_t: float vecs[2][4] (32 bytes), int flags (4), int value (4),
-            //            char texture[32] (32), int nexttexinfo (4)
-            let flags = try_read_i32(data, base + 32)?;
-            let value = try_read_i32(data, base + 36)?;
-
-            // Read texture name (32 bytes, null terminated)
-            let name_start = base + 40;
-            let name_end = name_start + 32;
-            let name_bytes = data
-                .get(name_start..name_end)
-                .ok_or_else(|| Q2Error::Drop("Mod_LoadSurfaces: truncated texinfo".into()))?;
-            let nul_pos = name_bytes.iter().position(|&b| b == 0).unwrap_or(32);
-            let name = String::from_utf8_lossy(&name_bytes[..nul_pos]).into_owned();
-
-            self.surfaces.push(MapSurface { name, flags, value });
+        self.surfaces.reserve(texinfo.len());
+        for t in texinfo {
+            self.surfaces.push(MapSurface {
+                name: t.texture,
+                flags: t.flags,
+                value: t.value,
+            });
         }
         Ok(())
     }
 
-    fn load_submodels(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
-        let Lump {
-            offset: ofs,
-            length: len,
-        } = lump;
-        if !len.is_multiple_of(DMODEL_SIZE) {
-            return Err(Q2Error::Drop("Mod_LoadSubmodels: funny lump size".into()));
-        }
-        let count = len / DMODEL_SIZE;
-        if count < 1 {
+    fn load_submodels(&mut self, models: Vec<DModel>) -> Q2Result<()> {
+        if models.is_empty() {
             return Err(Q2Error::Drop("Map with no models".into()));
         }
-        if count > MAX_MAP_MODELS {
+        if models.len() > MAX_MAP_MODELS {
             return Err(Q2Error::Drop("Map has too many models".into()));
         }
 
-        self.models.reserve(count);
-        for i in 0..count {
-            let base = ofs + i * DMODEL_SIZE;
-            // dmodel_t: float mins[3], maxs[3], origin[3], int headnode, int firstface, int numfaces
-            let mins = Vec3f::new(
-                try_read_f32(data, base)? - 1.0,
-                try_read_f32(data, base + 4)? - 1.0,
-                try_read_f32(data, base + 8)? - 1.0,
-            );
-            let maxs = Vec3f::new(
-                try_read_f32(data, base + 12)? + 1.0,
-                try_read_f32(data, base + 16)? + 1.0,
-                try_read_f32(data, base + 20)? + 1.0,
-            );
-            let origin = Vec3f::new(
-                try_read_f32(data, base + 24)?,
-                try_read_f32(data, base + 28)?,
-                try_read_f32(data, base + 32)?,
-            );
-            let head_node = try_read_i32(data, base + 36)?;
-
+        self.models.reserve(models.len());
+        let spread = Vec3f::new(1.0, 1.0, 1.0);
+        for m in models {
+            // Spread the bounds by one unit, as C CMod_LoadSubmodels does.
             self.models.push(CModel {
-                mins,
-                maxs,
-                origin,
-                head_node,
+                mins: m.mins - spread,
+                maxs: m.maxs + spread,
+                origin: m.origin,
+                head_node: m.head_node,
             });
         }
         Ok(())
@@ -1881,7 +1783,7 @@ pub fn sign_bits_for_plane(normal: Vec3f) -> u8 {
     bits
 }
 
-use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16};
+use crate::binary::{try_read_i16, try_read_i32, try_read_u16};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1891,7 +1793,10 @@ use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16};
 pub(crate) mod tests {
     use super::*;
     use crate::binary::try_read_u32;
-    use crate::bsp_file::{BSPVERSION, IDBSPHEADER};
+    use crate::bsp_file::{
+        BSPVERSION, DPLANE_SIZE, IDBSPHEADER, LUMP_LEAFS, LUMP_MODELS, LUMP_NODES, LUMP_PLANES,
+        LUMP_TEXINFO,
+    };
 
     #[test]
     fn collision_map_new() {
