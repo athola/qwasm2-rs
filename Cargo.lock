@@ -682,7 +682,6 @@ dependencies = [
  "bitflags",
  "q2-shared",
  "tempfile",
- "thiserror",
  "tracing",
 ]
 
@@ -770,6 +769,7 @@ dependencies = [
  "bitflags",
  "glam",
  "serde",
+ "thiserror",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 use glow::HasContext;
 use q2_render_api::*;
+use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use crate::bsp::BspData;
@@ -219,11 +220,13 @@ impl Drop for Gl3Renderer {
 }
 
 impl Renderer for Gl3Renderer {
-    fn init(&mut self, width: i32, height: i32) -> Result<(), String> {
+    fn init(&mut self, width: i32, height: i32) -> Q2Result<()> {
         let gl = match &self.gl {
             Some(gl) => gl,
             None => {
-                return Err("GL3Renderer::init called without a GL context".into());
+                return Err(Q2Error::Drop(
+                    "GL3Renderer::init called without a GL context".into(),
+                ));
             }
         };
 
@@ -231,7 +234,7 @@ impl Renderer for Gl3Renderer {
         self.height = height;
 
         let prog = Self::compile_shaders(gl)
-            .map_err(|e| format!("Failed to compile world shaders: {e}"))?;
+            .map_err(|e| Q2Error::Drop(format!("Failed to compile world shaders: {e}")))?;
 
         // SAFETY: `prog` and any previous program were created by this same
         // `gl` context in `compile_shaders`, and `old` is no longer referenced
@@ -570,6 +573,16 @@ mod tests {
     fn init_fails_without_context() {
         let mut r = Gl3Renderer::new();
         assert!(r.init(800, 600).is_err());
+    }
+
+    #[test]
+    fn init_without_context_is_recoverable_q2_drop() {
+        // Renderer errors share Q2Error with the engine so the frame loop
+        // and q2err_to_js handle them like any other ERR_DROP.
+        let mut r = Gl3Renderer::new();
+        let err = r.init(800, 600).unwrap_err();
+        assert!(matches!(err, q2_shared::error::Q2Error::Drop(_)));
+        assert!(err.is_recoverable());
     }
 
     #[test]

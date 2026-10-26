@@ -10,6 +10,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+use q2_shared::error::Q2Result;
 use q2_shared::types::*;
 use std::fmt;
 
@@ -179,8 +180,8 @@ pub struct Particle {
 /// Corresponds to `refexport_t` in the C code (ref.h).
 pub trait Renderer: Send {
     /// Initialize the renderer with the given window dimensions.
-    /// Returns `Err` with a description on failure.
-    fn init(&mut self, width: i32, height: i32) -> Result<(), String>;
+    /// Returns `Err(Q2Error::Drop)` on failure, like C R_Init returning false.
+    fn init(&mut self, width: i32, height: i32) -> Q2Result<()>;
 
     /// Shut down the renderer, releasing all GPU resources.
     fn shutdown(&mut self);

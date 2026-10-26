@@ -1,3 +1,5 @@
+use super::fatal;
+use q2_common::error::Q2Result;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -28,14 +30,12 @@ impl Default for WasmInputState {
 
 /// Set up keyboard and mouse event listeners on a canvas.
 /// Returns a shared reference to the input state.
-pub fn setup_input_listeners(
-    canvas: &HtmlCanvasElement,
-) -> Result<Rc<RefCell<WasmInputState>>, String> {
+pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<WasmInputState>>> {
     let state = Rc::new(RefCell::new(WasmInputState::default()));
     let document = web_sys::window()
-        .ok_or("no window")?
+        .ok_or_else(|| fatal("no window"))?
         .document()
-        .ok_or("no document")?;
+        .ok_or_else(|| fatal("no document"))?;
 
     // Keyboard down. Here and on keyup, only keys the engine maps are
     // swallowed, and only while the pointer is locked to the game, so browser
@@ -53,7 +53,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         document
             .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("keydown listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("keydown listener: {:?}", e)))?;
         closure.forget(); // leak -- lives for lifetime of page
     }
 
@@ -71,7 +71,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         document
             .add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("keyup listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("keyup listener: {:?}", e)))?;
         closure.forget();
     }
 
@@ -85,7 +85,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("mousemove listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("mousemove listener: {:?}", e)))?;
         closure.forget();
     }
 
@@ -98,7 +98,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("mousedown listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("mousedown listener: {:?}", e)))?;
         closure.forget();
     }
 
@@ -110,7 +110,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("mouseup listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("mouseup listener: {:?}", e)))?;
         closure.forget();
     }
 
@@ -122,7 +122,7 @@ pub fn setup_input_listeners(
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
-            .map_err(|e| format!("click listener: {:?}", e))?;
+            .map_err(|e| fatal(format!("click listener: {:?}", e)))?;
         closure.forget();
     }
 

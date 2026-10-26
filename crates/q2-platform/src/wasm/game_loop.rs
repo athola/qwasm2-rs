@@ -1,3 +1,5 @@
+use super::fatal;
+use q2_common::error::Q2Result;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -10,7 +12,7 @@ pub type FrameCallback = Box<dyn FnMut(f64)>;
 type RafSlot = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
 
 /// Start the requestAnimationFrame game loop.
-pub fn start_game_loop(mut callback: FrameCallback) -> Result<(), String> {
+pub fn start_game_loop(mut callback: FrameCallback) -> Q2Result<()> {
     let f: RafSlot = Rc::new(RefCell::new(None));
     let g = f.clone();
 
@@ -25,15 +27,15 @@ pub fn start_game_loop(mut callback: FrameCallback) -> Result<(), String> {
     }) as Box<dyn FnMut(f64)>));
 
     request_animation_frame(g.borrow().as_ref().unwrap())
-        .map_err(|e| format!("initial RAF failed: {}", e))?;
+        .map_err(|e| fatal(format!("initial RAF failed: {}", e)))?;
     Ok(())
 }
 
-fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) -> Result<i32, String> {
+fn request_animation_frame(f: &Closure<dyn FnMut(f64)>) -> Q2Result<i32> {
     web_sys::window()
-        .ok_or_else(|| "no window".to_string())?
+        .ok_or_else(|| fatal("no window"))?
         .request_animation_frame(f.as_ref().unchecked_ref())
-        .map_err(|e| format!("request_animation_frame failed: {:?}", e))
+        .map_err(|e| fatal(format!("request_animation_frame failed: {:?}", e)))
 }
 
 /// Get high-resolution time in milliseconds.

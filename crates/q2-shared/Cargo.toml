@@ -8,6 +8,7 @@ rust-version.workspace = true
 glam = { workspace = true }
 bitflags = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 bincode = { workspace = true }

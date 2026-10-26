@@ -277,8 +277,8 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
 
     // 1. Create WebGL2 context
     log("Creating WebGL2 context...");
-    let (gl, canvas) = q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let (gl, canvas) =
+        q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id).map_err(q2err_to_js)?;
 
     let width = canvas.width() as i32;
     let height = canvas.height() as i32;
@@ -287,9 +287,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     // 2. Initialize renderer
     let mut renderer = Gl3Renderer::new();
     renderer.set_gl_context(gl);
-    renderer
-        .init(width, height)
-        .map_err(|e| JsValue::from_str(&format!("GL3 init failed: {e}")))?;
+    renderer.init(width, height).map_err(q2err_to_js)?;
     log("GL3 renderer initialized");
 
     // 3. Fetch pak0.pak — keep bytes in JS heap; don't copy to Rust yet.
@@ -367,8 +365,8 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     ));
 
     // 9. Set up input
-    let input_state = q2_platform::wasm::input::setup_input_listeners(&canvas)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let input_state =
+        q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
     log("Input listeners attached (click canvas for pointer lock)");
 
     // 10. Find player start via game spawn system
@@ -404,8 +402,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         engine.borrow_mut().tick(timestamp, &mut input);
     }) as Box<dyn FnMut(f64)>;
 
-    q2_platform::wasm::game_loop::start_game_loop(frame_callback)
-        .map_err(|e| JsValue::from_str(&e))?;
+    q2_platform::wasm::game_loop::start_game_loop(frame_callback).map_err(q2err_to_js)?;
 
     Ok(())
 }
