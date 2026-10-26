@@ -37,13 +37,18 @@ pub fn setup_input_listeners(
         .document()
         .ok_or("no document")?;
 
-    // Keyboard down
+    // Keyboard down. Here and on keyup, only keys the engine maps are
+    // swallowed, and only while the pointer is locked to the game, so browser
+    // shortcuts (F5, Ctrl+F) and typing into other inputs keep working.
     {
         let state = state.clone();
+        let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            event.prevent_default();
             if let Some(key) = key_code_to_q2(&event.code()) {
                 state.borrow_mut().keys[key as usize] = true;
+                if lock_doc.pointer_lock_element().is_some() {
+                    event.prevent_default();
+                }
             }
         }) as Box<dyn FnMut(_)>);
         document
@@ -55,10 +60,13 @@ pub fn setup_input_listeners(
     // Keyboard up
     {
         let state = state.clone();
+        let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            event.prevent_default();
             if let Some(key) = key_code_to_q2(&event.code()) {
                 state.borrow_mut().keys[key as usize] = false;
+                if lock_doc.pointer_lock_element().is_some() {
+                    event.prevent_default();
+                }
             }
         }) as Box<dyn FnMut(_)>);
         document
