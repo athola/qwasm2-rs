@@ -397,8 +397,9 @@ fn load_models(data: &[u8], lump: &BspLump) -> Q2Result<Vec<BspModel>> {
     for i in 0..count {
         let base = off + i * DISK_MODEL_SIZE;
         models.push(BspModel {
-            mins: try_read_vec3(data, base)?,
-            maxs: try_read_vec3(data, base + 12)?,
+            // Spread the bounds by one unit like gl3_model.c Mod_LoadSubmodels.
+            mins: try_read_vec3(data, base)? - Vec3f::new(1.0, 1.0, 1.0),
+            maxs: try_read_vec3(data, base + 12)? + Vec3f::new(1.0, 1.0, 1.0),
             origin: try_read_vec3(data, base + 24)?,
             head_node: try_read_i32(data, base + 36)?,
             first_face: try_read_i32(data, base + 40)?,
@@ -583,6 +584,26 @@ mod tests {
         assert_eq!(bsp.vertices.len(), 2);
         assert_eq!(bsp.vertices[0].position, Vec3f::new(1.0, 2.0, 3.0));
         assert_eq!(bsp.vertices[1].position, Vec3f::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn submodel_bounds_are_spread_by_one_unit() {
+        // gl3_model.c Mod_LoadSubmodels: "spread the mins / maxs by a pixel".
+        let mut record = Vec::new();
+        for f in [0.0f32, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0] {
+            record.extend_from_slice(&f.to_le_bytes());
+        }
+        for i in [0i32, 0, 1] {
+            record.extend_from_slice(&i.to_le_bytes());
+        }
+        let lump = BspLump {
+            offset: 0,
+            length: DISK_MODEL_SIZE as u32,
+        };
+        let models = load_models(&record, &lump).unwrap();
+        assert_eq!(models[0].mins, Vec3f::new(-1.0, -1.0, -1.0));
+        assert_eq!(models[0].maxs, Vec3f::new(11.0, 11.0, 11.0));
+        assert_eq!(models[0].origin, Vec3f::new(5.0, 5.0, 5.0));
     }
 
     #[test]
