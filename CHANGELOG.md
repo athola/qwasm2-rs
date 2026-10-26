@@ -27,7 +27,11 @@ All notable changes to qwasm2-rs are documented here.
 
 ### Added
 - `CollisionMap::world_trace`, which reports the world entity on a hit
-  like C CL_PMTrace
+  like C CL_PMTrace, and `clip_move_to_entities` (C CL_ClipMoveToEntities)
+  for client-side clipping against frame entities; unwired until client
+  prediction (#19)
+- `q2_common::bsp_file` decodes plane, node, leaf, texinfo and model
+  records for both the collision and render loaders
 - The wasm engine refits render size and fov when the canvas is resized
 
 ### Fixed

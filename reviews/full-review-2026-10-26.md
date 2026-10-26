@@ -8,9 +8,9 @@ duplicate map and per-task breakdown are in
 `docs/plans/2026-10-26-full-review-fixes.md`; finding IDs below (C-, S-, R-,
 A-, M-, B-) refer to it.
 
-Outcome: 69 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
+Outcome: 72 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
 rejected with a reason, or mapped to a tracking issue. `make ci` (fmt check,
-clippy `--all-targets -D warnings` on host and wasm32, check, 557 tests),
+clippy `--all-targets -D warnings` on host and wasm32, check, 565 tests),
 `make wasm` and `make test-browser` (6/6) pass. `cargo audit` dropped from 19
 vulnerabilities to 0, with one unmaintained warning (bincode, via q2-shared).
 
@@ -103,11 +103,15 @@ instead, at the user's request:
   through `q2err_to_js`.
 - A-20: `q2_common::bsp_file` validates the BSP header and lump ranges for
   both collision and the renderer; collision loads the entity string like
-  C CMod_LoadEntityString, and spawn reads it from there. Each loader still
-  reads its own lumps from the same bytes, as C CM_LoadMap and the GL3
-  model loader do.
-- C-20: `CollisionMap::world_trace` reports the world entity on a hit, the
-  world half of C CL_PMTrace. Entity clipping stays with #11 and #19.
+  C CMod_LoadEntityString, and spawn reads it from there. The plane, node,
+  leaf, texinfo and model records both loaders use are decoded once in
+  `bsp_file`; each loader keeps its own transform and C checks. A
+  fingerprint of both loaders on demo1-3 is identical before and after.
+- C-20: `CollisionMap::world_trace` reports the world entity on a hit, and
+  `clip_move_to_entities` ports C CL_ClipMoveToEntities, together the whole
+  of CL_PMTrace; it is called once client prediction exists (#19).
+  Server-side SV_ClipMoveToEntities needs linked entities and a server
+  collision map (#11, #31).
 - C-18(d): `areas_connected` and `set_area_portal_state` return ERR_DROP
   for out-of-range indices instead of silently answering.
 - R-29: the engine refits render size and fov when the page resizes the
