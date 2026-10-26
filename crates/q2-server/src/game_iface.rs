@@ -153,12 +153,16 @@ impl GameImport for ServerGameImport {
         _start: Vec3f,
         _mins: Vec3f,
         _maxs: Vec3f,
-        _end: Vec3f,
+        end: Vec3f,
         _pass_ent: Option<usize>,
         _content_mask: i32,
     ) -> Trace {
-        // CP-3: no BSP loaded — return an unobstructed trace (fraction = 1.0).
-        Trace::default()
+        // CP-3: no BSP loaded — return an unobstructed trace. A trace that
+        // hits nothing reaches `end` (fraction 1.0), as in C SV_Trace.
+        Trace {
+            endpos: end,
+            ..Trace::default()
+        }
     }
 
     fn point_contents(&self, _point: Vec3f) -> i32 {
@@ -273,6 +277,16 @@ impl GameImport for ServerGameImport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unobstructed_trace_ends_at_requested_end_point() {
+        let gi = ServerGameImport::new();
+        let end = Vec3f::new(100.0, -20.0, 8.0);
+        let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
+        assert_eq!(tr.fraction, 1.0);
+        assert_eq!(tr.endpos, end);
+        assert!(!tr.allsolid && !tr.startsolid);
+    }
 
     #[test]
     fn configstring_stored() {

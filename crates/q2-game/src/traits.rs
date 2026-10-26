@@ -253,11 +253,14 @@ mod tests {
             _start: Vec3f,
             _mins: Vec3f,
             _maxs: Vec3f,
-            _end: Vec3f,
+            end: Vec3f,
             _pass_ent: Option<usize>,
             _content_mask: i32,
         ) -> Trace {
-            Trace::default()
+            Trace {
+                endpos: end,
+                ..Trace::default()
+            }
         }
         fn point_contents(&self, _point: Vec3f) -> i32 {
             0
@@ -322,18 +325,13 @@ mod tests {
     }
 
     #[test]
-    fn game_import_trace_returns_valid_default() {
+    fn game_import_unobstructed_trace_ends_at_end_point() {
         let gi: &dyn GameImport = &MockGameImport::default();
-        let tr = gi.trace(
-            Vec3f::ZERO,
-            Vec3f::ZERO,
-            Vec3f::ZERO,
-            Vec3f::new(100.0, 0.0, 0.0),
-            None,
-            0,
-        );
-        // Trace::default() has fraction=1.0, meaning no collision
+        let end = Vec3f::new(100.0, 0.0, 0.0);
+        let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
+        // Contract: fraction 1.0 (no hit) implies endpos == end.
         assert_eq!(tr.fraction, 1.0);
+        assert_eq!(tr.endpos, end);
         assert!(!tr.allsolid);
     }
 
