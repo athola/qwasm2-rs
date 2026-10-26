@@ -59,7 +59,14 @@ impl GameExport for GameLogic {
     }
 
     fn spawn_entities(&mut self, mapname: &str, entstring: &str, _spawnpoint: &str) {
-        let entities = parse_entity_string(entstring);
+        // C aborts the map load (gi.error) on a malformed entity string.
+        let entities = match parse_entity_string(entstring) {
+            Ok(entities) => entities,
+            Err(e) => {
+                tracing::error!(map = mapname, "spawn_entities: {e}");
+                return;
+            }
+        };
         for props in &entities {
             let key = match self.storage.spawn() {
                 Some(k) => k,
@@ -247,6 +254,21 @@ mod tests {
 "#;
         game.spawn_entities("test_map", entstring, "");
         assert_eq!(game.storage.count(), 2);
+    }
+
+    #[test]
+    fn spawn_entities_with_truncated_text_spawns_nothing() {
+        let mut game = GameLogic::new(4);
+        let entstring = r#"
+{ "classname" "worldspawn" }
+{ "classname" "info_player_start" "origin" "0 0 0"
+"#;
+        game.spawn_entities("test_map", entstring, "");
+        assert_eq!(
+            game.storage.count(),
+            0,
+            "a corrupt entity lump must not half-load"
+        );
     }
 
     #[test]

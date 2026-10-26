@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use q2_common::error::{Q2Error, Q2Result};
+
 use crate::entity::{EntityKey, EntityStorage};
 
 // ---------------------------------------------------------------------------
@@ -20,45 +22,36 @@ use crate::entity::{EntityKey, EntityStorage};
 /// }
 /// ```
 ///
+/// Tokens follow C `COM_Parse` (quoted strings or bare words, `//` comments).
 /// Keys starting with `_` are editor-only comments and are discarded.
-pub fn parse_entity_string(entstring: &str) -> Vec<HashMap<String, String>> {
+/// Malformed text is an error, as in C `SpawnEntities` / `ED_ParseEdict`,
+/// so a corrupt entity lump never loads as a partial map.
+pub fn parse_entity_string(entstring: &str) -> Q2Result<Vec<HashMap<String, String>>> {
     let mut result = Vec::new();
     let mut chars = entstring.chars().peekable();
 
-    loop {
-        // Skip whitespace looking for '{'
-        skip_whitespace(&mut chars);
-        match chars.peek() {
-            Some('{') => {
-                chars.next(); // consume '{'
-            }
-            _ => break, // end of string or unexpected — done
+    while let Some(token) = next_token(&mut chars) {
+        if !token.starts_with('{') {
+            return Err(Q2Error::Drop(format!(
+                "ED_LoadFromFile: found {token} when expecting {{"
+            )));
         }
 
         let mut entity: HashMap<String, String> = HashMap::new();
-
         loop {
-            skip_whitespace(&mut chars);
-            match chars.peek() {
-                Some('}') => {
-                    chars.next(); // consume '}'
-                    break;
-                }
-                Some('"') => {
-                    let key = parse_quoted_string(&mut chars);
-                    skip_whitespace(&mut chars);
-                    let value = parse_quoted_string(&mut chars);
-
-                    // Discard editor-only keys (leading underscore).
-                    if !key.starts_with('_') {
-                        entity.insert(key, value);
-                    }
-                }
-                Some(_) => {
-                    // Token without quotes (rare but tolerated) — skip it.
-                    chars.next();
-                }
-                None => break, // premature EOF
+            let key = next_token(&mut chars).ok_or_else(eof_without_brace)?;
+            if key.starts_with('}') {
+                break;
+            }
+            let value = next_token(&mut chars).ok_or_else(eof_without_brace)?;
+            if value.starts_with('}') {
+                return Err(Q2Error::Drop(
+                    "ED_ParseEntity: closing brace without data".into(),
+                ));
+            }
+            // Discard editor-only keys (leading underscore).
+            if !key.starts_with('_') {
+                entity.insert(key, value);
             }
         }
 
@@ -67,18 +60,39 @@ pub fn parse_entity_string(entstring: &str) -> Vec<HashMap<String, String>> {
         }
     }
 
-    result
+    Ok(result)
+}
+
+fn eof_without_brace() -> Q2Error {
+    Q2Error::Drop("ED_ParseEntity: EOF without closing brace".into())
+}
+
+/// Next token per C `COM_Parse`; `None` at end of input.
+fn next_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    loop {
+        skip_whitespace(chars);
+        let mut lookahead = chars.clone();
+        if lookahead.next() == Some('/') && lookahead.next() == Some('/') {
+            chars.find(|&c| c == '\n');
+            continue;
+        }
+        break;
+    }
+    match chars.peek()? {
+        '"' => Some(parse_quoted_string(chars)),
+        _ => {
+            let mut word = String::new();
+            while let Some(c) = chars.next_if(|c| !c.is_ascii_whitespace()) {
+                word.push(c);
+            }
+            Some(word)
+        }
+    }
 }
 
 /// Advance past whitespace characters.
 fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    while let Some(&c) = chars.peek() {
-        if c.is_ascii_whitespace() {
-            chars.next();
-        } else {
-            break;
-        }
-    }
+    while chars.next_if(|c| c.is_ascii_whitespace()).is_some() {}
 }
 
 /// Parse a `"quoted string"`, consuming the surrounding double quotes.
@@ -268,7 +282,13 @@ pub fn find_player_start(
         angle: f32,
     }
 
-    let entities = parse_entity_string(entstring);
+    let entities = match parse_entity_string(entstring) {
+        Ok(entities) => entities,
+        Err(e) => {
+            tracing::error!("find_player_start: {e}");
+            return None;
+        }
+    };
     let spawns: Vec<SpawnCandidate<'_>> = entities
         .iter()
         .filter_map(|ent| {
@@ -314,7 +334,7 @@ mod tests {
 "angle" "90"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0]["classname"], "info_player_start");
         assert_eq!(entities[0]["origin"], "0 0 0");
@@ -338,7 +358,7 @@ mod tests {
 "_color" "1 1 1"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities.len(), 3);
 
         assert_eq!(entities[0]["classname"], "worldspawn");
@@ -354,8 +374,36 @@ mod tests {
 
     #[test]
     fn parse_entity_string_empty() {
-        let entities = parse_entity_string("");
+        let entities = parse_entity_string("").unwrap();
         assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn parse_rejects_entity_without_closing_brace() {
+        // C ED_ParseEdict: "EOF without closing brace".
+        assert!(parse_entity_string(r#"{ "classname" "worldspawn""#).is_err());
+        assert!(parse_entity_string(r#"{ "classname" "worldspawn" "message""#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_key_followed_by_closing_brace() {
+        // C ED_ParseEdict: "closing brace without data".
+        assert!(parse_entity_string(r#"{ "classname" }"#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_text_where_opening_brace_expected() {
+        // C SpawnEntities: "found %s when expecting {".
+        assert!(parse_entity_string(r#"garbage { "classname" "light" }"#).is_err());
+        assert!(parse_entity_string(r#"{ "classname" "light" } stray"#).is_err());
+    }
+
+    #[test]
+    fn parse_reads_unquoted_tokens_like_com_parse() {
+        let entities = parse_entity_string("{ classname light origin \"1 2 3\" }").unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0]["classname"], "light");
+        assert_eq!(entities[0]["origin"], "1 2 3");
     }
 
     #[test]
@@ -366,7 +414,7 @@ mod tests {
 "message" "line1\nline2"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities[0]["message"], "line1\nline2");
     }
 
