@@ -296,6 +296,7 @@ try {{
   // Populate Playwright test hooks after WASM init succeeds
   document.getElementById('wasm-loaded').textContent = 'true';
   document.getElementById('self-test-result').textContent = self_test();
+  document.getElementById('engine-version').textContent = engine_version();
 
   // Determine pak URL — if served by devserver, fetch from /gamedata/
   const pakUrl = '/gamedata/baseq2/pak0-web.pak';
@@ -317,6 +318,7 @@ try {{
 <div id="test-hooks" style="display:none">
   <span id="wasm-loaded">false</span>
   <span id="self-test-result"></span>
+  <span id="engine-version"></span>
 </div>
 </body>
 </html>"#
