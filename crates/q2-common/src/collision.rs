@@ -15,23 +15,10 @@ use q2_shared::{Plane, Surface, Trace, Vec3f};
 /// 1/32 epsilon to keep floating point happy — MUST be this exact value.
 const DIST_EPSILON: f32 = 0.03125;
 
-// BSP file magic and version
-const IDBSPHEADER: u32 =
-    (b'I' as u32) | ((b'B' as u32) << 8) | ((b'S' as u32) << 16) | ((b'P' as u32) << 24);
-const BSPVERSION: u32 = 38;
-
-// Lump indices
-const LUMP_PLANES: usize = 1;
-const LUMP_NODES: usize = 4;
-const LUMP_TEXINFO: usize = 5;
-const LUMP_LEAFS: usize = 8;
-const LUMP_LEAFBRUSHES: usize = 10;
-const LUMP_MODELS: usize = 13;
-const LUMP_BRUSHES: usize = 14;
-const LUMP_BRUSHSIDES: usize = 15;
-const LUMP_AREAS: usize = 17;
-const LUMP_AREAPORTALS: usize = 18;
-const HEADER_LUMPS: usize = 19;
+use crate::bsp_file::{
+    BspHeader, Lump, LUMP_AREAPORTALS, LUMP_AREAS, LUMP_BRUSHES, LUMP_BRUSHSIDES, LUMP_LEAFBRUSHES,
+    LUMP_LEAFS, LUMP_MODELS, LUMP_NODES, LUMP_PLANES, LUMP_TEXINFO,
+};
 
 // Map limits
 const MAX_MAP_MODELS: usize = 1024;
@@ -195,6 +182,8 @@ pub struct CollisionMap {
     // Area connectivity
     areas: Vec<CArea>,
     area_portals: Vec<CAreaPortal>,
+    /// Entity lump text (C `map_entitystring`), for the game's spawn code.
+    entity_string: String,
     portal_open: Vec<bool>,
     flood_valid: i32,
 }
@@ -220,6 +209,7 @@ impl CollisionMap {
             solid_leaf: 0,
             areas: vec![CArea::default()], // area 0 is unused
             area_portals: Vec::new(),
+            entity_string: String::new(),
             portal_open: vec![false; MAX_MAP_AREAPORTALS],
             flood_valid: 0,
         }
@@ -266,42 +256,8 @@ impl CollisionMap {
             return Ok(0);
         }
 
-        // Need at least header
-        let header_size = 8 + HEADER_LUMPS * 8;
-        if data.len() < header_size {
-            return Err(Q2Error::Drop("BSP file too small".into()));
-        }
-
-        let ident = try_read_u32(data, 0)?;
-        let version = try_read_u32(data, 4)?;
-
-        if ident != IDBSPHEADER {
-            return Err(Q2Error::Drop(format!(
-                "CMod_LoadBrushModel: wrong magic 0x{ident:08X}"
-            )));
-        }
-        if version != BSPVERSION {
-            return Err(Q2Error::Drop(format!(
-                "CMod_LoadBrushModel: wrong version {version} (expected {BSPVERSION})"
-            )));
-        }
-
-        // Read lump directory
-        let mut lumps = [(0u32, 0u32); HEADER_LUMPS];
-        for (i, lump) in lumps.iter_mut().enumerate().take(HEADER_LUMPS) {
-            let base = 8 + i * 8;
-            *lump = (try_read_u32(data, base)?, try_read_u32(data, base + 4)?);
-            // Every lump must lie inside the file; this also keeps the
-            // per-record `ofs + i * SIZE` arithmetic from overflowing.
-            let inside = (lump.0 as usize)
-                .checked_add(lump.1 as usize)
-                .is_some_and(|end| end <= data.len());
-            if !inside {
-                return Err(Q2Error::Drop(format!(
-                    "CMod_LoadBrushModel: lump {i} extends past end of file"
-                )));
-            }
-        }
+        let header = BspHeader::parse(data)?;
+        let lumps = header.lumps;
 
         // Com_BlockChecksum: MD4 hash, then XOR the four 32-bit digest words.
         let checksum = com_block_checksum(data);
@@ -317,6 +273,7 @@ impl CollisionMap {
         self.load_nodes(data, lumps[LUMP_NODES])?;
         self.load_areas(data, lumps[LUMP_AREAS])?;
         self.load_area_portals(data, lumps[LUMP_AREAPORTALS])?;
+        self.entity_string = header.entity_string(data)?;
 
         self.validate_references()?;
         self.init_box_hull()?;
@@ -327,9 +284,11 @@ impl CollisionMap {
         Ok(checksum)
     }
 
-    fn load_planes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_planes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DPLANE_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadPlanes: funny lump size".into()));
         }
@@ -371,9 +330,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_nodes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_nodes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DNODE_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadNodes: funny lump size".into()));
         }
@@ -399,9 +360,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_leafs(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_leafs(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DLEAF_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadLeafs: funny lump size".into()));
         }
@@ -459,9 +422,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_leaf_brushes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_leaf_brushes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(2) {
             return Err(Q2Error::Drop("Mod_LoadLeafBrushes: funny lump size".into()));
         }
@@ -480,9 +445,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_brushes(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_brushes(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DBRUSH_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadBrushes: funny lump size".into()));
         }
@@ -504,9 +471,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_brush_sides(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_brush_sides(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DBRUSHSIDE_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadBrushSides: funny lump size".into()));
         }
@@ -534,9 +503,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_surfaces(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_surfaces(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(TEXINFO_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadSurfaces: funny lump size".into()));
         }
@@ -570,9 +541,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_submodels(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_submodels(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DMODEL_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadSubmodels: funny lump size".into()));
         }
@@ -615,9 +588,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_areas(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_areas(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DAREA_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadAreas: funny lump size".into()));
         }
@@ -640,9 +615,11 @@ impl CollisionMap {
         Ok(())
     }
 
-    fn load_area_portals(&mut self, data: &[u8], (ofs, len): (u32, u32)) -> Q2Result<()> {
-        let ofs = ofs as usize;
-        let len = len as usize;
+    fn load_area_portals(&mut self, data: &[u8], lump: Lump) -> Q2Result<()> {
+        let Lump {
+            offset: ofs,
+            length: len,
+        } = lump;
         if !len.is_multiple_of(DAREAPORTAL_SIZE) {
             return Err(Q2Error::Drop("Mod_LoadAreaPortals: funny lump size".into()));
         }
@@ -912,6 +889,11 @@ impl CollisionMap {
             flood_num += 1;
             self.flood_area_r(i, flood_num);
         }
+    }
+
+    /// The map's entity lump (C CM_EntityString).
+    pub fn entity_string(&self) -> &str {
+        &self.entity_string
     }
 
     /// Set an area portal open or closed and recalculate connectivity.
@@ -1821,7 +1803,7 @@ pub fn sign_bits_for_plane(normal: Vec3f) -> u8 {
     bits
 }
 
-use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16, try_read_u32};
+use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1830,6 +1812,8 @@ use crate::binary::{try_read_f32, try_read_i16, try_read_i32, try_read_u16, try_
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::binary::try_read_u32;
+    use crate::bsp_file::{BSPVERSION, IDBSPHEADER};
 
     #[test]
     fn collision_map_new() {
@@ -2965,6 +2949,19 @@ pub(crate) mod tests {
             Vec3f::new(0.0, 45.0, 0.0),
         );
         assert!((t.endpos.x - 116.0).abs() < 1.0, "endpos {:?}", t.endpos);
+    }
+
+    #[test]
+    fn load_map_keeps_entity_string_like_cm_entitystring() {
+        let entities = b"{ \"classname\" \"worldspawn\" }\0";
+        let mut bsp = build_floor_bsp();
+        let ofs = bsp.len() as u32;
+        bsp.extend_from_slice(entities);
+        put_i32(&mut bsp, 8, ofs as i32);
+        put_i32(&mut bsp, 12, entities.len() as i32);
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+        assert_eq!(cm.entity_string(), "{ \"classname\" \"worldspawn\" }");
     }
 
     #[test]

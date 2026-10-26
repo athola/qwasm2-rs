@@ -8,6 +8,7 @@
 //! - Inherent: 0
 
 pub mod binary;
+pub mod bsp_file;
 pub mod cmd;
 pub mod collision;
 pub mod cvar;
