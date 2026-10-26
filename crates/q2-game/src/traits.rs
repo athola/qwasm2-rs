@@ -222,12 +222,15 @@ pub trait GameExport {
     /// Called when a new map is loaded.
     fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str);
 
+    // Client calls take the client's entity number, `slot + 1`, as C passes
+    // `EDICT_NUM(slot + 1)`; entity 0 is the world.
+
     /// Returns `true` if the client is allowed to connect.
-    fn client_connect(&mut self, ent_idx: usize, userinfo: &str) -> bool;
-    fn client_begin(&mut self, ent_idx: usize);
-    fn client_disconnect(&mut self, ent_idx: usize);
-    fn client_command(&mut self, ent_idx: usize);
-    fn client_think(&mut self, ent_idx: usize, cmd: &UserCmd);
+    fn client_connect(&mut self, number: usize, userinfo: &str) -> bool;
+    fn client_begin(&mut self, number: usize);
+    fn client_disconnect(&mut self, number: usize);
+    fn client_command(&mut self, number: usize);
+    fn client_think(&mut self, number: usize, cmd: &UserCmd);
 
     /// Run one game frame (10 Hz by default in Q2).
     fn run_frame(&mut self);

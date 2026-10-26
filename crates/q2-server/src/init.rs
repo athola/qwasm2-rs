@@ -4,27 +4,34 @@
 //! `sv_init.c` (C reference: Qwasm2/src/server/sv_init.c).
 
 use q2_common::error::Q2Result;
+use q2_game::traits::{GameExport, GameImport};
 use q2_shared::constants::*;
 use q2_shared::types::EntityState;
 
 use crate::state::{Server, ServerClient, ServerState, ServerStatic};
+use crate::ServerGameImport;
 
 impl Server {
-    /// Initialize a new map.
+    /// Load a map and spawn it (C `SV_SpawnServer`):
     ///
-    /// Roughly corresponds to the combined logic of `SV_SpawnServer()` and
-    /// `SV_Map()` from the C codebase. It:
+    /// 1. Reset frame counters, configstrings and baselines.
+    /// 2. Load `bsp` into the import's collision map and area tree; an empty
+    ///    `bsp` is C's no-map case (cinematic servers).
+    /// 3. Register the world as model 1 and each inline model `*n` as model
+    ///    `n + 1`, and record the map checksum.
+    /// 4. Let the game spawn the map's entities and run two frames so
+    ///    everything settles before clients enter.
     ///
-    /// 1. Transitions the server to `Loading`.
-    /// 2. Resets frame counters and timing.
-    /// 3. Allocates configstrings and entity baselines.
-    /// 4. Records the map name in `CS_NAME`.
-    /// 5. Transitions to `Game` once everything is ready.
-    ///
-    /// Actual BSP loading and entity spawning are left to the collision-map
-    /// and game modules respectively; this method only handles the server
-    /// bookkeeping.
-    pub fn map(&mut self, svs: &mut ServerStatic, map_name: &str) -> Q2Result<()> {
+    /// A map that fails to load leaves the server `Dead`, as C's ERR_DROP
+    /// shuts the server down.
+    pub fn map(
+        &mut self,
+        svs: &mut ServerStatic,
+        map_name: &str,
+        bsp: &[u8],
+        gi: &ServerGameImport,
+        game: &mut dyn GameExport,
+    ) -> Q2Result<()> {
         // Transition into loading state.
         self.state = ServerState::Loading;
         self.name = map_name.to_string();
@@ -53,10 +60,33 @@ impl Server {
             client.last_frame = -1;
         }
 
-        // TODO(#11): CM_LoadMap — load the BSP collision model.
-        // TODO(#11): SV_ClearWorld — reset the spatial partitioning tree.
-        // TODO(#11): ge->SpawnEntities — let the game module spawn edicts.
-        // TODO(#11): SV_CreateBaseline — snapshot initial entity state.
+        let checksum = match gi.load_map(bsp) {
+            Ok(checksum) => checksum,
+            Err(e) => {
+                self.state = ServerState::Dead;
+                return Err(e);
+            }
+        };
+        if !bsp.is_empty() {
+            gi.configstring((CS_MODELS + 1) as i32, &format!("maps/{map_name}.bsp"));
+        }
+        // C formats the checksum with %i.
+        gi.configstring(CS_MAPCHECKSUM as i32, &(checksum as i32).to_string());
+        for i in 1..gi.num_inline_models() {
+            gi.configstring((CS_MODELS + 1 + i) as i32, &format!("*{i}"));
+        }
+
+        game.spawn_entities(map_name, &gi.entity_string(), "");
+        game.run_frame();
+        game.run_frame();
+
+        // The game wrote configstrings through the import's mirror.
+        for (index, value) in gi.drain_configstring_updates() {
+            if let Some(slot) = self.configstrings.get_mut(index) {
+                *slot = value;
+            }
+        }
+        // TODO(#10): SV_CreateBaseline once client messages are sent.
 
         // All precaches complete — go live.
         self.state = ServerState::Game;
@@ -91,6 +121,7 @@ impl ServerStatic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::NullGame;
 
     #[test]
     fn server_map_init() {
@@ -99,7 +130,14 @@ mod tests {
         svs.init_game(4);
         svs.realtime = 5000;
 
-        sv.map(&mut svs, "base1").expect("map() should succeed");
+        sv.map(
+            &mut svs,
+            "base1",
+            &[],
+            &ServerGameImport::new(),
+            &mut NullGame::default(),
+        )
+        .expect("map() should succeed");
 
         assert_eq!(sv.state, ServerState::Game);
         assert_eq!(sv.name, "base1");
@@ -118,16 +156,31 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(1);
 
-        sv.map(&mut svs, "a").unwrap();
+        sv.map(
+            &mut svs,
+            "a",
+            &[],
+            &ServerGameImport::new(),
+            &mut NullGame::default(),
+        )
+        .unwrap();
         sv.configstrings[CS_MODELS + 1] = "maps/a.bsp".into();
         sv.configstrings[CS_SOUNDS + 3] = "world/amb1.wav".into();
         sv.baselines[5].modelindex = 7;
 
-        sv.map(&mut svs, "b").unwrap();
+        sv.map(
+            &mut svs,
+            "b",
+            &[],
+            &ServerGameImport::new(),
+            &mut NullGame::default(),
+        )
+        .unwrap();
 
         assert_eq!(sv.configstrings[CS_NAME], "b");
+        // Every map writes its own name and checksum; nothing else survives.
         for (i, cs) in sv.configstrings.iter().enumerate() {
-            if i != CS_NAME {
+            if i != CS_NAME && i != CS_MAPCHECKSUM {
                 assert!(
                     cs.is_empty(),
                     "configstring {i} leaked from previous map: {cs:?}"
@@ -151,7 +204,14 @@ mod tests {
         assert_eq!(sv.state, ServerState::Dead);
 
         // map() transitions Dead -> Loading -> Game.
-        sv.map(&mut svs, "test_map").unwrap();
+        sv.map(
+            &mut svs,
+            "test_map",
+            &[],
+            &ServerGameImport::new(),
+            &mut NullGame::default(),
+        )
+        .unwrap();
         assert_eq!(sv.state, ServerState::Game);
     }
 
@@ -207,7 +267,14 @@ mod tests {
         svs.clients[0].state = crate::state::ClientState::Spawned;
         svs.clients[1].state = crate::state::ClientState::Connected;
 
-        sv.map(&mut svs, "base2").unwrap();
+        sv.map(
+            &mut svs,
+            "base2",
+            &[],
+            &ServerGameImport::new(),
+            &mut NullGame::default(),
+        )
+        .unwrap();
 
         // Spawned -> Connected; Connected stays Connected.
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Connected);

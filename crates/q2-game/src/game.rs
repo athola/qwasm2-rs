@@ -6,10 +6,7 @@
 
 use crate::traits::GameExport;
 use crate::world::GameWorld;
-use q2_shared::{
-    constants::{CS_MAXCLIENTS, MAX_CLIENTS},
-    types::UserCmd,
-};
+use q2_shared::{constants::MAX_CLIENTS, types::UserCmd};
 
 impl GameWorld {
     /// Set `game.maxclients` (clamped to `MAX_CLIENTS`, as the server clamps
@@ -34,9 +31,6 @@ impl GameWorld {
 impl GameExport for GameWorld {
     fn init(&mut self) {
         self.init_game();
-        // C sets this in SP_worldspawn from the maxclients cvar (g_spawn.c).
-        self.gi
-            .configstring(CS_MAXCLIENTS as i32, &self.game.maxclients.to_string());
     }
 
     fn shutdown(&mut self) {}
@@ -104,12 +98,14 @@ impl GameExport for GameWorld {
 mod tests {
     use super::*;
     use crate::world::test_world_recording;
+    use q2_shared::constants::CS_MAXCLIENTS;
 
     #[test]
-    fn init_advertises_the_client_count_and_registers_spawns() {
+    fn spawning_a_map_advertises_the_client_count_like_sp_worldspawn() {
         let (mut world, gi) = test_world_recording();
         world.set_max_clients(4);
         world.init();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
         assert!(gi
             .configstrings
             .borrow()

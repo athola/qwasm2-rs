@@ -877,6 +877,24 @@ impl CollisionMap {
         }
     }
 
+    /// Contents at `point` for a hull placed at `origin` and rotated by
+    /// `angles`, C CM_TransformedPointContents. The box hull never rotates.
+    pub fn transformed_point_contents(
+        &self,
+        point: Vec3f,
+        head_node: i32,
+        origin: Vec3f,
+        angles: Vec3f,
+    ) -> i32 {
+        let mut p_l = point - origin;
+        if head_node != self.box_head_node && angles != Vec3f::ZERO {
+            let (forward, right, up) = angle_vectors(angles);
+            let temp = p_l;
+            p_l = Vec3f::new(temp.dot(forward), -temp.dot(right), temp.dot(up));
+        }
+        self.point_contents(p_l, head_node)
+    }
+
     /// Get point leaf number (from world root).
     pub fn point_leafnum(&self, point: Vec3f) -> usize {
         if self.planes.is_empty() {
@@ -3081,6 +3099,37 @@ pub(crate) mod tests {
         };
         cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, &ents, &mut tr);
         assert_eq!(tr.ent_index, None);
+    }
+
+    #[test]
+    fn transformed_point_contents_moves_and_rotates_into_the_model_frame() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        // The floor hull (head node 0) moved up 100: z = 50 is now inside it.
+        let p = Vec3f::new(0.0, 0.0, 50.0);
+        let up = Vec3f::new(0.0, 0.0, 100.0);
+        assert_eq!(
+            cm.transformed_point_contents(p, 0, up, Vec3f::ZERO),
+            CONTENTS_SOLID
+        );
+        assert_eq!(
+            cm.transformed_point_contents(p, 0, Vec3f::ZERO, Vec3f::ZERO),
+            0
+        );
+        // Rolled 180 degrees the floor faces down, so below the origin is open.
+        let below = Vec3f::new(0.0, 0.0, -50.0);
+        let roll = Vec3f::new(0.0, 0.0, 180.0);
+        assert_eq!(
+            cm.transformed_point_contents(below, 0, Vec3f::ZERO, roll),
+            0
+        );
+        // The box hull never rotates (C skips rotation for box_headnode).
+        let head = cm.headnode_for_box(Vec3f::splat(-8.0), Vec3f::new(8.0, 8.0, 64.0));
+        let tall = Vec3f::new(0.0, 0.0, 40.0);
+        assert_eq!(
+            cm.transformed_point_contents(tall, head, Vec3f::ZERO, roll),
+            CONTENTS_MONSTER
+        );
     }
 
     #[test]

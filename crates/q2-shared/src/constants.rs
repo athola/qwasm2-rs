@@ -23,6 +23,7 @@ pub const CONTENTS_SOLID: i32 = 1;
 pub const CONTENTS_WINDOW: i32 = 2;
 pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
 pub const CONTENTS_MONSTER: i32 = 0x0200_0000;
+pub const CONTENTS_DEADMONSTER: i32 = 0x0400_0000;
 pub const MASK_PLAYERSOLID: i32 =
     CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW | CONTENTS_MONSTER;
 
@@ -117,6 +118,7 @@ mod tests {
         assert_eq!(CONTENTS_WINDOW, 2);
         assert_eq!(CONTENTS_PLAYERCLIP, 0x10000);
         assert_eq!(CONTENTS_MONSTER, 0x0200_0000);
+        assert_eq!(CONTENTS_DEADMONSTER, 0x0400_0000);
         assert_eq!(MASK_PLAYERSOLID, 0x0201_0003);
     }
 

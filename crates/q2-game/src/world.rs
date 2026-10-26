@@ -511,6 +511,11 @@ impl GameWorld {
             mapname: mapname.to_string(),
             ..LevelLocals::default()
         };
+        // C SP_worldspawn sets this from the maxclients cvar (g_spawn.c).
+        self.gi.configstring(
+            q2_shared::constants::CS_MAXCLIENTS as i32,
+            &self.game.maxclients.to_string(),
+        );
 
         // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
         let parsed = match crate::spawn::parse_entity_string(entstring) {

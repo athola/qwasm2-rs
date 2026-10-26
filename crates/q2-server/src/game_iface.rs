@@ -3,15 +3,27 @@
 //! `ServerGameImport` implements `q2_game::traits::GameImport` so the game
 //! module can call back into the server during a game frame.
 //!
-//! `GameImport` methods take `&self`, so the message buffer and configstring
-//! mirror live in a `RefCell`. The engine is single-threaded, so the trait
-//! carries no `Send + Sync` bound and no lock is needed.
+//! `GameImport` methods take `&self`, so the server-side state the game
+//! reaches (message buffer, configstring mirror, collision map, entity links)
+//! lives in a `RefCell`. The engine is single-threaded, so the trait carries
+//! no `Send + Sync` bound and no lock is needed. Every method takes and drops
+//! its borrow inside the call, because the game calls back in while it runs.
 
 use std::cell::RefCell;
 
+use q2_common::collision::CollisionMap;
+use q2_common::error::Q2Result;
 use q2_common::net_msg::NetMsg;
 use q2_game::traits::{EntityLink, GameImport};
-use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
+use q2_shared::{
+    constants::{
+        CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MAX_CONFIGSTRINGS, MAX_EDICTS,
+        MAX_IMAGES, MAX_MODELS, MAX_SOUNDS,
+    },
+    types::*,
+};
+
+use crate::world::{ServerWorld, AREA_SOLID};
 
 // ---------------------------------------------------------------------------
 // Interior-mutable state
@@ -28,6 +40,13 @@ struct GiInner {
     configstrings: Vec<String>,
     /// Tracks which configstring slots were written since the last drain.
     dirty: Vec<bool>,
+    /// The loaded map (C `CM_LoadMap` state).
+    collision: CollisionMap,
+    /// Area tree for entity queries (C `sv_areanodes`).
+    world: ServerWorld,
+    /// Last link per entity number: what SV_ClipMoveToEntities reads from
+    /// the edict in C.
+    links: Vec<Option<EntityLink>>,
 }
 
 impl GiInner {
@@ -36,7 +55,54 @@ impl GiInner {
             msg_buf: NetMsg::new(),
             configstrings: vec![String::new(); MAX_CONFIGSTRINGS],
             dirty: vec![false; MAX_CONFIGSTRINGS],
+            collision: CollisionMap::new(),
+            world: ServerWorld::new(),
+            links: vec![None; MAX_EDICTS],
         }
+    }
+
+    fn set_configstring(&mut self, idx: usize, value: &str) {
+        if idx < self.configstrings.len() {
+            self.configstrings[idx] = value.to_string();
+            self.dirty[idx] = true;
+        }
+    }
+
+    /// C SV_FindIndex with `create`: the slot already holding `name`, or the
+    /// first empty one from 1. A full table is ERR_DROP in C; the trait can't
+    /// return an error, so it is logged and 0 (no model/sound) returned.
+    fn find_index(&mut self, name: &str, start: usize, max: usize) -> i32 {
+        if name.is_empty() {
+            return 0;
+        }
+        let mut i = 1;
+        while i < max && !self.configstrings[start + i].is_empty() {
+            if self.configstrings[start + i] == name {
+                return i as i32;
+            }
+            i += 1;
+        }
+        if i == max {
+            tracing::error!(name, start, "index overflow (C ERR_DROP)");
+            return 0;
+        }
+        self.set_configstring(start + i, name);
+        i as i32
+    }
+
+    /// C SV_HullForEntity. Model index 1 is the world (`sv.models[1]`), so
+    /// index `n` is inline model `n - 1`.
+    fn hull_for_entity(&mut self, link: &EntityLink) -> Option<i32> {
+        if link.solid == Solid::Bsp {
+            let model = usize::try_from(link.modelindex - 1)
+                .ok()
+                .and_then(|i| self.collision.model(i));
+            if model.is_none() {
+                tracing::error!(number = link.number, "MOVETYPE_PUSH with a non bsp model");
+            }
+            return model.map(|m| m.head_node);
+        }
+        Some(self.collision.headnode_for_box(link.mins, link.maxs))
     }
 }
 
@@ -60,6 +126,34 @@ impl ServerGameImport {
         Self {
             inner: RefCell::new(GiInner::new()),
         }
+    }
+
+    /// Load a map's collision data and rebuild the area tree (C CM_LoadMap +
+    /// SV_ClearWorld). Links and the configstring mirror start empty, as C
+    /// SV_SpawnServer zeroes `sv`. Returns the map checksum.
+    pub fn load_map(&self, bsp: &[u8]) -> Q2Result<u32> {
+        let mut inner = self.inner.borrow_mut();
+        let checksum = inner.collision.load_map(bsp)?;
+        let (mins, maxs) = inner
+            .collision
+            .model(0)
+            .map(|m| (m.mins, m.maxs))
+            .unwrap_or_default();
+        inner.world.clear(mins, maxs);
+        inner.links.fill(None);
+        inner.configstrings.fill(String::new());
+        inner.dirty.fill(false);
+        Ok(checksum)
+    }
+
+    /// The loaded map's entity lump.
+    pub fn entity_string(&self) -> String {
+        self.inner.borrow().collision.entity_string().to_string()
+    }
+
+    /// Inline (brush) models in the loaded map, the world included.
+    pub fn num_inline_models(&self) -> usize {
+        self.inner.borrow().collision.num_inline_models()
     }
 
     /// Drain configstring updates written since the last call.
@@ -133,67 +227,180 @@ impl GameImport for ServerGameImport {
 
     // -- asset indexing ------------------------------------------------------
 
-    fn model_index(&self, _name: &str) -> i32 {
-        0
+    fn model_index(&self, name: &str) -> i32 {
+        self.inner
+            .borrow_mut()
+            .find_index(name, CS_MODELS, MAX_MODELS)
     }
 
-    fn sound_index(&self, _name: &str) -> i32 {
-        0
+    fn sound_index(&self, name: &str) -> i32 {
+        self.inner
+            .borrow_mut()
+            .find_index(name, CS_SOUNDS, MAX_SOUNDS)
     }
 
-    fn image_index(&self, _name: &str) -> i32 {
-        0
+    fn image_index(&self, name: &str) -> i32 {
+        self.inner
+            .borrow_mut()
+            .find_index(name, CS_IMAGES, MAX_IMAGES)
     }
 
-    fn set_model(&self, _ent_idx: usize, _name: &str) {}
-
-    // -- collision -----------------------------------------------------------
-
-    fn trace(
-        &self,
-        _start: Vec3f,
-        _mins: Vec3f,
-        _maxs: Vec3f,
-        end: Vec3f,
-        _pass_ent: Option<usize>,
-        _content_mask: i32,
-    ) -> Trace {
-        // CP-3: no BSP loaded — return an unobstructed trace. A trace that
-        // hits nothing reaches `end` (fraction 1.0), as in C SV_Trace.
-        Trace {
-            endpos: end,
-            ..Trace::default()
+    /// Registers the model. C PF_setmodel also writes the edict's
+    /// modelindex and inline-model bounds; the game owns its entities, so it
+    /// does that part itself (not yet ported: brush entities have no bounds).
+    fn set_model(&self, _ent_idx: usize, name: &str) {
+        if !name.starts_with('*') {
+            self.model_index(name);
         }
     }
 
-    fn point_contents(&self, _point: Vec3f) -> i32 {
-        0
+    // -- collision -----------------------------------------------------------
+
+    /// C SV_Trace: the world, then every linked solid entity in the move's
+    /// bounds (SV_ClipMoveToEntities). `ent_index` is the world (0) unless an
+    /// entity was hit.
+    fn trace(
+        &self,
+        start: Vec3f,
+        mins: Vec3f,
+        maxs: Vec3f,
+        end: Vec3f,
+        pass_ent: Option<usize>,
+        content_mask: i32,
+    ) -> Trace {
+        let mut guard = self.inner.borrow_mut();
+        let inner = &mut *guard;
+        let mut trace = inner
+            .collision
+            .box_trace(start, end, mins, maxs, 0, content_mask);
+        trace.ent_index = Some(0);
+        if trace.fraction == 0.0 {
+            return trace; // blocked by the world
+        }
+
+        // SV_TraceBounds.
+        let (mut boxmins, mut boxmaxs) = (Vec3f::ZERO, Vec3f::ZERO);
+        for i in 0..3 {
+            let (lo, hi) = if end[i] > start[i] {
+                (start[i], end[i])
+            } else {
+                (end[i], start[i])
+            };
+            boxmins[i] = lo + mins[i] - 1.0;
+            boxmaxs[i] = hi + maxs[i] + 1.0;
+        }
+
+        let pass_owner = pass_ent.and_then(|p| inner.links[p].and_then(|l| l.owner));
+        for number in inner.world.area_edicts(boxmins, boxmaxs, AREA_SOLID) {
+            let Some(touch) = inner.links[number] else {
+                continue;
+            };
+            if touch.solid == Solid::Not || Some(number) == pass_ent {
+                continue;
+            }
+            if trace.allsolid {
+                return trace;
+            }
+            if pass_ent.is_some() && (touch.owner == pass_ent || pass_owner == Some(number)) {
+                continue; // own missiles, or the owner
+            }
+            if content_mask & CONTENTS_DEADMONSTER == 0
+                && touch.svflags & q2_shared::constants::SVF_DEADMONSTER != 0
+            {
+                continue;
+            }
+            let Some(head_node) = inner.hull_for_entity(&touch) else {
+                continue;
+            };
+            let angles = if touch.solid == Solid::Bsp {
+                touch.angles
+            } else {
+                Vec3f::ZERO // boxes don't rotate
+            };
+            // C passes mins2/maxs2 for SVF_MONSTER entities; SV_Trace copies
+            // them from mins/maxs, so both branches trace the same box.
+            let mut hit = inner.collision.transformed_box_trace(
+                start,
+                end,
+                mins,
+                maxs,
+                head_node,
+                content_mask,
+                touch.origin,
+                angles,
+            );
+            if hit.allsolid || hit.startsolid || hit.fraction < trace.fraction {
+                hit.ent_index = Some(number);
+                let was_startsolid = trace.startsolid;
+                trace = hit;
+                if was_startsolid {
+                    trace.startsolid = true;
+                }
+            }
+        }
+        trace
     }
 
+    /// C SV_PointContents: the world's contents ORed with every linked solid
+    /// entity at the point.
+    fn point_contents(&self, point: Vec3f) -> i32 {
+        let mut guard = self.inner.borrow_mut();
+        let inner = &mut *guard;
+        let mut contents = inner.collision.point_contents(point, 0);
+        for number in inner.world.area_edicts(point, point, AREA_SOLID) {
+            let Some(link) = inner.links[number] else {
+                continue;
+            };
+            if let Some(head_node) = inner.hull_for_entity(&link) {
+                contents |= inner.collision.transformed_point_contents(
+                    point,
+                    head_node,
+                    link.origin,
+                    link.angles,
+                );
+            }
+        }
+        contents
+    }
+
+    /// No visibility lump is loaded yet, and C treats a map without vis data
+    /// as fully visible (CM_ClusterPVS returns all bits set).
     fn in_pvs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
-        false
+        true
     }
 
+    /// See `in_pvs`: without vis data everything is hearable.
     fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
-        false
+        true
     }
 
     // -- entity linking ------------------------------------------------------
 
-    fn link_entity(&self, _ent: &EntityLink) {
-        // TODO(#31): store the link in the area tree for trace clipping.
+    fn link_entity(&self, ent: &EntityLink) {
+        if ent.number >= MAX_EDICTS {
+            tracing::warn!(number = ent.number, "link_entity: number beyond MAX_EDICTS");
+            return;
+        }
+        let mut inner = self.inner.borrow_mut();
+        inner
+            .world
+            .link_entity(ent.number, ent.absmin, ent.absmax, ent.solid);
+        inner.links[ent.number] = Some(*ent);
     }
 
-    fn unlink_entity(&self, _ent_idx: usize) {}
+    fn unlink_entity(&self, number: usize) {
+        if number >= MAX_EDICTS {
+            return;
+        }
+        let mut inner = self.inner.borrow_mut();
+        inner.world.unlink_entity(number);
+        inner.links[number] = None;
+    }
 
-    fn box_edicts(
-        &self,
-        _mins: Vec3f,
-        _maxs: Vec3f,
-        _max_count: usize,
-        _area_type: i32,
-    ) -> Vec<usize> {
-        Vec::new()
+    fn box_edicts(&self, mins: Vec3f, maxs: Vec3f, max_count: usize, area_type: i32) -> Vec<usize> {
+        let mut found = self.inner.borrow().world.area_edicts(mins, maxs, area_type);
+        found.truncate(max_count);
+        found
     }
 
     // -- configstrings -------------------------------------------------------
@@ -202,12 +409,9 @@ impl GameImport for ServerGameImport {
         if num < 0 {
             return;
         }
-        let idx = num as usize;
-        let mut inner = self.inner.borrow_mut();
-        if idx < inner.configstrings.len() {
-            inner.configstrings[idx] = string.to_string();
-            inner.dirty[idx] = true;
-        }
+        self.inner
+            .borrow_mut()
+            .set_configstring(num as usize, string);
     }
 
     // -- network writing (buffered; flushed on multicast/unicast) -----------

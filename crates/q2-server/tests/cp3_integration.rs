@@ -55,7 +55,8 @@ fn cp3_server_runs_100_frames() {
 
     // 4. Load a minimal map (no real BSP — sets state to Game).
     let mut sv = Server::default();
-    sv.map(&mut svs, "cp3_test").expect("map() must succeed");
+    sv.map(&mut svs, "cp3_test", &[], &gi, &mut game)
+        .expect("map() must succeed");
     assert_eq!(sv.state, ServerState::Game);
 
     // 5. Spawn game entities from the entity string.
@@ -96,7 +97,7 @@ fn cp3_client_disconnect_does_not_panic() {
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
-    sv.map(&mut svs, "test").unwrap();
+    sv.map(&mut svs, "test", &[], &gi, &mut game).unwrap();
 
     game.client_connect(1, "");
     game.client_begin(1);
@@ -126,7 +127,7 @@ fn cp3_configstring_written_by_game_survives_frame() {
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
-    sv.map(&mut svs, "cp3_test").unwrap();
+    sv.map(&mut svs, "cp3_test", &[], &gi, &mut game).unwrap();
 
     // A game-side configstring write (C: gi.configstring during a frame).
     gi.configstring(CS_SKY as i32, "unit1_");
@@ -140,19 +141,17 @@ fn cp3_configstring_written_by_game_survives_frame() {
     assert_eq!(sv.configstrings[CS_SKY], "unit1_");
 }
 
-/// Verify that vtable dispatch actually routes GameImport callbacks from inside
-/// `GameWorld::init()` to the concrete `ServerGameImport` implementation.
+/// Verify that a configstring the game writes while spawning a map reaches
+/// the concrete `ServerGameImport` through the game's `Rc<dyn GameImport>`.
 ///
-/// This proves the call goes through the `&dyn GameImport` vtable, not a
-/// direct call — important because it exercises the same code path that the
-/// real game frame callbacks will follow.
+/// This exercises the same dispatch path every game-frame callback follows.
 #[test]
-fn cp3_game_init_dispatches_configstring_through_vtable() {
+fn cp3_game_spawn_dispatches_configstring_through_vtable() {
     let gi = Rc::new(ServerGameImport::new());
+    let mut game = new_game(&gi);
 
-    // init() calls gi.configstring(CS_MAXCLIENTS, "1") through the game's
-    // Rc<dyn GameImport>.
-    let _game = new_game(&gi);
+    // SP_worldspawn calls gi.configstring(CS_MAXCLIENTS, "1").
+    game.spawn_entities("cp3_test", MINIMAL_ENTSTRING, "");
 
     let updates = gi.drain_configstring_updates();
     let found = updates
@@ -160,6 +159,6 @@ fn cp3_game_init_dispatches_configstring_through_vtable() {
         .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "1");
     assert!(
         found,
-        "GameWorld::init must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"
+        "spawning must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"
     );
 }

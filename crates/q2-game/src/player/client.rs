@@ -26,7 +26,7 @@ impl GameWorld {
         ent.mins = PLAYER_MINS;
         ent.maxs = PLAYER_MAXS;
         ent.solid = Solid::Bbox;
-        ent.clipmask = 0xFFFF; // MASK_PLAYERSOLID
+        ent.clipmask = q2_shared::constants::MASK_PLAYERSOLID;
         ent.game.movetype = MoveType::Walk;
         ent.game.mass = 200;
         ent.game.takedamage = TakeDamage::Aim;

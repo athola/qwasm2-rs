@@ -88,34 +88,9 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::NullGame;
     use q2_game::traits::GameImport;
     use q2_shared::constants::{CS_MAXCLIENTS, CS_SKY, MAX_CONFIGSTRINGS};
-    use q2_shared::types::UserCmd;
-
-    /// Minimal GameExport stub for frame loop tests.
-    struct NullGame {
-        frames_run: u32,
-    }
-
-    impl GameExport for NullGame {
-        fn api_version(&self) -> i32 {
-            3
-        }
-        fn init(&mut self) {}
-        fn shutdown(&mut self) {}
-        fn spawn_entities(&mut self, _: &str, _: &str, _: &str) {}
-        fn client_connect(&mut self, _: usize, _: &str) -> bool {
-            true
-        }
-        fn client_begin(&mut self, _: usize) {}
-        fn client_disconnect(&mut self, _: usize) {}
-        fn client_command(&mut self, _: usize) {}
-        fn client_think(&mut self, _: usize, _: &UserCmd) {}
-        fn run_frame(&mut self) {
-            self.frames_run += 1;
-        }
-        fn server_command(&mut self) {}
-    }
 
     fn running_server() -> (Server, ServerStatic, NullGame) {
         let sv = Server {
