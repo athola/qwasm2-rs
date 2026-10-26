@@ -75,7 +75,7 @@ impl Engine {
 
     /// Run one frame: translate platform input, delegate to PlayerController, render.
     fn tick(&mut self, timestamp: f64, input: &mut q2_platform::wasm::input::WasmInputState) {
-        let dt = ((timestamp - self.last_time) / 1000.0).min(0.05) as f32;
+        let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
 
         // Translate platform-specific WasmInputState → platform-agnostic MoveInput
@@ -158,6 +158,15 @@ impl Engine {
 
         self.renderer.render_frame(&fd, &[], &[], &[]);
     }
+}
+
+/// Seconds since the last frame for the movement tick, clamped to
+/// `0.0..=0.05`. Negative deltas (the first RAF timestamp can precede the
+/// `performance.now()` taken at engine creation) would run movement and
+/// gravity backwards for a frame; long stalls are capped.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
+    ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +449,23 @@ mod tests {
         assert!(info.contains(&q2_shared::constants::PROTOCOL_VERSION.to_string()));
         assert!(info.contains(&q2_shared::constants::MAX_EDICTS.to_string()));
         assert!(info.contains(&q2_shared::constants::MAX_CLIENTS.to_string()));
+    }
+
+    #[test]
+    fn frame_dt_is_zero_when_timestamp_precedes_last_frame() {
+        // The first RAF timestamp can be earlier than performance.now()
+        // taken at engine creation.
+        assert_eq!(frame_dt_seconds(1000.0, 1010.0), 0.0);
+    }
+
+    #[test]
+    fn frame_dt_is_capped_at_50ms() {
+        assert_eq!(frame_dt_seconds(5000.0, 1000.0), 0.05);
+    }
+
+    #[test]
+    fn frame_dt_converts_milliseconds_to_seconds() {
+        assert!((frame_dt_seconds(1016.0, 1000.0) - 0.016).abs() < 1e-6);
     }
 
     #[test]
