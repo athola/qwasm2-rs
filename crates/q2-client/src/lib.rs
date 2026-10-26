@@ -1,4 +1,4 @@
-//! Qwasm2-rs: Client — input, sound, menu, console, screen, prediction
+//! Qwasm2-rs: Client — input, server message parsing, client state, view math
 //!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0
@@ -53,8 +53,17 @@ mod tests {
     #[test]
     fn calc_fov_90() {
         // At 4:3 ratio (640x480), horizontal FOV 90 -> vertical FOV ~73.74
-        let fov_y = calc_fov(90.0, 640.0, 480.0);
+        let fov_y = calc_fov(90.0, 640.0, 480.0).unwrap();
         assert!((fov_y - 73.74).abs() < 0.1, "fov_y was {}", fov_y);
+    }
+
+    #[test]
+    fn calc_fov_rejects_fov_outside_1_to_179_like_c() {
+        // C CalcFov raises ERR_DROP for fov_x < 1 or > 179.
+        assert!(calc_fov(0.5, 640.0, 480.0).is_err());
+        assert!(calc_fov(179.5, 640.0, 480.0).is_err());
+        assert!(calc_fov(1.0, 640.0, 480.0).is_ok());
+        assert!(calc_fov(179.0, 640.0, 480.0).is_ok());
     }
 
     #[test]

@@ -50,6 +50,7 @@ struct Engine {
     player: PlayerController,
     width: i32,
     height: i32,
+    fov_y: f32,
     last_time: f64,
 }
 
@@ -60,6 +61,7 @@ impl Engine {
         collision: q2_common::collision::CollisionMap,
         width: i32,
         height: i32,
+        fov_y: f32,
         spawn_pos: Vec3f,
         spawn_yaw: f32,
     ) -> Self {
@@ -69,6 +71,7 @@ impl Engine {
             player: PlayerController::new(spawn_pos, spawn_yaw),
             width,
             height,
+            fov_y,
             last_time: q2_platform::wasm::game_loop::performance_now(),
         }
     }
@@ -146,7 +149,7 @@ impl Engine {
             width: self.width,
             height: self.height,
             fov_x: 90.0,
-            fov_y: q2_client::view::calc_fov(90.0, self.width as f32, self.height as f32),
+            fov_y: self.fov_y,
             vieworg: self.player.view_origin(),
             // PlayerController stores pitch positive-up (pitch_delta is
             // -(mouse_dy * sens)); RefDef uses Q2 viewangles, positive-down.
@@ -381,7 +384,12 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw
     ));
 
-    let mut engine = Engine::new(renderer, collision, width, height, spawn_pos, spawn_yaw);
+    let fov_y =
+        q2_client::view::calc_fov(90.0, width as f32, height as f32).map_err(q2err_to_js)?;
+
+    let mut engine = Engine::new(
+        renderer, collision, width, height, fov_y, spawn_pos, spawn_yaw,
+    );
     engine.player.snap_to_ground(&mut engine.collision);
 
     // 11. Start game loop
