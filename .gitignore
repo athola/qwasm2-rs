@@ -9,3 +9,14 @@ tests/browser/node_modules/
 tests/browser/test-results/
 crates/q2-wasm/pkg/
 rust_out
+
+# Working documents (plans, specs, briefs, review reports). Decisions from
+# them are consolidated into docs/adr/; the files stay local only.
+docs/plans/
+docs/superpowers/
+docs/implementation-plan.md
+docs/project-brief.md
+docs/specification.md
+docs/pak-web-specification.md
+docs/pak-web-implementation-plan.md
+reviews/

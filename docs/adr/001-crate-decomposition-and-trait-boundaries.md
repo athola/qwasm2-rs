@@ -1,6 +1,6 @@
 # ADR-001: Crate Decomposition and Trait Boundaries
 
-**Status:** Accepted
+**Status:** Accepted (amended 2026-10-26)
 **Date:** 2026-03-26
 
 ## Context
@@ -25,7 +25,7 @@ q2-shared       Foundation types, constants, protocol enums (no deps)
 q2-common       Engine services: collision, pmove, filesystem, net_msg, cvars
 q2-render-api   Renderer trait + data types (no implementation)
 q2-render       GL3/GLES3 renderer (implements Renderer trait)
-q2-game         Game logic: entity system, spawn, GameImport/GameExport traits
+q2-game         Game logic (ADR-003): entities, spawn, AI, combat, items, monsters
 q2-server       Server state, frame loop, world
 q2-client       Client state, parsing, input, view calculations
 q2-platform     Platform abstraction (WASM input/GL context/game loop)
@@ -103,8 +103,8 @@ yet implemented.
   unsafe blocks workspace-wide.
 
 **Negative:**
-- q2-common is a large crate (~8000 LOC) aggregating weakly-related modules.
-  May need splitting if it exceeds ~15k LOC.
+- q2-common is a large crate (~11,000 LOC including tests) aggregating
+  weakly-related modules. May need splitting if it exceeds ~15k LOC.
 - Cross-crate refactoring requires coordinating changes across multiple
   Cargo.toml files.
 - The standalone tools (devserver, bundler, pak-repack) and placeholders
@@ -117,8 +117,23 @@ yet implemented.
 requires C parity for the network protocol. The earlier deviations (16-bit
 entity angles instead of the C 8-bit `MSG_WriteAngle`, FRAME8|FRAME16 for
 large frames, delta-encoded `event`) were removed in 4d6c420, encoder and
-client decoder together (finding C-7 in
-`docs/plans/2026-10-26-full-review-fixes.md`).
+client decoder together. ADR-005 holds the parity rules.
+
+## Amendments (2026-10-26)
+
+- **Errors.** `Q2Error`/`Q2Result` are defined in q2-shared and re-exported
+  from q2-common, so q2-render-api, which sits beside q2-common rather than
+  above it, returns `Q2Result` too. Platform startup failures map to
+  `Q2Error::Fatal`, renderer init failure to `Q2Error::Drop`.
+- **No `Send + Sync` on engine traits.** `PakReader`, `GameImport` and
+  `GameExport` dropped the bounds: nothing in the workspace runs them on
+  another thread, and the bounds had forced an `unsafe impl` in q2-platform
+  and a `Mutex` in q2-server. `Renderer` keeps `Send`.
+- **One BSP header reader.** `q2_common::bsp_file` validates the header and
+  lump ranges and decodes the plane, node, leaf, texinfo and model records for
+  both the collision and render loaders; collision owns the entity string.
+- **Unsafe** now exists only in q2-render (8 blocks), after the q2-platform
+  `unsafe impl`s were removed.
 
 ## Review Triggers
 

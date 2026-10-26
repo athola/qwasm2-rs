@@ -17,7 +17,7 @@ Key C source directories:
 ## Architecture
 
 14-crate Cargo workspace with strict DAG dependency graph. See `docs/adr/001-crate-decomposition-and-trait-boundaries.md`.
-See `docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md` for phase progress and next-session roadmap.
+Decisions and phase status live in `docs/adr/` (ADR-002 roadmap, ADR-003 game logic, ADR-005 C-parity rules).
 
 ```
 q2-shared (types) → q2-common (services) → q2-game/client/render → q2-wasm

@@ -204,14 +204,16 @@ against the C source before modifying.
 
 ## Documentation
 
-- [Conversion Plan](docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md)
-  — phase progress, next-session roadmap, critical path to playable
-- [Phase 2 Specification](docs/specification.md) — game logic
-  requirements and acceptance criteria
-- [Phase 2 Implementation Plan](docs/implementation-plan.md) — task
-  breakdown, dependency graph, sprint results
 - [ADR-001: Crate Decomposition](docs/adr/001-crate-decomposition-and-trait-boundaries.md)
   — workspace structure and trait boundary rationale
+- [ADR-002: Conversion Strategy and Roadmap](docs/adr/002-conversion-strategy-and-roadmap.md)
+  — rewrite approach, playability checkpoints, phase status
+- [ADR-003: Game Logic Design](docs/adr/003-game-logic-design.md) —
+  `GameWorld`, callbacks, scope of the q2-game port
+- [ADR-004: Web Asset Delivery](docs/adr/004-web-asset-delivery.md) — PAK
+  repacking, Brotli serving, lazy reads
+- [ADR-005: C Parity and Quality Gates](docs/adr/005-c-parity-and-quality-gates.md)
+  — protocol and physics parity rules, CI gates
 - [CLAUDE.md](CLAUDE.md) — project-level instructions for AI-assisted
   development
 
