@@ -54,6 +54,10 @@ fn cp3_server_runs_100_frames() {
     // 6. Simulate a client connecting and entering the game.
     let accepted = game.client_connect(0, r"name\TestPlayer\skin\male/grunt");
     assert!(accepted, "client_connect must accept the connection");
+    assert!(
+        !game.client_connect(1, r"name\Extra"),
+        "a 1-slot game must reject slot 1"
+    );
     game.client_begin(0);
 
     // 7. Call the server at 10 Hz (100 ms = 100,000 µs per call). map() sets

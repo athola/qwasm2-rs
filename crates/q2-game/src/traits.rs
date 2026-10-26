@@ -338,7 +338,8 @@ mod tests {
     #[test]
     fn game_import_box_edicts_returns_empty() {
         let gi: &dyn GameImport = &MockGameImport::default();
-        let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 0);
+        // area_type 1 = AREA_SOLID; 0 is not a valid area type.
+        let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 1);
         assert!(edicts.is_empty());
     }
 }

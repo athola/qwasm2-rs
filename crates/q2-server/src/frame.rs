@@ -245,6 +245,19 @@ mod tests {
     }
 
     #[test]
+    fn frame_stops_running_game_once_server_is_dead_again() {
+        let gi = ServerGameImport::new();
+        let (mut sv, mut svs, mut game) = running_server();
+
+        sv.frame(&mut svs, 100_000, &mut game, &gi);
+        sv.state = ServerState::Dead;
+        sv.frame(&mut svs, 100_000, &mut game, &gi);
+
+        assert_eq!(game.frames_run, 1);
+        assert_eq!(sv.framenum, 1);
+    }
+
+    #[test]
     fn run_game_called_on_active_server() {
         let gi = ServerGameImport::new();
         let (mut sv, mut svs, mut game) = running_server();

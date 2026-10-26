@@ -254,6 +254,13 @@ mod tests {
 "#;
         game.spawn_entities("test_map", entstring, "");
         assert_eq!(game.storage.count(), 2);
+        let mut classnames: Vec<&str> = game
+            .storage
+            .iter()
+            .map(|(_, ent)| ent.game.classname.as_str())
+            .collect();
+        classnames.sort_unstable();
+        assert_eq!(classnames, ["info_player_start", "worldspawn"]);
     }
 
     #[test]

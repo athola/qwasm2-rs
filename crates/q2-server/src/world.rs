@@ -372,6 +372,47 @@ mod tests {
     }
 
     #[test]
+    fn area_edicts_before_clear_is_empty() {
+        let mut w = ServerWorld::new();
+        let mins = Vec3f::new(-16.0, -16.0, -16.0);
+        let maxs = Vec3f::new(16.0, 16.0, 16.0);
+        w.link_entity(1, mins, maxs, Solid::Bbox);
+        assert!(w.area_edicts(mins, maxs, AREA_SOLID).is_empty());
+    }
+
+    #[test]
+    fn entity_straddling_root_split_stays_in_root_node() {
+        // A cube world's root splits Y at 0 (C picks Y unless X is strictly
+        // larger). Like SV_LinkEdict, a box
+        // whose min equals the split distance is not strictly greater, so
+        // it stays in the root and is found from either side.
+        let mut w = make_world();
+        w.link_entity(
+            3,
+            Vec3f::new(10.0, 0.0, 0.0),
+            Vec3f::new(20.0, 8.0, 8.0),
+            Solid::Bbox,
+        );
+        w.link_entity(
+            4,
+            Vec3f::new(10.0, -8.0, 0.0),
+            Vec3f::new(20.0, 8.0, 8.0),
+            Solid::Bbox,
+        );
+
+        assert_eq!(w.links[3].as_ref().map(|l| l.node_idx), Some(0));
+        assert_eq!(w.links[4].as_ref().map(|l| l.node_idx), Some(0));
+
+        let mut left = w.area_edicts(
+            Vec3f::new(0.0, -100.0, 0.0),
+            Vec3f::new(30.0, 0.0, 30.0),
+            AREA_SOLID,
+        );
+        left.sort_unstable();
+        assert_eq!(left, vec![3, 4]);
+    }
+
+    #[test]
     fn world_link_unlink() {
         let mut w = make_world();
 
