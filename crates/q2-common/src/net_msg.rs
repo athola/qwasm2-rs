@@ -129,9 +129,8 @@ const CM_IMPULSE: u8 = 1 << 7;
 pub struct NetMsg {
     data: Vec<u8>,
     read_pos: usize,
-    /// If true, overflows are allowed (data is silently truncated).
-    #[allow(dead_code)]
-    allow_overflow: bool,
+    /// Write limit, like `sizebuf_t.maxsize`. `usize::MAX` means unbounded.
+    max_size: usize,
     overflowed: bool,
 }
 
@@ -149,7 +148,7 @@ impl NetMsg {
         Self {
             data: Vec::new(),
             read_pos: 0,
-            allow_overflow: false,
+            max_size: usize::MAX,
             overflowed: false,
         }
     }
@@ -159,7 +158,20 @@ impl NetMsg {
         Self {
             data: Vec::with_capacity(capacity),
             read_pos: 0,
-            allow_overflow: false,
+            max_size: usize::MAX,
+            overflowed: false,
+        }
+    }
+
+    /// Create a write buffer limited to `max_size` bytes (C `SZ_Init` with
+    /// `allowoverflow` set). A write that would exceed the limit clears the
+    /// buffer and sets [`is_overflowed`](Self::is_overflowed), so the owner can
+    /// detect the loss instead of sending a truncated message.
+    pub fn with_max_size(max_size: usize) -> Self {
+        Self {
+            data: Vec::new(),
+            read_pos: 0,
+            max_size,
             overflowed: false,
         }
     }
@@ -169,7 +181,7 @@ impl NetMsg {
         Self {
             data: data.to_vec(),
             read_pos: 0,
-            allow_overflow: false,
+            max_size: usize::MAX,
             overflowed: false,
         }
     }
@@ -201,7 +213,8 @@ impl NetMsg {
         self.read_pos
     }
 
-    /// Whether a read operation has tried to read past the end of the buffer.
+    /// Whether a read went past the end of the buffer, or a write went past
+    /// the maximum size.
     pub fn is_overflowed(&self) -> bool {
         self.overflowed
     }
@@ -217,39 +230,59 @@ impl NetMsg {
 
     // ----- Write operations (append to buffer) -----
 
+    /// C `SZ_GetSpace`: returns `false` (after clearing the buffer and setting
+    /// `overflowed`) when `len` more bytes would pass `max_size`. C then
+    /// writes the item at offset 0, but every owner discards an overflowed
+    /// buffer, so the write is skipped here.
+    fn get_space(&mut self, len: usize) -> bool {
+        if self.data.len().saturating_add(len) > self.max_size {
+            self.data.clear();
+            self.overflowed = true;
+            return false;
+        }
+        true
+    }
+
+    fn put(&mut self, bytes: &[u8]) {
+        if self.get_space(bytes.len()) {
+            self.data.extend_from_slice(bytes);
+        }
+    }
+
     /// Write a signed byte (1 byte, sign-extended on read via [`read_char`](Self::read_char)).
     ///
     /// Use for values in the range `[-128, 127]`. For unsigned bytes `[0, 255]`,
     /// use [`write_byte`](Self::write_byte) / [`read_byte`](Self::read_byte).
     pub fn write_char(&mut self, c: i32) {
-        self.data.push(c as u8);
+        self.put(&[c as u8]);
     }
 
     /// Write an unsigned byte (1 byte).
     pub fn write_byte(&mut self, c: i32) {
-        self.data.push(c as u8);
+        self.put(&[c as u8]);
     }
 
     /// Write a 16-bit integer, little-endian.
     pub fn write_short(&mut self, c: i32) {
         let v = c as i16;
-        self.data.extend_from_slice(&v.to_le_bytes());
+        self.put(&v.to_le_bytes());
     }
 
     /// Write a 32-bit integer, little-endian.
     pub fn write_long(&mut self, c: i32) {
-        self.data.extend_from_slice(&c.to_le_bytes());
+        self.put(&c.to_le_bytes());
     }
 
     /// Write a 32-bit float, little-endian IEEE 754.
     pub fn write_float(&mut self, f: f32) {
-        self.data.extend_from_slice(&f.to_le_bytes());
+        self.put(&f.to_le_bytes());
     }
 
     /// Write a null-terminated string.
     pub fn write_string(&mut self, s: &str) {
-        self.data.extend_from_slice(s.as_bytes());
-        self.data.push(0);
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.push(0);
+        self.put(&bytes);
     }
 
     /// Write a coordinate: multiply by 8, write as short.
@@ -276,7 +309,7 @@ impl NetMsg {
 
     /// Write raw bytes.
     pub fn write_data(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data);
+        self.put(data);
     }
 
     /// Compress a direction vector to a single byte index into the BYTEDIRS table.
@@ -1224,6 +1257,39 @@ mod tests {
         assert_eq!(buf.read_byte(), -1);
         assert_eq!(buf.read_short(), -1);
         assert_eq!(buf.read_long(), -1);
+    }
+
+    // C SZ_GetSpace (szone.c:45-71) with allowoverflow: a write that would
+    // pass maxsize clears the buffer and sets `overflowed`.
+    #[test]
+    fn write_past_max_size_sets_overflowed_and_clears() {
+        let mut buf = NetMsg::with_max_size(4);
+        buf.write_long(7);
+        assert_eq!(buf.len(), 4);
+        assert!(!buf.is_overflowed());
+
+        buf.write_byte(1);
+        assert!(buf.is_overflowed());
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn write_data_past_max_size_sets_overflowed() {
+        let mut buf = NetMsg::with_max_size(3);
+        buf.write_data(&[1, 2, 3, 4]);
+        assert!(buf.is_overflowed());
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn clear_resets_write_overflow() {
+        let mut buf = NetMsg::with_max_size(1);
+        buf.write_short(1);
+        assert!(buf.is_overflowed());
+        buf.clear();
+        assert!(!buf.is_overflowed());
+        buf.write_byte(9);
+        assert_eq!(buf.data(), &[9]);
     }
 
     #[test]
