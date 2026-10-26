@@ -64,7 +64,9 @@ impl Gl3Renderer {
             vertex_count
         );
 
-        // SAFETY: All glow GL calls require unsafe. `verts` is a live
+        // SAFETY: The VAO/VBO are created here on `gl`, the renderer's only
+        // context, and a replaced mesh was created on the same context by an
+        // earlier load_bsp. `verts` is a live
         // `Vec<f32>` whose backing allocation is valid for the duration of this
         // block. `f32` has no padding, and `verts.len() * size_of::<f32>()`
         // cannot overflow because `Vec` guarantees its allocation fits in
@@ -121,7 +123,9 @@ impl Gl3Renderer {
 
     /// Compile the world shader program.
     fn compile_shaders(gl: &glow::Context) -> Result<glow::Program, String> {
-        // SAFETY: glow shader compilation calls require unsafe.
+        // SAFETY: Every shader and program handle is created on `gl` within
+        // this block and deleted on it on each error path; only the linked
+        // program escapes, to a caller that owns the same context.
         unsafe {
             let program = gl
                 .create_program()
@@ -240,7 +244,8 @@ impl Renderer for Gl3Renderer {
             self.u_view_proj = gl.get_uniform_location(prog, "u_view_proj");
         }
 
-        // SAFETY: glow GL state setup requires unsafe.
+        // SAFETY: State-only calls on the live context `gl`; no object
+        // handles are passed.
         unsafe {
             gl.viewport(0, 0, width, height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
@@ -257,8 +262,9 @@ impl Renderer for Gl3Renderer {
 
     fn shutdown(&mut self) {
         if let Some(gl) = &self.gl {
-            // SAFETY: glow GL deletion calls require unsafe. We delete GPU
-            // objects before clearing state so they are not leaked.
+            // SAFETY: The mesh and program were created on this same `gl` by
+            // load_bsp / init and are taken out of `self` before deletion, so
+            // no deleted handle is used again.
             unsafe {
                 if let Some(mesh) = self.world_mesh.take() {
                     gl.delete_vertex_array(mesh.vao);
@@ -294,7 +300,8 @@ impl Renderer for Gl3Renderer {
             None => return,
         };
 
-        // SAFETY: glow GL draw calls require unsafe.
+        // SAFETY: State-only calls on the live context `gl`; no object
+        // handles are passed.
         unsafe {
             gl.viewport(0, 0, fd.width, fd.height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
@@ -307,7 +314,9 @@ impl Renderer for Gl3Renderer {
         {
             let vp = build_view_projection(fd);
 
-            // SAFETY: glow draw calls require unsafe.
+            // SAFETY: `prog`, `u_loc` and `mesh.vao` were created on this same
+            // `gl` by init / load_bsp and are still owned (not deleted) by
+            // `self`.
             unsafe {
                 gl.use_program(Some(*prog));
                 gl.uniform_matrix_4_f32_slice(Some(u_loc), false, &vp);
@@ -334,7 +343,8 @@ impl Renderer for Gl3Renderer {
 
     fn clear_screen(&mut self) {
         if let Some(gl) = &self.gl {
-            // SAFETY: glow GL calls require unsafe — clearing the framebuffer.
+            // SAFETY: State-only calls on the live context `gl`; no object
+            // handles are passed.
             unsafe {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
