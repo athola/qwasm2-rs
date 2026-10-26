@@ -1,67 +1,91 @@
 use crate::state::{CEntity, ClientFrame, ClientState, ConnState};
+use q2_common::error::Q2Result;
 use q2_common::net_msg::NetMsg;
+use q2_common::q2_drop;
 use q2_shared::constants::*;
 use q2_shared::protocol::*;
 use q2_shared::types::*;
 
 impl ClientState {
     /// Parse a complete server message buffer (may contain multiple opcodes).
-    pub fn parse_server_message(&mut self, msg: &mut NetMsg) {
-        while !msg.remaining_data().is_empty() {
+    ///
+    /// Returns `Q2Error::Drop` where C `CL_ParseServerMessage` would raise
+    /// ERR_DROP: an illegible opcode, out-of-place frame data, a malformed
+    /// frame, or reading past the end of the message. Parsing stops at the
+    /// first error, since the rest of the stream can no longer be trusted.
+    pub fn parse_server_message(&mut self, msg: &mut NetMsg) -> Q2Result<()> {
+        loop {
+            if msg.is_overflowed() {
+                q2_drop!("parse_server_message: bad server message (read past end)");
+            }
+            if msg.remaining_data().is_empty() {
+                return Ok(());
+            }
             let cmd = msg.read_byte();
             let op = SvcOp::try_from(cmd as u8);
 
             match op {
-                Ok(SvcOp::ServerData) => self.parse_server_data(msg),
+                Ok(SvcOp::ServerData) => self.parse_server_data(msg)?,
                 Ok(SvcOp::ConfigString) => self.parse_config_string(msg),
                 Ok(SvcOp::SpawnBaseline) => self.parse_baseline(msg),
                 Ok(SvcOp::Print) => self.parse_print(msg),
                 Ok(SvcOp::StuffText) => self.parse_stufftext(msg),
                 Ok(SvcOp::CenterPrint) => self.parse_centerprint(msg),
-                Ok(SvcOp::Frame) => self.parse_frame(msg),
+                Ok(SvcOp::Frame) => self.parse_frame(msg)?,
                 Ok(SvcOp::Disconnect) => {
                     self.state = ConnState::Disconnected;
-                    return;
+                    return Ok(());
                 }
                 Ok(SvcOp::Nop) => {}
                 // PlayerInfo (17) and PacketEntities (18) are sub-commands of
-                // svc_frame and MUST NOT appear as top-level opcodes.  If they
-                // do, the stream is corrupt — stop parsing rather than silently
-                // consuming zero bytes and corrupting everything that follows.
+                // svc_frame and MUST NOT appear as top-level opcodes.
                 Ok(SvcOp::PlayerInfo) | Ok(SvcOp::PacketEntities) => {
-                    tracing::error!(
-                        "Received opcode {} as a top-level message — protocol violation, \
-                         aborting parse (expected only inside svc_frame)",
-                        cmd
-                    );
-                    return;
+                    q2_drop!("parse_server_message: out of place frame data (opcode {cmd})");
                 }
                 _ => {
-                    tracing::warn!("Unknown server command {} — stopping parse", cmd);
-                    return;
+                    q2_drop!("parse_server_message: illegible server message (opcode {cmd})");
                 }
             }
         }
     }
 
-    fn parse_server_data(&mut self, msg: &mut NetMsg) {
+    /// Mirrors C `CL_ParseServerData`. The protocol and player number are
+    /// validated before any state is cleared, so a rejected message leaves
+    /// the client untouched (C clears first, then drops).
+    fn parse_server_data(&mut self, msg: &mut NetMsg) -> Q2Result<()> {
         let protocol = msg.read_long();
-        self.server_count = msg.read_long();
-        let _attractloop = msg.read_byte();
-        self.gamedir = msg.read_string();
-        self.playernum = msg.read_short();
+        if protocol != PROTOCOL_VERSION {
+            q2_drop!("Server returned version {protocol}, not {PROTOCOL_VERSION}");
+        }
+        let server_count = msg.read_long();
+        let attractloop = msg.read_byte();
+        let gamedir = msg.read_string();
+        let playernum = msg.read_short();
         let _levelname = msg.read_string();
+        if msg.is_overflowed() {
+            q2_drop!("parse_server_data: truncated message");
+        }
+        // -1 means a cinematic or picture rather than a level.
+        if !(-1..MAX_CLIENTS as i32).contains(&playernum) {
+            q2_drop!("parse_server_data: bad player number {playernum}");
+        }
 
-        tracing::info!(
-            "Server data: protocol={}, player={}",
-            protocol,
-            self.playernum
-        );
+        tracing::info!("Server data: protocol={}, player={}", protocol, playernum);
+
+        // CL_ClearState: frames from the previous server must not be used
+        // as delta bases.
+        self.frames = (0..UPDATE_BACKUP).map(|_| ClientFrame::default()).collect();
+        self.frame = ClientFrame::default();
+        self.server_count = server_count;
+        self.attractloop = attractloop != 0;
+        self.gamedir = gamedir;
+        self.playernum = playernum;
 
         self.entities.clear();
         self.entities.resize(MAX_EDICTS, CEntity::default());
         self.configstrings.clear();
         self.configstrings.resize(MAX_CONFIGSTRINGS, String::new());
+        Ok(())
     }
 
     fn parse_config_string(&mut self, msg: &mut NetMsg) {
@@ -118,15 +142,27 @@ impl ClientState {
     ///   | areabits_len (u8) | areabits ([u8; len])
     ///   | svc_playerinfo (u8=17) | player_state_data
     ///   | svc_packetentities (u8=18) | entity_list | terminator (0, 0)
-    fn parse_frame(&mut self, msg: &mut NetMsg) {
+    ///
+    /// A malformed or truncated frame is an error and is not stored, so it
+    /// can never become a delta base.
+    fn parse_frame(&mut self, msg: &mut NetMsg) -> Q2Result<()> {
         let serverframe = msg.read_long();
         let deltaframe = msg.read_long();
         let _suppress = msg.read_byte();
-        let servertime = serverframe * 100;
+        let raw_areabits_len = msg.read_byte();
+        if msg.is_overflowed() {
+            q2_drop!("parse_frame: truncated frame header");
+        }
+        if serverframe < 0 {
+            q2_drop!("parse_frame: negative serverframe {serverframe}");
+        }
+        // Wraps like the C int multiply instead of panicking.
+        let servertime = serverframe.wrapping_mul(100);
 
         // areabits: length-prefixed raw bytes.  Cap to MAX_MAP_AREAS/8 but
-        // consume the full wire length to keep the stream aligned.
-        let raw_areabits_len = msg.read_byte() as usize;
+        // consume the full wire length to keep the stream aligned. The
+        // length is a byte (0..=255) now that truncation was rejected.
+        let raw_areabits_len = raw_areabits_len as usize;
         let capped_areabits_len = raw_areabits_len.min(MAX_MAP_AREAS / 8);
         if raw_areabits_len > MAX_MAP_AREAS / 8 {
             tracing::warn!(
@@ -165,11 +201,7 @@ impl ClientState {
         // svc_playerinfo must follow immediately.
         let ps_cmd = msg.read_byte();
         if ps_cmd != SvcOp::PlayerInfo as i32 {
-            tracing::error!(
-                "parse_frame: expected PlayerInfo (17), got {} — aborting frame",
-                ps_cmd
-            );
-            return;
+            q2_drop!("parse_frame: expected PlayerInfo (17), got {ps_cmd}");
         }
         let old_ps = old_frame.as_ref().map(|f| &f.playerstate);
         let playerstate = read_player_state(msg, old_ps);
@@ -177,17 +209,16 @@ impl ClientState {
         // svc_packetentities must follow immediately.
         let pe_cmd = msg.read_byte();
         if pe_cmd != SvcOp::PacketEntities as i32 {
-            tracing::error!(
-                "parse_frame: expected PacketEntities (18), got {} — aborting frame",
-                pe_cmd
-            );
-            return;
+            q2_drop!("parse_frame: expected PacketEntities (18), got {pe_cmd}");
         }
         let old_entities = old_frame
             .as_ref()
             .map(|f| f.entities.as_slice())
             .unwrap_or(&[]);
-        let entities = read_packet_entities(msg, old_entities, &self.entities);
+        let entities = read_packet_entities(msg, old_entities, &self.entities)?;
+        if msg.is_overflowed() {
+            q2_drop!("parse_frame: frame truncated");
+        }
 
         let new_frame = ClientFrame {
             valid: frame_valid,
@@ -203,6 +234,7 @@ impl ClientState {
         let idx = (serverframe as usize) & UPDATE_MASK;
         self.frames[idx] = new_frame.clone();
         self.frame = new_frame;
+        Ok(())
     }
 }
 
@@ -453,40 +485,37 @@ fn read_player_state(msg: &mut NetMsg, old: Option<&PlayerState>) -> PlayerState
 /// entities that are not in the old frame.
 ///
 /// Returns a new entity list sorted by entity number, ready to store in
-/// `ClientFrame::entities`.
+/// `ClientFrame::entities`. Errors (C ERR_DROP) on a truncated list or a bad
+/// entity number; numbers must also ascend, which the merge with
+/// `old_entities` relies on.
 fn read_packet_entities(
     msg: &mut NetMsg,
     old_entities: &[EntityState],
     baselines: &[CEntity],
-) -> Vec<EntityState> {
+) -> Q2Result<Vec<EntityState>> {
     let mut result: Vec<EntityState> = Vec::new();
     let mut old_idx = 0usize;
+    let mut last_num = 0;
 
     loop {
         let (newnum, bits) = parse_entity_bits(msg);
 
-        // Truncated stream — all further reads return -1/0, so stop now rather
-        // than spinning through spurious MOREBITS expansions.
         if msg.is_overflowed() {
-            tracing::error!("read_packet_entities: stream overflowed, aborting");
-            break;
+            q2_drop!("read_packet_entities: end of message");
         }
-
-        if newnum >= MAX_EDICTS as i32 {
-            tracing::error!(
-                "read_packet_entities: entity number {} >= MAX_EDICTS",
-                newnum
-            );
-            // Consume the delta payload before aborting so callers that
-            // inspect remaining_data() see an aligned stream (matches the
-            // parse_baseline pattern).
-            read_delta_entity(msg, &EntityState::default(), newnum, bits);
-            break;
+        // C reads the number as unsigned, so a negative NUMBER16 also fails
+        // this check there.
+        if !(0..MAX_EDICTS as i32).contains(&newnum) {
+            q2_drop!("read_packet_entities: bad number {newnum}");
         }
 
         if newnum == 0 {
             break; // terminator
         }
+        if newnum <= last_num {
+            q2_drop!("read_packet_entities: entity {newnum} after {last_num}");
+        }
+        last_num = newnum;
 
         // Copy unchanged old entities whose number is less than this new one.
         while old_idx < old_entities.len() && old_entities[old_idx].number < newnum {
@@ -524,7 +553,7 @@ fn read_packet_entities(
     // Copy any remaining unchanged old entities.
     result.extend(old_entities[old_idx..].iter().map(copy_forward));
 
-    result
+    Ok(result)
 }
 
 /// An entity absent from the packet is unchanged: C runs it through
@@ -605,7 +634,7 @@ mod tests {
     fn parse_server_data_sets_fields() {
         let mut cs = ClientState::default();
         let mut msg = make_server_data_msg(34, 7, 2, "baseq2", "base1");
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
 
         assert_eq!(cs.server_count, 7);
         assert_eq!(cs.playernum, 2);
@@ -621,7 +650,7 @@ mod tests {
         cs.entities.resize(10, CEntity::default());
 
         let mut msg = make_server_data_msg(34, 1, 0, "baseq2", "q2dm1");
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
 
         assert_eq!(cs.entities.len(), MAX_EDICTS);
         assert_eq!(cs.configstrings.len(), MAX_CONFIGSTRINGS);
@@ -636,7 +665,7 @@ mod tests {
         msg.write_string("models/world.bsp");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.configstrings[5], "models/world.bsp");
     }
 
@@ -651,7 +680,7 @@ mod tests {
         msg.write_string("should_be_ignored");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.configstrings.len(), original_len);
     }
 
@@ -664,7 +693,7 @@ mod tests {
         msg.write_string("Hello world");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
     }
 
@@ -672,7 +701,7 @@ mod tests {
     fn parse_frame_sets_serverframe() {
         let mut cs = ClientState::default();
         let mut msg = make_frame_msg(42, -1);
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.frame.serverframe, 42);
         assert_eq!(cs.frame.deltaframe, -1);
     }
@@ -688,7 +717,7 @@ mod tests {
         msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.state, ConnState::Disconnected);
     }
 
@@ -703,20 +732,25 @@ mod tests {
         msg.write_byte(SvcOp::Nop as i32);
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.state, ConnState::Active);
     }
 
+    // C CL_ParseServerMessage: an unknown opcode is ERR_DROP ("Illegible
+    // server message").
     #[test]
-    fn unknown_opcode_stops_parsing() {
-        let mut cs = ClientState::default();
+    fn unknown_opcode_is_error_and_stops_parsing() {
+        let mut cs = ClientState {
+            state: ConnState::Active,
+            ..Default::default()
+        };
         let mut msg = NetMsg::new();
         msg.write_byte(255);
         msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
-        assert_eq!(cs.state, ConnState::Disconnected); // default
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_eq!(cs.state, ConnState::Active);
     }
 
     #[test]
@@ -733,7 +767,7 @@ mod tests {
         write_empty_frame(&mut msg, 100, -1, None, &[]);
 
         msg.begin_reading();
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
 
         assert_eq!(cs.configstrings[10], "test_value");
         assert_eq!(cs.frame.serverframe, 100);
@@ -748,7 +782,7 @@ mod tests {
         msg.write_string("cmd connect");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
     }
 
@@ -760,7 +794,7 @@ mod tests {
         msg.write_string("You found a secret!");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
     }
 
@@ -775,7 +809,7 @@ mod tests {
         msg.write_byte(42); // entity number
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
     }
 
@@ -788,7 +822,7 @@ mod tests {
         msg.write_string("should_be_ignored");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert!(cs.configstrings.iter().all(|s| s.is_empty()));
     }
 
@@ -800,7 +834,7 @@ mod tests {
     fn parse_frame_stores_in_ring_buffer() {
         let mut cs = ClientState::default();
         let mut msg = make_frame_msg(5, -1);
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
 
         let idx = 5usize & UPDATE_MASK;
         assert_eq!(cs.frames[idx].serverframe, 5);
@@ -830,7 +864,7 @@ mod tests {
             .expect("valid entities");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.frame.areabits[0], 0xAB);
         assert_eq!(cs.frame.areabits[1], 0xCD);
         assert_eq!(cs.frame.areabits[2], 0xEF);
@@ -932,7 +966,8 @@ mod tests {
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
-        let decoded = read_packet_entities(&mut msg, &[], &vec![CEntity::default(); MAX_EDICTS]);
+        let decoded = read_packet_entities(&mut msg, &[], &vec![CEntity::default(); MAX_EDICTS])
+            .expect("valid entity list");
 
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].number, 1);
@@ -968,7 +1003,8 @@ mod tests {
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
-        let decoded = read_packet_entities(&mut msg, &old, &vec![CEntity::default(); MAX_EDICTS]);
+        let decoded = read_packet_entities(&mut msg, &old, &vec![CEntity::default(); MAX_EDICTS])
+            .expect("valid entity list");
 
         // Entity 3 must be absent from result.
         assert_eq!(decoded.len(), 2);
@@ -989,7 +1025,7 @@ mod tests {
         let mut msg = NetMsg::new();
         write_empty_frame(&mut msg, 1, -1, Some(&ps1), &[]);
         msg.begin_reading();
-        cs.parse_server_message(&mut msg);
+        cs.parse_server_message(&mut msg).expect("valid message");
         assert_eq!(cs.frame.playerstate.fov, 75.0);
 
         // Frame 2: delta from frame 1, only gravity changed.
@@ -1006,7 +1042,7 @@ mod tests {
         msg2.write_packet_entities_list(&[], &[], &[], 0)
             .expect("valid entities");
         msg2.begin_reading();
-        cs.parse_server_message(&mut msg2);
+        cs.parse_server_message(&mut msg2).expect("valid message");
 
         // fov should be carried forward (delta); gravity should update.
         assert_eq!(cs.frame.playerstate.fov, 75.0);
@@ -1028,7 +1064,7 @@ mod tests {
         msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        assert!(cs.parse_server_message(&mut msg).is_err());
         assert_eq!(cs.state, ConnState::Active);
     }
 
@@ -1044,7 +1080,7 @@ mod tests {
         msg.write_byte(SvcOp::Disconnect as i32);
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg);
+        assert!(cs.parse_server_message(&mut msg).is_err());
         assert_eq!(cs.state, ConnState::Active);
     }
 
@@ -1216,7 +1252,8 @@ mod tests {
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // PacketEntities opcode
-        let decoded = read_packet_entities(&mut msg, &[], &client_baselines);
+        let decoded =
+            read_packet_entities(&mut msg, &[], &client_baselines).expect("valid entity list");
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].modelindex, 0);
         assert_eq!(decoded[0].solid, 31);
@@ -1239,7 +1276,7 @@ mod tests {
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // PacketEntities opcode
-        let frame1 = read_packet_entities(&mut msg, &[], &baselines);
+        let frame1 = read_packet_entities(&mut msg, &[], &baselines).expect("valid entity list");
         assert_eq!(frame1[0].event, 3);
         assert_eq!(frame1[0].old_origin, Vec3f::ZERO);
 
@@ -1254,9 +1291,274 @@ mod tests {
             .expect("valid entities");
         msg2.begin_reading();
         let _ = msg2.read_byte();
-        let frame2 = read_packet_entities(&mut msg2, &frame1, &baselines);
+        let frame2 =
+            read_packet_entities(&mut msg2, &frame1, &baselines).expect("valid entity list");
         assert_eq!(frame2.len(), 1);
         assert_eq!(frame2[0].event, 0);
         assert_eq!(frame2[0].old_origin, Vec3f::new(8.0, 0.0, 0.0));
+    }
+
+    // -------------------------------------------------------------------------
+    // Malformed / truncated input (review S-1, S-9, S-10, S-11, S-13, S-31)
+    // -------------------------------------------------------------------------
+
+    /// svc_frame header: serverframe, deltaframe, suppress, areabits len 0.
+    fn write_frame_header(msg: &mut NetMsg, serverframe: i32, deltaframe: i32) {
+        msg.write_byte(SvcOp::Frame as i32);
+        msg.write_long(serverframe);
+        msg.write_long(deltaframe);
+        msg.write_byte(0); // suppress
+        msg.write_byte(0); // areabits len
+    }
+
+    /// Frame header + empty playerinfo + PacketEntities opcode; the caller
+    /// appends the entity list.
+    fn frame_up_to_entities(serverframe: i32) -> NetMsg {
+        let mut msg = NetMsg::new();
+        write_frame_header(&mut msg, serverframe, -1);
+        msg.write_player_state(&PlayerState::default(), &PlayerState::default());
+        msg.write_byte(SvcOp::PacketEntities as i32);
+        msg
+    }
+
+    fn assert_frame_not_stored(cs: &ClientState, serverframe: i32) {
+        let idx = (serverframe as usize) & UPDATE_MASK;
+        assert!(!cs.frames[idx].valid, "frame {serverframe} stored");
+        assert_ne!(cs.frame.serverframe, serverframe);
+    }
+
+    // S-1: a packet ending after `suppress` made read_byte return -1 for the
+    // areabits length, and `-1 as usize` drove a ~2^64-iteration drain loop.
+    #[test]
+    fn truncated_frame_header_returns_promptly() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cs = ClientState::default();
+            let mut msg = NetMsg::new();
+            msg.write_byte(SvcOp::Frame as i32);
+            msg.write_long(5);
+            msg.write_long(-1);
+            msg.write_byte(0); // suppress, then nothing
+            msg.begin_reading();
+            let parsed = cs.parse_server_message(&mut msg);
+            let _ = tx.send((parsed.is_err(), cs.frame.serverframe));
+        });
+        let (is_err, serverframe) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("parse must not hang on a truncated frame");
+        assert!(is_err);
+        assert_eq!(serverframe, 0);
+    }
+
+    // S-10: entity 4 announces ORIGIN1 but the coordinate is missing.
+    #[test]
+    fn truncated_entity_list_does_not_store_frame() {
+        let mut cs = ClientState::default();
+        let mut msg = frame_up_to_entities(9);
+        msg.write_byte(0x01); // ORIGIN1
+        msg.write_byte(4); // entity 4, payload missing
+        msg.begin_reading();
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_frame_not_stored(&cs, 9);
+    }
+
+    // S-10: cut a valid multi-opcode message at every offset inside the
+    // frame; no prefix may panic or store the frame.
+    #[test]
+    fn frame_truncated_at_any_offset_is_never_stored() {
+        let ents = [
+            EntityState {
+                number: 3,
+                origin: Vec3f::new(8.0, 16.0, 24.0),
+                modelindex: 2,
+                ..Default::default()
+            },
+            EntityState {
+                number: 300,
+                frame: 5,
+                ..Default::default()
+            },
+        ];
+        let ps = PlayerState {
+            fov: 90.0,
+            ..Default::default()
+        };
+        let mut full = NetMsg::new();
+        full.write_byte(SvcOp::ConfigString as i32);
+        full.write_short(1);
+        full.write_string("x");
+        let frame_start = full.len();
+        write_empty_frame(&mut full, 9, -1, Some(&ps), &ents);
+        let frame_end = full.len();
+
+        // cut == frame_start is a complete message without the frame.
+        for cut in frame_start + 1..frame_end {
+            let mut cs = ClientState::default();
+            let mut msg = NetMsg::from_bytes(&full.data()[..cut]);
+            assert!(cs.parse_server_message(&mut msg).is_err(), "cut {cut}");
+            assert_frame_not_stored(&cs, 9);
+        }
+
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::from_bytes(full.data());
+        cs.parse_server_message(&mut msg).expect("full message");
+        assert_eq!(cs.frame.serverframe, 9);
+        assert_eq!(cs.frame.entities.len(), 2);
+    }
+
+    // S-9: NUMBER16 with a short >= 0x8000 reads negative. C reads the
+    // number as unsigned, so it fails the MAX_EDICTS check (ERR_DROP).
+    // bits = NUMBER16|MOREBITS1 -> 0x80, 0x01; number -5 -> 0xFB, 0xFF.
+    #[test]
+    fn negative_entity_number_rejects_frame() {
+        let mut cs = ClientState::default();
+        let mut msg = frame_up_to_entities(9);
+        msg.write_data(&[0x80, 0x01, 0xFB, 0xFF]);
+        msg.write_data(&[0, 0]);
+        msg.begin_reading();
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_frame_not_stored(&cs, 9);
+    }
+
+    #[test]
+    fn entity_number_max_edicts_rejects_frame() {
+        let mut cs = ClientState::default();
+        let mut msg = frame_up_to_entities(9);
+        msg.write_data(&[0x80, 0x01]);
+        msg.write_short(MAX_EDICTS as i32);
+        msg.write_data(&[0, 0]);
+        msg.begin_reading();
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_frame_not_stored(&cs, 9);
+    }
+
+    // S-9: the merge with the old frame relies on ascending numbers.
+    #[test]
+    fn descending_entity_numbers_reject_frame() {
+        let mut cs = ClientState::default();
+        let mut msg = frame_up_to_entities(9);
+        msg.write_data(&[0x00, 5]); // entity 5, no fields
+        msg.write_data(&[0x00, 3]); // entity 3 after 5
+        msg.write_data(&[0, 0]);
+        msg.begin_reading();
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_frame_not_stored(&cs, 9);
+    }
+
+    // S-11: after a bad playerinfo opcode the rest of the frame is garbage;
+    // a following byte 12 must not be run as svc_serverdata.
+    #[test]
+    fn aborted_frame_stops_parsing_the_message() {
+        let mut cs = ClientState::default();
+        cs.entities[3].baseline.modelindex = 7;
+
+        let mut msg = NetMsg::new();
+        write_frame_header(&mut msg, 1, -1);
+        msg.write_byte(99); // not svc_playerinfo
+        msg.write_byte(SvcOp::ServerData as i32);
+        msg.write_long(PROTOCOL_VERSION);
+        msg.write_long(1);
+        msg.write_byte(0);
+        msg.write_string("baseq2");
+        msg.write_short(0);
+        msg.write_string("base1");
+        msg.begin_reading();
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_eq!(cs.entities[3].baseline.modelindex, 7);
+    }
+
+    // R-25 / S-13: C CL_ParseServerData drops on a protocol mismatch.
+    #[test]
+    fn server_data_with_wrong_protocol_is_rejected() {
+        let mut cs = ClientState {
+            server_count: 3,
+            ..Default::default()
+        };
+        cs.entities[3].baseline.modelindex = 7;
+        let mut msg = make_server_data_msg(33, 9, 0, "baseq2", "base1");
+
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_eq!(cs.server_count, 3);
+        assert_eq!(cs.entities[3].baseline.modelindex, 7);
+    }
+
+    #[test]
+    fn server_data_with_out_of_range_playernum_is_rejected() {
+        let mut cs = ClientState::default();
+        let mut msg = make_server_data_msg(34, 9, 9999, "baseq2", "base1");
+        assert!(cs.parse_server_message(&mut msg).is_err());
+    }
+
+    // playernum -1 means a cinematic or picture, not a level.
+    #[test]
+    fn server_data_accepts_cinematic_playernum() {
+        let mut cs = ClientState::default();
+        let mut msg = make_server_data_msg(34, 9, -1, "baseq2", "intro.cin");
+        cs.parse_server_message(&mut msg)
+            .expect("cinematic serverdata");
+        assert_eq!(cs.playernum, -1);
+    }
+
+    #[test]
+    fn server_data_records_attractloop() {
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::ServerData as i32);
+        msg.write_long(PROTOCOL_VERSION);
+        msg.write_long(1);
+        msg.write_byte(1); // attractloop
+        msg.write_string("baseq2");
+        msg.write_short(0);
+        msg.write_string("demo");
+        msg.begin_reading();
+        cs.parse_server_message(&mut msg).expect("valid serverdata");
+        assert!(cs.attractloop);
+    }
+
+    // S-13: like CL_ClearState, a new serverdata forgets old frames so a
+    // frame from the previous map cannot be a delta base.
+    #[test]
+    fn server_data_resets_frame_ring() {
+        let mut cs = ClientState::default();
+        let mut msg = make_frame_msg(5, -1);
+        cs.parse_server_message(&mut msg).expect("valid frame");
+        assert!(cs.frames[5].valid);
+
+        let mut msg = make_server_data_msg(34, 2, 0, "baseq2", "base2");
+        cs.parse_server_message(&mut msg).expect("valid serverdata");
+        assert!(cs.frames.iter().all(|f| !f.valid));
+        assert_eq!(cs.frame.serverframe, 0);
+    }
+
+    // S-31: serverframe * 100 overflowed i32 (debug panic).
+    #[test]
+    fn huge_serverframe_does_not_panic() {
+        let mut cs = ClientState::default();
+        let mut msg = make_frame_msg(i32::MAX, -1);
+        cs.parse_server_message(&mut msg).expect("valid frame");
+        assert_eq!(cs.frame.serverframe, i32::MAX);
+        assert_eq!(cs.frame.servertime, i32::MAX.wrapping_mul(100));
+    }
+
+    #[test]
+    fn negative_serverframe_is_rejected() {
+        let mut cs = ClientState::default();
+        let mut msg = make_frame_msg(-7, -1);
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_frame_not_stored(&cs, -7);
+    }
+
+    // C CL_ParseServerMessage: reading past the end of the message is
+    // ERR_DROP ("Bad server message").
+    #[test]
+    fn unterminated_configstring_is_error() {
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::from_bytes(&[SvcOp::ConfigString as u8, 5, 0, b'a']);
+        assert!(cs.parse_server_message(&mut msg).is_err());
     }
 }
