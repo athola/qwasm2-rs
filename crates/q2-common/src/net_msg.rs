@@ -279,8 +279,18 @@ impl NetMsg {
     }
 
     /// Write a null-terminated string.
+    ///
+    /// Q2 strings are bytes, not UTF-8: each char U+0000..=U+00FF becomes the
+    /// byte with that value (the inverse of [`read_string`](Self::read_string)),
+    /// so high-bit console colour bytes survive a read/write cycle. Chars that
+    /// do not fit in a byte become `?`. An interior NUL ends the string, as
+    /// with C `strlen`.
     pub fn write_string(&mut self, s: &str) {
-        let mut bytes = s.as_bytes().to_vec();
+        let mut bytes: Vec<u8> = s
+            .chars()
+            .take_while(|&c| c != '\0')
+            .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
+            .collect();
         bytes.push(0);
         self.put(&bytes);
     }
@@ -405,21 +415,21 @@ impl NetMsg {
     }
 
     /// Read a null-terminated string.
+    ///
+    /// Each byte maps to the char with the same code point (Latin-1), so no
+    /// byte is lost. Like C `MSG_ReadString`, at most 2047 bytes are read;
+    /// the remainder of a longer string stays in the stream.
     pub fn read_string(&mut self) -> String {
-        let mut result = Vec::new();
-        loop {
-            if self.read_pos >= self.data.len() {
-                self.overflowed = true;
-                break;
+        const MAX_STRING_CHARS: usize = 2047;
+        let mut result = String::new();
+        for _ in 0..MAX_STRING_CHARS {
+            let c = self.read_byte();
+            if c <= 0 {
+                break; // terminator, or end of message (-1)
             }
-            let b = self.data[self.read_pos];
-            self.read_pos += 1;
-            if b == 0 {
-                break;
-            }
-            result.push(b);
+            result.push(char::from(c as u8));
         }
-        String::from_utf8_lossy(&result).into_owned()
+        result
     }
 
     /// Read a coordinate: read short, divide by 8.0.
@@ -1067,6 +1077,56 @@ mod tests {
         buf.write_string("hello world");
         buf.begin_reading();
         assert_eq!(buf.read_string(), "hello world");
+    }
+
+    // Q2 strings are raw bytes (high-bit bytes are coloured console text).
+    // Each byte maps to the char with the same code point (Latin-1).
+    #[test]
+    fn read_string_keeps_high_bit_bytes() {
+        let mut buf = NetMsg::from_bytes(&[0xA0, 0x41, 0xFF, 0]);
+        assert_eq!(buf.read_string(), "\u{A0}A\u{FF}");
+    }
+
+    #[test]
+    fn write_string_roundtrips_high_bit_bytes() {
+        let mut rd = NetMsg::from_bytes(&[0xA0, 0x41, 0x80, 0]);
+        let text = rd.read_string();
+        let mut wr = NetMsg::new();
+        wr.write_string(&text);
+        assert_eq!(wr.data(), &[0xA0, 0x41, 0x80, 0]);
+    }
+
+    #[test]
+    fn write_string_replaces_chars_outside_one_byte_range() {
+        let mut buf = NetMsg::new();
+        buf.write_string("a\u{2014}b");
+        assert_eq!(buf.data(), b"a?b\0");
+    }
+
+    // C MSG_WriteString uses strlen, so an interior NUL ends the string.
+    #[test]
+    fn write_string_stops_at_interior_nul() {
+        let mut buf = NetMsg::new();
+        buf.write_string("ab\0cd");
+        assert_eq!(buf.data(), b"ab\0");
+    }
+
+    // C MSG_ReadString (movemsg.c:896-915) stops after 2047 chars and leaves
+    // the rest of the string in the stream.
+    #[test]
+    fn read_string_caps_at_2047_bytes_like_c() {
+        let mut bytes = vec![b'a'; 3000];
+        bytes.push(0);
+        let mut buf = NetMsg::from_bytes(&bytes);
+        assert_eq!(buf.read_string().len(), 2047);
+        assert_eq!(buf.read_cursor(), 2047);
+    }
+
+    #[test]
+    fn read_string_without_terminator_sets_overflow() {
+        let mut buf = NetMsg::from_bytes(b"abc");
+        assert_eq!(buf.read_string(), "abc");
+        assert!(buf.is_overflowed());
     }
 
     #[test]
