@@ -12,7 +12,7 @@ use crate::bsp::BspData;
 /// Compiled GPU mesh: VAO + vertex count, ready to draw.
 struct GpuMesh {
     vao: glow::VertexArray,
-    _vbo: glow::Buffer,
+    vbo: glow::Buffer,
     vertex_count: i32,
 }
 
@@ -107,11 +107,15 @@ impl Gl3Renderer {
             gl.bind_vertex_array(None);
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
-            self.world_mesh = Some(GpuMesh {
+            // A map change replaces the mesh; free the previous map's buffers.
+            if let Some(old) = self.world_mesh.replace(GpuMesh {
                 vao,
-                _vbo: vbo,
+                vbo,
                 vertex_count,
-            });
+            }) {
+                gl.delete_vertex_array(old.vao);
+                gl.delete_buffer(old.vbo);
+            }
         }
     }
 
@@ -144,14 +148,16 @@ impl Gl3Renderer {
                 }
             "#;
 
-            let vs = gl
-                .create_shader(glow::VERTEX_SHADER)
-                .map_err(|e| format!("create vertex shader failed: {e}"))?;
+            let vs = gl.create_shader(glow::VERTEX_SHADER).map_err(|e| {
+                gl.delete_program(program);
+                format!("create vertex shader failed: {e}")
+            })?;
             gl.shader_source(vs, vs_src);
             gl.compile_shader(vs);
             if !gl.get_shader_compile_status(vs) {
                 let log = gl.get_shader_info_log(vs);
                 gl.delete_shader(vs);
+                gl.delete_program(program);
                 let msg = format!("VS compile error: {}", log);
                 tracing::error!("{}", msg);
                 return Err(msg);
@@ -159,6 +165,7 @@ impl Gl3Renderer {
 
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| {
                 gl.delete_shader(vs);
+                gl.delete_program(program);
                 format!("create fragment shader failed: {e}")
             })?;
             gl.shader_source(fs, fs_src);
@@ -167,6 +174,7 @@ impl Gl3Renderer {
                 let log = gl.get_shader_info_log(fs);
                 gl.delete_shader(fs);
                 gl.delete_shader(vs);
+                gl.delete_program(program);
                 let msg = format!("FS compile error: {}", log);
                 tracing::error!("{}", msg);
                 return Err(msg);
@@ -199,6 +207,13 @@ impl Default for Gl3Renderer {
     }
 }
 
+impl Drop for Gl3Renderer {
+    /// Release GPU objects even if the caller never called `shutdown`.
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 impl Renderer for Gl3Renderer {
     fn init(&mut self, width: i32, height: i32) -> Result<(), String> {
         let gl = match &self.gl {
@@ -211,18 +226,18 @@ impl Renderer for Gl3Renderer {
         self.width = width;
         self.height = height;
 
-        // Compile shaders
-        match Self::compile_shaders(gl) {
-            Ok(prog) => self.world_program = Some(prog),
-            Err(e) => return Err(format!("Failed to compile world shaders: {e}")),
-        }
+        let prog = Self::compile_shaders(gl)
+            .map_err(|e| format!("Failed to compile world shaders: {e}"))?;
 
-        // Get uniform location
-        if let Some(prog) = &self.world_program {
-            // SAFETY: glow uniform lookup requires unsafe.
-            unsafe {
-                self.u_view_proj = gl.get_uniform_location(*prog, "u_view_proj");
+        // SAFETY: `prog` and any previous program were created by this same
+        // `gl` context in `compile_shaders`, and `old` is no longer referenced
+        // once replaced.
+        unsafe {
+            // A repeated init replaces the program; free the old one.
+            if let Some(old) = self.world_program.replace(prog) {
+                gl.delete_program(old);
             }
+            self.u_view_proj = gl.get_uniform_location(prog, "u_view_proj");
         }
 
         // SAFETY: glow GL state setup requires unsafe.
@@ -247,7 +262,7 @@ impl Renderer for Gl3Renderer {
             unsafe {
                 if let Some(mesh) = self.world_mesh.take() {
                     gl.delete_vertex_array(mesh.vao);
-                    gl.delete_buffer(mesh._vbo);
+                    gl.delete_buffer(mesh.vbo);
                 }
                 if let Some(prog) = self.world_program.take() {
                     gl.delete_program(prog);
