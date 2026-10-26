@@ -12,7 +12,7 @@
 //! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
 use crate::error::{Q2Error, Q2Result};
-use q2_shared::constants::{MAX_EDICTS, MAX_STATS};
+use q2_shared::constants::{MAX_EDICTS, MAX_MSGLEN, MAX_STATS};
 use q2_shared::protocol::{PlayerStateFlags, SvcOp, UpdateFlags};
 use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
@@ -995,12 +995,20 @@ impl NetMsg {
     // -------------------------------------------------------------------------
 
     /// Write a delta-compressed entity list followed by the `svc_packetentities`
-    /// opcode and terminated by entity number 0.
+    /// opcode and terminated by entity number 0. Mirrors C
+    /// `SV_EmitPacketEntities`.
     ///
     /// Both `old_entities` and `new_entities` **must** be sorted by entity number
     /// (ascending). Entities in `old_entities` but absent from `new_entities` are
     /// written with the REMOVE flag; entities that appear in both with identical
     /// state are omitted (the reader copies them forward from the old frame).
+    /// A new entity is delta'd from `baselines[number]` (C `sv.baselines`;
+    /// missing entries count as all-zero), which is what the client decodes it
+    /// against. Entities numbered `<= max_clients` are players and always
+    /// refresh old_origin, so they never lerp from a stale position.
+    ///
+    /// Like C, no more entities are written once the message passes
+    /// `MAX_MSGLEN - 150` bytes; the rest go out in a later frame.
     ///
     /// Errors if an entity number is invalid (see
     /// [`write_delta_entity`](Self::write_delta_entity)).
@@ -1008,35 +1016,41 @@ impl NetMsg {
         &mut self,
         old_entities: &[EntityState],
         new_entities: &[EntityState],
+        baselines: &[EntityState],
+        max_clients: i32,
     ) -> Q2Result<()> {
         self.write_byte(SvcOp::PacketEntities as i32);
 
+        let zero_baseline = EntityState::default();
         let mut old_idx = 0usize;
+        let mut new_idx = 0usize;
 
-        for new_ent in new_entities {
-            // Entities in old that come before this new entity number are REMOVED.
-            while old_idx < old_entities.len() && old_entities[old_idx].number < new_ent.number {
-                self.write_entity_remove(old_entities[old_idx].number);
-                old_idx += 1;
-            }
-
-            // Determine delta base: old entity with same number (if any) or zero.
-            let (from, is_new) =
-                if old_idx < old_entities.len() && old_entities[old_idx].number == new_ent.number {
-                    let from = old_entities[old_idx].clone();
+        while self.len() <= MAX_MSGLEN - 150 {
+            let new_ent = new_entities.get(new_idx);
+            match (new_ent, old_entities.get(old_idx)) {
+                (Some(new_ent), Some(old_ent)) if new_ent.number == old_ent.number => {
+                    // Unforced: unchanged entities emit nothing.
+                    let is_player = new_ent.number <= max_clients;
+                    self.write_delta_entity(old_ent, new_ent, false, is_player)?;
                     old_idx += 1;
-                    (from, false)
-                } else {
-                    (EntityState::default(), true)
-                };
-
-            self.write_delta_entity(&from, new_ent, is_new, is_new)?;
-        }
-
-        // Any remaining old entities are removed.
-        while old_idx < old_entities.len() {
-            self.write_entity_remove(old_entities[old_idx].number);
-            old_idx += 1;
+                    new_idx += 1;
+                }
+                // The old entity is not in the new frame.
+                (_, Some(old_ent)) if new_ent.is_none_or(|n| n.number > old_ent.number) => {
+                    self.write_entity_remove(old_ent.number);
+                    old_idx += 1;
+                }
+                // A new entity: send it from its baseline.
+                (Some(new_ent), _) => {
+                    let baseline = usize::try_from(new_ent.number)
+                        .ok()
+                        .and_then(|n| baselines.get(n))
+                        .unwrap_or(&zero_baseline);
+                    self.write_delta_entity(baseline, new_ent, true, true)?;
+                    new_idx += 1;
+                }
+                (None, _) => break,
+            }
         }
 
         // Terminator: entity number 0 with no flags.
@@ -1513,6 +1527,77 @@ mod tests {
             delta_bytes(&ent, &ent, false, false),
             vec![0x80, 0x01, 0x2C, 0x01]
         );
+    }
+
+    // C SV_EmitPacketEntities: a new entity is sent with force and
+    // newentity from sv.baselines[n]. Baseline modelindex 5 equals the
+    // state, so only OLDORIGIN is set: bits 0x1808080, number 5, 3 coords,
+    // then the 2-byte terminator.
+    #[test]
+    fn packet_entities_new_entity_deltas_from_baseline() {
+        let mut baselines = vec![EntityState::default(); 8];
+        baselines[5] = EntityState {
+            number: 5,
+            modelindex: 5,
+            ..Default::default()
+        };
+        let ent = baselines[5].clone();
+        let mut buf = NetMsg::new();
+        buf.write_packet_entities_list(&[], &[ent], &baselines, 0)
+            .expect("valid entities");
+        assert_eq!(
+            buf.data(),
+            &[18, 0x80, 0x80, 0x80, 0x01, 5, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    // "players are always 'newentities'": an unchanged entity with number
+    // <= maxclients still sends OLDORIGIN; other unchanged entities send
+    // nothing.
+    #[test]
+    fn packet_entities_unchanged_player_still_sends_oldorigin() {
+        let player = EntityState {
+            number: 1,
+            old_origin: Vec3f::new(1.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let mut buf = NetMsg::new();
+        let list = std::slice::from_ref(&player);
+        buf.write_packet_entities_list(list, list, &[], 4)
+            .expect("valid entities");
+        assert_eq!(
+            buf.data(),
+            &[18, 0x80, 0x80, 0x80, 0x01, 1, 8, 0, 0, 0, 0, 0, 0, 0]
+        );
+
+        let monster = EntityState {
+            number: 5,
+            ..player
+        };
+        let mut buf = NetMsg::new();
+        let list = std::slice::from_ref(&monster);
+        buf.write_packet_entities_list(list, list, &[], 4)
+            .expect("valid entities");
+        assert_eq!(buf.data(), &[18, 0, 0]);
+    }
+
+    // C stops emitting entities once the message passes MAX_MSGLEN - 150;
+    // the rest are sent in a later frame.
+    #[test]
+    fn packet_entities_stop_near_max_msglen() {
+        let ents: Vec<EntityState> = (1..1024)
+            .map(|number| EntityState {
+                number,
+                modelindex: 1,
+                ..Default::default()
+            })
+            .collect();
+        let mut buf = NetMsg::new();
+        buf.write_packet_entities_list(&[], &ents, &[], 0)
+            .expect("valid entities");
+        let max_msglen = q2_shared::constants::MAX_MSGLEN;
+        assert!(buf.len() <= max_msglen - 150 + 32, "len {}", buf.len());
+        assert_eq!(&buf.data()[buf.len() - 2..], &[0, 0]);
     }
 
     // C: Com_Error(ERR_FATAL) for "Unset entity number" and

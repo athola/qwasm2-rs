@@ -567,7 +567,7 @@ mod tests {
         msg.write_byte(0); // suppress
         msg.write_byte(0); // areabits len = 0
         msg.write_player_state(&old_ps, ps);
-        msg.write_packet_entities_list(&[], entities)
+        msg.write_packet_entities_list(&[], entities, &[], 0)
             .expect("valid entities");
     }
 
@@ -826,7 +826,7 @@ mod tests {
         msg.write_byte(0x12);
 
         msg.write_player_state(&zero_ps, &zero_ps);
-        msg.write_packet_entities_list(&[], &[])
+        msg.write_packet_entities_list(&[], &[], &[], 0)
             .expect("valid entities");
         msg.begin_reading();
 
@@ -928,7 +928,7 @@ mod tests {
         };
 
         let mut msg = NetMsg::new();
-        msg.write_packet_entities_list(&[], &[ent1.clone(), ent2.clone()])
+        msg.write_packet_entities_list(&[], &[ent1.clone(), ent2.clone()], &[], 0)
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
@@ -964,7 +964,7 @@ mod tests {
         let new = vec![ent1.clone(), ent3.clone()];
 
         let mut msg = NetMsg::new();
-        msg.write_packet_entities_list(&old, &new)
+        msg.write_packet_entities_list(&old, &new, &[], 0)
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
@@ -1003,7 +1003,7 @@ mod tests {
         msg2.write_byte(0);
         msg2.write_byte(0); // areabits len = 0
         msg2.write_player_state(&old_ps, &ps2);
-        msg2.write_packet_entities_list(&[], &[])
+        msg2.write_packet_entities_list(&[], &[], &[], 0)
             .expect("valid entities");
         msg2.begin_reading();
         cs.parse_server_message(&mut msg2);
@@ -1189,6 +1189,39 @@ mod tests {
         assert!(msg.remaining_data().is_empty());
     }
 
+    // C SV_EmitPacketEntities deltas a new entity from its baseline and the
+    // client decodes it from the same baseline. A field that is zero in the
+    // entity but nonzero in the baseline must still arrive as zero.
+    #[test]
+    fn new_entity_roundtrips_against_nonzero_baseline() {
+        let baseline = EntityState {
+            number: 7,
+            modelindex: 9,
+            solid: 31,
+            ..Default::default()
+        };
+        let mut server_baselines = vec![EntityState::default(); MAX_EDICTS];
+        server_baselines[7] = baseline.clone();
+        let mut client_baselines = vec![CEntity::default(); MAX_EDICTS];
+        client_baselines[7].baseline = baseline;
+
+        let ent = EntityState {
+            number: 7,
+            modelindex: 0,
+            solid: 31,
+            ..Default::default()
+        };
+        let mut msg = NetMsg::new();
+        msg.write_packet_entities_list(&[], std::slice::from_ref(&ent), &server_baselines, 0)
+            .expect("valid entities");
+        msg.begin_reading();
+        let _ = msg.read_byte(); // PacketEntities opcode
+        let decoded = read_packet_entities(&mut msg, &[], &client_baselines);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].modelindex, 0);
+        assert_eq!(decoded[0].solid, 31);
+    }
+
     // C copies unchanged entities forward through CL_ParseDelta with bits 0,
     // which clears `event` and sets old_origin to the previous origin.
     #[test]
@@ -1202,7 +1235,7 @@ mod tests {
         let baselines = vec![CEntity::default(); MAX_EDICTS];
 
         let mut msg = NetMsg::new();
-        msg.write_packet_entities_list(&[], std::slice::from_ref(&with_event))
+        msg.write_packet_entities_list(&[], std::slice::from_ref(&with_event), &[], 0)
             .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // PacketEntities opcode
@@ -1217,7 +1250,7 @@ mod tests {
             ..with_event.clone()
         };
         let mut msg2 = NetMsg::new();
-        msg2.write_packet_entities_list(&[with_event], &[without_event])
+        msg2.write_packet_entities_list(&[with_event], &[without_event], &[], 0)
             .expect("valid entities");
         msg2.begin_reading();
         let _ = msg2.read_byte();
