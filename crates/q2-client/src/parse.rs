@@ -62,8 +62,9 @@ impl ClientState {
                 Ok(SvcOp::Sound) => skip_sound(msg),
                 Ok(SvcOp::Download) => skip_download(msg),
                 // The payload depends on a per-type table not ported yet
-                // (opcode handlers, issue #19). Temp entities trail the frame
-                // in the datagram, so stopping here does not lose the frame.
+                // (opcode handlers, issue #19). Unreliable temp entities trail
+                // the frame in the datagram; reliable ones (MULTICAST_*_R) ride
+                // ahead of it and still cost that frame until #19 lands.
                 Ok(SvcOp::TempEntity) => {
                     q2_drop!("parse_server_message: svc_temp_entity is not supported yet");
                 }
@@ -1726,8 +1727,8 @@ mod tests {
     }
 
     // svc_temp_entity needs the per-type payload table; until that handler
-    // exists it is an error rather than a silent stop. Temp entities follow
-    // the frame in the datagram, so the frame is not lost.
+    // exists it is an error rather than a silent stop. An unreliable temp
+    // entity follows the frame, so that frame is kept.
     #[test]
     fn temp_entity_is_error() {
         let mut cs = ClientState::default();
