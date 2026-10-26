@@ -24,7 +24,7 @@ use q2_shared::types::*;
 /// gi.write_position(origin);
 /// gi.multicast(origin, Multicast::PVS);  // ← flush
 /// ```
-pub trait GameImport: Send + Sync {
+pub trait GameImport {
     // -- printing ----------------------------------------------------------
 
     /// Broadcast a print message to all connected clients.
@@ -180,7 +180,7 @@ pub trait GameImport: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Game-to-server interface.  Mirrors `game_export_t` from `game.h`.
-pub trait GameExport: Send + Sync {
+pub trait GameExport {
     /// API version (must be `GAME_API_VERSION == 3`).
     fn api_version(&self) -> i32 {
         3
@@ -215,8 +215,13 @@ mod tests {
     use super::*;
 
     /// A no-op mock that proves `GameImport` is object-safe and
-    /// implementable.
-    struct MockGameImport;
+    /// implementable. The `Rc` marker makes it `!Send + !Sync`, so the tests
+    /// also prove the trait does not demand thread-safety the single-threaded
+    /// engine never uses.
+    #[derive(Default)]
+    struct MockGameImport {
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
 
     impl GameImport for MockGameImport {
         fn bprintf(&self, _printlevel: i32, _msg: &str) {}
@@ -300,7 +305,7 @@ mod tests {
     #[test]
     fn game_import_is_object_safe() {
         // Prove the trait is object-safe by constructing a trait object.
-        let gi: Box<dyn GameImport> = Box::new(MockGameImport);
+        let gi: Box<dyn GameImport> = Box::new(MockGameImport::default());
         // Call methods through the vtable — this tests dispatch, not return values.
         gi.bprintf(0, "broadcast");
         gi.dprintf("debug");
@@ -318,7 +323,7 @@ mod tests {
 
     #[test]
     fn game_import_trace_returns_valid_default() {
-        let gi: &dyn GameImport = &MockGameImport;
+        let gi: &dyn GameImport = &MockGameImport::default();
         let tr = gi.trace(
             Vec3f::ZERO,
             Vec3f::ZERO,
@@ -334,7 +339,7 @@ mod tests {
 
     #[test]
     fn game_import_box_edicts_returns_empty() {
-        let gi: &dyn GameImport = &MockGameImport;
+        let gi: &dyn GameImport = &MockGameImport::default();
         let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 0);
         assert!(edicts.is_empty());
     }
