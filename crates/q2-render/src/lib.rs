@@ -1,6 +1,6 @@
 //! Qwasm2-rs: GL3/GLES3 renderer implementation using glow
 //!
-//! Contains the BSP loader, GL3 renderer backend, and re-exports the renderer API trait.
+//! Contains the BSP loader and the GL3 renderer backend.
 //!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 3
@@ -11,5 +11,3 @@
 
 pub mod bsp;
 pub mod gl3;
-
-pub use q2_render_api::*;

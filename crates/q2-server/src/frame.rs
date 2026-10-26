@@ -25,15 +25,15 @@ impl Server {
         self.framenum += 1;
         self.time += self.frametime;
 
-        // TODO: SV_CheckTimeouts — drop clients that haven't sent packets.
-        // TODO: SV_ReadPackets   — process incoming client packets.
-        // TODO: SV_CalcPings     — update per-client ping estimates.
-        // TODO: SV_GiveMsec      — refresh command-millisecond budgets.
+        // TODO(#10): SV_CheckTimeouts — drop clients that haven't sent packets.
+        // TODO(#10): SV_ReadPackets   — process incoming client packets.
+        // TODO(#10): SV_CalcPings     — update per-client ping estimates.
+        // TODO(#10): SV_GiveMsec      — refresh command-millisecond budgets.
 
         game.run_frame();
 
-        // TODO: SV_SendClientMessages — push state to connected clients.
-        // TODO: SV_PrepWorldFrame     — clear per-frame entity events.
+        // TODO(#10): SV_SendClientMessages — push state to connected clients.
+        // TODO(#10): SV_PrepWorldFrame     — clear per-frame entity events.
     }
 }
 

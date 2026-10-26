@@ -160,7 +160,7 @@ impl ServerWorld {
     ///
     /// Corresponds to the tail end of `SV_LinkEdict()` in the C codebase
     /// (the part that inserts the entity into an area-node list).
-    // TODO: migrate from raw usize indices to SlotMap generational keys per ADR-001
+    // TODO(#9): migrate from raw usize indices to SlotMap generational keys per ADR-001
     pub fn link_entity(&mut self, ent_idx: usize, mins: Vec3f, maxs: Vec3f, solid: Solid) {
         // Unlink first if already linked.
         self.unlink_entity(ent_idx);

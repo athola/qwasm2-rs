@@ -5,9 +5,6 @@
 
 use q2_shared::types::*;
 
-// Re-export from canonical location so game code can use `traits::CVarHandle`.
-pub use q2_shared::CVarHandle;
-
 // ---------------------------------------------------------------------------
 // GameImport — server callbacks available to the game module
 // ---------------------------------------------------------------------------

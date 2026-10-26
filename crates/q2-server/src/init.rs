@@ -51,10 +51,10 @@ impl Server {
             client.last_frame = -1;
         }
 
-        // TODO: CM_LoadMap — load the BSP collision model.
-        // TODO: SV_ClearWorld — reset the spatial partitioning tree.
-        // TODO: ge->SpawnEntities — let the game module spawn edicts.
-        // TODO: SV_CreateBaseline — snapshot initial entity state.
+        // TODO(#11): CM_LoadMap — load the BSP collision model.
+        // TODO(#11): SV_ClearWorld — reset the spatial partitioning tree.
+        // TODO(#11): ge->SpawnEntities — let the game module spawn edicts.
+        // TODO(#11): SV_CreateBaseline — snapshot initial entity state.
 
         // All precaches complete — go live.
         self.state = ServerState::Game;

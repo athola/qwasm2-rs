@@ -41,10 +41,6 @@ impl Default for GameLogic {
 }
 
 impl GameExport for GameLogic {
-    fn api_version(&self) -> i32 {
-        3
-    }
-
     fn init(&mut self, import: &dyn GameImport) {
         import.dprintf("GameLogic initialised\n");
         // Mirrors G_Init in g_main.c: advertise max client count via configstring.
