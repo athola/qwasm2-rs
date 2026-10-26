@@ -48,9 +48,8 @@ struct Engine {
     renderer: Gl3Renderer,
     collision: q2_common::collision::CollisionMap,
     player: PlayerController,
-    width: i32,
-    height: i32,
-    fov_y: f32,
+    canvas: web_sys::HtmlCanvasElement,
+    view: ViewSize,
     last_time: f64,
 }
 
@@ -59,9 +58,8 @@ impl Engine {
     fn new(
         renderer: Gl3Renderer,
         collision: q2_common::collision::CollisionMap,
-        width: i32,
-        height: i32,
-        fov_y: f32,
+        canvas: web_sys::HtmlCanvasElement,
+        view: ViewSize,
         spawn_pos: Vec3f,
         spawn_yaw: f32,
     ) -> Self {
@@ -69,9 +67,8 @@ impl Engine {
             renderer,
             collision,
             player: PlayerController::new(spawn_pos, spawn_yaw),
-            width,
-            height,
-            fov_y,
+            canvas,
+            view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
         }
     }
@@ -142,14 +139,26 @@ impl Engine {
         // Delegate physics to PlayerController
         self.player.tick(dt, &move_input, &mut self.collision);
 
+        // The page resizes the canvas with the window; refit before drawing.
+        let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
+        // ViewSize dimensions are always positive, so the casts are lossless.
+        if (canvas_w, canvas_h) != (self.view.width as u32, self.view.height as u32) {
+            match ViewSize::for_canvas(canvas_w, canvas_h) {
+                Ok(Some(view)) => self.view = view,
+                // Zero-area canvas: keep drawing at the last usable size.
+                Ok(None) => {}
+                Err(e) => console::error_1(&q2err_to_js(e)),
+            }
+        }
+
         // Render frame
         let fd = RefDef {
             x: 0,
             y: 0,
-            width: self.width,
-            height: self.height,
-            fov_x: 90.0,
-            fov_y: self.fov_y,
+            width: self.view.width,
+            height: self.view.height,
+            fov_x: FOV_X,
+            fov_y: self.view.fov_y,
             vieworg: self.player.view_origin(),
             // PlayerController stores pitch positive-up (pitch_delta is
             // -(mouse_dy * sens)); RefDef uses Q2 viewangles, positive-down.
@@ -170,6 +179,40 @@ impl Engine {
 #[cfg(any(target_arch = "wasm32", test))]
 fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
     ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
+}
+
+/// Horizontal fov the view is fitted to (C `fov` cvar default).
+#[cfg(any(target_arch = "wasm32", test))]
+const FOV_X: f32 = 90.0;
+
+/// Render size and the vertical fov that fits it, refreshed whenever the
+/// page resizes the canvas so the picture is not stretched.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ViewSize {
+    width: i32,
+    height: i32,
+    fov_y: f32,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl ViewSize {
+    /// `Ok(None)` when the canvas has no usable area (hidden, collapsed or
+    /// too large for GL's i32 viewport): there is no aspect ratio to fit.
+    fn for_canvas(width: u32, height: u32) -> q2_common::error::Q2Result<Option<Self>> {
+        let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {
+            return Ok(None);
+        };
+        if width == 0 || height == 0 {
+            return Ok(None);
+        }
+        let fov_y = q2_client::view::calc_fov(FOV_X, width as f32, height as f32)?;
+        Ok(Some(Self {
+            width,
+            height,
+            fov_y,
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +323,10 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     let (gl, canvas) =
         q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id).map_err(q2err_to_js)?;
 
-    let width = canvas.width() as i32;
-    let height = canvas.height() as i32;
+    let view = ViewSize::for_canvas(canvas.width(), canvas.height())
+        .map_err(q2err_to_js)?
+        .ok_or_else(|| JsValue::from_str("canvas has no usable size"))?;
+    let (width, height) = (view.width, view.height);
     log(&format!("Canvas: {}x{}", width, height));
 
     // 2. Initialize renderer
@@ -385,11 +430,13 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw
     ));
 
-    let fov_y =
-        q2_client::view::calc_fov(90.0, width as f32, height as f32).map_err(q2err_to_js)?;
-
     let mut engine = Engine::new(
-        renderer, collision, width, height, fov_y, spawn_pos, spawn_yaw,
+        renderer,
+        collision,
+        canvas.clone(),
+        view,
+        spawn_pos,
+        spawn_yaw,
     );
     engine.player.snap_to_ground(&mut engine.collision);
 
@@ -467,6 +514,25 @@ fn console_error_panic_hook_setup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_size_fits_vertical_fov_to_canvas_aspect() {
+        let view = ViewSize::for_canvas(640, 480).unwrap().unwrap();
+        assert_eq!((view.width, view.height), (640, 480));
+        assert!((view.fov_y - 73.74).abs() < 0.01, "fov_y {}", view.fov_y);
+
+        // A wider canvas keeps fov_x 90 and narrows fov_y, as C CalcFov does.
+        let wide = ViewSize::for_canvas(1920, 1080).unwrap().unwrap();
+        assert!((wide.fov_y - 58.72).abs() < 0.01, "fov_y {}", wide.fov_y);
+    }
+
+    #[test]
+    fn view_size_has_no_fit_for_zero_or_unrepresentable_canvas() {
+        // A hidden or collapsed canvas has no aspect ratio to fit.
+        assert_eq!(ViewSize::for_canvas(0, 480).unwrap(), None);
+        assert_eq!(ViewSize::for_canvas(640, 0).unwrap(), None);
+        assert_eq!(ViewSize::for_canvas(u32::MAX, 480).unwrap(), None);
+    }
 
     #[test]
     fn engine_version_contains_pkg_version() {
