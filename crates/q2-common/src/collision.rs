@@ -6,7 +6,7 @@
 
 use crate::pmove::angle_vectors;
 use crate::{Q2Error, Q2Result};
-use q2_shared::{Plane, Surface, Trace, Vec3f};
+use q2_shared::{EntityState, Plane, Surface, Trace, Vec3f};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,7 +33,7 @@ const MAX_MAP_LEAFS: usize = 65536;
 const MAX_MAP_LEAFBRUSHES: usize = 65536;
 
 // Content flags
-use q2_shared::constants::{CONTENTS_MONSTER, CONTENTS_SOLID};
+use q2_shared::constants::{CONTENTS_MONSTER, CONTENTS_SOLID, MASK_PLAYERSOLID};
 
 // On-disk struct sizes (bytes)
 const DPLANE_SIZE: usize = 20; // 3 floats + 1 float + 1 int
@@ -109,6 +109,19 @@ pub struct MapSurface {
     pub name: String,
     pub flags: i32,
     pub value: i32,
+}
+
+/// The entities a client-side movement trace clips against (C
+/// `CL_ClipMoveToEntities` reads these from `cl.frame` and `cl.model_clip`).
+#[derive(Debug, Clone, Copy)]
+pub struct ClipEntities<'a> {
+    /// Entities in the current frame.
+    pub entities: &'a [EntityState],
+    /// Entity number of the local player (`cl.playernum + 1`), never clipped.
+    pub player_number: i32,
+    /// Head node of each inline model by model index (`cl.model_clip`);
+    /// `None` or a missing index skips a `solid == 31` entity, as in C.
+    pub model_clip: &'a [Option<i32>],
 }
 
 /// Collision model (world or entity submodel).
@@ -1123,6 +1136,71 @@ impl CollisionMap {
             trace.ent_index = Some(0);
         }
         trace
+    }
+
+    /// Clip a movement trace against frame entities, C CL_ClipMoveToEntities.
+    ///
+    /// `tr` is the world trace (see `world_trace`); a closer entity hit
+    /// replaces it and sets `ent_index` to the entity number. Unwired until
+    /// client prediction lands (#19); server-side clipping needs linked
+    /// entities (#11, #31).
+    pub fn clip_move_to_entities(
+        &mut self,
+        start: Vec3f,
+        mins: Vec3f,
+        maxs: Vec3f,
+        end: Vec3f,
+        clip: &ClipEntities,
+        tr: &mut Trace,
+    ) {
+        for ent in clip.entities {
+            if ent.solid == 0 || ent.number == clip.player_number {
+                continue;
+            }
+
+            let (head_node, angles) = if ent.solid == 31 {
+                // Special value for brush models.
+                let model = usize::try_from(ent.modelindex)
+                    .ok()
+                    .and_then(|i| clip.model_clip.get(i).copied().flatten());
+                let Some(head_node) = model else {
+                    continue;
+                };
+                (head_node, ent.angles)
+            } else {
+                // Encoded bbox; boxes don't rotate.
+                let x = (8 * (ent.solid & 31)) as f32;
+                let zd = (8 * ((ent.solid >> 5) & 31)) as f32;
+                let zu = (8 * ((ent.solid >> 10) & 63) - 32) as f32;
+                let bmins = Vec3f::new(-x, -x, -zd);
+                let bmaxs = Vec3f::new(x, x, zu);
+                (self.headnode_for_box(bmins, bmaxs), Vec3f::ZERO)
+            };
+
+            if tr.allsolid {
+                return;
+            }
+
+            let mut trace = self.transformed_box_trace(
+                start,
+                end,
+                mins,
+                maxs,
+                head_node,
+                MASK_PLAYERSOLID,
+                ent.origin,
+                angles,
+            );
+
+            if trace.allsolid || trace.startsolid || trace.fraction < tr.fraction {
+                trace.ent_index = usize::try_from(ent.number).ok();
+                let was_startsolid = tr.startsolid;
+                *tr = trace;
+                if was_startsolid {
+                    tr.startsolid = true;
+                }
+            }
+        }
     }
 
     /// Trace a box through the world BSP.
@@ -2962,6 +3040,142 @@ pub(crate) mod tests {
         let mut cm = CollisionMap::new();
         cm.load_map(&bsp).unwrap();
         assert_eq!(cm.entity_string(), "{ \"classname\" \"worldspawn\" }");
+    }
+
+    /// Encoded bbox as C SV_LinkEdict packs it: x = 8 * (solid & 31),
+    /// zd = 8 * ((solid >> 5) & 31), zu = 8 * ((solid >> 10) & 63) - 32.
+    fn encoded_solid(x: i32, zd: i32, zu: i32) -> i32 {
+        (x / 8) | ((zd / 8) << 5) | (((zu + 32) / 8) << 10)
+    }
+
+    fn clip_ent(number: i32, solid: i32, origin: Vec3f) -> q2_shared::EntityState {
+        q2_shared::EntityState {
+            number,
+            solid,
+            origin,
+            ..Default::default()
+        }
+    }
+
+    /// Point trace along +x at z=50, above the floor BSP: misses the world.
+    fn clip_trace(cm: &mut CollisionMap, ents: &ClipEntities) -> Trace {
+        let (start, end) = (Vec3f::new(0.0, 0.0, 50.0), Vec3f::new(200.0, 0.0, 50.0));
+        let mut tr = cm.world_trace(start, Vec3f::ZERO, Vec3f::ZERO, end, MASK_PLAYERSOLID);
+        assert_eq!(tr.fraction, 1.0);
+        cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, ents, &mut tr);
+        tr
+    }
+
+    #[test]
+    fn clip_move_to_entities_box_entity_blocks_and_is_reported() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        let ents = [clip_ent(
+            5,
+            encoded_solid(16, 16, 16),
+            Vec3f::new(100.0, 0.0, 50.0),
+        )];
+        let tr = clip_trace(
+            &mut cm,
+            &ClipEntities {
+                entities: &ents,
+                player_number: 1,
+                model_clip: &[],
+            },
+        );
+        assert!(tr.fraction < 1.0);
+        assert!((tr.endpos.x - 84.0).abs() < 0.1, "endpos {:?}", tr.endpos);
+        assert_eq!(tr.ent_index, Some(5));
+    }
+
+    #[test]
+    fn clip_move_to_entities_skips_player_and_non_solid_entities() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        let blocker = encoded_solid(16, 16, 16);
+        let ents = [
+            clip_ent(1, blocker, Vec3f::new(100.0, 0.0, 50.0)), // the player
+            clip_ent(2, 0, Vec3f::new(120.0, 0.0, 50.0)),       // not solid
+        ];
+        let tr = clip_trace(
+            &mut cm,
+            &ClipEntities {
+                entities: &ents,
+                player_number: 1,
+                model_clip: &[],
+            },
+        );
+        assert_eq!(tr.fraction, 1.0);
+        assert_eq!(tr.ent_index, None);
+    }
+
+    #[test]
+    fn clip_move_to_entities_uses_model_clip_for_bmodels() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        // solid 31 = bmodel: model index 1 clips with the world hull (head
+        // node 0) moved up by 100, so a downward trace stops at z=100.
+        let mut door = clip_ent(7, 31, Vec3f::new(0.0, 0.0, 100.0));
+        door.modelindex = 1;
+        let model_clip = [None, Some(0)];
+        let ents = ClipEntities {
+            entities: std::slice::from_ref(&door),
+            player_number: 1,
+            model_clip: &model_clip,
+        };
+        let (start, end) = (Vec3f::new(0.0, 0.0, 150.0), Vec3f::new(0.0, 0.0, 50.0));
+        let mut tr = cm.world_trace(start, Vec3f::ZERO, Vec3f::ZERO, end, MASK_PLAYERSOLID);
+        cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, &ents, &mut tr);
+        assert!((tr.endpos.z - 100.0).abs() < 0.1, "endpos {:?}", tr.endpos);
+        assert_eq!(tr.ent_index, Some(7));
+
+        // No clip model registered for the index: C skips the entity.
+        let ents = ClipEntities {
+            entities: std::slice::from_ref(&door),
+            player_number: 1,
+            model_clip: &[],
+        };
+        let mut tr = cm.world_trace(start, Vec3f::ZERO, Vec3f::ZERO, end, MASK_PLAYERSOLID);
+        cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, &ents, &mut tr);
+        assert_eq!(tr.fraction, 1.0);
+    }
+
+    #[test]
+    fn clip_move_to_entities_keeps_startsolid_and_stops_when_allsolid() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        let ents = [clip_ent(
+            5,
+            encoded_solid(16, 16, 16),
+            Vec3f::new(100.0, 0.0, 50.0),
+        )];
+        let ents = ClipEntities {
+            entities: &ents,
+            player_number: 1,
+            model_clip: &[],
+        };
+        let (start, end) = (Vec3f::new(0.0, 0.0, 50.0), Vec3f::new(200.0, 0.0, 50.0));
+
+        // C: a closer entity hit replaces the trace but keeps startsolid.
+        let mut tr = Trace {
+            fraction: 1.0,
+            startsolid: true,
+            endpos: end,
+            ..Default::default()
+        };
+        cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, &ents, &mut tr);
+        assert!(tr.startsolid);
+        assert_eq!(tr.ent_index, Some(5));
+
+        // C returns before tracing anything once the trace is allsolid.
+        let mut tr = Trace {
+            fraction: 0.0,
+            allsolid: true,
+            startsolid: true,
+            ..Default::default()
+        };
+        cm.clip_move_to_entities(start, Vec3f::ZERO, Vec3f::ZERO, end, &ents, &mut tr);
+        assert_eq!(tr.ent_index, None);
     }
 
     #[test]
