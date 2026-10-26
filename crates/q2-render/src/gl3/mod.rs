@@ -453,38 +453,46 @@ fn perspective_matrix(fd: &RefDef) -> [f32; 16] {
 
 /// View matrix converting Q2 world coords to OpenGL eye coords.
 /// Q2: +X forward, +Y left, +Z up. OpenGL: -Z forward, +X right, +Y up.
+///
+/// Port of the view setup in gl3_main.c SetupGL (:1467-1487):
+/// `Z_UP_TO_GL * rotAroundAxisXYZ(-roll, -pitch, -yaw) *
+/// translate(-vieworg)`. `viewangles` use the Q2 convention (pitch > 0
+/// looks down).
 fn view_matrix(fd: &RefDef) -> [f32; 16] {
-    let pitch = fd.viewangles.x.to_radians();
-    let yaw = fd.viewangles.y.to_radians();
+    // Column-major: first put the Z axis going up.
+    #[rustfmt::skip]
+    const Z_UP_TO_GL: [f32; 16] = [
+         0.0, 0.0, -1.0, 0.0,
+        -1.0, 0.0,  0.0, 0.0,
+         0.0, 1.0,  0.0, 0.0,
+         0.0, 0.0,  0.0, 1.0,
+    ];
+    let rot = rot_around_axis_xyz(-fd.viewangles.z, -fd.viewangles.x, -fd.viewangles.y);
+    let o = fd.vieworg;
+    #[rustfmt::skip]
+    let translate = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        -o.x, -o.y, -o.z, 1.0,
+    ];
+    mat4_mul(&mat4_mul(&Z_UP_TO_GL, &rot), &translate)
+}
 
-    let (sp, cp) = (pitch.sin(), pitch.cos());
-    let (sy, cy) = (yaw.sin(), yaw.cos());
-
-    // Basis vectors: eye_right, eye_up, eye_forward
-    let (rx, ry, rz) = (sy, -cy, 0.0f32);
-    let (ux, uy, uz) = (-sp * cy, -sp * sy, cp);
-    let (fx, fy, fz) = (-cp * cy, -cp * sy, -sp);
-
-    let (tx, ty, tz) = (fd.vieworg.x, fd.vieworg.y, fd.vieworg.z);
-
-    [
-        rx,
-        ux,
-        fx,
-        0.0,
-        ry,
-        uy,
-        fy,
-        0.0,
-        rz,
-        uz,
-        fz,
-        0.0,
-        -(rx * tx + ry * ty + rz * tz),
-        -(ux * tx + uy * ty + uz * tz),
-        -(fx * tx + fy * ty + fz * tz),
-        1.0,
-    ]
+/// Column-major rotation around X, then Y, then Z (degrees); C
+/// `rotAroundAxisXYZ` in gl3_main.c:1304-1325.
+fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16] {
+    let (sin_a, cos_a) = around_x.to_radians().sin_cos();
+    let (sin_b, cos_b) = around_y.to_radians().sin_cos();
+    let (sin_g, cos_g) = around_z.to_radians().sin_cos();
+    #[rustfmt::skip]
+    let m = [
+        cos_b * cos_g,  sin_a * sin_b * cos_g + cos_a * sin_g, -cos_a * sin_b * cos_g + sin_a * sin_g, 0.0,
+       -cos_b * sin_g, -sin_a * sin_b * sin_g + cos_a * cos_g,  cos_a * sin_b * sin_g + sin_a * cos_g, 0.0,
+        sin_b,         -sin_a * cos_b,                          cos_a * cos_b,                         0.0,
+        0.0,            0.0,                                    0.0,                                   1.0,
+    ];
+    m
 }
 
 fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
@@ -633,14 +641,7 @@ mod tests {
 
     #[test]
     fn view_matrix_yaw90_maps_world_to_eye_correctly() {
-        // At yaw=90, pitch=0, player at origin:
-        //   Q2 forward (+X) becomes... let's see what the basis vectors give us.
-        //   yaw=90 => sy=1, cy=0; pitch=0 => sp=0, cp=1
-        //   right  = (sy, -cy, 0) = (1, 0, 0)
-        //   up     = (-sp*cy, -sp*sy, cp) = (0, 0, 1)
-        //   fwd    = (-cp*cy, -cp*sy, -sp) = (0, -1, 0)
-        //
-        // A point at (0, 100, 0) — directly ahead in Q2 when facing +Y (yaw=90)
+        // At yaw=90, pitch=0, player at origin. A point at (0, 100, 0) — directly ahead in Q2 when facing +Y (yaw=90)
         // should map to eye-space (0, 0, -100): forward in OpenGL is -Z.
         let fd = RefDef {
             vieworg: Vec3f::ZERO,
@@ -685,6 +686,51 @@ mod tests {
             right[2].abs() < eps,
             "right eye-z should be 0, got {}",
             right[2]
+        );
+    }
+
+    fn assert_vec3_near(actual: [f32; 4], expected: [f32; 3], what: &str) {
+        for axis in 0..3 {
+            assert!(
+                (actual[axis] - expected[axis]).abs() < 1e-3,
+                "{what}: got {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn view_matrix_positive_pitch_looks_down_like_q2_anglevectors() {
+        // Q2 AngleVectors: forward = (cp*cy, cp*sy, -sp), so pitch > 0 looks
+        // down. That direction must land straight ahead in eye space (-Z).
+        let (pitch, yaw) = (10.0f32, 45.0f32);
+        let fd = RefDef {
+            viewangles: Vec3f::new(pitch, yaw, 0.0),
+            ..Default::default()
+        };
+        let (sp, cp) = pitch.to_radians().sin_cos();
+        let (sy, cy) = yaw.to_radians().sin_cos();
+        let eye = mat4_mul_vec4(&view_matrix(&fd), [cp * cy, cp * sy, -sp, 0.0]);
+        assert_vec3_near(eye, [0.0, 0.0, -1.0], "forward");
+    }
+
+    #[test]
+    fn view_matrix_roll90_maps_world_up_to_eye_left() {
+        // gl3_main.c rotates by -roll: at roll 90 world up (+Z) appears on
+        // the eye's left (-X) and forward (+X) stays straight ahead.
+        let fd = RefDef {
+            viewangles: Vec3f::new(0.0, 0.0, 90.0),
+            ..Default::default()
+        };
+        let v = view_matrix(&fd);
+        assert_vec3_near(
+            mat4_mul_vec4(&v, [0.0, 0.0, 100.0, 1.0]),
+            [-100.0, 0.0, 0.0],
+            "world up",
+        );
+        assert_vec3_near(
+            mat4_mul_vec4(&v, [100.0, 0.0, 0.0, 1.0]),
+            [0.0, 0.0, -100.0],
+            "world forward",
         );
     }
 

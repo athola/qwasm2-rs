@@ -148,7 +148,10 @@ impl Engine {
             fov_x: 90.0,
             fov_y: q2_client::view::calc_fov(90.0, self.width as f32, self.height as f32),
             vieworg: self.player.view_origin(),
-            viewangles: Vec3f::new(self.player.pitch, self.player.yaw, 0.0),
+            // PlayerController stores pitch positive-up (pitch_delta is
+            // -(mouse_dy * sens)); RefDef uses Q2 viewangles, positive-down.
+            // The negation goes away when movement moves onto pmove (#12).
+            viewangles: Vec3f::new(-self.player.pitch, self.player.yaw, 0.0),
             time: (timestamp / 1000.0) as f32,
             ..Default::default()
         };
