@@ -14,7 +14,8 @@ use q2_shared::types::Vec3f;
 
 const GRAVITY: f32 = 800.0;
 const JUMP_VELOCITY: f32 = 270.0;
-const MOVE_SPEED: f32 = 300.0;
+/// C `cl_forwardspeed` default; `+speed` (run) doubles it before the pmove cap.
+const MOVE_SPEED: f32 = 200.0;
 /// CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW | CONTENTS_MONSTER
 const MASK_PLAYERSOLID: i32 = 1 | 0x10000 | 2 | 0x0200_0000;
 const STEP_HEIGHT: f32 = 18.0;
@@ -415,6 +416,17 @@ mod tests {
         let mut cm = CollisionMap::new();
         pc.tick(0.1, &input(1.0, false, false, true), &mut cm);
         assert!((pc.pos.x - 30.0).abs() < 1e-3, "x = {}", pc.pos.x);
+    }
+
+    #[test]
+    fn walk_speed_is_c_forwardspeed_and_slower_than_run() {
+        // C cl_forwardspeed is 200; +speed doubles it to 400, which pmove
+        // then caps at 300, so walking must stay below the run speed.
+        let mut pc = PlayerController::new(Vec3f::ZERO, 0.0);
+        pc.on_ground = true;
+        let mut cm = CollisionMap::new();
+        pc.tick(0.1, &input(1.0, false, false, false), &mut cm);
+        assert!((pc.pos.x - 20.0).abs() < 1e-3, "x = {}", pc.pos.x);
     }
 
     #[test]
