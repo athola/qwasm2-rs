@@ -4,6 +4,7 @@
 //! The collision model sweeps axis-aligned bounding boxes through the world
 //! BSP tree and reports what they hit.
 
+use crate::pmove::angle_vectors;
 use crate::{Q2Error, Q2Result};
 use q2_shared::{Plane, Surface, Trace, Vec3f};
 
@@ -1664,27 +1665,6 @@ impl Default for CollisionMap {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: AngleVectors
-// ---------------------------------------------------------------------------
-
-/// Compute forward, right, up vectors from Euler angles (pitch, yaw, roll) in degrees.
-fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let pitch = angles.x.to_radians();
-    let yaw = angles.y.to_radians();
-    let roll = angles.z.to_radians();
-
-    let (sp, cp) = pitch.sin_cos();
-    let (sy, cy) = yaw.sin_cos();
-    let (sr, cr) = roll.sin_cos();
-
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
-    let up = Vec3f::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
-
-    (forward, right, up)
 }
 
 // ---------------------------------------------------------------------------
