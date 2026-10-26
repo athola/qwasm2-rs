@@ -71,7 +71,7 @@ Engine       q2-game         -> q2-shared, q2-common
              q2-client       -> q2-shared, q2-common
              q2-render       -> q2-shared, q2-common, q2-render-api
              q2-server       -> q2-shared, q2-common, q2-game
-Adapter      q2-platform     -> q2-shared, q2-common, q2-render-api
+Adapter      q2-platform     -> q2-common
 Entry point  q2-wasm         -> q2-shared, q2-common, q2-game, q2-client,
                                 q2-render-api, q2-render, q2-platform
 ```
@@ -114,11 +114,11 @@ yet implemented.
 ## Wire Protocol Deviations from C Original
 
 **Revised 2026-10-26.** The wire format targets C protocol 34, as CLAUDE.md
-requires C parity for the network protocol. The earlier deviation (entity
-angles written as 16-bit `write_angle16` values instead of the C 8-bit
-`MSG_WriteAngle`) is a divergence to remove, not a design choice; it is
-finding C-7 in `docs/plans/2026-10-26-full-review-fixes.md`, fixed together
-with the client decoder.
+requires C parity for the network protocol. The earlier deviations (16-bit
+entity angles instead of the C 8-bit `MSG_WriteAngle`, FRAME8|FRAME16 for
+large frames, delta-encoded `event`) were removed in 4d6c420, encoder and
+client decoder together (finding C-7 in
+`docs/plans/2026-10-26-full-review-fixes.md`).
 
 ## Review Triggers
 

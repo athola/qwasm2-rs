@@ -140,7 +140,7 @@ function-pointer tables and backend coupling:
 | `q2-game` | Game logic, entity system (SlotMap), spawn | q2-shared, q2-common |
 | `q2-server` | Server state, frame loop, world | q2-shared, q2-common, q2-game |
 | `q2-client` | Client state, parsing, input, view | q2-shared, q2-common |
-| `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-shared, q2-common, q2-render-api |
+| `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-common |
 | `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-game, q2-client, q2-render-api, q2-render, q2-platform |
 | `q2-net` | Placeholder for P2P networking (WebRTC via Matchbox, #22) | none |
 | `q2-bin` | Placeholder for a native binary | none |
