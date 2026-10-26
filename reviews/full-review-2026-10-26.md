@@ -8,7 +8,7 @@ duplicate map and per-task breakdown are in
 `docs/plans/2026-10-26-full-review-fixes.md`; finding IDs below (C-, S-, R-,
 A-, M-, B-) refer to it.
 
-Outcome: 60 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
+Outcome: 63 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
 rejected with a reason, or mapped to a tracking issue. `make ci` (fmt check,
 clippy `--all-targets -D warnings` on host and wasm32, check, 544 tests),
 `make wasm` and `make test-browser` (6/6) pass. `cargo audit` dropped from 19
@@ -99,6 +99,13 @@ Proposed new issues, not filed: A-17 (move `Q2Error` to q2-shared so
 render-api and platform stop returning `String`), A-20 (one BSP loader for
 collision, render and spawn), C-20 (entity identity in traces), C-18(d)
 (range-check area queries), R-29 (canvas resize export).
+
+Fixed by the integrator after the workers merged: walk speed 200 so run is
+faster again (the pm_maxspeed clamp had made them equal), A-21 (content
+flags defined once in q2-shared), the q2-client half of M-15/A-24/A-26, and
+workspace version inheritance. R-14b was already resolved by the T3 mesh
+refactor. A headless run of demo1 against local gamedata confirmed mouse
+look up/down and forward movement with no console errors.
 
 ## Not verified
 

@@ -4,7 +4,39 @@ All notable changes to qwasm2-rs are documented here.
 
 ## [Unreleased]
 
+### Changed (breaking)
+- Entity and usercmd encoding now match C protocol 34 byte for byte (8-bit
+  entity angles, FRAME8/FRAME16 as in C, `event` sent whenever non-zero,
+  usercmd `msec`/`lightlevel` written last); new entities delta from
+  baselines. The client rejects any other protocol version
+- `Server::frame` takes `&ServerGameImport` and runs game frames at 10 Hz;
+  server time is `u32` milliseconds and `frametime` is gone
+- `GameLogic::new(max_clients)` replaces `Default`; `GameImport`,
+  `GameExport` and `PakReader` no longer require `Send + Sync`
+- `parse_server_message`, `write_delta_entity`,
+  `write_packet_entities_list`, `read_dir`, `parse_entity_string` and
+  `calc_fov` return `Q2Result`; `NetChan::new` takes a source and qport
+
 ### Fixed
+- Netchan rejects runt packets, reserves header space when staging
+  reliable data and sets `fatal_error` on overflow
+- Client parsing no longer hangs on a truncated frame, stores a partial
+  frame as valid, or accepts negative or unsorted entity numbers
+- BSP loading rejects out-of-range or cyclic references and truncated
+  lumps instead of panicking or looping (child index must exceed parent,
+  which is stricter than C); an empty map no longer hangs the box hull
+- Filesystem rejects absolute and `..` paths, bounds PAK sizes before
+  allocating, and lets PAKs override loose files as C does
+- pmove numerics follow C (double-precision AngleVectors, reciprocal
+  normalize, 0.7 slope test, wrapping snap, runtime air acceleration,
+  fly-move early return); PlayerController walks at 200 and runs at 300
+- Cvar and command parsing: userinfo injection, numeric prefix parse,
+  newline always ends a command, buffer and token limits
+- Map change clears configstrings and baselines; game-written
+  configstrings reach the server; out-of-range client slots are an error
+- Renderer: checked BSP casts, GL objects freed on reload and shader
+  errors, C pitch sign and submodel bounds; `calc_fov` rejects fov outside
+  1..179
 - `make test-browser` ran `cd tests/browser` twice and never reached
   Playwright; it now installs locked npm deps and runs the suite
 - `q2-pak-repack` reports Brotli write errors (the stream was finished in
