@@ -34,9 +34,9 @@ mod tests {
 
         let cmd = input.build_cmd(16);
         assert_eq!(cmd.msec, 16);
-        assert_eq!(cmd.forwardmove, 127);
-        // -0.5 * 127.0 = -63.5, truncated to -63
-        assert_eq!(cmd.sidemove, -63);
+        // cl_forwardspeed / cl_sidespeed default to 200 in C.
+        assert_eq!(cmd.forwardmove, 200);
+        assert_eq!(cmd.sidemove, -100);
     }
 
     #[test]
@@ -46,8 +46,8 @@ mod tests {
         input.jump = true;
         input.crouch = true;
         let cmd = input.build_cmd(16);
-        // attack=1, jump=2, crouch=4 => 7
-        assert_eq!(cmd.buttons, 7);
+        // BUTTON_ATTACK (1) | BUTTON_ANY (128); jump and crouch go to upmove.
+        assert_eq!(cmd.buttons, 129);
     }
 
     #[test]
