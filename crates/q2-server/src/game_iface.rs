@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 
+use q2_common::net_msg::NetMsg;
 use q2_game::traits::GameImport;
 use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 
@@ -16,11 +17,12 @@ use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 // Interior-mutable state
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
 struct GiInner {
     /// Outbound message buffer accumulating write_* calls; discarded (not sent)
     /// when multicast/unicast is called until proper routing is implemented.
-    msg_buf: Vec<u8>,
+    /// Uses `NetMsg` so game-written temp entities encode byte-for-byte like
+    /// every other server message (MSG_Write* in C).
+    msg_buf: NetMsg,
     /// Mirror of Server::configstrings, updated by game calls to configstring().
     configstrings: Vec<String>,
     /// Tracks which configstring slots were written since the last drain.
@@ -30,7 +32,7 @@ struct GiInner {
 impl GiInner {
     fn new() -> Self {
         Self {
-            msg_buf: Vec::new(),
+            msg_buf: NetMsg::new(),
             configstrings: vec![String::new(); MAX_CONFIGSTRINGS],
             dirty: vec![false; MAX_CONFIGSTRINGS],
         }
@@ -206,55 +208,35 @@ impl GameImport for ServerGameImport {
     // -- network writing (buffered; flushed on multicast/unicast) -----------
 
     fn write_byte(&self, c: i32) {
-        self.inner.borrow_mut().msg_buf.push(c as u8);
+        self.inner.borrow_mut().msg_buf.write_byte(c);
     }
 
     fn write_short(&self, c: i32) {
-        let mut inner = self.inner.borrow_mut();
-        let bytes = (c as i16).to_le_bytes();
-        inner.msg_buf.extend_from_slice(&bytes);
+        self.inner.borrow_mut().msg_buf.write_short(c);
     }
 
     fn write_long(&self, c: i32) {
-        let mut inner = self.inner.borrow_mut();
-        inner.msg_buf.extend_from_slice(&c.to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_long(c);
     }
 
     fn write_float(&self, f: f32) {
-        let mut inner = self.inner.borrow_mut();
-        inner.msg_buf.extend_from_slice(&f.to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_float(f);
     }
 
     fn write_string(&self, s: &str) {
-        let mut inner = self.inner.borrow_mut();
-        inner.msg_buf.extend_from_slice(s.as_bytes());
-        inner.msg_buf.push(0); // null-terminate
+        self.inner.borrow_mut().msg_buf.write_string(s);
     }
 
     fn write_position(&self, pos: Vec3f) {
-        let mut inner = self.inner.borrow_mut();
-        let encode = |f: f32| -> i16 { (f * 8.0) as i16 };
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.x).to_le_bytes());
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.y).to_le_bytes());
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.z).to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_position(pos);
     }
 
     fn write_dir(&self, dir: Vec3f) {
-        // Stub: should quantise to the nearest BYTEDIRS entry (162 directions).
-        // Writing byte 0 keeps the stream aligned until quantization is wired up.
-        let _ = dir;
-        self.inner.borrow_mut().msg_buf.push(0);
+        self.inner.borrow_mut().msg_buf.write_dir(dir);
     }
 
     fn write_angle(&self, f: f32) {
-        let byte = ((f * 256.0 / 360.0) as i32 & 255) as u8;
-        self.inner.borrow_mut().msg_buf.push(byte);
+        self.inner.borrow_mut().msg_buf.write_angle(f);
     }
 
     // -- multicast / unicast (flush message buffer) -------------------------
@@ -325,7 +307,7 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_string("hello");
         let inner = gi.inner.borrow();
-        assert_eq!(inner.msg_buf.last(), Some(&0u8));
+        assert_eq!(inner.msg_buf.data().last(), Some(&0u8));
     }
 
     #[test]
@@ -347,7 +329,7 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_short(0x1234);
         let inner = gi.inner.borrow();
-        assert_eq!(&inner.msg_buf[..], &0x1234i16.to_le_bytes());
+        assert_eq!(inner.msg_buf.data(), &0x1234i16.to_le_bytes());
     }
 
     #[test]
@@ -355,7 +337,7 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_long(0x0A0B_0C0D);
         let inner = gi.inner.borrow();
-        assert_eq!(&inner.msg_buf[..], &0x0A0B_0C0Di32.to_le_bytes());
+        assert_eq!(inner.msg_buf.data(), &0x0A0B_0C0Di32.to_le_bytes());
     }
 
     #[test]
@@ -363,7 +345,7 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_float(1.5);
         let inner = gi.inner.borrow();
-        assert_eq!(&inner.msg_buf[..], &1.5f32.to_le_bytes());
+        assert_eq!(inner.msg_buf.data(), &1.5f32.to_le_bytes());
     }
 
     #[test]
@@ -371,13 +353,56 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.write_position(q2_shared::types::Vec3f::new(16.0, -8.0, 0.5));
         let inner = gi.inner.borrow();
-        // coord wire format: (f * 8.0) as i16, three components
-        let x: i16 = i16::from_le_bytes([inner.msg_buf[0], inner.msg_buf[1]]);
-        let y: i16 = i16::from_le_bytes([inner.msg_buf[2], inner.msg_buf[3]]);
-        let z: i16 = i16::from_le_bytes([inner.msg_buf[4], inner.msg_buf[5]]);
+        // coord wire format: (int)(f * 8) written as a short, three components
+        let x: i16 = i16::from_le_bytes([inner.msg_buf.data()[0], inner.msg_buf.data()[1]]);
+        let y: i16 = i16::from_le_bytes([inner.msg_buf.data()[2], inner.msg_buf.data()[3]]);
+        let z: i16 = i16::from_le_bytes([inner.msg_buf.data()[4], inner.msg_buf.data()[5]]);
         assert_eq!(x, (16.0f32 * 8.0) as i16);
         assert_eq!(y, (-8.0f32 * 8.0) as i16);
         assert_eq!(z, (0.5f32 * 8.0) as i16);
+    }
+
+    fn written(gi: &ServerGameImport) -> Vec<u8> {
+        gi.inner.borrow().msg_buf.data().to_vec()
+    }
+
+    fn netmsg_bytes(write: impl FnOnce(&mut q2_common::net_msg::NetMsg)) -> Vec<u8> {
+        let mut msg = q2_common::net_msg::NetMsg::new();
+        write(&mut msg);
+        msg.data().to_vec()
+    }
+
+    #[test]
+    fn write_dir_up_encodes_bytedirs_index_5() {
+        let gi = ServerGameImport::new();
+        gi.write_dir(Vec3f::new(0.0, 0.0, 1.0));
+        assert_eq!(&written(&gi)[..], &[5u8]);
+    }
+
+    #[test]
+    fn write_dir_matches_netmsg_encoding() {
+        let dirs = [
+            Vec3f::new(1.0, 0.0, 0.0),
+            Vec3f::new(0.0, -1.0, 0.0),
+            Vec3f::new(0.0, 0.0, -1.0),
+            Vec3f::new(0.6, 0.0, 0.8),
+            Vec3f::new(-0.48, 0.36, 0.8),
+        ];
+        for dir in dirs {
+            let gi = ServerGameImport::new();
+            gi.write_dir(dir);
+            let expected = netmsg_bytes(|m| m.write_dir(dir));
+            assert_eq!(&written(&gi)[..], &expected[..], "dir {dir:?}");
+        }
+    }
+
+    #[test]
+    fn write_position_beyond_4096_wraps_like_netmsg() {
+        let pos = Vec3f::new(5000.0, -5000.0, 4095.875);
+        let gi = ServerGameImport::new();
+        gi.write_position(pos);
+        let expected = netmsg_bytes(|m| m.write_position(pos));
+        assert_eq!(&written(&gi)[..], &expected[..]);
     }
 
     #[test]
@@ -387,7 +412,7 @@ mod tests {
         gi.write_angle(90.0);
         let inner = gi.inner.borrow();
         let expected = ((90.0f32 * 256.0 / 360.0) as i32 & 255) as u8;
-        assert_eq!(inner.msg_buf[0], expected);
+        assert_eq!(inner.msg_buf.data()[0], expected);
     }
 
     #[test]
