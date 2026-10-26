@@ -35,12 +35,11 @@ impl Server {
         self.models.clear();
         self.models.resize(MAX_MODELS, String::new());
 
-        // Allocate configstrings and set the map name.
-        self.configstrings.resize(MAX_CONFIGSTRINGS, String::new());
+        // Fresh configstrings and baselines: C SV_SpawnServer zeroes all of
+        // `sv` (memset), so nothing from the previous map survives.
+        self.configstrings = vec![String::new(); MAX_CONFIGSTRINGS];
         self.configstrings[CS_NAME] = map_name.to_string();
-
-        // Allocate entity baselines.
-        self.baselines.resize(MAX_EDICTS, EntityState::default());
+        self.baselines = vec![EntityState::default(); MAX_EDICTS];
 
         // Demote any spawned clients back to connected so they will
         // re-enter via ClientBegin after the map loads.
@@ -108,6 +107,35 @@ mod tests {
         assert_eq!(sv.configstrings.len(), MAX_CONFIGSTRINGS);
         assert_eq!(sv.baselines.len(), MAX_EDICTS);
         assert_eq!(sv.models.len(), MAX_MODELS);
+    }
+
+    #[test]
+    fn map_change_clears_previous_map_configstrings_and_baselines() {
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+
+        sv.map(&mut svs, "a").unwrap();
+        sv.configstrings[CS_MODELS + 1] = "maps/a.bsp".into();
+        sv.configstrings[CS_SOUNDS + 3] = "world/amb1.wav".into();
+        sv.baselines[5].modelindex = 7;
+
+        sv.map(&mut svs, "b").unwrap();
+
+        assert_eq!(sv.configstrings[CS_NAME], "b");
+        for (i, cs) in sv.configstrings.iter().enumerate() {
+            if i != CS_NAME {
+                assert!(
+                    cs.is_empty(),
+                    "configstring {i} leaked from previous map: {cs:?}"
+                );
+            }
+        }
+        assert_eq!(sv.baselines.len(), MAX_EDICTS);
+        assert_eq!(
+            sv.baselines[5].modelindex, 0,
+            "baseline leaked from previous map"
+        );
     }
 
     #[test]
