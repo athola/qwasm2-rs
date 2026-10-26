@@ -26,14 +26,6 @@ impl JsPakReader {
     }
 }
 
-// SAFETY: The standard WASM target is single-threaded; there are no OS threads,
-// so Send + Sync cannot be violated.  js_sys types lack these impls only because
-// the Rust/JS interop crate is conservative by default.
-// WARNING: if this crate is ever compiled with `target_feature = +atomics`
-// (wasm-threads), this assumption breaks and these impls must be revisited.
-unsafe impl Send for JsPakReader {}
-unsafe impl Sync for JsPakReader {}
-
 impl PakReader for JsPakReader {
     fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
         let end = offset

@@ -8,6 +8,11 @@ use bitflags::bitflags;
 use q2_shared::CVarHandle;
 use std::collections::HashMap;
 
+/// C `MAX_INFO_KEY` / `MAX_INFO_VALUE`: keys and values must be shorter.
+const MAX_INFO_KEY: usize = 64;
+/// C `MAX_INFO_STRING`: the whole info string must stay below this length.
+const MAX_INFO_STRING: usize = 512;
+
 bitflags! {
     /// Flags controlling cvar behaviour.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +68,7 @@ impl CVarSystem {
         }
 
         let index = self.vars.len();
-        let value = default_value.parse::<f32>().unwrap_or(0.0);
+        let value = parse_value(default_value);
         self.vars.push(CVar {
             name: name.to_owned(),
             string: default_value.to_owned(),
@@ -71,7 +76,8 @@ impl CVarSystem {
             default_value: default_value.to_owned(),
             flags,
             latched_string: None,
-            modified: false,
+            // C Cvar_Get marks a freshly created cvar modified.
+            modified: true,
         });
         self.name_to_index.insert(name.to_owned(), index);
         CVarHandle::from_raw(index)
@@ -92,6 +98,11 @@ impl CVarSystem {
         };
 
         let cvar = &mut self.vars[index];
+
+        if !Self::info_value_allowed(cvar, value) {
+            tracing::warn!("invalid info cvar value for {}", cvar.name);
+            return;
+        }
 
         if cvar.flags.contains(CVarFlags::NOSET) {
             return;
@@ -122,6 +133,12 @@ impl CVarSystem {
         };
 
         let cvar = &mut self.vars[index];
+
+        if !Self::info_value_allowed(cvar, value) {
+            tracing::warn!("invalid info cvar value for {}", cvar.name);
+            return;
+        }
+
         cvar.latched_string = None;
         Self::apply_value(cvar, value);
 
@@ -161,6 +178,19 @@ impl CVarSystem {
             .map_or("", |v| v.default_value.as_str())
     }
 
+    /// Whether the cvar changed since the last `clear_modified` (C
+    /// `cvar->modified`), for change detection in renderer/network code.
+    pub fn modified(&self, handle: CVarHandle) -> bool {
+        self.vars.get(handle.raw()).is_some_and(|v| v.modified)
+    }
+
+    /// Acknowledge a change reported by `modified`.
+    pub fn clear_modified(&mut self, handle: CVarHandle) {
+        if let Some(v) = self.vars.get_mut(handle.raw()) {
+            v.modified = false;
+        }
+    }
+
     /// Apply all latched values (called at an appropriate point, e.g. map change).
     pub fn apply_latched(&mut self) {
         for cvar in &mut self.vars {
@@ -185,7 +215,16 @@ impl CVarSystem {
         let mut output = String::new();
         for cvar in &self.vars {
             if cvar.flags.contains(CVarFlags::ARCHIVE) {
-                output.push_str(&format!("set {} \"{}\"\n", cvar.name, cvar.string));
+                // The command tokenizer has no escape syntax (like C
+                // COM_Parse), so a quote or newline in the value would end
+                // the quoted token and let the rest run as commands when the
+                // config is exec'd. C writes the value raw; we drop them.
+                let value: String = cvar
+                    .string
+                    .chars()
+                    .filter(|c| !matches!(c, '"' | '\n' | '\r'))
+                    .collect();
+                output.push_str(&format!("set {} \"{}\"\n", cvar.name, value));
             }
         }
         output
@@ -228,23 +267,96 @@ impl CVarSystem {
     /// Update the string and parsed float value on a cvar.
     fn apply_value(cvar: &mut CVar, value: &str) {
         cvar.string = value.to_owned();
-        cvar.value = value.parse::<f32>().unwrap_or(0.0);
+        cvar.value = parse_value(value);
         cvar.modified = true;
     }
 
-    /// Build a backslash-delimited info string from cvars that have the given flag.
+    /// C `Cvar_InfoValidate`, applied only to USERINFO/SERVERINFO cvars:
+    /// these characters would forge keys or break the info string.
+    fn info_value_allowed(cvar: &CVar, value: &str) -> bool {
+        !cvar
+            .flags
+            .intersects(CVarFlags::USERINFO | CVarFlags::SERVERINFO)
+            || !value.contains(['\\', '"', ';'])
+    }
+
+    /// Build a backslash-delimited info string from cvars that have the given
+    /// flag, applying each pair the way C `Info_SetValueForKey` does.
     fn build_info_string(vars: &[CVar], flag: CVarFlags) -> String {
         let mut info = String::new();
-        for cvar in vars {
-            if cvar.flags.contains(flag) {
-                info.push('\\');
-                info.push_str(&cvar.name);
-                info.push('\\');
-                info.push_str(&cvar.string);
+        for cvar in vars.iter().filter(|c| c.flags.contains(flag)) {
+            let (key, value) = (cvar.name.as_str(), cvar.string.as_str());
+            if key.contains(['\\', '"', ';']) || value.contains(['\\', '"']) {
+                tracing::warn!("Can't use keys or values with a \\ or \" ({key})");
+                continue;
             }
+            if key.len() >= MAX_INFO_KEY || value.len() >= MAX_INFO_KEY {
+                tracing::warn!("Keys and values must be < 64 characters ({key})");
+                continue;
+            }
+            if value.is_empty() {
+                continue;
+            }
+            let pair = format!("\\{key}\\{value}");
+            if pair.len() + info.len() >= MAX_INFO_STRING {
+                tracing::warn!("Info string length exceeded ({key})");
+                continue;
+            }
+            // Only printable ASCII survives, high bit stripped first.
+            info.extend(
+                pair.bytes()
+                    .map(|b| b & 0x7f)
+                    .filter(|b| (32..127).contains(b))
+                    .map(char::from),
+            );
         }
         info
     }
+}
+
+/// Parse a cvar's float value like C `(float)strtod(s, NULL)`: leading
+/// whitespace is skipped and the longest decimal prefix is used, so `" 3"`
+/// is 3 and `"1.5abc"` is 1.5. Non-finite results (`nan`, `inf`, overflow)
+/// become 0 so they cannot poison physics cvars. Hex floats are not parsed.
+fn parse_value(text: &str) -> f32 {
+    let text = text.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let bytes = text.as_bytes();
+    let digits_from = |mut i: usize| {
+        while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        i
+    };
+
+    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let int_end = digits_from(end);
+    let mut mantissa_digits = int_end - end;
+    end = int_end;
+    if bytes.get(end) == Some(&b'.') {
+        let frac_end = digits_from(end + 1);
+        mantissa_digits += frac_end - (end + 1);
+        end = frac_end;
+    }
+    if mantissa_digits == 0 {
+        return 0.0;
+    }
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let mut exp = end + 1;
+        if matches!(bytes.get(exp), Some(b'+' | b'-')) {
+            exp += 1;
+        }
+        let exp_end = digits_from(exp);
+        if exp_end > exp {
+            end = exp_end;
+        }
+    }
+
+    text[..end]
+        .parse::<f64>()
+        .map(|v| v as f32)
+        .ok()
+        .filter(|v| v.is_finite())
+        .unwrap_or(0.0)
 }
 
 impl Default for CVarSystem {
@@ -365,6 +477,142 @@ mod tests {
         let mut cvars = CVarSystem::new();
         let handle = cvars.get("text", "hello", CVarFlags::empty());
         assert_eq!(cvars.value(handle), 0.0);
+    }
+
+    #[test]
+    fn set_rejects_info_separators_in_userinfo_value() {
+        // C Cvar_InfoValidate: `\`, `"` and `;` would forge extra keys or
+        // break the info string, so the old value is kept.
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("name", "player", CVarFlags::USERINFO);
+        for bad in ["x\\ip\\1.2.3.4", "a\"b", "a;b"] {
+            cvars.set("name", bad);
+            assert_eq!(cvars.string(h), "player", "accepted {bad:?}");
+            cvars.force_set("name", bad);
+            assert_eq!(cvars.string(h), "player", "force accepted {bad:?}");
+        }
+        let s = cvars.get("hostname", "srv", CVarFlags::SERVERINFO);
+        cvars.set("hostname", "a\\b");
+        assert_eq!(cvars.string(s), "srv");
+        // Non-info cvars may hold any text.
+        let plain = cvars.get("plain", "", CVarFlags::empty());
+        cvars.set("plain", "a;b");
+        assert_eq!(cvars.string(plain), "a;b");
+    }
+
+    #[test]
+    fn userinfo_string_drops_values_info_set_value_for_key_rejects() {
+        let mut cvars = CVarSystem::new();
+        cvars.get("name", "player1", CVarFlags::USERINFO);
+        cvars.get("evil", "a\\ip\\1.2.3.4", CVarFlags::USERINFO);
+        cvars.get("quote", "a\"b", CVarFlags::USERINFO);
+        cvars.get("empty", "", CVarFlags::USERINFO);
+        cvars.get("long", &"v".repeat(64), CVarFlags::USERINFO);
+        assert_eq!(cvars.userinfo_string(), "\\name\\player1");
+    }
+
+    #[test]
+    fn userinfo_string_strips_non_printable_bytes() {
+        let mut cvars = CVarSystem::new();
+        cvars.get("name", "a\tb\u{7f}c", CVarFlags::USERINFO);
+        assert_eq!(cvars.userinfo_string(), "\\name\\abc");
+    }
+
+    #[test]
+    fn userinfo_string_stops_below_max_info_string() {
+        let mut cvars = CVarSystem::new();
+        for i in 0..20 {
+            cvars.get(&format!("key{i:02}"), &"v".repeat(40), CVarFlags::USERINFO);
+        }
+        let info = cvars.userinfo_string();
+        assert!(info.len() < 512, "len {}", info.len());
+        // Each pair is `\keyNN\` + 40 bytes = 47 bytes; 10 fit below 512.
+        assert_eq!(info.matches('\\').count(), 2 * 10);
+    }
+
+    #[test]
+    fn write_archive_cannot_inject_commands_through_quotes_or_newlines() {
+        let mut cvars = CVarSystem::new();
+        cvars.get("evil", "x\" ; quit \"", CVarFlags::ARCHIVE);
+        cvars.get("multi", "a\nquit", CVarFlags::ARCHIVE);
+        let output = cvars.write_archive();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "{output:?}");
+        for line in lines {
+            assert_eq!(crate::cmd::tokenize(line).len(), 3, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn value_parses_numeric_prefix_like_strtod() {
+        let mut cvars = CVarSystem::new();
+        let cases = [
+            (" 3", 3.0),
+            ("1.5abc", 1.5),
+            ("-2", -2.0),
+            (".5", 0.5),
+            ("1e3x", 1000.0),
+            ("1e", 1.0),
+            ("-", 0.0),
+            ("nan", 0.0),
+            ("inf", 0.0),
+            ("1e40", 0.0),
+        ];
+        for (i, (text, expected)) in cases.iter().enumerate() {
+            let h = cvars.get(&format!("v{i}"), text, CVarFlags::empty());
+            assert_eq!(cvars.value(h), *expected, "default {text:?}");
+            cvars.set(&format!("v{i}"), text);
+            assert_eq!(cvars.value(h), *expected, "set {text:?}");
+        }
+    }
+
+    #[test]
+    fn modified_flag_tracks_changes_until_cleared() {
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("gl_mode", "3", CVarFlags::empty());
+        // C Cvar_Get marks a new cvar modified.
+        assert!(cvars.modified(h));
+        cvars.clear_modified(h);
+        assert!(!cvars.modified(h));
+        cvars.set("gl_mode", "4");
+        assert!(cvars.modified(h));
+    }
+
+    #[test]
+    fn set_on_unknown_creates_cvar_with_value() {
+        let mut cvars = CVarSystem::new();
+        cvars.set("fresh", "7");
+        let h = cvars.find("fresh").unwrap();
+        assert_eq!(cvars.value(h), 7.0);
+        assert_eq!(cvars.name(h), "fresh");
+        assert_eq!(cvars.default_value(h), "7");
+    }
+
+    #[test]
+    fn force_set_discards_pending_latch() {
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("maxclients", "1", CVarFlags::LATCH);
+        cvars.set("maxclients", "8");
+        cvars.force_set("maxclients", "4");
+        cvars.apply_latched();
+        assert_eq!(cvars.value(h), 4.0);
+    }
+
+    #[test]
+    fn serverinfo_string_lists_only_serverinfo_cvars() {
+        let mut cvars = CVarSystem::new();
+        cvars.get("hostname", "q2", CVarFlags::SERVERINFO);
+        cvars.get("name", "p", CVarFlags::USERINFO);
+        assert_eq!(cvars.serverinfo_string(), "\\hostname\\q2");
+    }
+
+    #[test]
+    fn complete_returns_alphabetically_first_match() {
+        let mut cvars = CVarSystem::new();
+        cvars.get("gl_z", "1", CVarFlags::empty());
+        cvars.get("gl_a", "1", CVarFlags::empty());
+        assert_eq!(cvars.complete("gl_").as_deref(), Some("gl_a"));
+        assert_eq!(cvars.complete("zz"), None);
     }
 
     #[test]

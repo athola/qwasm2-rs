@@ -27,8 +27,11 @@ pub enum Q2Error {
 }
 
 impl Q2Error {
+    /// Whether the frame loop may continue. Io and Net failures map to C
+    /// ERR_DROP (e.g. CM_LoadMap "Couldn't load", bad server message), not
+    /// ERR_FATAL.
     pub fn is_recoverable(&self) -> bool {
-        matches!(self, Q2Error::Drop(_))
+        matches!(self, Q2Error::Drop(_) | Q2Error::Io(_) | Q2Error::Net(_))
     }
 }
 
@@ -73,12 +76,20 @@ mod tests {
     }
 
     #[test]
-    fn error_io_is_not_recoverable() {
+    fn error_io_is_recoverable_like_c_err_drop() {
+        // C reports runtime load failures (CM_LoadMap "Couldn't load") as
+        // ERR_DROP, so a missing file must not kill the frame loop.
         let err = Q2Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "file not found",
         ));
-        assert!(!err.is_recoverable());
+        assert!(err.is_recoverable());
+    }
+
+    #[test]
+    fn error_net_is_recoverable_like_c_err_drop() {
+        // C drops the connection (ERR_DROP) on a bad server message.
+        assert!(Q2Error::Net("bad server message".into()).is_recoverable());
     }
 
     #[test]
