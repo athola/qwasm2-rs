@@ -2644,6 +2644,46 @@ pub(crate) mod tests {
         bsp
     }
 
+    /// Build a BSP whose only solid is a ceiling: everything above
+    /// `height` is solid, everything below is empty. Derived from the floor
+    /// BSP by moving the split plane and flipping which side is solid.
+    pub(crate) fn build_ceiling_bsp(height: f32) -> Vec<u8> {
+        let mut bsp = build_floor_bsp();
+        let planes = lump(&bsp, LUMP_PLANES).0;
+        // Plane 0 (+Z) becomes the split at `height`; plane 1 (-Z) becomes
+        // the brush's bottom face, z >= height.
+        bsp[planes + 12..planes + 16].copy_from_slice(&height.to_le_bytes());
+        let bottom = planes + DPLANE_SIZE + 12;
+        bsp[bottom..bottom + 4].copy_from_slice(&(-height).to_le_bytes());
+        // Brush uses sides 1..6 (no top face: unbounded upward).
+        patch_i32(&mut bsp, LUMP_BRUSHES, 0, 1);
+        patch_i32(&mut bsp, LUMP_BRUSHES, 4, 5);
+        // Front of the split (above) is the solid leaf 0, back is empty.
+        patch_i32(&mut bsp, LUMP_NODES, 4, -1);
+        patch_i32(&mut bsp, LUMP_NODES, 8, -2);
+        bsp
+    }
+
+    #[test]
+    fn ceiling_bsp_is_solid_above_height_only() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_ceiling_bsp(100.0)).unwrap();
+        assert_eq!(
+            cm.point_contents(Vec3f::new(0.0, 0.0, 150.0), 0),
+            CONTENTS_SOLID
+        );
+        assert_eq!(cm.point_contents(Vec3f::new(0.0, 0.0, 50.0), 0), 0);
+        let t = cm.box_trace(
+            Vec3f::new(0.0, 0.0, 50.0),
+            Vec3f::new(0.0, 0.0, 150.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            0,
+            CONTENTS_SOLID,
+        );
+        assert!((t.endpos.z - 100.0).abs() < 0.1, "endpos {:?}", t.endpos);
+    }
+
     /// Patch the minimal BSP with `patch` and assert load_map rejects it.
     fn assert_rejected(what: &str, patch: impl FnOnce(&mut Vec<u8>)) {
         let mut bsp = build_minimal_bsp();

@@ -5,6 +5,7 @@
 //! (native, WASM, dedicated server prediction).
 
 use crate::collision::CollisionMap;
+use crate::pmove::{PM_DUCKSPEED, PM_MAXSPEED};
 use q2_shared::types::Vec3f;
 
 // ---------------------------------------------------------------------------
@@ -101,13 +102,19 @@ impl PlayerController {
         self.pitch += input.pitch_delta;
         self.pitch = self.pitch.clamp(-89.0, 89.0);
 
-        // Movement wish vector
+        // Movement wish vector, capped like C pmove: pm_maxspeed standing,
+        // pm_duckspeed ducked (running cannot exceed the cap).
         let move_speed = if input.run {
             MOVE_SPEED * 2.0
         } else {
             MOVE_SPEED
         };
-        let speed = move_speed * dt;
+        let max_speed = if input.duck {
+            PM_DUCKSPEED
+        } else {
+            PM_MAXSPEED
+        };
+        let speed = move_speed.min(max_speed) * dt;
 
         let yaw_rad = self.yaw.to_radians();
         let fwd = Vec3f::new(yaw_rad.cos(), yaw_rad.sin(), 0.0);
@@ -228,9 +235,13 @@ impl PlayerController {
         );
         new_pos.z = v_start.z + (v_end.z - v_start.z) * v_trace.fraction;
 
-        if v_trace.fraction < 1.0 && self.velocity_z < 0.0 {
+        if v_trace.fraction < 1.0 {
+            // Landing grounds the player; hitting a ceiling only stops the
+            // rise so gravity takes over next tick.
+            if self.velocity_z < 0.0 {
+                self.on_ground = true;
+            }
             self.velocity_z = 0.0;
-            self.on_ground = true;
         }
 
         // Ground check
@@ -377,10 +388,56 @@ mod tests {
 
         // Player should be stopped by wall. With half-width 16, center stops at x≈16.
         assert!(
-            pc.pos.x > 14.0,
-            "player should not pass through wall, got x={}",
+            (pc.pos.x - 16.0).abs() < 1.0,
+            "player should stop flush against the wall, got x={}",
             pc.pos.x
         );
+    }
+
+    fn input(forward: f32, jump: bool, duck: bool, run: bool) -> MoveInput {
+        MoveInput {
+            forward,
+            right: 0.0,
+            yaw_delta: 0.0,
+            pitch_delta: 0.0,
+            jump,
+            duck,
+            run,
+        }
+    }
+
+    #[test]
+    fn run_speed_is_capped_at_pm_maxspeed() {
+        // C clamps wishspeed to pm_maxspeed (300); running doubles the
+        // command but cannot exceed it.
+        let mut pc = PlayerController::new(Vec3f::ZERO, 0.0);
+        pc.on_ground = true;
+        let mut cm = CollisionMap::new();
+        pc.tick(0.1, &input(1.0, false, false, true), &mut cm);
+        assert!((pc.pos.x - 30.0).abs() < 1e-3, "x = {}", pc.pos.x);
+    }
+
+    #[test]
+    fn ducked_speed_is_capped_at_pm_duckspeed() {
+        let mut pc = PlayerController::new(Vec3f::ZERO, 0.0);
+        pc.on_ground = true;
+        let mut cm = CollisionMap::new();
+        pc.tick(0.1, &input(1.0, false, true, true), &mut cm);
+        assert!((pc.pos.x - 10.0).abs() < 1e-3, "x = {}", pc.pos.x);
+    }
+
+    #[test]
+    fn hitting_ceiling_stops_upward_velocity() {
+        // Ceiling at z=100; the jump hits it within the first tick.
+        let mut cm = CollisionMap::new();
+        cm.load_map(&crate::collision::tests::build_ceiling_bsp(100.0))
+            .unwrap();
+        let mut pc = PlayerController::new(Vec3f::new(0.0, 0.0, 60.0), 0.0);
+        pc.on_ground = true;
+        pc.tick(0.1, &input(0.0, true, false, false), &mut cm);
+        assert!(pc.pos.z < 68.1, "z = {}", pc.pos.z);
+        assert!(pc.velocity_z <= 0.0, "velocity_z = {}", pc.velocity_z);
+        assert!(!pc.on_ground);
     }
 
     #[test]
