@@ -57,7 +57,12 @@ impl Zone {
     /// Panics when `max_bytes` is non-zero and the allocation would exceed it.
     /// This mirrors the original C `Sys_Error("Z_Malloc: failed on allocation")`.
     pub fn alloc(&mut self, tag: MemTag, size: usize) -> &mut [u8] {
-        if self.max_bytes != 0 && self.total_bytes + size > self.max_bytes {
+        // checked_add: a huge `size` must hit the cap, not wrap past it.
+        let over_cap = self
+            .total_bytes
+            .checked_add(size)
+            .is_none_or(|total| total > self.max_bytes);
+        if self.max_bytes != 0 && over_cap {
             tracing::error!(
                 "Zone::alloc: out of memory — requested {size} bytes (have {}/{} used)",
                 self.total_bytes,
@@ -191,6 +196,14 @@ mod tests {
     }
 
     /// Freeing a tag that was never allocated must be a no-op (no panic).
+    #[test]
+    #[should_panic(expected = "out of memory")]
+    fn alloc_size_overflowing_total_hits_cap_instead_of_wrapping() {
+        let mut zone = Zone::new(100);
+        zone.alloc(MemTag::Temp, 10);
+        zone.alloc(MemTag::Temp, usize::MAX);
+    }
+
     #[test]
     fn free_empty_tag_is_noop() {
         let mut zone = Zone::new(0);
