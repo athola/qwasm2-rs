@@ -726,10 +726,6 @@ impl NetMsg {
 
         self.write_byte(i32::from(bits));
 
-        // msec and lightlevel are always written (they change virtually every frame).
-        self.write_byte(i32::from(to.msec));
-        self.write_byte(i32::from(to.lightlevel));
-
         if bits & CM_ANGLE1 != 0 {
             self.write_short(i32::from(to.angles[0]));
         }
@@ -754,15 +750,17 @@ impl NetMsg {
         if bits & CM_IMPULSE != 0 {
             self.write_byte(i32::from(to.impulse));
         }
+
+        // msec and lightlevel are always written, after the flagged fields
+        // (protocol 34 order, movemsg.c MSG_WriteDeltaUsercmd).
+        self.write_byte(i32::from(to.msec));
+        self.write_byte(i32::from(to.lightlevel));
     }
 
     /// Read a delta-compressed user command.
     pub fn read_delta_usercmd(&mut self, from: &UserCmd) -> UserCmd {
         let mut cmd = *from;
         let bits = self.read_byte() as u8;
-
-        cmd.msec = self.read_byte() as u8;
-        cmd.lightlevel = self.read_byte() as u8;
 
         if bits & CM_ANGLE1 != 0 {
             cmd.angles[0] = self.read_short() as i16;
@@ -788,6 +786,9 @@ impl NetMsg {
         if bits & CM_IMPULSE != 0 {
             cmd.impulse = self.read_byte() as u8;
         }
+
+        cmd.msec = self.read_byte() as u8;
+        cmd.lightlevel = self.read_byte() as u8;
 
         cmd
     }
@@ -1173,6 +1174,59 @@ mod tests {
         assert_eq!(result.angles, [100, 200, 0]);
         assert_eq!(result.forwardmove, 400);
         assert_eq!(result.sidemove, -200);
+    }
+
+    // C MSG_WriteDeltaUsercmd (movemsg.c:290-381): bits byte, then the
+    // flagged fields in angle/move/buttons/impulse order, then msec and
+    // lightlevel LAST. bits = CM_BUTTONS (1 << 6 = 64).
+    #[test]
+    fn delta_usercmd_bytes_match_c_field_order() {
+        let to = UserCmd {
+            msec: 16,
+            lightlevel: 99,
+            buttons: 1,
+            ..Default::default()
+        };
+        let mut buf = NetMsg::new();
+        buf.write_delta_usercmd(&UserCmd::default(), &to);
+        assert_eq!(buf.data(), &[64, 1, 16, 99]);
+    }
+
+    // All flags: bits 0xFF, angles/moves as LE shorts, buttons, impulse,
+    // then msec, lightlevel.
+    #[test]
+    fn delta_usercmd_all_fields_bytes_match_c() {
+        let to = UserCmd {
+            msec: 8,
+            buttons: 3,
+            angles: [0x0102, -2, 3],
+            forwardmove: 400,
+            sidemove: -200,
+            upmove: 200,
+            impulse: 7,
+            lightlevel: 42,
+        };
+        let mut buf = NetMsg::new();
+        buf.write_delta_usercmd(&UserCmd::default(), &to);
+        assert_eq!(
+            buf.data(),
+            &[
+                0xFF, // bits
+                0x02, 0x01, // angles[0]
+                0xFE, 0xFF, // angles[1] = -2
+                0x03, 0x00, // angles[2]
+                0x90, 0x01, // forwardmove = 400
+                0x38, 0xFF, // sidemove = -200
+                0xC8, 0x00, // upmove = 200
+                3,    // buttons
+                7,    // impulse
+                8,    // msec
+                42,   // lightlevel
+            ]
+        );
+        let mut rd = NetMsg::from_bytes(buf.data());
+        let decoded = rd.read_delta_usercmd(&UserCmd::default());
+        assert_eq!(decoded, to);
     }
 
     #[test]
