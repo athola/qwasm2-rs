@@ -228,13 +228,7 @@ fn validate_lump(
 // ---------------------------------------------------------------------------
 
 fn load_entities(data: &[u8], lump: &BspLump) -> Q2Result<String> {
-    let off = lump.offset as usize;
-    let len = lump.length as usize;
-    if off + len > data.len() {
-        return Err(Q2Error::Drop(
-            "BSP entities lump extends past end of file".into(),
-        ));
-    }
+    let (off, len) = validate_lump(data, lump, 1, "entities")?;
     let raw = &data[off..off + len];
     // Strip trailing null bytes
     let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
@@ -268,13 +262,7 @@ fn load_vertices(data: &[u8], lump: &BspLump) -> Q2Result<Vec<BspVertex>> {
 }
 
 fn load_visibility(data: &[u8], lump: &BspLump) -> Q2Result<Vec<u8>> {
-    let off = lump.offset as usize;
-    let len = lump.length as usize;
-    if off + len > data.len() {
-        return Err(Q2Error::Drop(
-            "BSP visibility lump extends past end of file".into(),
-        ));
-    }
+    let (off, len) = validate_lump(data, lump, 1, "visibility")?;
     Ok(data[off..off + len].to_vec())
 }
 
@@ -349,13 +337,7 @@ fn load_faces(data: &[u8], lump: &BspLump) -> Q2Result<Vec<BspFace>> {
 }
 
 fn load_lightmap(data: &[u8], lump: &BspLump) -> Q2Result<Vec<u8>> {
-    let off = lump.offset as usize;
-    let len = lump.length as usize;
-    if off + len > data.len() {
-        return Err(Q2Error::Drop(
-            "BSP lightmap lump extends past end of file".into(),
-        ));
-    }
+    let (off, len) = validate_lump(data, lump, 1, "lightmap")?;
     Ok(data[off..off + len].to_vec())
 }
 
@@ -601,6 +583,19 @@ mod tests {
         assert_eq!(bsp.vertices.len(), 2);
         assert_eq!(bsp.vertices[0].position, Vec3f::new(1.0, 2.0, 3.0));
         assert_eq!(bsp.vertices[1].position, Vec3f::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn raw_lumps_whose_end_overflows_are_rejected() {
+        // offset + length wraps a 32-bit usize (wasm32) to a small value.
+        let data = make_minimal_bsp();
+        let lump = BspLump {
+            offset: u32::MAX,
+            length: 2,
+        };
+        assert!(load_entities(&data, &lump).is_err());
+        assert!(load_visibility(&data, &lump).is_err());
+        assert!(load_lightmap(&data, &lump).is_err());
     }
 
     #[test]
