@@ -271,7 +271,9 @@ impl GameWorld {
             let end = origin + current_velocity * time_left;
 
             // Trace from origin to end.
-            let trace = self.gi.trace(origin, mins, maxs, end, None, mask);
+            let trace = self
+                .gi
+                .trace(origin, mins, maxs, end, self.number_of(key), mask);
 
             if trace.allsolid {
                 // Entity is stuck in solid.
@@ -294,7 +296,9 @@ impl GameWorld {
             }
 
             // Hit something — determine what.
-            let hit_key: Option<EntityKey> = None; // Phase 3: map trace.ent_index to EntityKey
+            let hit_key = trace
+                .ent_index
+                .and_then(|n| self.entities.key_for_number(n));
             self.sv_impact(key, hit_key, &trace);
 
             // Entity may have been freed by the touch callback.
@@ -404,17 +408,21 @@ impl GameWorld {
         };
 
         let end = origin + push;
-        let trace = self.gi.trace(origin, mins, maxs, end, None, clipmask);
+        let trace = self
+            .gi
+            .trace(origin, mins, maxs, end, self.number_of(key), clipmask);
 
         if let Some(ent) = self.entities.get_mut(key) {
             ent.state.origin = trace.endpos;
         }
 
         // Link entity in the world (updates spatial index).
-        self.gi.link_entity(0); // placeholder index
+        self.link_entity(key);
 
         if trace.fraction < 1.0 {
-            let hit_key: Option<EntityKey> = None; // Phase 3: map trace.ent_index to EntityKey
+            let hit_key = trace
+                .ent_index
+                .and_then(|n| self.entities.key_for_number(n));
             self.sv_impact(key, hit_key, &trace);
         }
 
@@ -445,7 +453,7 @@ impl GameWorld {
         ent.state.angles += ent.avelocity * FRAMETIME;
         ent.state.origin += ent.velocity * FRAMETIME;
 
-        self.gi.link_entity(0);
+        self.link_entity(key);
     }
 
     /// Physics for MOVETYPE_TOSS, BOUNCE, FLY, FLYMISSILE.
@@ -561,7 +569,7 @@ impl GameWorld {
             }
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(key);
     }
 
     /// Physics for MOVETYPE_STEP — walking monsters with gravity and stepping.
@@ -639,7 +647,7 @@ impl GameWorld {
         self.fly_move(key, FRAMETIME, mask);
 
         // Link entity.
-        self.gi.link_entity(0);
+        self.link_entity(key);
 
         // Run think.
         self.run_think(key);
@@ -676,7 +684,7 @@ impl GameWorld {
                 ent.state.origin += move_vec;
                 ent.state.angles += amove_vec;
             }
-            self.gi.link_entity(0);
+            self.link_entity(key);
 
             // TODO: SV_Push to displace blocking entities + rollback on block.
             // For now, just move the pusher. Full push with entity displacement
@@ -723,7 +731,9 @@ impl GameWorld {
         // Trace straight down from entity center, 0.25 units.
         let start = origin;
         let end = Vec3f::new(origin.x, origin.y, origin.z - 0.25);
-        let trace = self.gi.trace(start, mins, maxs, end, None, 0xFFFF);
+        let trace = self
+            .gi
+            .trace(start, mins, maxs, end, self.number_of(key), 0xFFFF);
 
         // Too steep to stand on.
         if trace.plane.normal.z < GROUND_NORMAL_THRESHOLD {
@@ -787,7 +797,48 @@ impl GameWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::test_world;
+    use crate::world::{test_world, test_world_recording};
+
+    fn mark_touched(
+        world: &mut GameWorld,
+        self_key: EntityKey,
+        _other: EntityKey,
+        _plane: Option<&Plane>,
+        _surf: Option<&Surface>,
+    ) {
+        if let Some(ent) = world.entities.get_mut(self_key) {
+            ent.game.count = 99;
+        }
+    }
+
+    #[test]
+    fn push_entity_traces_with_its_own_number_as_pass_entity() {
+        let (mut world, gi) = test_world_recording();
+        let key = world.spawn().unwrap();
+        let number = world.number_of(key);
+        world.push_entity(key, Vec3f::new(10.0, 0.0, 0.0));
+        assert_eq!(gi.trace_pass_ents.borrow().first(), Some(&number));
+    }
+
+    #[test]
+    fn push_entity_touches_the_entity_the_trace_hit() {
+        let (mut world, gi) = test_world_recording();
+        let mover = world.spawn().unwrap();
+        let wall = world.spawn().unwrap();
+        world.entities.get_mut(mover).unwrap().solid = Solid::Bbox;
+        {
+            let w = world.entities.get_mut(wall).unwrap();
+            w.solid = Solid::Bbox;
+            w.touch = Some(mark_touched);
+        }
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 0.5,
+            ent_index: world.number_of(wall),
+            ..Default::default()
+        });
+        world.push_entity(mover, Vec3f::new(10.0, 0.0, 0.0));
+        assert_eq!(world.entities.get(wall).unwrap().game.count, 99);
+    }
 
     // -- clip_velocity tests --
 

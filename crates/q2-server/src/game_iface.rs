@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 
 use q2_common::net_msg::NetMsg;
-use q2_game::traits::GameImport;
+use q2_game::traits::{EntityLink, GameImport};
 use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 
 // ---------------------------------------------------------------------------
@@ -180,8 +180,8 @@ impl GameImport for ServerGameImport {
 
     // -- entity linking ------------------------------------------------------
 
-    fn link_entity(&self, _ent_idx: usize) {
-        // TODO: implement once EntityStorage is accessible here (tracked in #31).
+    fn link_entity(&self, _ent: &EntityLink) {
+        // TODO(#31): store the link in the area tree for trace clipping.
     }
 
     fn unlink_entity(&self, _ent_idx: usize) {}

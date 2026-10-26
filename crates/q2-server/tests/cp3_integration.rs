@@ -2,18 +2,29 @@
 //! connection, and runs 100 frames without panicking.
 //!
 //! This is the acceptance test for Phase 3 of the C-to-Rust conversion plan.
-//! It wires together the real q2-game GameLogic and q2-server together — no
-//! mocks for either side.
+//! It wires the full q2-game GameWorld to q2-server, with no mocks for
+//! either side.
+
+use std::rc::Rc;
 
 use q2_game::{
     traits::{GameExport, GameImport},
-    GameLogic,
+    world::GameWorld,
 };
 use q2_server::{
     state::{Server, ServerState, ServerStatic},
     ServerGameImport,
 };
-use q2_shared::constants::{CS_MAXCLIENTS, CS_SKY};
+use q2_shared::constants::{CS_MAXCLIENTS, CS_SKY, MAX_EDICTS};
+
+/// The game with one client slot, sharing `gi` with the server as the C
+/// server and game DLL share one `game_import_t`.
+fn new_game(gi: &Rc<ServerGameImport>) -> GameWorld {
+    let mut game = GameWorld::new(gi.clone(), MAX_EDICTS);
+    game.set_max_clients(1);
+    game.init();
+    game
+}
 
 /// Minimal entity string for map initialisation: just a worldspawn and a
 /// player start.  A real map has hundreds of entities; this is enough to
@@ -33,11 +44,10 @@ const MINIMAL_ENTSTRING: &str = r#"
 #[test]
 fn cp3_server_runs_100_frames() {
     // 1. Set up the GameImport (server → game callbacks).
-    let gi = ServerGameImport::new();
+    let gi = Rc::new(ServerGameImport::new());
 
     // 2. Create and initialise the game module.
-    let mut game = GameLogic::new(1);
-    game.init(&gi);
+    let mut game = new_game(&gi);
 
     // 3. Initialise server with 1 client slot.
     let mut svs = ServerStatic::default();
@@ -52,13 +62,14 @@ fn cp3_server_runs_100_frames() {
     game.spawn_entities("cp3_test", MINIMAL_ENTSTRING, "");
 
     // 6. Simulate a client connecting and entering the game.
-    let accepted = game.client_connect(0, r"name\TestPlayer\skin\male/grunt");
+    // Client slot 0 is entity number 1 (C passes EDICT_NUM(slot + 1)).
+    let accepted = game.client_connect(1, r"name\TestPlayer\skin\male/grunt");
     assert!(accepted, "client_connect must accept the connection");
     assert!(
-        !game.client_connect(1, r"name\Extra"),
-        "a 1-slot game must reject slot 1"
+        !game.client_connect(2, r"name\Extra"),
+        "a 1-slot game must reject entity 2"
     );
-    game.client_begin(0);
+    game.client_begin(1);
 
     // 7. Call the server at 10 Hz (100 ms = 100,000 µs per call). map() sets
     //    sv.time = 1000 like C SV_SpawnServer, so the first call only clamps
@@ -79,24 +90,23 @@ fn cp3_server_runs_100_frames() {
 
 #[test]
 fn cp3_client_disconnect_does_not_panic() {
-    let gi = ServerGameImport::new();
-    let mut game = GameLogic::new(1);
-    game.init(&gi);
+    let gi = Rc::new(ServerGameImport::new());
+    let mut game = new_game(&gi);
 
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
     sv.map(&mut svs, "test").unwrap();
 
-    game.client_connect(0, "");
-    game.client_begin(0);
+    game.client_connect(1, "");
+    game.client_begin(1);
 
     // Run a few 60 Hz calls, then disconnect.
     for _ in 0..5 {
         sv.frame(&mut svs, 16_667, &mut game, &gi);
     }
     let framenum_before = sv.framenum;
-    game.client_disconnect(0);
+    game.client_disconnect(1);
 
     // Server must keep running game frames after the disconnect.
     for _ in 0..10 {
@@ -110,8 +120,9 @@ fn cp3_client_disconnect_does_not_panic() {
 
 #[test]
 fn cp3_configstring_written_by_game_survives_frame() {
-    let gi = ServerGameImport::new();
-    let mut game = GameLogic::new(1);
+    let gi = Rc::new(ServerGameImport::new());
+    let mut game = new_game(&gi);
+    gi.drain_configstring_updates(); // init's own writes are not under test
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
@@ -130,18 +141,18 @@ fn cp3_configstring_written_by_game_survives_frame() {
 }
 
 /// Verify that vtable dispatch actually routes GameImport callbacks from inside
-/// `GameLogic::init()` to the concrete `ServerGameImport` implementation.
+/// `GameWorld::init()` to the concrete `ServerGameImport` implementation.
 ///
 /// This proves the call goes through the `&dyn GameImport` vtable, not a
 /// direct call — important because it exercises the same code path that the
 /// real game frame callbacks will follow.
 #[test]
 fn cp3_game_init_dispatches_configstring_through_vtable() {
-    let gi = ServerGameImport::new();
-    let mut game = GameLogic::new(1);
+    let gi = Rc::new(ServerGameImport::new());
 
-    // init() calls gi.configstring(CS_MAXCLIENTS, "1") through &dyn GameImport.
-    game.init(&gi);
+    // init() calls gi.configstring(CS_MAXCLIENTS, "1") through the game's
+    // Rc<dyn GameImport>.
+    let _game = new_game(&gi);
 
     let updates = gi.drain_configstring_updates();
     let found = updates
@@ -149,6 +160,6 @@ fn cp3_game_init_dispatches_configstring_through_vtable() {
         .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "1");
     assert!(
         found,
-        "GameLogic::init must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"
+        "GameWorld::init must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"
     );
 }

@@ -500,7 +500,7 @@ mod tests {
         let inflictor = world.spawn().unwrap();
         let fake_key = {
             let k = world.spawn().unwrap();
-            world.free_entity(k);
+            world.entities.free(k); // gone entirely, not just freed
             k
         };
 

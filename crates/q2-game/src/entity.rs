@@ -392,39 +392,147 @@ impl std::fmt::Debug for Entity {
 // Entity storage
 // ---------------------------------------------------------------------------
 
-/// `SlotMap`-backed entity storage.
+/// `SlotMap`-backed entity storage with C edict numbering.
 ///
-/// Provides O(1) insert, remove, and lookup with generational indices so
-/// stale keys are detected automatically.
+/// Every live entity also has a wire number (`state.number`, C's index into
+/// `g_edicts`): 0 is the world and `1..=max_clients` are the client slots,
+/// which `spawn` never hands out. Generational keys mean a key held across a
+/// slot's reuse goes stale instead of aliasing the new entity.
 pub struct EntityStorage {
     entities: SlotMap<EntityKey, Entity>,
     max_entities: usize,
+    /// Entity number -> key (C `g_edicts[n]`).
+    numbers: Vec<Option<EntityKey>>,
+    max_clients: usize,
+    /// `level.time`, for G_Spawn's "freed more than 0.5 s ago" reuse rule.
+    level_time: f32,
+}
+
+/// C G_FindFreeEdict policies.
+#[derive(Clone, Copy, PartialEq)]
+enum FreePolicy {
+    Default,
+    Desperate,
 }
 
 impl EntityStorage {
-    /// Create storage with room for up to `max_entities` entities.
+    /// Create storage with room for up to `max_entities` entity numbers,
+    /// including the world (number 0).
     pub fn new(max_entities: usize) -> Self {
         Self {
             entities: SlotMap::with_capacity_and_key(max_entities),
             max_entities,
+            numbers: vec![None; max_entities],
+            max_clients: 0,
+            level_time: 0.0,
         }
     }
 
-    /// Spawn a new default entity. Returns `None` if the storage is full.
+    /// Reserve numbers `1..=max_clients` for client entities.
+    pub fn set_max_clients(&mut self, max_clients: usize) {
+        self.max_clients = max_clients;
+    }
+
+    /// Current `level.time`, consulted when reusing freed slots.
+    pub fn set_level_time(&mut self, time: f32) {
+        self.level_time = time;
+    }
+
+    /// Spawn a new entity in the first free number above the client slots
+    /// (C G_Spawn). Returns `None` if every number is taken.
     pub fn spawn(&mut self) -> Option<EntityKey> {
-        if self.entities.len() >= self.max_entities {
+        let first = self.max_clients + 1;
+        let number = self
+            .find_free(first, FreePolicy::Default)
+            .or_else(|| (first..self.max_entities).find(|&n| self.numbers[n].is_none()))
+            .or_else(|| self.find_free(first, FreePolicy::Desperate))?;
+        self.init_at(number)
+    }
+
+    /// Spawn into a specific number: 0 for the world, `1..=max_clients` for
+    /// a client. `None` if the number is out of range or still in use.
+    pub fn spawn_numbered(&mut self, number: usize) -> Option<EntityKey> {
+        if number >= self.max_entities {
             return None;
+        }
+        if let Some(key) = self.numbers[number] {
+            if self.entities.get(key).is_some_and(|e| e.in_use) {
+                return None;
+            }
+        }
+        self.init_at(number)
+    }
+
+    /// First soft-freed number at or above `first` that `policy` allows.
+    fn find_free(&self, first: usize, policy: FreePolicy) -> Option<usize> {
+        (first..self.max_entities).find(|&n| {
+            let Some(ent) = self.numbers[n].and_then(|k| self.entities.get(k)) else {
+                return false;
+            };
+            !ent.in_use
+                && (policy == FreePolicy::Desperate
+                    || ent.game.freetime < 2.0
+                    || self.level_time - ent.game.freetime > 0.5)
+        })
+    }
+
+    /// C G_InitEdict on number `n`, replacing any freed entity there.
+    fn init_at(&mut self, number: usize) -> Option<EntityKey> {
+        if let Some(old) = self.numbers[number].take() {
+            self.entities.remove(old);
         }
         let ent = Entity {
             in_use: true,
+            state: EntityState {
+                number: number as i32,
+                ..Default::default()
+            },
+            game: GameEntityData {
+                gravity: 1.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        Some(self.entities.insert(ent))
+        let key = self.entities.insert(ent);
+        self.numbers[number] = Some(key);
+        Some(key)
     }
 
-    /// Remove an entity and free its slot for reuse.
+    /// C G_FreeEdict: clear the entity but keep its number until G_Spawn
+    /// reuses it, so clients don't see a freed entity morph into a new one.
+    pub fn soft_free(&mut self, key: EntityKey) {
+        let level_time = self.level_time;
+        if let Some(ent) = self.entities.get_mut(key) {
+            let number = ent.state.number;
+            *ent = Entity {
+                state: EntityState {
+                    number,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            ent.game.classname = "freed".to_string();
+            ent.game.freetime = level_time;
+        }
+    }
+
+    /// Remove an entity outright and release its number.
     pub fn free(&mut self, key: EntityKey) {
-        self.entities.remove(key);
+        if let Some(ent) = self.entities.remove(key) {
+            if let Some(slot) = usize::try_from(ent.state.number)
+                .ok()
+                .and_then(|n| self.numbers.get_mut(n))
+            {
+                if *slot == Some(key) {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    /// The key holding entity number `n` (in use or soft-freed), if any.
+    pub fn key_for_number(&self, n: usize) -> Option<EntityKey> {
+        self.numbers.get(n).copied().flatten()
     }
 
     /// Immutable lookup by key.
@@ -491,10 +599,90 @@ mod tests {
 
     #[test]
     fn entity_max_limit() {
-        let mut storage = EntityStorage::new(2);
+        // Number 0 is the world, which G_Spawn never hands out, so a
+        // three-slot table holds two spawned entities.
+        let mut storage = EntityStorage::new(3);
         let _k1 = storage.spawn().unwrap();
         let _k2 = storage.spawn().unwrap();
         assert!(storage.spawn().is_none(), "should return None when full");
+    }
+
+    fn number_of(storage: &EntityStorage, key: EntityKey) -> i32 {
+        storage.get(key).unwrap().state.number
+    }
+
+    #[test]
+    fn spawn_numbers_start_above_reserved_client_slots_like_g_spawn() {
+        let mut storage = EntityStorage::new(16);
+        storage.set_max_clients(4);
+        let a = storage.spawn().unwrap();
+        let b = storage.spawn().unwrap();
+        assert_eq!((number_of(&storage, a), number_of(&storage, b)), (5, 6));
+        assert_eq!(storage.key_for_number(5), Some(a));
+        assert_eq!(storage.key_for_number(6), Some(b));
+        assert_eq!(storage.key_for_number(1), None);
+    }
+
+    #[test]
+    fn spawn_numbered_places_world_and_clients_in_their_slots() {
+        let mut storage = EntityStorage::new(16);
+        storage.set_max_clients(4);
+        let world = storage.spawn_numbered(0).unwrap();
+        let client = storage.spawn_numbered(3).unwrap();
+        assert_eq!(number_of(&storage, world), 0);
+        assert_eq!(number_of(&storage, client), 3);
+        assert!(storage.get(client).unwrap().in_use);
+        // An in-use slot is not handed out twice; out of range is refused.
+        assert!(storage.spawn_numbered(3).is_none());
+        assert!(storage.spawn_numbered(16).is_none());
+    }
+
+    #[test]
+    fn soft_freed_slot_is_reused_only_after_half_a_second_like_g_spawn() {
+        let mut storage = EntityStorage::new(3);
+        let old = storage.spawn().unwrap();
+        storage.set_level_time(5.0);
+        storage.soft_free(old);
+        assert!(!storage.get(old).unwrap().in_use);
+
+        // Freed 0.4 s ago (and after the first 2 s): number 1 stays retired,
+        // so the next spawn takes number 2.
+        storage.set_level_time(5.4);
+        let fresh = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, fresh), 2);
+
+        // Table full now; the desperate policy reuses number 1 at once and
+        // the old key goes stale instead of aliasing the new entity.
+        let reused = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, reused), 1);
+        assert!(storage.get(old).is_none());
+        assert_eq!(storage.key_for_number(1), Some(reused));
+    }
+
+    #[test]
+    fn slot_freed_in_first_two_seconds_or_long_ago_is_reused_first() {
+        let mut storage = EntityStorage::new(8);
+        let early = storage.spawn().unwrap();
+        storage.set_level_time(1.0);
+        storage.soft_free(early); // freetime 1.0 < 2
+        let again = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, again), 1);
+
+        storage.set_level_time(10.0);
+        storage.soft_free(again);
+        storage.set_level_time(10.6);
+        let later = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, later), 1);
+    }
+
+    #[test]
+    fn free_releases_the_number_for_reuse() {
+        let mut storage = EntityStorage::new(8);
+        let key = storage.spawn().unwrap();
+        storage.free(key);
+        assert_eq!(storage.key_for_number(1), None);
+        let next = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, next), 1);
     }
 
     // -- Callback tests --

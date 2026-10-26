@@ -709,7 +709,7 @@ mod tests {
         func_explosive_die(&mut world, explosive, attacker, attacker, 100, Vec3f::ZERO);
 
         assert!(world.entities.get(victim).unwrap().game.health < 200);
-        assert!(world.entities.get(explosive).is_none());
+        assert!(!world.entities.get(explosive).is_some_and(|e| e.in_use));
     }
 
     #[test]

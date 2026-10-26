@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn view_offset_default_height() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P").unwrap();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
         world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
 
         world.update_player_view(key);
@@ -65,7 +65,7 @@ mod tests {
     fn view_bob_increases_with_speed() {
         let mut world = test_world();
         world.level.time = 1.0;
-        let key = world.client_connect("\\name\\P").unwrap();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
         world.entities.get_mut(key).unwrap().velocity = Vec3f::new(300.0, 0.0, 0.0);
 
         world.update_player_view(key);

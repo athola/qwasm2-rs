@@ -1,324 +1,186 @@
-//! Concrete GameExport implementation — the game module's public entry point.
+//! `GameExport` for `GameWorld`: the interface the server drives.
 //!
-//! Wires together EntityStorage, SpawnTable, and the GameImport callbacks
-//! into the interface the server drives.
+//! C ref: `game_export_t` (game.h) filled in by `GetGameAPI` (g_main.c).
+//! Client calls take the client's entity number (`slot + 1`), as C passes
+//! `EDICT_NUM(slot + 1)`.
 
-use crate::entity::{ClientData, EntityKey, EntityStorage};
-use crate::spawn::{parse_entity_string, SpawnTable};
-use crate::traits::{GameExport, GameImport};
+use crate::traits::GameExport;
+use crate::world::GameWorld;
 use q2_shared::{
-    constants::{CS_MAXCLIENTS, MAX_CLIENTS, MAX_EDICTS},
+    constants::{CS_MAXCLIENTS, MAX_CLIENTS},
     types::UserCmd,
 };
 
-pub struct GameLogic {
-    storage: EntityStorage,
-    spawn_table: SpawnTable,
-    framenum: i32,
-    /// Maps server client-slot index (0-based) to entity key; one entry per
-    /// client slot (C `game.maxclients`).
-    player_slots: Vec<Option<EntityKey>>,
-}
-
-impl GameLogic {
-    /// Create the game for `max_clients` client slots (the server's
-    /// `maxclients`, clamped to `MAX_CLIENTS`). There is no cvar system on
-    /// the GameImport yet, so the count is passed in rather than read.
-    pub fn new(max_clients: usize) -> Self {
-        Self {
-            storage: EntityStorage::new(MAX_EDICTS),
-            spawn_table: SpawnTable::new(),
-            framenum: 0,
-            player_slots: vec![None; max_clients.min(MAX_CLIENTS)],
-        }
+impl GameWorld {
+    /// Set `game.maxclients` (clamped to `MAX_CLIENTS`, as the server clamps
+    /// its cvar) and reserve entity numbers `1..=maxclients` for clients.
+    pub fn set_max_clients(&mut self, max_clients: usize) {
+        let max_clients = max_clients.min(MAX_CLIENTS);
+        self.game.maxclients = max_clients as i32;
+        self.entities.set_max_clients(max_clients);
     }
 
-    /// `true` if `idx` names a client slot. The server only passes valid
-    /// slots in C; out-of-range indices are logged and ignored here rather
-    /// than panicking on the slot table.
-    fn valid_slot(&self, idx: usize) -> bool {
-        let valid = idx < self.player_slots.len();
+    /// `true` if `number` is a client entity number. The server only passes
+    /// valid ones in C; anything else is logged and ignored here.
+    fn is_client_number(&self, number: usize) -> bool {
+        let valid = (1..=self.game.maxclients as usize).contains(&number);
         if !valid {
-            tracing::warn!(slot = idx, "client slot out of range");
+            tracing::warn!(number, "client entity number out of range");
         }
         valid
     }
 }
 
-impl GameExport for GameLogic {
-    fn init(&mut self, import: &dyn GameImport) {
-        import.dprintf("GameLogic initialised\n");
+impl GameExport for GameWorld {
+    fn init(&mut self) {
+        self.init_game();
         // C sets this in SP_worldspawn from the maxclients cvar (g_spawn.c).
-        import.configstring(CS_MAXCLIENTS as i32, &self.player_slots.len().to_string());
+        self.gi
+            .configstring(CS_MAXCLIENTS as i32, &self.game.maxclients.to_string());
     }
 
-    fn shutdown(&mut self) {
-        self.storage = EntityStorage::new(MAX_EDICTS);
-        self.player_slots.fill(None);
-        self.framenum = 0;
+    fn shutdown(&mut self) {}
+
+    fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str) {
+        GameWorld::spawn_entities(self, mapname, entstring, spawnpoint);
     }
 
-    fn spawn_entities(&mut self, mapname: &str, entstring: &str, _spawnpoint: &str) {
-        // C aborts the map load (gi.error) on a malformed entity string.
-        let entities = match parse_entity_string(entstring) {
-            Ok(entities) => entities,
-            Err(e) => {
-                tracing::error!(map = mapname, "spawn_entities: {e}");
-                return;
-            }
-        };
-        for props in &entities {
-            let key = match self.storage.spawn() {
-                Some(k) => k,
-                None => {
-                    tracing::warn!(map = mapname, "entity pool full during spawn_entities");
-                    break;
-                }
-            };
-            if let Some(classname) = props.get("classname") {
-                if let Some(spawn_fn) = self.spawn_table.get(classname) {
-                    spawn_fn(&mut self.storage, key, props);
-                }
-            }
-        }
-        tracing::debug!(
-            map = mapname,
-            count = entities.len(),
-            "spawn_entities complete"
-        );
-    }
-
-    fn client_connect(&mut self, ent_idx: usize, _userinfo: &str) -> bool {
-        if !self.valid_slot(ent_idx) {
+    fn client_connect(&mut self, number: usize, userinfo: &str) -> bool {
+        if !self.is_client_number(number) {
             return false;
         }
-        if let Some(old_key) = self.player_slots[ent_idx].take() {
-            self.storage.free(old_key);
-        }
-        true
-    }
-
-    fn client_begin(&mut self, ent_idx: usize) {
-        if !self.valid_slot(ent_idx) {
-            return;
-        }
-        if let Some(old_key) = self.player_slots[ent_idx].take() {
-            self.storage.free(old_key);
-        }
-        if let Some(key) = self.storage.spawn() {
-            if let Some(ent) = self.storage.get_mut(key) {
-                ent.client = Some(ClientData::default());
-                ent.game.classname = "player".to_string();
+        // A reconnect replaces whatever the slot held.
+        if let Some(old) = self.entities.key_for_number(number) {
+            if let Some(ent) = self.entities.get_mut(old) {
+                ent.in_use = false;
             }
-            self.player_slots[ent_idx] = Some(key);
-        } else {
-            tracing::warn!(slot = ent_idx, "entity pool full — cannot spawn player");
         }
+        self.connect_client(number, userinfo).is_some()
     }
 
-    fn client_disconnect(&mut self, ent_idx: usize) {
-        if !self.valid_slot(ent_idx) {
+    fn client_begin(&mut self, number: usize) {
+        if !self.is_client_number(number) {
             return;
         }
-        if let Some(key) = self.player_slots[ent_idx].take() {
-            self.storage.free(key);
+        // After a map change the new map's entities start empty (C keeps the
+        // client in game.clients and rebuilds the edict in ClientBegin).
+        let key = match self.entities.key_for_number(number) {
+            Some(key) if self.entities.get(key).is_some_and(|e| e.in_use) => Some(key),
+            _ => self.connect_client(number, ""),
+        };
+        if let Some(key) = key {
+            self.begin_client(key);
         }
     }
 
-    fn client_command(&mut self, _ent_idx: usize) {}
+    fn client_disconnect(&mut self, number: usize) {
+        if !self.is_client_number(number) {
+            return;
+        }
+        if let Some(key) = self.entities.key_for_number(number) {
+            self.disconnect_client(key);
+        }
+    }
 
-    fn client_think(&mut self, _ent_idx: usize, _cmd: &UserCmd) {}
+    fn client_command(&mut self, _number: usize) {}
+
+    fn client_think(&mut self, number: usize, cmd: &UserCmd) {
+        if !self.is_client_number(number) {
+            return;
+        }
+        if let Some(key) = self.entities.key_for_number(number) {
+            self.think_client(key, cmd);
+        }
+    }
 
     fn run_frame(&mut self) {
-        self.framenum += 1;
-        // Future: iterate entities with nextthink <= server time and call think fns
+        GameWorld::run_frame(self);
     }
 
     fn server_command(&mut self) {}
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::GameImport;
-    use q2_shared::types::*;
-
-    /// No-op import that records configstring writes.
-    #[derive(Default)]
-    struct NoopImport {
-        configstrings: std::cell::RefCell<Vec<(i32, String)>>,
-    }
-
-    impl GameImport for NoopImport {
-        fn bprintf(&self, _: i32, _: &str) {}
-        fn dprintf(&self, _: &str) {}
-        fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
-        fn centerprintf(&self, _: Option<usize>, _: &str) {}
-        fn sound(&self, _: Option<usize>, _: i32, _: i32, _: f32, _: f32, _: f32) {}
-        fn model_index(&self, _: &str) -> i32 {
-            0
-        }
-        fn sound_index(&self, _: &str) -> i32 {
-            0
-        }
-        fn image_index(&self, _: &str) -> i32 {
-            0
-        }
-        fn set_model(&self, _: usize, _: &str) {}
-        fn trace(&self, _: Vec3f, _: Vec3f, _: Vec3f, _: Vec3f, _: Option<usize>, _: i32) -> Trace {
-            Trace::default()
-        }
-        fn point_contents(&self, _: Vec3f) -> i32 {
-            0
-        }
-        fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {
-            false
-        }
-        fn in_phs(&self, _: Vec3f, _: Vec3f) -> bool {
-            false
-        }
-        fn link_entity(&self, _: usize) {}
-        fn unlink_entity(&self, _: usize) {}
-        fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> {
-            Vec::new()
-        }
-        fn configstring(&self, num: i32, string: &str) {
-            self.configstrings
-                .borrow_mut()
-                .push((num, string.to_string()));
-        }
-        fn write_byte(&self, _: i32) {}
-        fn write_short(&self, _: i32) {}
-        fn write_long(&self, _: i32) {}
-        fn write_float(&self, _: f32) {}
-        fn write_string(&self, _: &str) {}
-        fn write_position(&self, _: Vec3f) {}
-        fn write_dir(&self, _: Vec3f) {}
-        fn write_angle(&self, _: f32) {}
-        fn multicast(&self, _: Vec3f, _: Multicast) {}
-        fn unicast(&self, _: usize, _: bool) {}
-        fn argc(&self) -> i32 {
-            0
-        }
-        fn argv(&self, _: i32) -> String {
-            String::new()
-        }
-        fn args(&self) -> String {
-            String::new()
-        }
-        fn add_command_string(&self, _: &str) {}
-    }
+    use crate::world::test_world_recording;
 
     #[test]
-    fn init_advertises_the_configured_client_count() {
-        let import = NoopImport::default();
-        let mut game = GameLogic::new(4);
-        game.init(&import);
-        assert_eq!(
-            *import.configstrings.borrow(),
-            vec![(CS_MAXCLIENTS as i32, "4".to_string())]
-        );
-        assert_eq!(game.framenum, 0);
-        assert_eq!(game.storage.count(), 0);
+    fn init_advertises_the_client_count_and_registers_spawns() {
+        let (mut world, gi) = test_world_recording();
+        world.set_max_clients(4);
+        world.init();
+        assert!(gi
+            .configstrings
+            .borrow()
+            .contains(&(CS_MAXCLIENTS as i32, "4".to_string())));
+        assert!(world.spawn_table.get("monster_soldier").is_some());
     }
 
     #[test]
     fn client_count_is_clamped_to_max_clients() {
-        let import = NoopImport::default();
-        let mut game = GameLogic::new(MAX_CLIENTS + 7);
-        game.init(&import);
-        assert_eq!(import.configstrings.borrow()[0].1, MAX_CLIENTS.to_string());
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(MAX_CLIENTS + 7);
+        assert_eq!(world.game.maxclients as usize, MAX_CLIENTS);
     }
 
     #[test]
-    fn client_calls_out_of_range_are_rejected_without_panic() {
-        let mut game = GameLogic::new(4);
-        assert!(!game.client_connect(4, ""));
-        assert!(!game.client_connect(MAX_CLIENTS + 1, ""));
-        game.client_begin(4);
-        game.client_disconnect(MAX_CLIENTS + 1);
-        game.client_think(4, &UserCmd::default());
-        assert_eq!(game.storage.count(), 0, "no player spawned for a bad slot");
+    fn client_calls_outside_the_client_slots_are_rejected_without_panic() {
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(2);
+        world.init();
+        assert!(!world.client_connect(0, ""), "0 is the world");
+        assert!(!world.client_connect(3, ""));
+        world.client_begin(3);
+        world.client_disconnect(MAX_CLIENTS + 1);
+        world.client_think(0, &UserCmd::default());
     }
 
     #[test]
-    fn spawn_entities_populates_storage() {
-        let mut game = GameLogic::new(4);
-        let entstring = r#"
-{ "classname" "worldspawn" "message" "Test" }
-{ "classname" "info_player_start" "origin" "0 0 0" }
-"#;
-        game.spawn_entities("test_map", entstring, "");
-        assert_eq!(game.storage.count(), 2);
-        let mut classnames: Vec<&str> = game
-            .storage
-            .iter()
-            .map(|(_, ent)| ent.game.classname.as_str())
-            .collect();
-        classnames.sort_unstable();
-        assert_eq!(classnames, ["info_player_start", "worldspawn"]);
-    }
-
-    #[test]
-    fn spawn_entities_with_truncated_text_spawns_nothing() {
-        let mut game = GameLogic::new(4);
-        let entstring = r#"
-{ "classname" "worldspawn" }
-{ "classname" "info_player_start" "origin" "0 0 0"
-"#;
-        game.spawn_entities("test_map", entstring, "");
-        assert_eq!(
-            game.storage.count(),
-            0,
-            "a corrupt entity lump must not half-load"
+    fn connected_client_becomes_a_player_entity_at_its_number() {
+        let (mut world, gi) = test_world_recording();
+        world.set_max_clients(2);
+        world.init();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_player_start\" \"origin\" \"64 0 24\" }",
+            "",
         );
-    }
+        assert!(world.client_connect(2, r"\name\Tester"));
+        world.client_begin(2);
 
-    #[test]
-    fn client_connect_and_begin() {
-        let mut game = GameLogic::new(4);
-        assert!(game.client_connect(0, r"name\test\skin\male/grunt"));
-        game.client_begin(0);
-        // Player entity should exist
-        let slot_key = game.player_slots[0].expect("player slot should be filled");
-        let ent = game.storage.get(slot_key).expect("entity should exist");
+        let key = world.entities.key_for_number(2).unwrap();
+        let ent = world.entities.get(key).unwrap();
+        assert!(ent.in_use);
         assert_eq!(ent.game.classname, "player");
-        assert!(ent.client.is_some());
+        assert_eq!(ent.state.origin, q2_shared::Vec3f::new(64.0, 0.0, 24.0));
+        assert!(gi.links.borrow().iter().any(|l| l.number == 2));
+
+        world.client_disconnect(2);
+        let ent = world.entities.get(key).unwrap();
+        assert!(!ent.in_use);
+        assert_eq!(ent.game.classname, "disconnected");
     }
 
     #[test]
-    fn client_disconnect_frees_entity() {
-        let mut game = GameLogic::new(4);
-        game.client_connect(0, "");
-        game.client_begin(0);
-        let pre_count = game.storage.count();
-        game.client_disconnect(0);
-        assert_eq!(game.storage.count(), pre_count - 1);
-        assert!(game.player_slots[0].is_none());
+    fn spawn_entities_starts_the_new_map_from_empty_storage() {
+        let (mut world, _gi) = test_world_recording();
+        world.init();
+        let entstring = "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_player_start\" \"origin\" \"0 0 0\" }";
+        world.spawn_entities("one", entstring, "");
+        let first = world.entities.count();
+        world.spawn_entities("two", entstring, "");
+        assert_eq!(world.entities.count(), first, "C memsets g_edicts per map");
+        assert_eq!(world.level.mapname, "two");
     }
 
     #[test]
-    fn run_frame_increments_framenum() {
-        let mut game = GameLogic::new(4);
-        for _ in 0..10 {
-            game.run_frame();
-        }
-        assert_eq!(game.framenum, 10);
-    }
-
-    #[test]
-    fn shutdown_resets_state() {
-        let mut game = GameLogic::new(4);
-        game.client_connect(0, "");
-        game.client_begin(0);
+    fn run_frame_through_the_trait_advances_the_level() {
+        let (mut world, _gi) = test_world_recording();
+        world.init();
+        let game: &mut dyn GameExport = &mut world;
         game.run_frame();
-        game.shutdown();
-        assert_eq!(game.framenum, 0);
-        assert_eq!(game.storage.count(), 0);
-        assert!(game.player_slots.iter().all(|s| s.is_none()));
+        game.run_frame();
+        assert_eq!(world.level.framenum, 2);
     }
 }

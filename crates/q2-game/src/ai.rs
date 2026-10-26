@@ -144,7 +144,7 @@ pub fn find_target(world: &mut GameWorld, key: EntityKey) -> bool {
         Vec3f::ZERO,
         Vec3f::ZERO,
         client_origin,
-        None,
+        world.number_of(key),
         1, // MASK_SOLID
     );
 
@@ -301,6 +301,19 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_target_sight_trace_passes_the_monster_itself() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let monster = world.spawn().unwrap();
+        let player = world.spawn().unwrap();
+        world.level.sight_client_key = Some(player);
+        find_target(&mut world, monster);
+        assert_eq!(
+            gi.trace_pass_ents.borrow().first(),
+            Some(&world.number_of(monster))
+        );
+    }
     use crate::entity::MonsterMove;
     use crate::world::test_world;
 

@@ -274,7 +274,7 @@ impl GameWorld {
             bolt.game.nextthink = self.level.time + 2.0;
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(bolt_key);
     }
 
     /// Fire a single bullet (machinegun/chaingun round).
@@ -378,7 +378,7 @@ impl GameWorld {
             rocket.game.nextthink = self.level.time + 8000.0 / speed as f32;
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(rocket_key);
     }
 
     /// Fire a grenade. Creates a bouncing projectile entity.
@@ -421,7 +421,7 @@ impl GameWorld {
             gren.game.nextthink = self.level.time + timer;
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(gren_key);
     }
 
     /// Fire a railgun shot. Instant hitscan that pierces entities.
@@ -486,7 +486,7 @@ impl GameWorld {
             bfg.game.nextthink = self.level.time + 8000.0 / speed as f32;
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(bfg_key);
     }
 
     /// Melee attack — trace forward and apply damage.
@@ -652,7 +652,7 @@ mod tests {
         // Target should have taken damage.
         assert_eq!(world.entities.get(target).unwrap().game.health, 85);
         // Bolt should be freed.
-        assert!(world.entities.get(bolt_key).is_none());
+        assert!(!world.entities.get(bolt_key).is_some_and(|e| e.in_use));
     }
 
     #[test]
@@ -710,7 +710,7 @@ mod tests {
         // Bystander takes splash damage (within 150 radius).
         assert!(world.entities.get(bystander).unwrap().game.health < 200);
         // Rocket is freed.
-        assert!(world.entities.get(rocket_key).is_none());
+        assert!(!world.entities.get(rocket_key).is_some_and(|e| e.in_use));
     }
 
     #[test]
@@ -741,7 +741,7 @@ mod tests {
         // Target should have taken splash damage.
         assert!(world.entities.get(target).unwrap().game.health < 200);
         // Grenade should be freed.
-        assert!(world.entities.get(gren).is_none());
+        assert!(!world.entities.get(gren).is_some_and(|e| e.in_use));
     }
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
         // Target should have taken damage.
         assert!(world.entities.get(target).unwrap().game.health < 200);
         // Grenade should be freed after explosion.
-        assert!(world.entities.get(gren_key).is_none());
+        assert!(!world.entities.get(gren_key).is_some_and(|e| e.in_use));
     }
 
     #[test]
@@ -814,6 +814,6 @@ mod tests {
 
         projectile_timeout(&mut world, ent);
 
-        assert!(world.entities.get(ent).is_none());
+        assert!(!world.entities.get(ent).is_some_and(|e| e.in_use));
     }
 }

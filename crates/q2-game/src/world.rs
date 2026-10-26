@@ -8,7 +8,9 @@ use q2_shared::types::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::items::ItemDef;
 use crate::spawn::SpawnTable;
-use crate::traits::GameImport;
+use crate::traits::{EntityLink, GameImport};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // LevelLocals — per-level state (reset each map)
@@ -78,19 +80,24 @@ pub struct GameWorld {
     pub game: GameLocals,
     pub items: Vec<ItemDef>,
     pub spawn_table: SpawnTable,
-    pub gi: Box<dyn GameImport>,
+    /// Engine callbacks. `Rc` so a pmove trace closure can hold its own
+    /// handle while game code borrows `self` mutably.
+    pub gi: Rc<dyn GameImport>,
 }
 
 impl GameWorld {
     /// Create a new game world with the given engine callbacks.
-    pub fn new(gi: Box<dyn GameImport>, maxentities: usize) -> Self {
+    pub fn new(gi: Rc<dyn GameImport>, maxentities: usize) -> Self {
+        let game = GameLocals {
+            maxentities: maxentities as i32,
+            ..GameLocals::default()
+        };
+        let mut entities = EntityStorage::new(maxentities);
+        entities.set_max_clients(game.maxclients.max(0) as usize);
         Self {
-            entities: EntityStorage::new(maxentities),
+            entities,
             level: LevelLocals::default(),
-            game: GameLocals {
-                maxentities: maxentities as i32,
-                ..GameLocals::default()
-            },
+            game,
             items: Vec::new(),
             spawn_table: SpawnTable::new(),
             gi,
@@ -105,22 +112,93 @@ impl GameWorld {
         self.entities.spawn()
     }
 
-    /// Free an entity and remove it from the world.
+    /// Free an entity: unlink it and keep the slot as a freed edict, so its
+    /// number is not reused for another 0.5 s. Client slots are never freed.
     /// C ref: G_FreeEdict (g_utils.c)
     pub fn free_entity(&mut self, key: EntityKey) {
-        if let Some(ent) = self.entities.get_mut(key) {
-            ent.in_use = false;
-            ent.game.classname = String::new();
-            ent.game.target = String::new();
-            ent.game.targetname = String::new();
-            ent.think = None;
-            ent.touch = None;
-            ent.use_fn = None;
-            ent.pain = None;
-            ent.die = None;
-            ent.blocked = None;
+        let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
+            return;
+        };
+        if let Ok(n) = usize::try_from(number) {
+            self.gi.unlink_entity(n);
         }
-        self.entities.free(key);
+        if number <= self.game.maxclients {
+            return;
+        }
+        self.entities.set_level_time(self.level.time);
+        self.entities.soft_free(key);
+    }
+
+    /// Recompute the link fields and hand the entity to the server.
+    /// C ref: SV_LinkEdict (sv_world.c), whose edict-side half lives here
+    /// because the game owns the entities.
+    pub fn link_entity(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        if ent.state.number == 0 || !ent.in_use {
+            return; // C: the world and free edicts are never linked
+        }
+        ent.size = ent.maxs - ent.mins;
+
+        // Encode the size into entity_state for client prediction.
+        ent.state.solid = if ent.solid == Solid::Bbox
+            && ent.svflags & q2_shared::constants::SVF_DEADMONSTER == 0
+        {
+            let i = ((ent.maxs.x as i32) / 8).clamp(1, 31);
+            let j = ((-ent.mins.z as i32) / 8).clamp(1, 31);
+            let k = (((ent.maxs.z + 32.0) as i32) / 8).clamp(1, 63);
+            (k << 10) | (j << 5) | i
+        } else if ent.solid == Solid::Bsp {
+            31 // a solid_bbox will never create this value
+        } else {
+            0
+        };
+
+        let angles = ent.state.angles;
+        if ent.solid == Solid::Bsp && (angles.x != 0.0 || angles.y != 0.0 || angles.z != 0.0) {
+            // Expand for rotation.
+            let max = [ent.mins, ent.maxs]
+                .iter()
+                .flat_map(|v| [v.x.abs(), v.y.abs(), v.z.abs()])
+                .fold(0.0f32, f32::max);
+            ent.absmin = ent.state.origin - Vec3f::splat(max);
+            ent.absmax = ent.state.origin + Vec3f::splat(max);
+        } else {
+            ent.absmin = ent.state.origin + ent.mins;
+            ent.absmax = ent.state.origin + ent.maxs;
+        }
+        // Movement is clipped an epsilon away from an edge, so check boxes
+        // that don't quite touch.
+        ent.absmin -= Vec3f::ONE;
+        ent.absmax += Vec3f::ONE;
+        ent.linkcount += 1;
+
+        let owner = ent.owner;
+        let link = EntityLink {
+            number: ent.state.number as usize,
+            origin: ent.state.origin,
+            angles,
+            mins: ent.mins,
+            maxs: ent.maxs,
+            absmin: ent.absmin,
+            absmax: ent.absmax,
+            solid: ent.solid,
+            modelindex: ent.state.modelindex,
+            owner: None,
+            svflags: ent.svflags,
+        };
+        let owner = owner
+            .and_then(|k| self.entities.get(k))
+            .and_then(|o| usize::try_from(o.state.number).ok());
+        self.gi.link_entity(&EntityLink { owner, ..link });
+    }
+
+    /// Entity number of `key`, as passed to GameImport calls.
+    pub fn number_of(&self, key: EntityKey) -> Option<usize> {
+        self.entities
+            .get(key)
+            .and_then(|e| usize::try_from(e.state.number).ok())
     }
 
     // -- Search utilities ----------------------------------------------------
@@ -261,11 +339,19 @@ impl GameWorld {
 // MockGameImport — for unit testing game code without a real server
 // ---------------------------------------------------------------------------
 
-/// No-op `GameImport` implementation for testing.
+/// `GameImport` for testing game logic without a real server.
 ///
-/// All methods do nothing or return safe defaults. This allows testing
-/// game logic in isolation without a real server.
-pub struct MockGameImport;
+/// Calls return safe defaults; links, unlinks and trace pass-entities are
+/// recorded so tests can check what the game told the server.
+#[derive(Default)]
+pub struct MockGameImport {
+    pub links: RefCell<Vec<EntityLink>>,
+    pub unlinks: RefCell<Vec<usize>>,
+    pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
+    pub configstrings: RefCell<Vec<(i32, String)>>,
+    /// Returned by the next `trace` call instead of an unobstructed trace.
+    pub next_trace: RefCell<Option<Trace>>,
+}
 
 impl GameImport for MockGameImport {
     fn bprintf(&self, _: i32, _: &str) {}
@@ -290,9 +376,13 @@ impl GameImport for MockGameImport {
         _mins: Vec3f,
         _maxs: Vec3f,
         end: Vec3f,
-        _pass_ent: Option<usize>,
+        pass_ent: Option<usize>,
         _content_mask: i32,
     ) -> Trace {
+        self.trace_pass_ents.borrow_mut().push(pass_ent);
+        if let Some(trace) = self.next_trace.borrow_mut().take() {
+            return trace;
+        }
         // Default trace: no collision, endpoint reached.
         Trace {
             fraction: 1.0,
@@ -315,13 +405,21 @@ impl GameImport for MockGameImport {
     fn in_phs(&self, _: Vec3f, _: Vec3f) -> bool {
         true
     }
-    fn link_entity(&self, _: usize) {}
-    fn unlink_entity(&self, _: usize) {}
+    fn link_entity(&self, ent: &EntityLink) {
+        self.links.borrow_mut().push(*ent);
+    }
+    fn unlink_entity(&self, number: usize) {
+        self.unlinks.borrow_mut().push(number);
+    }
     fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> {
         Vec::new()
     }
 
-    fn configstring(&self, _: i32, _: &str) {}
+    fn configstring(&self, num: i32, string: &str) {
+        self.configstrings
+            .borrow_mut()
+            .push((num, string.to_string()));
+    }
     fn write_byte(&self, _: i32) {}
     fn write_short(&self, _: i32) {}
     fn write_long(&self, _: i32) {}
@@ -367,6 +465,7 @@ impl GameWorld {
     pub fn run_frame(&mut self) {
         self.level.framenum += 1;
         self.level.time = self.level.framenum as f32 * crate::constants::FRAMETIME;
+        self.entities.set_level_time(self.level.time);
 
         // Pick a player for monsters to target this frame.
         crate::ai::ai_set_sight_client(self);
@@ -396,11 +495,23 @@ impl GameWorld {
             // Run entity physics + think.
             self.run_entity(key);
         }
+
+        // Build the player state each client is sent this frame.
+        self.client_end_server_frames();
     }
 
     /// Parse an entity string and spawn all entities.
     /// C ref: `SpawnEntities` (g_spawn.c).
-    pub fn spawn_entities(&mut self, _mapname: &str, entstring: &str, _spawnpoint: &str) {
+    pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, _spawnpoint: &str) {
+        // C SpawnEntities: a new map starts from zeroed edicts and level.
+        self.entities = EntityStorage::new(self.game.maxentities.max(0) as usize);
+        self.entities
+            .set_max_clients(self.game.maxclients.max(0) as usize);
+        self.level = LevelLocals {
+            mapname: mapname.to_string(),
+            ..LevelLocals::default()
+        };
+
         // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
         let parsed = match crate::spawn::parse_entity_string(entstring) {
             Ok(parsed) => parsed,
@@ -420,7 +531,13 @@ impl GameWorld {
             let spawn_fn = self.spawn_table.get(&classname).copied();
 
             if let Some(sfn) = spawn_fn {
-                let Some(key) = self.entities.spawn() else {
+                // C SpawnEntities: the first entity (worldspawn) is g_edicts[0].
+                let slot = if classname == "worldspawn" {
+                    self.entities.spawn_numbered(0)
+                } else {
+                    self.entities.spawn()
+                };
+                let Some(key) = slot else {
                     break; // Storage full.
                 };
 
@@ -451,7 +568,13 @@ impl GameWorld {
 
 /// Helper to create a `GameWorld` for testing.
 pub fn test_world() -> GameWorld {
-    GameWorld::new(Box::new(MockGameImport), 1024)
+    test_world_recording().0
+}
+
+/// A test `GameWorld` plus a handle on its recording import.
+pub fn test_world_recording() -> (GameWorld, Rc<MockGameImport>) {
+    let gi = Rc::new(MockGameImport::default());
+    (GameWorld::new(gi.clone(), 1024), gi)
 }
 
 // ---------------------------------------------------------------------------
@@ -473,13 +596,108 @@ mod tests {
 
     #[test]
     fn spawn_and_free_entity() {
-        let mut world = test_world();
+        let (mut world, gi) = test_world_recording();
         let key = world.spawn().expect("should spawn");
         assert_eq!(world.entities.count(), 1);
         assert!(world.entities.get(key).unwrap().in_use);
 
+        // C G_FreeEdict: unlink, then keep the slot as a freed edict so its
+        // number is not reused for another 0.5 s.
+        world.level.time = 3.0;
         world.free_entity(key);
-        assert_eq!(world.entities.count(), 0);
+        let ent = world.entities.get(key).unwrap();
+        assert!(!ent.in_use);
+        assert_eq!(ent.game.classname, "freed");
+        assert_eq!(ent.game.freetime, 3.0);
+        assert_eq!(*gi.unlinks.borrow(), [ent.state.number as usize]);
+    }
+
+    #[test]
+    fn free_entity_never_frees_a_client_slot() {
+        let (mut world, gi) = test_world_recording();
+        world.set_max_clients(4);
+        let client = world.entities.spawn_numbered(2).unwrap();
+        world.free_entity(client);
+        assert!(world.entities.get(client).unwrap().in_use);
+        assert_eq!(*gi.unlinks.borrow(), [2]);
+    }
+
+    #[test]
+    fn link_entity_sends_number_bounds_and_encodes_bbox_solid() {
+        let (mut world, gi) = test_world_recording();
+        let key = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.state.origin = Vec3f::new(10.0, 20.0, 30.0);
+            ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
+            ent.maxs = Vec3f::new(16.0, 16.0, 32.0);
+            ent.solid = Solid::Bbox;
+        }
+        world.link_entity(key);
+
+        let ent = world.entities.get(key).unwrap();
+        // C SV_LinkEdict: i = 16/8, j = 24/8, k = (32+32)/8.
+        assert_eq!(ent.state.solid, (8 << 10) | (3 << 5) | 2);
+        assert_eq!(ent.absmin, Vec3f::new(-7.0, 3.0, 5.0));
+        assert_eq!(ent.absmax, Vec3f::new(27.0, 37.0, 63.0));
+        assert_eq!(ent.size, Vec3f::new(32.0, 32.0, 56.0));
+        let links = gi.links.borrow();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].number, ent.state.number as usize);
+        assert_eq!(links[0].absmin, ent.absmin);
+        assert_eq!(links[0].solid, Solid::Bbox);
+    }
+
+    #[test]
+    fn link_entity_expands_rotated_bmodels_and_skips_world_and_freed() {
+        let (mut world, gi) = test_world_recording();
+        let door = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(door).unwrap();
+            ent.mins = Vec3f::new(-8.0, -64.0, 0.0);
+            ent.maxs = Vec3f::new(8.0, 0.0, 96.0);
+            ent.state.angles = Vec3f::new(0.0, 90.0, 0.0);
+            ent.solid = Solid::Bsp;
+        }
+        world.link_entity(door);
+        let ent = world.entities.get(door).unwrap();
+        assert_eq!(ent.state.solid, 31);
+        // Rotated BSP: a cube of the largest extent (96) around the origin.
+        assert_eq!(ent.absmin, Vec3f::new(-97.0, -97.0, -97.0));
+        assert_eq!(ent.absmax, Vec3f::new(97.0, 97.0, 97.0));
+
+        let dead = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(dead).unwrap();
+            ent.solid = Solid::Bbox;
+            ent.svflags = q2_shared::constants::SVF_DEADMONSTER;
+        }
+        world.link_entity(dead);
+        assert_eq!(world.entities.get(dead).unwrap().state.solid, 0);
+
+        let world_ent = world.entities.spawn_numbered(0).unwrap();
+        world.link_entity(world_ent);
+        let freed = world.spawn().unwrap();
+        world.free_entity(freed);
+        world.link_entity(freed);
+        let numbers: Vec<usize> = gi.links.borrow().iter().map(|l| l.number).collect();
+        assert_eq!(numbers.len(), 2, "world and freed entities are not linked");
+    }
+
+    #[test]
+    fn spawn_entities_puts_worldspawn_at_number_zero() {
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_player_start\" \"origin\" \"0 0 0\" }",
+            "",
+        );
+        let key = world.entities.key_for_number(0).expect("world at 0");
+        assert_eq!(
+            world.entities.get(key).unwrap().game.classname,
+            "worldspawn"
+        );
     }
 
     #[test]
@@ -569,7 +787,7 @@ mod tests {
         world.use_targets(ent, ent);
 
         // Victim should be freed
-        assert!(world.entities.get(victim).is_none());
+        assert!(!world.entities.get(victim).is_some_and(|e| e.in_use));
     }
 
     #[test]
@@ -624,7 +842,7 @@ mod tests {
 
     #[test]
     fn mock_game_import_trace_passes_through() {
-        let gi = MockGameImport;
+        let gi = MockGameImport::default();
         let start = Vec3f::new(0.0, 0.0, 0.0);
         let end = Vec3f::new(100.0, 0.0, 0.0);
         let trace = gi.trace(start, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
@@ -870,8 +1088,8 @@ mod tests {
         }
 
         // Connect and begin.
-        let player = world.client_connect("\\name\\TestPlayer").unwrap();
-        world.client_begin(player);
+        let player = world.connect_client(1, "\\name\\TestPlayer").unwrap();
+        world.begin_client(player);
 
         assert_eq!(world.entities.get(player).unwrap().game.health, 100);
 

@@ -18,8 +18,8 @@ const PLAYER_MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 impl GameWorld {
     /// Handle a new client connection. Allocates a player entity.
     /// C ref: `ClientConnect` (player/client.c).
-    pub fn client_connect(&mut self, userinfo: &str) -> Option<EntityKey> {
-        let key = self.spawn()?;
+    pub fn connect_client(&mut self, number: usize, userinfo: &str) -> Option<EntityKey> {
+        let key = self.entities.spawn_numbered(number)?;
 
         let ent = self.entities.get_mut(key)?;
         ent.game.classname = "player".to_string();
@@ -51,7 +51,7 @@ impl GameWorld {
 
     /// Place a connected client into the game world at a spawn point.
     /// C ref: `PutClientInServer` / `ClientBegin` (player/client.c).
-    pub fn client_begin(&mut self, key: EntityKey) {
+    pub fn begin_client(&mut self, key: EntityKey) {
         // Find a spawn point by searching live entities.
         let spawn_pos = self
             .find_by_classname(None, "info_player_start")
@@ -70,24 +70,28 @@ impl GameWorld {
             }
         }
 
-        self.gi.link_entity(0);
+        self.link_entity(key);
     }
 
     /// Handle client disconnection. Free the player entity.
     /// C ref: `ClientDisconnect` (player/client.c).
-    pub fn client_disconnect(&mut self, key: EntityKey) {
+    pub fn disconnect_client(&mut self, key: EntityKey) {
         if let Some(ent) = self.entities.get_mut(key) {
             if let Some(ref mut client) = ent.client {
                 client.pers.connected = false;
             }
             ent.in_use = false;
+            ent.solid = Solid::Not;
+            ent.state.modelindex = 0;
+            ent.game.classname = "disconnected".to_string();
         }
+        // Unlinks; a client slot is never freed (C G_FreeEdict).
         self.free_entity(key);
     }
 
     /// Process a client's input command for one frame.
     /// C ref: `ClientThink` (player/client.c).
-    pub fn client_think(&mut self, key: EntityKey, cmd: &UserCmd) {
+    pub fn think_client(&mut self, key: EntityKey, cmd: &UserCmd) {
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
@@ -161,7 +165,7 @@ mod tests {
     #[test]
     fn client_connect_creates_player() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\TestPlayer").unwrap();
+        let key = world.connect_client(1, "\\name\\TestPlayer").unwrap();
 
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.game.classname, "player");
@@ -183,8 +187,8 @@ mod tests {
             ent.state.origin = Vec3f::new(100.0, 200.0, 0.0);
         }
 
-        let key = world.client_connect("\\name\\P1").unwrap();
-        world.client_begin(key);
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
 
         let pos = world.entities.get(key).unwrap().state.origin;
         assert!((pos.x - 100.0).abs() < 0.01);
@@ -194,8 +198,8 @@ mod tests {
     #[test]
     fn client_begin_gives_blaster() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P1").unwrap();
-        world.client_begin(key);
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
 
         let inv = world
             .entities
@@ -212,17 +216,18 @@ mod tests {
     #[test]
     fn client_disconnect_frees_entity() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P1").unwrap();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
 
         assert_eq!(world.entities.count(), 1);
-        world.client_disconnect(key);
-        assert_eq!(world.entities.count(), 0);
+        world.disconnect_client(key);
+        // C keeps client edicts allocated; the slot is just no longer in use.
+        assert!(!world.entities.get(key).unwrap().in_use);
     }
 
     #[test]
     fn client_think_applies_movement() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P1").unwrap();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
         world.entities.get_mut(key).unwrap().state.angles.y = 0.0;
 
         let cmd = UserCmd {
@@ -236,7 +241,7 @@ mod tests {
             lightlevel: 0,
         };
 
-        world.client_think(key, &cmd);
+        world.think_client(key, &cmd);
 
         let v = world.entities.get(key).unwrap().velocity;
         assert!(v.x > 0.0); // Moving forward

@@ -101,7 +101,7 @@ mod tests {
         fn api_version(&self) -> i32 {
             3
         }
-        fn init(&mut self, _: &dyn q2_game::traits::GameImport) {}
+        fn init(&mut self) {}
         fn shutdown(&mut self) {}
         fn spawn_entities(&mut self, _: &str, _: &str, _: &str) {}
         fn client_connect(&mut self, _: usize, _: &str) -> bool {

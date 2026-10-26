@@ -45,7 +45,7 @@ mod tests {
     #[test]
     fn stats_reflect_health() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P").unwrap();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
         world.entities.get_mut(key).unwrap().game.health = 75;
 
         world.update_player_stats(key);
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn stats_reflect_armor() {
         let mut world = test_world();
-        let key = world.client_connect("\\name\\P").unwrap();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
         if let Some(ref mut client) = world.entities.get_mut(key).unwrap().client {
             client.pers.inventory[1] = 50;
         }

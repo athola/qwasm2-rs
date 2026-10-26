@@ -366,7 +366,7 @@ mod tests {
         // Victim should have taken splash damage.
         assert!(world.entities.get(victim).unwrap().game.health < 200);
         // Box should be freed.
-        assert!(world.entities.get(box_ent).is_none());
+        assert!(!world.entities.get(box_ent).is_some_and(|e| e.in_use));
     }
 
     #[test]

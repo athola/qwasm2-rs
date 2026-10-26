@@ -6,6 +6,33 @@
 use q2_shared::types::*;
 
 // ---------------------------------------------------------------------------
+// EntityLink — the edict fields SV_LinkEdict reads
+// ---------------------------------------------------------------------------
+
+/// What the server needs to place an entity in its spatial tree and clip
+/// traces against it. In C the server reads these fields straight out of the
+/// shared `edict_t`; here the game copies them out when it links.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EntityLink {
+    /// Entity number (index into C `g_edicts`).
+    pub number: usize,
+    pub origin: Vec3f,
+    pub angles: Vec3f,
+    pub mins: Vec3f,
+    pub maxs: Vec3f,
+    /// World-space bounds, already expanded by one unit as SV_LinkEdict does.
+    pub absmin: Vec3f,
+    pub absmax: Vec3f,
+    pub solid: Solid,
+    /// Inline model index for `Solid::Bsp` entities (`*n` -> `n + 1`).
+    pub modelindex: i32,
+    /// Number of the owning entity; traces from the owner pass through.
+    pub owner: Option<usize>,
+    /// `SVF_*` flags (`SVF_DEADMONSTER` changes how traces clip).
+    pub svflags: u32,
+}
+
+// ---------------------------------------------------------------------------
 // GameImport — server callbacks available to the game module
 // ---------------------------------------------------------------------------
 
@@ -103,11 +130,12 @@ pub trait GameImport {
     // -- entity linking ----------------------------------------------------
 
     /// Link an entity into the world spatial structure (call after changing
-    /// origin, mins, maxs, or solid type).
-    fn link_entity(&self, ent_idx: usize);
+    /// origin, mins, maxs, or solid type). Replaces any earlier link for the
+    /// same number.
+    fn link_entity(&self, ent: &EntityLink);
 
-    /// Remove an entity from the world spatial structure.
-    fn unlink_entity(&self, ent_idx: usize);
+    /// Remove entity `number` from the world spatial structure.
+    fn unlink_entity(&self, number: usize);
 
     /// Find all entity indices whose bounding boxes intersect the given region.
     ///
@@ -186,7 +214,9 @@ pub trait GameExport {
         3
     }
 
-    fn init(&mut self, import: &dyn GameImport);
+    /// C `InitGame`. The import is supplied when the game is constructed,
+    /// since the game keeps calling it every frame.
+    fn init(&mut self);
     fn shutdown(&mut self);
 
     /// Called when a new map is loaded.
@@ -271,7 +301,7 @@ mod tests {
         fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
             false
         }
-        fn link_entity(&self, _ent_idx: usize) {}
+        fn link_entity(&self, _ent: &EntityLink) {}
         fn unlink_entity(&self, _ent_idx: usize) {}
         fn box_edicts(
             &self,
@@ -317,7 +347,7 @@ mod tests {
         gi.sound(Some(1), 0, 0, 1.0, 1.0, 0.0);
         gi.set_model(1, "models/test.md2");
         gi.configstring(0, "test");
-        gi.link_entity(1);
+        gi.link_entity(&EntityLink::default());
         gi.unlink_entity(1);
         gi.multicast(Vec3f::ZERO, Multicast::All);
         gi.unicast(1, true);

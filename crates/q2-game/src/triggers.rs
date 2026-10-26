@@ -459,7 +459,7 @@ mod tests {
         trigger_once_touch(&mut world, trigger, player, None, None);
 
         // Trigger should be freed.
-        assert!(world.entities.get(trigger).is_none());
+        assert!(!world.entities.get(trigger).is_some_and(|e| e.in_use));
     }
 
     #[test]

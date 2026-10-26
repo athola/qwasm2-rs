@@ -25,5 +25,3 @@ pub mod traits;
 pub mod triggers;
 pub mod weapons;
 pub mod world;
-
-pub use game::GameLogic;
