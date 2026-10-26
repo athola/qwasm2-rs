@@ -55,102 +55,7 @@ impl Gl3Renderer {
             None => return,
         };
 
-        // Build vertex data from BSP faces: position (3f) + color (3f) per vertex
-        let mut verts: Vec<f32> = Vec::new();
-
-        // Only render world model (model 0) faces
-        let (first_face, num_faces) = if let Some(model) = bsp.models.first() {
-            (model.first_face as usize, model.num_faces as usize)
-        } else {
-            (0, bsp.faces.len())
-        };
-
-        let end_face = (first_face + num_faces).min(bsp.faces.len());
-        for face_idx in first_face..end_face {
-            let face = &bsp.faces[face_idx];
-            let num_edges = face.num_edges as usize;
-            if num_edges < 3 {
-                continue;
-            }
-
-            // Skip sky/nodraw surfaces
-            if (face.texinfo_idx as usize) < bsp.texinfo.len() {
-                let ti = &bsp.texinfo[face.texinfo_idx as usize];
-                // SURF_SKY=4, SURF_NODRAW=128
-                if ti.flags & (4 | 128) != 0 {
-                    continue;
-                }
-            }
-
-            // Get the face's plane normal for pseudo-lighting
-            let normal = if (face.plane_idx as usize) < bsp.planes.len() {
-                let plane = &bsp.planes[face.plane_idx as usize];
-                if face.side != 0 {
-                    -plane.normal
-                } else {
-                    plane.normal
-                }
-            } else {
-                Vec3f::new(0.0, 0.0, 1.0)
-            };
-
-            // Compute face color from normal (simple directional light)
-            let light_dir = Vec3f::new(0.5, 0.3, 0.9).normalize();
-            let ndotl = normal.dot(light_dir).max(0.0);
-            let ambient = 0.15;
-            let brightness = ambient + (1.0 - ambient) * ndotl;
-
-            // Vary base color by texinfo index for visual variety
-            let ti_idx = face.texinfo_idx as usize;
-            let (r, g, b) = face_color(ti_idx, brightness);
-
-            // Collect face vertices via surface_edges → edges → vertices
-            let mut face_verts: Vec<Vec3f> = Vec::with_capacity(num_edges);
-            for i in 0..num_edges {
-                let se_idx = (face.first_edge as usize) + i;
-                if se_idx >= bsp.surface_edges.len() {
-                    break;
-                }
-                let se = bsp.surface_edges[se_idx];
-                let vi = if se >= 0 {
-                    let edge_idx = se as usize;
-                    if edge_idx < bsp.edges.len() {
-                        bsp.edges[edge_idx].v[0] as usize
-                    } else {
-                        continue;
-                    }
-                } else {
-                    let edge_idx = (-se) as usize;
-                    if edge_idx < bsp.edges.len() {
-                        bsp.edges[edge_idx].v[1] as usize
-                    } else {
-                        continue;
-                    }
-                };
-
-                if vi < bsp.vertices.len() {
-                    face_verts.push(bsp.vertices[vi].position);
-                }
-            }
-
-            // Fan triangulate: v0, v1, v2, then v0, v2, v3, etc.
-            if face_verts.len() >= 3 {
-                let v0 = face_verts[0];
-                for i in 1..face_verts.len() - 1 {
-                    let v1 = face_verts[i];
-                    let v2 = face_verts[i + 1];
-                    // Triangle: v0, v1, v2
-                    for v in &[v0, v1, v2] {
-                        verts.push(v.x);
-                        verts.push(v.y);
-                        verts.push(v.z);
-                        verts.push(r);
-                        verts.push(g);
-                        verts.push(b);
-                    }
-                }
-            }
-        }
+        let verts = build_world_vertices(bsp);
 
         let vertex_count = (verts.len() / 6) as i32;
         tracing::info!(
@@ -423,6 +328,90 @@ impl Renderer for Gl3Renderer {
     }
 
     fn end_frame(&mut self) {}
+}
+
+/// Build the world model's triangle list: position (3 f32) + colour (3 f32)
+/// per vertex, fan-triangulated from each face's edge loop. Kept free of GL
+/// so malformed BSP indices can be tested without a context.
+fn build_world_vertices(bsp: &BspData) -> Vec<f32> {
+    // Signed on-disk counts and offsets go through try_from: a negative
+    // value cast with `as usize` becomes huge (capacity-overflow panic,
+    // or index arithmetic that overflows).
+    let index = |v: i32| usize::try_from(v).ok();
+    let mut verts: Vec<f32> = Vec::new();
+
+    // Only render world model (model 0) faces
+    let face_range = match bsp.models.first() {
+        Some(model) => match (index(model.first_face), index(model.num_faces)) {
+            (Some(first), Some(count)) => first..first.saturating_add(count),
+            _ => 0..0,
+        },
+        None => 0..bsp.faces.len(),
+    };
+    let faces = bsp
+        .faces
+        .get(face_range.start..face_range.end.min(bsp.faces.len()));
+
+    let light_dir = Vec3f::new(0.5, 0.3, 0.9).normalize();
+    for face in faces.unwrap_or_default() {
+        let (Ok(num_edges), Some(first_edge)) =
+            (usize::try_from(face.num_edges), index(face.first_edge))
+        else {
+            continue;
+        };
+        if num_edges < 3 {
+            continue;
+        }
+        let texinfo = usize::try_from(face.texinfo_idx)
+            .ok()
+            .and_then(|i| bsp.texinfo.get(i));
+
+        // Skip sky/nodraw surfaces (SURF_SKY=4, SURF_NODRAW=128)
+        if texinfo.is_some_and(|ti| ti.flags & (4 | 128) != 0) {
+            continue;
+        }
+
+        // Get the face's plane normal for pseudo-lighting
+        let normal = match bsp.planes.get(face.plane_idx as usize) {
+            Some(plane) if face.side != 0 => -plane.normal,
+            Some(plane) => plane.normal,
+            None => Vec3f::new(0.0, 0.0, 1.0),
+        };
+
+        // Compute face color from normal (simple directional light)
+        let ndotl = normal.dot(light_dir).max(0.0);
+        let ambient = 0.15;
+        let brightness = ambient + (1.0 - ambient) * ndotl;
+
+        // Vary base color by texinfo index for visual variety
+        let (r, g, b) = face_color(face.texinfo_idx as usize, brightness);
+
+        // Collect face vertices via surface_edges -> edges -> vertices.
+        // A surfedge >= 0 walks its edge forwards, < 0 backwards.
+        let surface_edges = bsp
+            .surface_edges
+            .get(first_edge..)
+            .unwrap_or_default()
+            .iter()
+            .take(num_edges);
+        let face_verts: Vec<Vec3f> = surface_edges
+            .filter_map(|&se| {
+                let edge = bsp.edges.get(se.unsigned_abs() as usize)?;
+                let vi = if se >= 0 { edge.v[0] } else { edge.v[1] };
+                bsp.vertices.get(vi as usize).map(|v| v.position)
+            })
+            .collect();
+
+        // Fan triangulate: v0, v1, v2, then v0, v2, v3, etc.
+        if let Some((&v0, rest)) = face_verts.split_first() {
+            for pair in rest.windows(2) {
+                for v in [v0, pair[0], pair[1]] {
+                    verts.extend_from_slice(&[v.x, v.y, v.z, r, g, b]);
+                }
+            }
+        }
+    }
+    verts
 }
 
 /// Build a combined view-projection matrix from RefDef.
@@ -715,6 +704,90 @@ mod tests {
         for (i, &val) in vp.iter().enumerate() {
             assert!(val.is_finite(), "vp[{i}]={val} is not finite");
         }
+    }
+
+    use crate::bsp::{BspEdge, BspFace, BspModel, BspVertex};
+
+    /// One triangle face (edges 1..=3 via surfedges) in an otherwise empty BSP.
+    fn triangle_bsp() -> BspData {
+        let v = |x, y, z| BspVertex {
+            position: Vec3f::new(x, y, z),
+        };
+        BspData {
+            vertices: vec![v(0.0, 0.0, 0.0), v(64.0, 0.0, 0.0), v(0.0, 64.0, 0.0)],
+            // Edge 0 is the unused sentinel, as in real maps.
+            edges: vec![
+                BspEdge { v: [0, 0] },
+                BspEdge { v: [0, 1] },
+                BspEdge { v: [1, 2] },
+                BspEdge { v: [2, 0] },
+            ],
+            surface_edges: vec![1, 2, 3],
+            faces: vec![BspFace {
+                plane_idx: 0,
+                side: 0,
+                first_edge: 0,
+                num_edges: 3,
+                texinfo_idx: -1,
+                styles: [0; 4],
+                light_ofs: -1,
+            }],
+            planes: vec![],
+            texinfo: vec![],
+            models: vec![],
+            entities: String::new(),
+            visibility: vec![],
+            nodes: vec![],
+            lightmap_data: vec![],
+            leafs: vec![],
+            leaf_faces: vec![],
+        }
+    }
+
+    #[test]
+    fn build_world_vertices_emits_one_triangle_per_triangle_face() {
+        let verts = build_world_vertices(&triangle_bsp());
+        assert_eq!(verts.len(), 3 * 6, "3 vertices x (position + colour)");
+        assert_eq!(&verts[6..9], &[64.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn build_world_vertices_skips_negative_num_edges() {
+        let mut bsp = triangle_bsp();
+        bsp.faces[0].num_edges = -1;
+        assert!(build_world_vertices(&bsp).is_empty());
+    }
+
+    #[test]
+    fn build_world_vertices_skips_negative_first_edge() {
+        let mut bsp = triangle_bsp();
+        bsp.faces[0].first_edge = -1;
+        assert!(build_world_vertices(&bsp).is_empty());
+    }
+
+    #[test]
+    fn build_world_vertices_ignores_negative_model_face_range() {
+        let mut bsp = triangle_bsp();
+        let model = |first_face, num_faces| BspModel {
+            mins: Vec3f::ZERO,
+            maxs: Vec3f::ZERO,
+            origin: Vec3f::ZERO,
+            head_node: 0,
+            first_face,
+            num_faces,
+        };
+        bsp.models = vec![model(0, -1)];
+        assert!(build_world_vertices(&bsp).is_empty());
+        bsp.models = vec![model(-1, 1)];
+        assert!(build_world_vertices(&bsp).is_empty());
+    }
+
+    #[test]
+    fn build_world_vertices_skips_min_int_surface_edge() {
+        let mut bsp = triangle_bsp();
+        bsp.surface_edges[1] = i32::MIN;
+        // Two usable vertices remain: not enough for a triangle.
+        assert!(build_world_vertices(&bsp).is_empty());
     }
 
     #[test]
