@@ -36,7 +36,7 @@ fn cp3_server_runs_100_frames() {
     let gi = ServerGameImport::new();
 
     // 2. Create and initialise the game module.
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
     game.init(&gi);
 
     // 3. Initialise server with 1 client slot.
@@ -68,7 +68,7 @@ fn cp3_server_runs_100_frames() {
     assert_eq!(sv.time, 100 * 100, "sv.time is framenum * 100 ms");
     assert_eq!(svs.realtime, sv.time, "realtime tracks game time at 10 Hz");
     assert_eq!(
-        sv.configstrings[CS_MAXCLIENTS], "8",
+        sv.configstrings[CS_MAXCLIENTS], "1",
         "configstring written by the game must reach the server"
     );
 }
@@ -76,7 +76,7 @@ fn cp3_server_runs_100_frames() {
 #[test]
 fn cp3_client_disconnect_does_not_panic() {
     let gi = ServerGameImport::new();
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
     game.init(&gi);
 
     let mut svs = ServerStatic::default();
@@ -107,7 +107,7 @@ fn cp3_client_disconnect_does_not_panic() {
 #[test]
 fn cp3_configstring_written_by_game_survives_frame() {
     let gi = ServerGameImport::new();
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
@@ -134,15 +134,15 @@ fn cp3_configstring_written_by_game_survives_frame() {
 #[test]
 fn cp3_game_init_dispatches_configstring_through_vtable() {
     let gi = ServerGameImport::new();
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
 
-    // init() calls gi.configstring(CS_MAXCLIENTS, "8") through &dyn GameImport.
+    // init() calls gi.configstring(CS_MAXCLIENTS, "1") through &dyn GameImport.
     game.init(&gi);
 
     let updates = gi.drain_configstring_updates();
     let found = updates
         .iter()
-        .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "8");
+        .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "1");
     assert!(
         found,
         "GameLogic::init must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"
