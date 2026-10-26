@@ -6,14 +6,16 @@
 //!
 //! Output: dist/qwasm2.html (single file, works when opened or served)
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let pkg_dir = Path::new("crates/q2-wasm/pkg");
-    let dist_dir = Path::new("dist");
+    // Resolve from the repo root so the bundler works from any directory.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let pkg_dir = root.join("crates/q2-wasm/pkg");
+    let dist_dir = root.join("dist");
 
     // Find the JS glue file
     let js_path = pkg_dir.join("q2_wasm.js");
@@ -52,13 +54,13 @@ fn main() -> Result<()> {
     // The wasm-pack generated JS has a function like:
     //   async function __wbg_load(module, imports) { ... }
     // and an init function that calls fetch(). We replace the fetch with base64 decode.
-    let patched_js = patch_js_glue(&js_glue, &wasm_base64);
+    let patched_js = patch_js_glue(&js_glue, &wasm_base64)?;
 
     // Generate single HTML
     let html = generate_html(&patched_js);
 
     // Write output
-    fs::create_dir_all(dist_dir)?;
+    fs::create_dir_all(&dist_dir)?;
     let output_path = dist_dir.join("qwasm2.html");
     fs::write(&output_path, &html)?;
 
@@ -75,7 +77,7 @@ fn main() -> Result<()> {
 
 /// Patch the wasm-pack JS glue to load WASM from an inlined base64 string
 /// instead of fetching a separate .wasm file.
-fn patch_js_glue(js: &str, wasm_base64: &str) -> String {
+fn patch_js_glue(js: &str, wasm_base64: &str) -> Result<String> {
     // The wasm-pack --target web output has an `init` function that accepts
     // an optional input (URL or Module). We inject the base64 decode at the top
     // and modify the init to use it.
@@ -101,47 +103,61 @@ function __q2_decode_wasm() {{
         wasm_base64
     );
 
-    // Strip `export` keywords — can't use them in inline <script type="module">
-    // "export function foo()" → "function foo()"
-    // "export { initSync, __wbg_init as default };" → "const init = __wbg_init;"
-    //
-    // NOTE: This export stripping is tightly coupled to wasm-pack's current JS
-    // output format. If wasm-pack changes its codegen, this will silently break.
-    // Consider using a regex or AST-based approach for robustness.
-    let stripped = js
+    // Inline <script type="module"> code cannot import sibling files, and
+    // `init` must be a plain binding for the page script below. Each rewrite
+    // is tied to wasm-bindgen's current output, so each must match exactly
+    // once: a codegen change fails the build here instead of producing a page
+    // that fetches a missing .wasm. (An AST-based rewrite is tracked in #2.)
+    if let Some(line) = js.lines().find(|l| l.trim_start().starts_with("import ")) {
+        anyhow::bail!("wasm-bindgen glue has a module import the bundler cannot inline: {line}");
+    }
+
+    let patched = js
         .replace("export function ", "function ")
         .replace("export async function ", "async function ");
+    let patched = replace_once(
+        &patched,
+        &["export { initSync, __wbg_init as default };"],
+        "const init = __wbg_init;",
+    )?;
+    let patched = replace_once(
+        &patched,
+        &[
+            "new URL('q2_wasm_bg.wasm', import.meta.url)",
+            r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
+        ],
+        "__q2_decode_wasm()",
+    )?;
+    // Exposes the raw wasm exports to importers; nothing imports this page.
+    let patched = patched.replace("export { wasm as __wasm }", "");
 
-    // Handle the final export line: "export { initSync, __wbg_init as default };"
-    // We need `init` to be available as a variable name in the inline script
-    let stripped = if stripped.contains("__wbg_init as default") {
-        stripped
-            .replace(
-                "export { initSync, __wbg_init as default };",
-                "const init = __wbg_init;",
-            )
-            // Also handle variations in the export syntax
-            .replace("export { initSync }", "")
-    } else {
-        stripped
-    };
+    ensure!(
+        !patched.contains("import.meta.url"),
+        "wasm-bindgen glue still references import.meta.url after patching"
+    );
+    if let Some(line) = patched.lines().find(|l| l.starts_with("export ")) {
+        anyhow::bail!("unhandled export in wasm-bindgen glue: {line}");
+    }
 
-    // Replace the fetch call to use our inlined WASM
-    let patched = if stripped.contains("import.meta.url") {
-        stripped
-            .replace(
-                "new URL('q2_wasm_bg.wasm', import.meta.url)",
-                "__q2_decode_wasm()",
-            )
-            .replace(
-                r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
-                "__q2_decode_wasm()",
-            )
-    } else {
-        stripped
-    };
+    Ok(format!("{}{}", decoder, patched))
+}
 
-    format!("{}{}", decoder, patched)
+/// Replace the single occurrence of any of `patterns` (alternative spellings
+/// of one construct) with `with`; zero or several matches is an error.
+fn replace_once(src: &str, patterns: &[&str], with: &str) -> Result<String> {
+    let found: Vec<&str> = patterns
+        .iter()
+        .copied()
+        .filter(|p| src.contains(p))
+        .collect();
+    let count: usize = found.iter().map(|p| src.matches(p).count()).sum();
+    ensure!(
+        count == 1,
+        "expected exactly one `{}` in wasm-bindgen glue, found {count}; \
+         the wasm-pack output format changed",
+        patterns[0]
+    );
+    Ok(src.replacen(found[0], with, 1))
 }
 
 fn generate_html(inlined_js: &str) -> String {
@@ -280,14 +296,20 @@ try {{
   // Populate Playwright test hooks after WASM init succeeds
   document.getElementById('wasm-loaded').textContent = 'true';
   document.getElementById('self-test-result').textContent = self_test();
+  document.getElementById('engine-version').textContent = engine_version();
 
   // Determine pak URL — if served by devserver, fetch from /gamedata/
   const pakUrl = '/gamedata/baseq2/pak0-web.pak';
 
   await start_game('canvas', pakUrl);
 }} catch (e) {{
+  // textContent: error text can carry pak-derived strings; never parse it as HTML.
+  const line = document.createElement('span');
+  line.className = 'fail';
+  line.textContent = 'ERROR: ' + e;
   const statusEl = document.getElementById('status');
-  statusEl.innerHTML += '<span class="fail">ERROR: ' + e + '</span>\n';
+  statusEl.appendChild(line);
+  statusEl.appendChild(document.createTextNode('\n'));
   console.error('[qwasm2-rs]', e);
 }}
 </script>
@@ -296,8 +318,73 @@ try {{
 <div id="test-hooks" style="display:none">
   <span id="wasm-loaded">false</span>
   <span id="self-test-result"></span>
+  <span id="engine-version"></span>
 </div>
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trimmed wasm-pack 0.14.0 / wasm-bindgen 0.2.114 `--target web` output.
+    const GLUE: &str = include_str!("../fixtures/wasm_bindgen_glue.js");
+
+    #[test]
+    fn patch_inlines_wasm_and_exposes_init() {
+        let patched = patch_js_glue(GLUE, "QUJD").unwrap();
+        assert!(patched.contains(r#"const __q2_wasm_base64 = "QUJD";"#));
+        assert!(patched.contains("module_or_path = __q2_decode_wasm();"));
+        assert!(patched.contains("const init = __wbg_init;"));
+        assert!(!patched.contains("import.meta.url"));
+        assert!(!patched.lines().any(|l| l.starts_with("export ")));
+    }
+
+    #[test]
+    fn patch_accepts_double_quoted_wasm_url() {
+        let glue = GLUE.replace(
+            "new URL('q2_wasm_bg.wasm', import.meta.url)",
+            r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
+        );
+        assert!(patch_js_glue(&glue, "").is_ok());
+    }
+
+    #[test]
+    fn patch_fails_when_wasm_url_format_changes() {
+        let glue = GLUE.replace(
+            "new URL('q2_wasm_bg.wasm', import.meta.url)",
+            "new URL('renamed_bg.wasm', import.meta.url)",
+        );
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("q2_wasm_bg.wasm"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_default_export_changes() {
+        let glue = GLUE.replace(
+            "export { initSync, __wbg_init as default };",
+            "export { __wbg_init as default, initSync };",
+        );
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("__wbg_init as default"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_on_module_imports() {
+        let glue = format!("import {{ helper }} from './snippets/x.js';\n{GLUE}");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("import"), "{err}");
+    }
+
+    #[test]
+    fn page_error_path_does_not_inject_html() {
+        let html = generate_html("");
+        assert!(
+            !html.contains("innerHTML +="),
+            "error text must not be parsed as HTML"
+        );
+        assert!(html.contains("line.textContent = 'ERROR: ' + e;"));
+    }
 }

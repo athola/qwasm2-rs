@@ -1,6 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use std::{collections::HashSet, fs, io::Write, path::PathBuf};
+use std::{
+    collections::HashSet,
+    ffi::OsString,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 
 #[derive(Parser)]
 #[command(
@@ -14,16 +20,13 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     out: PathBuf,
 
-    /// Keep all files regardless of extension (default; mutually exclusive with --allow)
-    #[arg(long, conflicts_with = "allow")]
-    all: bool,
-
     /// Comma-separated lowercase extensions to keep (e.g. "bsp,cfg").
-    /// When audio/texture transcoding lands, add those extensions here.
+    /// Without this flag every file is kept.
     #[arg(long)]
     allow: Option<String>,
 
-    /// Also write <out>.br (Brotli level 11) for Content-Encoding: br serving
+    /// Also write <out>.br (Brotli level 11) for Content-Encoding: br serving.
+    /// Without this flag an existing <out>.br is removed so it cannot go stale.
     #[arg(long)]
     brotli: bool,
 }
@@ -31,6 +34,7 @@ struct Args {
 pub const PAK_MAGIC: &[u8; 4] = b"PACK";
 pub const ENTRY_SIZE: usize = 64;
 pub const NAME_LEN: usize = 56;
+const HEADER_LEN: usize = 12;
 
 fn main() -> Result<()> {
     let args = Args::parse();
@@ -44,12 +48,7 @@ fn main() -> Result<()> {
 
     let out = repack(&src, allowlist.as_ref())?;
 
-    if let Some(parent) = args.out.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    fs::write(&args.out, &out).with_context(|| format!("writing {}", args.out.display()))?;
+    write_outputs(&args.out, &out, args.brotli)?;
 
     let src_mb = src.len() as f64 / 1_000_000.0;
     let out_mb = out.len() as f64 / 1_000_000.0;
@@ -77,27 +76,92 @@ fn main() -> Result<()> {
     }
 
     if args.brotli {
-        let br_path = PathBuf::from(format!("{}.br", args.out.display()));
-        let br_file = fs::File::create(&br_path)
-            .with_context(|| format!("creating {}", br_path.display()))?;
-        let mut writer = brotli::CompressorWriter::new(br_file, 65536, 11, 22);
-        writer
-            .write_all(&out)
-            .context("brotli compression failed")?;
-        writer.flush()?;
-        drop(writer);
-        let br_mb = fs::metadata(&br_path)
-            .map(|m| m.len() as f64 / 1_000_000.0)
-            .unwrap_or(0.0);
+        let br = br_path(&args.out);
+        let br_mb = fs::metadata(&br)
+            .with_context(|| format!("reading size of {}", br.display()))?
+            .len() as f64
+            / 1_000_000.0;
         let br_pct = (1.0 - br_mb / out_mb) * 100.0;
         println!(
             "{}: {:.2} MB (brotli level 11, {:.0}% compression)",
-            br_path.display(),
+            br.display(),
             br_mb,
             br_pct
         );
     }
 
+    Ok(())
+}
+
+/// `<out>.br`, the name the devserver looks for next to the web pak.
+fn br_path(out: &Path) -> PathBuf {
+    let mut name = OsString::from(out.as_os_str());
+    name.push(".br");
+    PathBuf::from(name)
+}
+
+/// Write the repacked PAK and, if requested, its Brotli variant.
+///
+/// The old `.br` is removed before anything is written, so a run that fails
+/// midway, or one without `--brotli`, never leaves a `.br` describing an older
+/// PAK. Each file is written to a temporary name and renamed into place, so a
+/// reader never sees a truncated file.
+fn write_outputs(out: &Path, pak: &[u8], brotli: bool) -> Result<()> {
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+
+    let br = br_path(out);
+    match fs::remove_file(&br) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("removing stale {}", br.display())),
+    }
+
+    write_atomic(out, |file| file.write_all(pak).map_err(Into::into))?;
+    if brotli {
+        write_atomic(&br, |file| write_brotli(pak, file))?;
+    }
+    Ok(())
+}
+
+/// Write `path` via `<path>.tmp` + fsync + rename.
+fn write_atomic(path: &Path, fill: impl FnOnce(&mut fs::File) -> Result<()>) -> Result<()> {
+    let mut tmp_name = OsString::from(path.as_os_str());
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
+
+    let written = (|| {
+        let mut file =
+            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        fill(&mut file).with_context(|| format!("writing {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
+    })();
+    if written.is_err() {
+        // Cleanup only; the write error above is the one the caller needs.
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
+/// Brotli-compress `data` (quality 11, window 22) into `w`.
+///
+/// Uses the one-shot encoder because `CompressorWriter` finishes the stream in
+/// `Drop` and discards any error from the final write.
+fn write_brotli<W: Write>(data: &[u8], w: &mut W) -> Result<()> {
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: 11,
+        lgwin: 22,
+        size_hint: data.len(),
+        ..Default::default()
+    };
+    brotli::BrotliCompress(&mut &data[..], w, &params).context("brotli compression failed")?;
+    w.flush().context("flushing brotli output")?;
     Ok(())
 }
 
@@ -108,7 +172,18 @@ fn main() -> Result<()> {
 ///
 /// Output is a valid PAK with all offsets recalculated from scratch (no gaps).
 pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>> {
-    if src.len() < 12 || &src[0..4] != PAK_MAGIC {
+    repack_with_limit(src, allowlist, u32::MAX as usize)
+}
+
+/// `repack` with an output size cap. PAK offsets are u32, and directory
+/// entries may alias the same source bytes, so the output can be far larger
+/// than the input; the cap is checked before anything is copied.
+fn repack_with_limit(
+    src: &[u8],
+    allowlist: Option<&HashSet<String>>,
+    max_out: usize,
+) -> Result<Vec<u8>> {
+    if src.len() < HEADER_LEN || &src[0..4] != PAK_MAGIC {
         bail!("not a valid PAK file (bad magic)");
     }
 
@@ -127,11 +202,12 @@ pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>
     }
 
     let num_files = dir_len / ENTRY_SIZE;
-    let mut kept: Vec<([u8; NAME_LEN], u32, &[u8])> = Vec::with_capacity(num_files);
+    let mut kept: Vec<([u8; NAME_LEN], &[u8])> = Vec::with_capacity(num_files);
+    let mut out_len = HEADER_LEN;
 
     for i in 0..num_files {
         let base = dir_offset + i * ENTRY_SIZE;
-        let raw_name = &src[base..base + NAME_LEN];
+        let raw_name: [u8; NAME_LEN] = src[base..base + NAME_LEN].try_into().unwrap();
         let offset = u32::from_le_bytes(
             src[base + NAME_LEN..base + NAME_LEN + 4]
                 .try_into()
@@ -143,13 +219,15 @@ pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>
                 .unwrap(),
         );
 
+        let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
+        let name = String::from_utf8_lossy(&raw_name[..name_end]);
+
         if let Some(allow) = allowlist {
-            let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
-            let name_str = std::str::from_utf8(&raw_name[..name_end])
-                .unwrap_or("")
-                .to_lowercase();
-            let ext = name_str.rsplit('.').next().unwrap_or("").to_string();
-            if !allow.contains(&ext) {
+            let ext = Path::new(name.as_ref())
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_lowercase);
+            if !ext.is_some_and(|ext| allow.contains(&ext)) {
                 continue;
             }
         }
@@ -157,38 +235,40 @@ pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>
         let start = offset as usize;
         let end = start.saturating_add(size as usize);
         if end > src.len() {
-            let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
-            let name_str = std::str::from_utf8(&raw_name[..name_end]).unwrap_or("?");
-            bail!("entry '{}' data extends past end of file", name_str);
+            bail!("entry '{}' data extends past end of file", name);
         }
 
-        let mut name_fixed = [0u8; NAME_LEN];
-        let copy_len = raw_name.len().min(NAME_LEN);
-        name_fixed[..copy_len].copy_from_slice(&raw_name[..copy_len]);
+        out_len = out_len.saturating_add(size as usize + ENTRY_SIZE);
+        if out_len > max_out {
+            bail!("output PAK exceeds {} bytes (PAK offsets are u32)", max_out);
+        }
 
-        kept.push((name_fixed, size, &src[start..end]));
+        kept.push((raw_name, &src[start..end]));
     }
 
     // Build output PAK: header | file data... | directory
-    let mut out: Vec<u8> = Vec::with_capacity(src.len() + 12);
+    let mut out: Vec<u8> = Vec::with_capacity(out_len);
     out.extend_from_slice(PAK_MAGIC);
     out.extend_from_slice(&[0u8; 8]); // placeholder for dir_offset + dir_len
 
+    // Every value below is <= out_len <= max_out <= u32::MAX, checked above.
+    let to_u32 = |n: usize| u32::try_from(n).expect("bounded by max_out check");
+
     let mut placed: Vec<([u8; NAME_LEN], u32, u32)> = Vec::with_capacity(kept.len());
-    for (name, size, data) in &kept {
-        let file_offset = out.len() as u32;
+    for (name, data) in &kept {
+        let file_offset = to_u32(out.len());
         out.extend_from_slice(data);
-        placed.push((*name, file_offset, *size));
+        placed.push((*name, file_offset, to_u32(data.len())));
     }
 
-    let dir_offset_out = out.len() as u32;
+    let dir_offset_out = to_u32(out.len());
     for (name, file_offset, size) in &placed {
         out.extend_from_slice(name);
         out.extend_from_slice(&file_offset.to_le_bytes());
         out.extend_from_slice(&size.to_le_bytes());
     }
 
-    let dir_len_out = (placed.len() * ENTRY_SIZE) as u32;
+    let dir_len_out = to_u32(placed.len() * ENTRY_SIZE);
     out[4..8].copy_from_slice(&dir_offset_out.to_le_bytes());
     out[8..12].copy_from_slice(&dir_len_out.to_le_bytes());
 
@@ -196,7 +276,7 @@ pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>
 }
 
 fn entry_count(pak: &[u8]) -> usize {
-    if pak.len() < 12 {
+    if pak.len() < HEADER_LEN {
         return 0;
     }
     let dir_len = u32::from_le_bytes(pak[8..12].try_into().unwrap()) as usize;
@@ -425,5 +505,148 @@ mod tests {
         assert!(names.contains(&"sound/boom.wav"));
         assert!(!names.contains(&"textures/wall.wal"));
         assert!(!names.contains(&"models/player.md2"));
+    }
+
+    fn allow(exts: &[&str]) -> HashSet<String> {
+        exts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn repack_allowlist_ignores_extensionless_names() {
+        // A root file literally named "bsp" has no extension and must not match "bsp".
+        let src = make_pak(&[("bsp", b"X"), ("maps/readme", b"Y")]);
+        let out = repack(&src, Some(&allow(&["bsp", "maps/readme"]))).unwrap();
+        assert_eq!(parse_dir(&out).len(), 0);
+    }
+
+    #[test]
+    fn repack_allowlist_uses_extension_of_file_name_not_directory() {
+        let src = make_pak(&[("dir.v2/file", b"X")]);
+        let out = repack(&src, Some(&allow(&["v2", "v2/file"]))).unwrap();
+        assert_eq!(parse_dir(&out).len(), 0);
+    }
+
+    #[test]
+    fn repack_rejects_directory_length_not_multiple_of_entry_size() {
+        let mut src = make_pak(&[("a.bsp", b"data")]);
+        src[8..12].copy_from_slice(&63u32.to_le_bytes());
+        let err = repack(&src, None).unwrap_err().to_string();
+        assert!(err.contains("not a multiple of 64"), "{err}");
+    }
+
+    #[test]
+    fn repack_rejects_directory_past_end_of_file() {
+        let mut src = make_pak(&[("a.bsp", b"data")]);
+        src[8..12].copy_from_slice(&128u32.to_le_bytes());
+        let err = repack(&src, None).unwrap_err().to_string();
+        assert!(err.contains("directory extends past end"), "{err}");
+    }
+
+    #[test]
+    fn repack_rejects_entry_data_past_end_of_file() {
+        let mut src = make_pak(&[("a.bsp", b"data")]);
+        let dir_offset = u32::from_le_bytes(src[4..8].try_into().unwrap()) as usize;
+        let size_at = dir_offset + NAME_LEN + 4;
+        src[size_at..size_at + 4].copy_from_slice(&1_000u32.to_le_bytes());
+        let err = repack(&src, None).unwrap_err().to_string();
+        assert!(err.contains("'a.bsp' data extends past end"), "{err}");
+    }
+
+    #[test]
+    fn entry_count_reads_directory_length() {
+        let src = make_pak(&[("a.bsp", b"1"), ("b.bsp", b"2")]);
+        assert_eq!(entry_count(&src), 2);
+        assert_eq!(entry_count(b"PACK"), 0);
+    }
+
+    #[test]
+    fn repack_rejects_output_larger_than_limit() {
+        // Two directory entries aliasing the same 8 source bytes produce 16 bytes of output data.
+        let mut src = make_pak(&[("a.bsp", b"ABCDEFGH"), ("b.bsp", b"ABCDEFGH")]);
+        let dir_offset = u32::from_le_bytes(src[4..8].try_into().unwrap()) as usize;
+        let second_offset_at = dir_offset + ENTRY_SIZE + NAME_LEN;
+        src[second_offset_at..second_offset_at + 4].copy_from_slice(&12u32.to_le_bytes());
+
+        let needed = 12 + 16 + 2 * ENTRY_SIZE;
+        assert!(repack_with_limit(&src, None, needed).is_ok());
+        let err = repack_with_limit(&src, None, needed - 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn write_brotli_round_trips() {
+        let pak = make_pak(&[("maps/base1.bsp", b"BSP_DATA_BSP_DATA_BSP_DATA")]);
+        let mut compressed = Vec::new();
+        write_brotli(&pak, &mut compressed).unwrap();
+        let mut decompressed = Vec::new();
+        brotli::BrotliDecompress(&mut &compressed[..], &mut decompressed).unwrap();
+        assert_eq!(decompressed, pak);
+    }
+
+    struct FailingWriter;
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("disk full"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_brotli_surfaces_write_errors() {
+        let err = write_brotli(b"some pak bytes", &mut FailingWriter).unwrap_err();
+        assert!(format!("{err:#}").contains("disk full"), "{err:#}");
+    }
+
+    #[test]
+    fn write_outputs_with_brotli_writes_pak_and_matching_br() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("sub/pak0-web.pak");
+        let pak = make_pak(&[("a.bsp", b"data")]);
+
+        write_outputs(&out, &pak, true).unwrap();
+
+        assert_eq!(fs::read(&out).unwrap(), pak);
+        let compressed = fs::read(br_path(&out)).unwrap();
+        let mut decompressed = Vec::new();
+        brotli::BrotliDecompress(&mut &compressed[..], &mut decompressed).unwrap();
+        assert_eq!(decompressed, pak);
+        let leftovers: Vec<_> = fs::read_dir(out.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+    }
+
+    #[test]
+    fn write_outputs_without_brotli_removes_stale_br() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("pak0-web.pak");
+        fs::write(br_path(&out), b"stale").unwrap();
+
+        write_outputs(&out, &make_pak(&[("a.bsp", b"data")]), false).unwrap();
+
+        assert!(out.exists());
+        assert!(!br_path(&out).exists(), "stale .br must be removed");
+    }
+
+    #[test]
+    fn write_outputs_without_brotli_and_no_br_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("pak0-web.pak");
+        write_outputs(&out, &make_pak(&[]), false).unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn br_path_appends_suffix() {
+        assert_eq!(
+            br_path(std::path::Path::new("g/pak0-web.pak")),
+            PathBuf::from("g/pak0-web.pak.br")
+        );
     }
 }

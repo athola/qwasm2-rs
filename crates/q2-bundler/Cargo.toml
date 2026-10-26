@@ -1,7 +1,8 @@
 [package]
 name = "q2-bundler"
-version = "0.1.2"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Bundles WASM + JS glue into a single self-contained HTML file"
 
 [[bin]]
@@ -10,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-base64 = "0.22"
+base64 = { workspace = true }
 
 [lints]
 workspace = true

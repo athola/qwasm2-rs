@@ -16,16 +16,18 @@ Key C source directories:
 
 ## Architecture
 
-13-crate Cargo workspace with strict DAG dependency graph. See `docs/adr/001-crate-decomposition-and-trait-boundaries.md`.
+14-crate Cargo workspace with strict DAG dependency graph. See `docs/adr/001-crate-decomposition-and-trait-boundaries.md`.
 
 ```
-q2-shared (types) → q2-common (services) → q2-game/server/client/render → q2-wasm/bin
+q2-shared (types) → q2-common (services) → q2-game/client/render → q2-wasm
+(q2-server builds on q2-game but no entry point uses it yet)
+q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-repack are tools
 ```
 
 ### Key boundaries
 - **Renderer**: `q2-render-api::Renderer` trait. Backends implement it.
 - **Game logic**: `q2-game::traits::GameImport/GameExport` traits replace C function-pointer tables.
-- **Player movement**: `q2-common::player_ctrl::PlayerController` — platform-agnostic physics.
+- **Player movement**: `q2-common::player_ctrl::PlayerController` (simplified mover used by the browser). The faithful `q2-common::pmove` port is not wired in yet (#12, #19).
 - **Platform**: `q2-platform` — WASM-specific code gated on `cfg(target_arch = "wasm32")`.
 
 ### Rules
@@ -38,10 +40,11 @@ q2-shared (types) → q2-common (services) → q2-game/server/client/render → 
 ## Build & Test
 
 ```bash
-cargo test --workspace          # Run all tests
-cargo clippy --workspace        # Lint (zero errors required)
+make ci                         # fmt-check + lint + check + test, as CI runs them
+make test                       # cargo test --workspace
+make lint                       # clippy -D warnings: native --all-targets + wasm32 libraries
 make wasm                       # Build WASM target
-make serve                      # Serve wasm-pack output via python3 (simple, no gamedata)
+make play                       # Build, bundle, repack game data, run devserver
 ```
 
 ## Conventions

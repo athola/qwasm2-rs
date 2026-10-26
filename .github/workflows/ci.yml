@@ -1,15 +1,52 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main, feat/playable-prototype]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Read by the Makefile: fail if Cargo.lock is out of date instead of rewriting it.
+  CARGO_FLAGS: --locked
+
 jobs:
-  check:
+  rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v5
+      # Installs the toolchain, components and wasm32 target pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: make fmt-check
+      - run: make lint
+      - run: make check
+      - run: make test
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@v2
         with:
-          targets: wasm32-unknown-unknown
-          components: clippy
-      - run: cargo check --workspace
-      - run: cargo check --workspace --target wasm32-unknown-unknown --lib --exclude q2-net
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test --workspace
+          tool: cargo-audit
+      - run: cargo audit
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      # Builds the wasm bundle (exercising the bundler's glue patching) and runs Playwright.
+      - run: make test-browser PLAYWRIGHT_INSTALL_FLAGS=--with-deps

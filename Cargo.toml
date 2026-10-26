@@ -20,6 +20,8 @@ members = [
 [workspace.package]
 version = "0.1.2"
 edition = "2021"
+# Matches the toolchain pinned in rust-toolchain.toml; older compilers are untested.
+rust-version = "1.97"
 
 [workspace.dependencies]
 glam = { version = "0.29", features = ["serde"] }
@@ -32,15 +34,12 @@ tracing-subscriber = "0.3"
 thiserror = "2"
 anyhow = "1"
 glow = "0.16"
-matchbox_socket = "0.14"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 js-sys = "0.3"
-cpal = "0.15"
-lewton = "0.10"
 axum = "0.8"
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["fs"] }
 base64 = "0.22"
 
 [workspace.lints.rust]

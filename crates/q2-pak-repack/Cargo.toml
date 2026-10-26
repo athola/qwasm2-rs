@@ -1,7 +1,8 @@
 [package]
 name = "q2-pak-repack"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "Filter a Quake 2 PAK file by extension allowlist, producing a smaller web-optimized PAK"
 
 [[bin]]
@@ -12,3 +13,9 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 brotli = "7"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"
