@@ -6,6 +6,13 @@ use q2_shared::constants::*;
 use q2_shared::protocol::*;
 use q2_shared::types::*;
 
+// svc_sound flags (common.h SND_*).
+const SND_VOLUME: i32 = 1 << 0;
+const SND_ATTENUATION: i32 = 1 << 1;
+const SND_POS: i32 = 1 << 2;
+const SND_ENT: i32 = 1 << 3;
+const SND_OFFSET: i32 = 1 << 4;
+
 impl ClientState {
     /// Parse a complete server message buffer (may contain multiple opcodes).
     ///
@@ -37,9 +44,34 @@ impl ClientState {
                     return Ok(());
                 }
                 Ok(SvcOp::Nop) => {}
+                Ok(SvcOp::Reconnect) => self.state = ConnState::Connecting,
+                // No client handler yet: consume the payload per its C layout
+                // so the opcodes after it (often the frame) still parse.
+                Ok(SvcOp::MuzzleFlash) | Ok(SvcOp::MuzzleFlash2) => {
+                    let _entity = msg.read_short();
+                    let _flash = msg.read_byte();
+                }
+                Ok(SvcOp::Layout) => {
+                    let _layout = msg.read_string();
+                }
+                Ok(SvcOp::Inventory) => {
+                    for _ in 0..MAX_ITEMS {
+                        msg.read_short();
+                    }
+                }
+                Ok(SvcOp::Sound) => skip_sound(msg),
+                Ok(SvcOp::Download) => skip_download(msg),
+                // The payload depends on a per-type table not ported yet
+                // (opcode handlers, issue #19). Temp entities trail the frame
+                // in the datagram, so stopping here does not lose the frame.
+                Ok(SvcOp::TempEntity) => {
+                    q2_drop!("parse_server_message: svc_temp_entity is not supported yet");
+                }
                 // PlayerInfo (17) and PacketEntities (18) are sub-commands of
                 // svc_frame and MUST NOT appear as top-level opcodes.
-                Ok(SvcOp::PlayerInfo) | Ok(SvcOp::PacketEntities) => {
+                Ok(SvcOp::PlayerInfo)
+                | Ok(SvcOp::PacketEntities)
+                | Ok(SvcOp::DeltaPacketEntities) => {
                     q2_drop!("parse_server_message: out of place frame data (opcode {cmd})");
                 }
                 _ => {
@@ -235,6 +267,35 @@ impl ClientState {
         self.frames[idx] = new_frame.clone();
         self.frame = new_frame;
         Ok(())
+    }
+}
+
+/// Consume an svc_sound payload (C `CL_ParseStartSoundPacket` layout).
+fn skip_sound(msg: &mut NetMsg) {
+    let flags = msg.read_byte();
+    let _sound_index = msg.read_byte();
+    for optional_byte in [SND_VOLUME, SND_ATTENUATION, SND_OFFSET] {
+        if flags & optional_byte != 0 {
+            msg.read_byte();
+        }
+    }
+    if flags & SND_ENT != 0 {
+        let _entity_channel = msg.read_short();
+    }
+    if flags & SND_POS != 0 {
+        let mut _pos = Vec3f::ZERO;
+        msg.read_position(&mut _pos);
+    }
+}
+
+/// Consume an svc_download payload (C `CL_ParseDownload` layout): size,
+/// percent, then `size` data bytes unless size is -1 (file not found).
+fn skip_download(msg: &mut NetMsg) {
+    let size = msg.read_short();
+    let _percent = msg.read_byte();
+    if let Ok(size) = usize::try_from(size) {
+        let mut data = vec![0u8; size];
+        msg.read_data(&mut data);
     }
 }
 
@@ -1560,5 +1621,122 @@ mod tests {
         let mut cs = ClientState::default();
         let mut msg = NetMsg::from_bytes(&[SvcOp::ConfigString as u8, 5, 0, b'a']);
         assert!(cs.parse_server_message(&mut msg).is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // Opcodes without a client handler are consumed per their C layout
+    // (review S-12) so the frame behind them is still parsed.
+    // -------------------------------------------------------------------------
+
+    /// Parse `prefix` followed by a valid frame 42; assert the frame landed.
+    fn assert_frame_parsed_after(prefix: &NetMsg) -> ClientState {
+        let mut msg = NetMsg::new();
+        msg.write_data(prefix.data());
+        write_empty_frame(&mut msg, 42, -1, None, &[]);
+        msg.begin_reading();
+        let mut cs = ClientState::default();
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.frame.serverframe, 42);
+        assert!(msg.remaining_data().is_empty());
+        cs
+    }
+
+    // svc_layout: one string (C copies it to cl.layout).
+    #[test]
+    fn layout_before_frame_is_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Layout as i32);
+        msg.write_string("xv 0 yv 0 string \"hi\"");
+        assert_frame_parsed_after(&msg);
+    }
+
+    // svc_inventory: MAX_ITEMS (256) shorts (C CL_ParseInventory).
+    #[test]
+    fn inventory_before_frame_is_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Inventory as i32);
+        for i in 0..MAX_ITEMS as i32 {
+            msg.write_short(i);
+        }
+        assert_frame_parsed_after(&msg);
+    }
+
+    // svc_muzzleflash / svc_muzzleflash2: short entity, byte weapon/flash.
+    #[test]
+    fn muzzleflashes_before_frame_are_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::MuzzleFlash as i32);
+        msg.write_short(1);
+        msg.write_byte(SvcOp::Frame as i32); // weapon byte that looks like an opcode
+        msg.write_byte(SvcOp::MuzzleFlash2 as i32);
+        msg.write_short(2);
+        msg.write_byte(3);
+        assert_frame_parsed_after(&msg);
+    }
+
+    // svc_sound (C CL_ParseStartSoundPacket): flags, soundnum, then volume,
+    // attenuation, offset bytes, entity/channel short and position as
+    // flagged. All flags set: 1 + 1 + 3 + 2 + 6 bytes after the opcode.
+    #[test]
+    fn sound_with_all_fields_before_frame_is_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Sound as i32);
+        msg.write_byte(0x1F); // VOLUME|ATTENUATION|POS|ENT|OFFSET
+        msg.write_byte(4); // sound index
+        msg.write_byte(255); // volume
+        msg.write_byte(64); // attenuation
+        msg.write_byte(0); // offset
+        msg.write_short((5 << 3) | 2); // entity 5, channel 2
+        msg.write_position(Vec3f::new(1.0, 2.0, 3.0));
+        assert_frame_parsed_after(&msg);
+    }
+
+    #[test]
+    fn sound_with_no_optional_fields_before_frame_is_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Sound as i32);
+        msg.write_byte(0);
+        msg.write_byte(4);
+        assert_frame_parsed_after(&msg);
+    }
+
+    // svc_download: short size, byte percent, then `size` bytes when
+    // size > 0 (C CL_ParseDownload); size -1 means "no such file".
+    #[test]
+    fn download_chunks_before_frame_are_skipped() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Download as i32);
+        msg.write_short(3);
+        msg.write_byte(50);
+        msg.write_data(&[SvcOp::Disconnect as u8, 0xAA, 0xBB]);
+        msg.write_byte(SvcOp::Download as i32);
+        msg.write_short(-1);
+        msg.write_byte(0);
+        // A misread would hit the svc_disconnect byte and miss the frame.
+        assert_frame_parsed_after(&msg);
+    }
+
+    // svc_reconnect: C sets ca_connecting and keeps parsing.
+    #[test]
+    fn reconnect_sets_connecting_and_keeps_parsing() {
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::Reconnect as i32);
+        let cs = assert_frame_parsed_after(&msg);
+        assert_eq!(cs.state, ConnState::Connecting);
+    }
+
+    // svc_temp_entity needs the per-type payload table; until that handler
+    // exists it is an error rather than a silent stop. Temp entities follow
+    // the frame in the datagram, so the frame is not lost.
+    #[test]
+    fn temp_entity_is_error() {
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::new();
+        write_empty_frame(&mut msg, 42, -1, None, &[]);
+        msg.write_byte(SvcOp::TempEntity as i32);
+        msg.write_byte(0);
+        msg.begin_reading();
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert_eq!(cs.frame.serverframe, 42);
     }
 }
