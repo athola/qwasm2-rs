@@ -233,11 +233,43 @@ pub fn self_test() -> String {
     "PASS".to_string()
 }
 
+/// Canvas attribute marking that an engine owns the canvas. The marker lives
+/// in the DOM rather than in a Rust global, per the no-global-state rule.
+#[cfg(target_arch = "wasm32")]
+const ENGINE_MARK: &str = "data-qwasm2-engine";
+
 /// Start the game engine. Called from JS after the page is ready.
 /// Fetches pak0.pak, initializes WebGL2, loads the first map, and starts the game loop.
+///
+/// Returns `Err` if an engine was already started on this canvas: a second
+/// engine would stack a second set of input listeners and a second
+/// requestAnimationFrame loop on the same canvas.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+    let canvas_el = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(&canvas_id))
+        .ok_or_else(|| JsValue::from_str(&format!("no element with id '{canvas_id}'")))?;
+    if canvas_el.has_attribute(ENGINE_MARK) {
+        return Err(JsValue::from_str(
+            "start_game: an engine is already running on this canvas",
+        ));
+    }
+    canvas_el.set_attribute(ENGINE_MARK, "")?;
+
+    let started = run_engine(canvas_id, pak_url).await;
+    if started.is_err() {
+        // Allow a retry after a failed start (e.g. the pak fetch failed).
+        if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
+            console::error_1(&e);
+        }
+    }
+    started
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
