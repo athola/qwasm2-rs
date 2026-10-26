@@ -8,9 +8,9 @@ duplicate map and per-task breakdown are in
 `docs/plans/2026-10-26-full-review-fixes.md`; finding IDs below (C-, S-, R-,
 A-, M-, B-) refer to it.
 
-Outcome: 63 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
+Outcome: 69 commits after the lint gate (a3c1044..HEAD). Every finding is fixed,
 rejected with a reason, or mapped to a tracking issue. `make ci` (fmt check,
-clippy `--all-targets -D warnings` on host and wasm32, check, 544 tests),
+clippy `--all-targets -D warnings` on host and wasm32, check, 557 tests),
 `make wasm` and `make test-browser` (6/6) pass. `cargo audit` dropped from 19
 vulnerabilities to 0, with one unmaintained warning (bincode, via q2-shared).
 
@@ -95,10 +95,23 @@ patch does not match.
 | A-5 (world loading through the Renderer trait) | #20 |
 | B-12/R-37 (AST-based bundler patching) | #2 |
 
-Proposed new issues, not filed: A-17 (move `Q2Error` to q2-shared so
-render-api and platform stop returning `String`), A-20 (one BSP loader for
-collision, render and spawn), C-20 (entity identity in traces), C-18(d)
-(range-check area queries), R-29 (canvas resize export).
+Five findings first proposed as new issues were fixed on this branch
+instead, at the user's request:
+
+- A-17: `Q2Error` is defined in q2-shared (q2-common re-exports it), so the
+  Renderer trait, gl3 and q2-platform return `Q2Result` and reach JS
+  through `q2err_to_js`.
+- A-20: `q2_common::bsp_file` validates the BSP header and lump ranges for
+  both collision and the renderer; collision loads the entity string like
+  C CMod_LoadEntityString, and spawn reads it from there. Each loader still
+  reads its own lumps from the same bytes, as C CM_LoadMap and the GL3
+  model loader do.
+- C-20: `CollisionMap::world_trace` reports the world entity on a hit, the
+  world half of C CL_PMTrace. Entity clipping stays with #11 and #19.
+- C-18(d): `areas_connected` and `set_area_portal_state` return ERR_DROP
+  for out-of-range indices instead of silently answering.
+- R-29: the engine refits render size and fov when the page resizes the
+  canvas; checked live at 800x600 and 1200x500.
 
 Fixed by the integrator after the workers merged: walk speed 200 so run is
 faster again (the pm_maxspeed clamp had made them equal), A-21 (content

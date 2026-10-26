@@ -16,6 +16,19 @@ All notable changes to qwasm2-rs are documented here.
 - `parse_server_message`, `write_delta_entity`,
   `write_packet_entities_list`, `read_dir`, `parse_entity_string` and
   `calc_fov` return `Q2Result`; `NetChan::new` takes a source and qport
+- `Q2Error`/`Q2Result` are defined in `q2_shared::error` (still re-exported
+  from `q2_common::error`); `Renderer::init` and the q2-platform wasm
+  functions return `Q2Result` instead of `Result<_, String>`
+- `CollisionMap::areas_connected` and `set_area_portal_state` return
+  `Q2Result` and reject out-of-range indices like C ERR_DROP
+- BSP header constants and lump directory live in `q2_common::bsp_file`;
+  `q2_render::bsp` no longer exports its own `LUMP_*`/`BspLump`, and
+  `BspData::entities` is gone (use `CollisionMap::entity_string`)
+
+### Added
+- `CollisionMap::world_trace`, which reports the world entity on a hit
+  like C CL_PMTrace
+- The wasm engine refits render size and fov when the canvas is resized
 
 ### Fixed
 - Netchan rejects runt packets, reserves header space when staging

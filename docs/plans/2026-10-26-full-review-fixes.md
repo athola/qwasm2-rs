@@ -53,8 +53,25 @@ A-14=R-16, A-17=R-40.
 S-5/R-24 -> #9, #31; S-6, S-21(spawn reset) -> #11; S-7, A-4, S-17, S-30 ->
 #18, #10; S-12(opcode handlers), S-16 -> #19, #6, #7; C-25/M-8/A-2(pmove
 rebuild), A-29 -> #12, #19; A-5 -> #20; B-12/R-37(AST approach) -> #2;
-A-17 (Q2Error to q2-shared), A-20 (single BSP loader), C-20 (ent identity in
-traces) -> proposed new issues, not filed without approval.
+A-17, A-20, C-20, C-18(d), R-29 were proposed as new issues, then fixed on
+this branch at the user's request (T6).
+
+## T6 Former proposed issues (user asked to fix on this branch, 2026-10-26)
+
+- [x] A-17: `Q2Error` lives in q2-shared (q2-common re-exports); Renderer
+  trait, gl3 and q2-platform return `Q2Result`. Test: render-api init error
+  is a recoverable Drop; q2-shared error tests move with the type.
+- [x] C-18(d): `areas_connected` / `set_area_portal_state` reject
+  out-of-range indices like C CM_AreasConnected / CM_SetAreaPortalState.
+  Test: out-of-range area / portal returns false or Err, no panic.
+- [x] C-20: traces report entity identity (world = 0) at the C wrapper
+  points (SV_Trace-equivalent in q2-server). Test: world hit has ent 0,
+  miss has none.
+- [x] A-20: one BSP header/lump reader in q2-common used by collision and
+  render; q2-wasm parses the entity string once. Test: shared reader
+  rejects bad header / overflowing lump; both loaders still load demo maps.
+- [x] R-29: canvas resize export updates engine width/height/fov.
+  Test: pure resize logic recomputes fov_y; Playwright resize if feasible.
 
 ## Deviations
 
