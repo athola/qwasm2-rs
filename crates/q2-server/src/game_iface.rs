@@ -23,7 +23,8 @@ struct GiInner {
     /// Uses `NetMsg` so game-written temp entities encode byte-for-byte like
     /// every other server message (MSG_Write* in C).
     msg_buf: NetMsg,
-    /// Mirror of Server::configstrings, updated by game calls to configstring().
+    /// Game-written configstrings; `Server::frame` copies dirty slots into
+    /// `Server::configstrings` after each game frame.
     configstrings: Vec<String>,
     /// Tracks which configstring slots were written since the last drain.
     dirty: Vec<bool>,
