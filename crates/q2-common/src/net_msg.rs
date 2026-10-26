@@ -11,6 +11,7 @@
 //! a received packet), never both simultaneously. A future refactor could
 //! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
+use crate::error::{Q2Error, Q2Result};
 use q2_shared::constants::MAX_STATS;
 use q2_shared::protocol::{PlayerStateFlags, SvcOp, UpdateFlags};
 use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
@@ -444,9 +445,10 @@ impl NetMsg {
         pos.z = self.read_coord();
     }
 
-    /// Read a byte angle: read byte, convert to degrees.
+    /// Read a byte angle in degrees, in `[-180, 178.6]`. The byte is signed,
+    /// as in C `MSG_ReadAngle`.
     pub fn read_angle(&mut self) -> f32 {
-        self.read_byte() as f32 * (360.0 / 256.0)
+        self.read_char() as f32 * (360.0 / 256.0)
     }
 
     /// Read a 16-bit angle: read short, convert to degrees.
@@ -468,13 +470,16 @@ impl NetMsg {
     }
 
     /// Read a compressed direction: read byte index, look up in BYTEDIRS table.
-    pub fn read_dir(&mut self) -> Vec3f {
-        let idx = self.read_byte() as usize;
-        if idx >= NUM_VERTEX_NORMALS {
-            return Vec3f::ZERO;
-        }
-        let entry = &BYTEDIRS[idx];
-        Vec3f::new(entry[0], entry[1], entry[2])
+    ///
+    /// An index outside the table (or a read past the end) is an error, as in
+    /// C `MSG_ReadDir` (ERR_DROP): a made-up normal would be silently wrong.
+    pub fn read_dir(&mut self) -> Q2Result<Vec3f> {
+        let idx = self.read_byte();
+        let entry = usize::try_from(idx)
+            .ok()
+            .and_then(|i| BYTEDIRS.get(i))
+            .ok_or_else(|| Q2Error::Drop(format!("read_dir: index {idx} out of range")))?;
+        Ok(Vec3f::new(entry[0], entry[1], entry[2]))
     }
 
     // ----- Delta compression -----
@@ -1208,7 +1213,9 @@ mod tests {
         assert!((buf.read_float() - 2.5).abs() < 0.001);
         assert_eq!(buf.read_string(), "hello");
         assert!((buf.read_coord() - 100.5).abs() < 0.125);
-        assert!((buf.read_angle() - 180.0).abs() < 1.5);
+        // Byte 128 reads back as -180 (C MSG_ReadAngle is signed): the same
+        // direction as 180.
+        assert!((buf.read_angle().rem_euclid(360.0) - 180.0).abs() < 1.5);
     }
 
     #[test]
@@ -1344,10 +1351,37 @@ mod tests {
         let dir = Vec3f::new(0.0, 0.0, 1.0);
         buf.write_dir(dir);
         buf.begin_reading();
-        let result = buf.read_dir();
+        let result = buf.read_dir().expect("index from write_dir is valid");
         // Should be close to the original direction
         let dot = result.x * dir.x + result.y * dir.y + result.z * dir.z;
         assert!(dot > 0.9, "Direction roundtrip lost too much precision");
+    }
+
+    // C MSG_ReadAngle: MSG_ReadChar * 1.40625, so 0xC0 = -64 -> -90 degrees.
+    #[test]
+    fn read_angle_0xc0_is_minus_90() {
+        let mut buf = NetMsg::from_bytes(&[0xC0]);
+        assert_eq!(buf.read_angle(), -90.0);
+    }
+
+    // C MSG_ReadDir raises ERR_DROP for an index >= NUMVERTEXNORMALS (162).
+    #[test]
+    fn read_dir_index_162_is_error() {
+        let mut buf = NetMsg::from_bytes(&[162]);
+        assert!(matches!(buf.read_dir(), Err(Q2Error::Drop(_))));
+    }
+
+    #[test]
+    fn read_dir_past_end_is_error() {
+        let mut buf = NetMsg::from_bytes(&[]);
+        assert!(buf.read_dir().is_err());
+    }
+
+    #[test]
+    fn read_dir_index_161_is_last_bytedir() {
+        let mut buf = NetMsg::from_bytes(&[161]);
+        let dir = buf.read_dir().expect("161 is in range");
+        assert_eq!(dir, Vec3f::new(-0.688191, -0.587785, -0.425325));
     }
 
     #[test]
