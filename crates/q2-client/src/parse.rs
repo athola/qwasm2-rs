@@ -236,8 +236,9 @@ fn parse_entity_bits(msg: &mut NetMsg) -> (i32, UpdateFlags) {
 
 /// Apply bit-flagged entity delta fields from `msg` on top of `from`.
 ///
-/// Entity angles are encoded with `write_angle16` (our convention, which
-/// differs from the original 8-bit C protocol).
+/// Mirrors C `CL_ParseDelta` (protocol 34). With empty `bits` nothing is
+/// read: the result is `from` with `event` cleared and `old_origin` set to
+/// the previous origin, which is how C carries unchanged entities forward.
 fn read_delta_entity(
     msg: &mut NetMsg,
     from: &EntityState,
@@ -261,12 +262,11 @@ fn read_delta_entity(
         e.modelindex4 = msg.read_byte();
     }
 
-    // FRAME: FRAME8+FRAME16 = short (our encoder), FRAME8 only = byte.
-    if bits.contains(UpdateFlags::FRAME8) && bits.contains(UpdateFlags::FRAME16) {
-        e.frame = msg.read_short();
-    } else if bits.contains(UpdateFlags::FRAME8) {
+    // FRAME8 and FRAME16 are independent fields, read in that order.
+    if bits.contains(UpdateFlags::FRAME8) {
         e.frame = msg.read_byte();
-    } else if bits.contains(UpdateFlags::FRAME16) {
+    }
+    if bits.contains(UpdateFlags::FRAME16) {
         e.frame = msg.read_short();
     }
 
@@ -307,15 +307,14 @@ fn read_delta_entity(
         e.origin.z = msg.read_coord();
     }
 
-    // Angles encoded as 16-bit (write_angle16 convention in our encoder).
     if bits.contains(UpdateFlags::ANGLE1) {
-        e.angles.x = msg.read_angle16();
+        e.angles.x = msg.read_angle();
     }
     if bits.contains(UpdateFlags::ANGLE2) {
-        e.angles.y = msg.read_angle16();
+        e.angles.y = msg.read_angle();
     }
     if bits.contains(UpdateFlags::ANGLE3) {
-        e.angles.z = msg.read_angle16();
+        e.angles.z = msg.read_angle();
     }
 
     if bits.contains(UpdateFlags::OLDORIGIN) {
@@ -491,7 +490,7 @@ fn read_packet_entities(
 
         // Copy unchanged old entities whose number is less than this new one.
         while old_idx < old_entities.len() && old_entities[old_idx].number < newnum {
-            result.push(old_entities[old_idx].clone());
+            result.push(copy_forward(&old_entities[old_idx]));
             old_idx += 1;
         }
 
@@ -523,9 +522,20 @@ fn read_packet_entities(
     }
 
     // Copy any remaining unchanged old entities.
-    result.extend_from_slice(&old_entities[old_idx..]);
+    result.extend(old_entities[old_idx..].iter().map(copy_forward));
 
     result
+}
+
+/// An entity absent from the packet is unchanged: C runs it through
+/// `CL_ParseDelta` with no bits, so its event is cleared and its old_origin
+/// becomes the previous origin.
+fn copy_forward(old: &EntityState) -> EntityState {
+    EntityState {
+        old_origin: old.origin,
+        event: 0,
+        ..old.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -557,7 +567,8 @@ mod tests {
         msg.write_byte(0); // suppress
         msg.write_byte(0); // areabits len = 0
         msg.write_player_state(&old_ps, ps);
-        msg.write_packet_entities_list(&[], entities);
+        msg.write_packet_entities_list(&[], entities)
+            .expect("valid entities");
     }
 
     fn make_frame_msg(serverframe: i32, deltaframe: i32) -> NetMsg {
@@ -815,7 +826,8 @@ mod tests {
         msg.write_byte(0x12);
 
         msg.write_player_state(&zero_ps, &zero_ps);
-        msg.write_packet_entities_list(&[], &[]);
+        msg.write_packet_entities_list(&[], &[])
+            .expect("valid entities");
         msg.begin_reading();
 
         cs.parse_server_message(&mut msg);
@@ -887,7 +899,8 @@ mod tests {
         };
 
         let mut msg = NetMsg::new();
-        msg.write_delta_entity(&old_ent, &new_ent, true, false);
+        msg.write_delta_entity(&old_ent, &new_ent, true, false)
+            .expect("valid entity");
         msg.begin_reading();
         let (num, bits) = parse_entity_bits(&mut msg);
         let decoded = read_delta_entity(&mut msg, &old_ent, num, bits);
@@ -915,7 +928,8 @@ mod tests {
         };
 
         let mut msg = NetMsg::new();
-        msg.write_packet_entities_list(&[], &[ent1.clone(), ent2.clone()]);
+        msg.write_packet_entities_list(&[], &[ent1.clone(), ent2.clone()])
+            .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
         let decoded = read_packet_entities(&mut msg, &[], &vec![CEntity::default(); MAX_EDICTS]);
@@ -950,7 +964,8 @@ mod tests {
         let new = vec![ent1.clone(), ent3.clone()];
 
         let mut msg = NetMsg::new();
-        msg.write_packet_entities_list(&old, &new);
+        msg.write_packet_entities_list(&old, &new)
+            .expect("valid entities");
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PacketEntities opcode
         let decoded = read_packet_entities(&mut msg, &old, &vec![CEntity::default(); MAX_EDICTS]);
@@ -988,7 +1003,8 @@ mod tests {
         msg2.write_byte(0);
         msg2.write_byte(0); // areabits len = 0
         msg2.write_player_state(&old_ps, &ps2);
-        msg2.write_packet_entities_list(&[], &[]);
+        msg2.write_packet_entities_list(&[], &[])
+            .expect("valid entities");
         msg2.begin_reading();
         cs.parse_server_message(&mut msg2);
 
@@ -1043,7 +1059,8 @@ mod tests {
         };
 
         let mut msg = NetMsg::new();
-        msg.write_delta_entity(&from, &to, true, false);
+        msg.write_delta_entity(&from, &to, true, false)
+            .expect("valid entity");
         msg.begin_reading();
         let (num, bits) = parse_entity_bits(&mut msg);
 
@@ -1090,7 +1107,8 @@ mod tests {
         };
 
         let mut msg = NetMsg::new();
-        msg.write_delta_entity(&from, &to, true, false);
+        msg.write_delta_entity(&from, &to, true, false)
+            .expect("valid entity");
         msg.begin_reading();
         let (_, bits) = parse_entity_bits(&mut msg);
 
@@ -1099,28 +1117,113 @@ mod tests {
         assert_eq!(decoded.solid, 31744);
     }
 
-    // S2: SKIN8+SKIN16 combo → 4-byte read; EFFECTS8+EFFECTS16 combo → 4-byte read.
+    // 256..0x8000 skinnum/effects use the 16-bit form (SKIN16 / EFFECTS16
+    // alone, short), as C MSG_WriteDeltaEntity does.
     #[test]
-    fn entity_skin_effects_wide_roundtrip() {
+    fn entity_skin_effects_16bit_roundtrip() {
         let from = EntityState::default();
         let to = EntityState {
             number: 2,
-            skinnum: 300, // >= 256 → SKIN8|SKIN16 → write_long
-            effects: 300, // >= 256 → EFFECTS8|EFFECTS16 → write_long
+            skinnum: 300,
+            effects: 300,
             ..Default::default()
         };
 
         let mut msg = NetMsg::new();
-        msg.write_delta_entity(&from, &to, true, false);
+        msg.write_delta_entity(&from, &to, true, false)
+            .expect("valid entity");
         msg.begin_reading();
         let (num, bits) = parse_entity_bits(&mut msg);
 
-        assert!(bits.contains(UpdateFlags::SKIN8));
+        assert!(!bits.contains(UpdateFlags::SKIN8));
         assert!(bits.contains(UpdateFlags::SKIN16));
-        assert!(bits.contains(UpdateFlags::EFFECTS8));
+        assert!(!bits.contains(UpdateFlags::EFFECTS8));
         assert!(bits.contains(UpdateFlags::EFFECTS16));
         let decoded = read_delta_entity(&mut msg, &from, num, bits);
         assert_eq!(decoded.skinnum, 300);
         assert_eq!(decoded.effects, 300);
+        assert!(msg.remaining_data().is_empty());
+    }
+
+    // Laser colour skins are negative as i32 and need the 32-bit form.
+    #[test]
+    fn entity_negative_skinnum_roundtrips() {
+        let from = EntityState::default();
+        let to = EntityState {
+            number: 2,
+            skinnum: 0xd0d1_d2d3_u32 as i32,
+            ..Default::default()
+        };
+        let mut msg = NetMsg::new();
+        msg.write_delta_entity(&from, &to, true, false)
+            .expect("valid entity");
+        msg.begin_reading();
+        let (num, bits) = parse_entity_bits(&mut msg);
+        let decoded = read_delta_entity(&mut msg, &from, num, bits);
+        assert_eq!(decoded.skinnum, to.skinnum);
+    }
+
+    // C writer bytes for {number 1, frame 300, angles (10,20,30)} (see the
+    // golden test in net_msg.rs). C CL_ParseDelta reads angles with
+    // MSG_ReadAngle: 7, 14, 21 * 1.40625.
+    #[test]
+    fn read_delta_entity_decodes_c_frame16_and_byte_angles() {
+        let mut msg = NetMsg::from_bytes(&[0x8C, 0x84, 0x02, 1, 0x2C, 0x01, 7, 14, 21]);
+        let (num, bits) = parse_entity_bits(&mut msg);
+        let decoded = read_delta_entity(&mut msg, &EntityState::default(), num, bits);
+        assert_eq!(decoded.number, 1);
+        assert_eq!(decoded.frame, 300);
+        assert_eq!(decoded.angles, Vec3f::new(9.84375, 19.6875, 29.53125));
+        assert!(msg.remaining_data().is_empty());
+    }
+
+    // C reads U_FRAME8 (byte) and U_FRAME16 (short) independently; with both
+    // set it consumes 3 bytes and the short wins.
+    // bits = FRAME8|FRAME16|MOREBITS2|MOREBITS1 -> bytes 0x90, 0x80, 0x02.
+    #[test]
+    fn read_delta_entity_reads_frame8_then_frame16() {
+        let mut msg = NetMsg::from_bytes(&[0x90, 0x80, 0x02, 1, 5, 0x2C, 0x01]);
+        let (num, bits) = parse_entity_bits(&mut msg);
+        let decoded = read_delta_entity(&mut msg, &EntityState::default(), num, bits);
+        assert_eq!(decoded.frame, 300);
+        assert!(msg.remaining_data().is_empty());
+    }
+
+    // C copies unchanged entities forward through CL_ParseDelta with bits 0,
+    // which clears `event` and sets old_origin to the previous origin.
+    #[test]
+    fn copied_forward_entity_clears_event_and_sets_old_origin() {
+        let with_event = EntityState {
+            number: 4,
+            origin: Vec3f::new(8.0, 0.0, 0.0),
+            event: 3,
+            ..Default::default()
+        };
+        let baselines = vec![CEntity::default(); MAX_EDICTS];
+
+        let mut msg = NetMsg::new();
+        msg.write_packet_entities_list(&[], std::slice::from_ref(&with_event))
+            .expect("valid entities");
+        msg.begin_reading();
+        let _ = msg.read_byte(); // PacketEntities opcode
+        let frame1 = read_packet_entities(&mut msg, &[], &baselines);
+        assert_eq!(frame1[0].event, 3);
+        assert_eq!(frame1[0].old_origin, Vec3f::ZERO);
+
+        // Same entity, event gone: nothing changed, so nothing is written
+        // for it and the client copies it forward.
+        let without_event = EntityState {
+            event: 0,
+            ..with_event.clone()
+        };
+        let mut msg2 = NetMsg::new();
+        msg2.write_packet_entities_list(&[with_event], &[without_event])
+            .expect("valid entities");
+        msg2.begin_reading();
+        let _ = msg2.read_byte();
+        let frame2 = read_packet_entities(&mut msg2, &frame1, &baselines);
+        assert_eq!(frame2.len(), 1);
+        assert_eq!(frame2[0].event, 0);
+        assert_eq!(frame2[0].old_origin, Vec3f::new(8.0, 0.0, 0.0));
     }
 }

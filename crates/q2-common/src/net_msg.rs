@@ -12,7 +12,7 @@
 //! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
 use crate::error::{Q2Error, Q2Result};
-use q2_shared::constants::MAX_STATS;
+use q2_shared::constants::{MAX_EDICTS, MAX_STATS};
 use q2_shared::protocol::{PlayerStateFlags, SvcOp, UpdateFlags};
 use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
@@ -120,6 +120,9 @@ const CM_SIDE: u8 = 1 << 4;
 const CM_UP: u8 = 1 << 5;
 const CM_BUTTONS: u8 = 1 << 6;
 const CM_IMPULSE: u8 = 1 << 7;
+
+/// `RF_BEAM` from shared.h: beams always carry their end point in old_origin.
+const RF_BEAM: i32 = 128;
 
 // ---------------------------------------------------------------------------
 // NetMsg — the network message buffer
@@ -484,20 +487,43 @@ impl NetMsg {
 
     // ----- Delta compression -----
 
-    /// Write only the fields that changed between `from` and `to`.
-    /// Uses bitflags from `UpdateFlags`.
+    /// Write only the fields that changed between `from` and `to`, in the
+    /// protocol 34 layout of C `MSG_WriteDeltaEntity`.
     ///
     /// If `force` is false and nothing changed, writes nothing (returns early).
-    /// If `newentity` is true, the receiving side creates a new entity slot.
+    /// `newentity` forces old_origin to be sent so the client does not lerp
+    /// from a stale position.
+    ///
+    /// Errors (C `ERR_FATAL`) when `to.number` is 0 (the list terminator) or
+    /// not below `MAX_EDICTS`; nothing is written then.
     pub fn write_delta_entity(
         &mut self,
         from: &EntityState,
         to: &EntityState,
         force: bool,
         newentity: bool,
-    ) {
+    ) -> Q2Result<()> {
+        if to.number <= 0 {
+            return Err(Q2Error::Fatal(format!(
+                "write_delta_entity: unset entity number {}",
+                to.number
+            )));
+        }
+        if to.number >= MAX_EDICTS as i32 {
+            return Err(Q2Error::Fatal(format!(
+                "write_delta_entity: entity number {} >= MAX_EDICTS",
+                to.number
+            )));
+        }
+
         // Build the flags for which fields have changed.
         let mut flags = UpdateFlags::empty();
+
+        // Set before the "nothing to send" check, as in C: an entity >= 256
+        // is always written, even when unchanged.
+        if to.number >= 256 {
+            flags |= UpdateFlags::NUMBER16;
+        }
 
         if to.origin.x != from.origin.x {
             flags |= UpdateFlags::ORIGIN1;
@@ -519,9 +545,15 @@ impl NetMsg {
             flags |= UpdateFlags::ANGLE3;
         }
 
+        // Field widths follow C: 8 bit, 16 bit alone, or both bits for 32.
+        // C compares skinnum as unsigned (laser colours are negative as int);
+        // frame and renderfx are signed compares, effects is unsigned.
         if to.skinnum != from.skinnum {
-            if to.skinnum < 256 {
+            let skin = to.skinnum as u32;
+            if skin < 256 {
                 flags |= UpdateFlags::SKIN8;
+            } else if skin < 0x10000 {
+                flags |= UpdateFlags::SKIN16;
             } else {
                 flags |= UpdateFlags::SKIN8 | UpdateFlags::SKIN16;
             }
@@ -531,13 +563,15 @@ impl NetMsg {
             if to.frame < 256 {
                 flags |= UpdateFlags::FRAME8;
             } else {
-                flags |= UpdateFlags::FRAME8 | UpdateFlags::FRAME16;
+                flags |= UpdateFlags::FRAME16;
             }
         }
 
         if to.effects != from.effects {
             if to.effects < 256 {
                 flags |= UpdateFlags::EFFECTS8;
+            } else if to.effects < 0x8000 {
+                flags |= UpdateFlags::EFFECTS16;
             } else {
                 flags |= UpdateFlags::EFFECTS8 | UpdateFlags::EFFECTS16;
             }
@@ -546,6 +580,8 @@ impl NetMsg {
         if to.renderfx != from.renderfx {
             if to.renderfx < 256 {
                 flags |= UpdateFlags::RENDERFX8;
+            } else if to.renderfx < 0x8000 {
+                flags |= UpdateFlags::RENDERFX16;
             } else {
                 flags |= UpdateFlags::RENDERFX8 | UpdateFlags::RENDERFX16;
             }
@@ -555,7 +591,9 @@ impl NetMsg {
             flags |= UpdateFlags::SOLID;
         }
 
-        if to.event != from.event {
+        // Events are not delta compressed, just zero compressed: the client
+        // clears the event whenever EVENT is absent.
+        if to.event != 0 {
             flags |= UpdateFlags::EVENT;
         }
 
@@ -576,18 +614,13 @@ impl NetMsg {
             flags |= UpdateFlags::SOUND;
         }
 
-        if to.old_origin != from.old_origin || newentity {
+        if newentity || (to.renderfx & RF_BEAM) != 0 {
             flags |= UpdateFlags::OLDORIGIN;
         }
 
         // If nothing changed and we are not forced, write nothing.
         if flags.is_empty() && !force {
-            return;
-        }
-
-        // Entity number > 255 needs 16-bit encoding.
-        if to.number >= 256 {
-            flags |= UpdateFlags::NUMBER16;
+            return Ok(());
         }
 
         // Determine extension bytes in descending order so each added MOREBITS
@@ -640,35 +673,37 @@ impl NetMsg {
         }
 
         if flags.contains(UpdateFlags::FRAME8) {
-            if flags.contains(UpdateFlags::FRAME16) {
-                self.write_short(to.frame);
-            } else {
-                self.write_byte(to.frame);
-            }
+            self.write_byte(to.frame);
+        }
+        if flags.contains(UpdateFlags::FRAME16) {
+            self.write_short(to.frame);
         }
 
-        if flags.contains(UpdateFlags::SKIN8) {
-            if flags.contains(UpdateFlags::SKIN16) {
-                self.write_long(to.skinnum);
-            } else {
-                self.write_byte(to.skinnum);
-            }
+        let skin_bits = flags & (UpdateFlags::SKIN8 | UpdateFlags::SKIN16);
+        if skin_bits == UpdateFlags::SKIN8 | UpdateFlags::SKIN16 {
+            self.write_long(to.skinnum);
+        } else if skin_bits == UpdateFlags::SKIN8 {
+            self.write_byte(to.skinnum);
+        } else if skin_bits == UpdateFlags::SKIN16 {
+            self.write_short(to.skinnum);
         }
 
-        if flags.contains(UpdateFlags::EFFECTS8) {
-            if flags.contains(UpdateFlags::EFFECTS16) {
-                self.write_long(to.effects as i32);
-            } else {
-                self.write_byte(to.effects as i32);
-            }
+        let effects_bits = flags & (UpdateFlags::EFFECTS8 | UpdateFlags::EFFECTS16);
+        if effects_bits == UpdateFlags::EFFECTS8 | UpdateFlags::EFFECTS16 {
+            self.write_long(to.effects as i32);
+        } else if effects_bits == UpdateFlags::EFFECTS8 {
+            self.write_byte(to.effects as i32);
+        } else if effects_bits == UpdateFlags::EFFECTS16 {
+            self.write_short(to.effects as i32);
         }
 
-        if flags.contains(UpdateFlags::RENDERFX8) {
-            if flags.contains(UpdateFlags::RENDERFX16) {
-                self.write_long(to.renderfx);
-            } else {
-                self.write_byte(to.renderfx);
-            }
+        let renderfx_bits = flags & (UpdateFlags::RENDERFX8 | UpdateFlags::RENDERFX16);
+        if renderfx_bits == UpdateFlags::RENDERFX8 | UpdateFlags::RENDERFX16 {
+            self.write_long(to.renderfx);
+        } else if renderfx_bits == UpdateFlags::RENDERFX8 {
+            self.write_byte(to.renderfx);
+        } else if renderfx_bits == UpdateFlags::RENDERFX16 {
+            self.write_short(to.renderfx);
         }
 
         if flags.contains(UpdateFlags::ORIGIN1) {
@@ -682,13 +717,13 @@ impl NetMsg {
         }
 
         if flags.contains(UpdateFlags::ANGLE1) {
-            self.write_angle16(to.angles.x);
+            self.write_angle(to.angles.x);
         }
         if flags.contains(UpdateFlags::ANGLE2) {
-            self.write_angle16(to.angles.y);
+            self.write_angle(to.angles.y);
         }
         if flags.contains(UpdateFlags::ANGLE3) {
-            self.write_angle16(to.angles.z);
+            self.write_angle(to.angles.z);
         }
 
         if flags.contains(UpdateFlags::OLDORIGIN) {
@@ -708,6 +743,8 @@ impl NetMsg {
         if flags.contains(UpdateFlags::SOLID) {
             self.write_short(to.solid);
         }
+
+        Ok(())
     }
 
     /// Write a delta-compressed user command.
@@ -964,11 +1001,14 @@ impl NetMsg {
     /// (ascending). Entities in `old_entities` but absent from `new_entities` are
     /// written with the REMOVE flag; entities that appear in both with identical
     /// state are omitted (the reader copies them forward from the old frame).
+    ///
+    /// Errors if an entity number is invalid (see
+    /// [`write_delta_entity`](Self::write_delta_entity)).
     pub fn write_packet_entities_list(
         &mut self,
         old_entities: &[EntityState],
         new_entities: &[EntityState],
-    ) {
+    ) -> Q2Result<()> {
         self.write_byte(SvcOp::PacketEntities as i32);
 
         let mut old_idx = 0usize;
@@ -990,7 +1030,7 @@ impl NetMsg {
                     (EntityState::default(), true)
                 };
 
-            self.write_delta_entity(&from, new_ent, is_new, is_new);
+            self.write_delta_entity(&from, new_ent, is_new, is_new)?;
         }
 
         // Any remaining old entities are removed.
@@ -1002,6 +1042,7 @@ impl NetMsg {
         // Terminator: entity number 0 with no flags.
         self.write_byte(0); // flags byte = 0
         self.write_byte(0); // entity number = 0
+        Ok(())
     }
 
     /// Write entity bits encoding a REMOVE for the given entity number.
@@ -1297,12 +1338,202 @@ mod tests {
     }
 
     #[test]
-    fn delta_entity_unchanged_is_compact() {
-        let state = EntityState::default();
+    fn delta_entity_unchanged_writes_nothing() {
+        let state = EntityState {
+            number: 1,
+            ..Default::default()
+        };
         let mut buf = NetMsg::new();
-        buf.write_delta_entity(&state, &state, false, false);
-        // Unchanged entity with force=false should write nothing (or just a number)
-        assert!(buf.len() < 10);
+        buf.write_delta_entity(&state, &state, false, false)
+            .expect("valid number");
+        assert!(buf.is_empty());
+    }
+
+    /// Encode `to` against `from` and return the bytes.
+    fn delta_bytes(from: &EntityState, to: &EntityState, force: bool, newentity: bool) -> Vec<u8> {
+        let mut buf = NetMsg::new();
+        buf.write_delta_entity(from, to, force, newentity)
+            .expect("valid number");
+        buf.data().to_vec()
+    }
+
+    // Golden vectors below are hand-derived from C MSG_WriteDeltaEntity
+    // (movemsg.c:432-774). Bit values are the U_* defines (common.h):
+    // ORIGIN1 1<<0, ANGLE2 1<<2, ANGLE3 1<<3, FRAME8 1<<4, EVENT 1<<5,
+    // MOREBITS1 1<<7, NUMBER16 1<<8, ANGLE1 1<<10, EFFECTS8 1<<14,
+    // MOREBITS2 1<<15, SKIN8 1<<16, FRAME16 1<<17, RENDERFX16 1<<18,
+    // EFFECTS16 1<<19, MOREBITS3 1<<23, OLDORIGIN 1<<24, SKIN16 1<<25.
+
+    // frame >= 256 sets FRAME16 alone (short); angles are MSG_WriteAngle
+    // bytes: (int)(10*256/360)=7, 20 -> 14, 30 -> 21.
+    // bits = ANGLE1|ANGLE2|ANGLE3|FRAME16 | MOREBITS2|MOREBITS1 = 0x2848C.
+    #[test]
+    fn delta_entity_frame16_and_byte_angles_match_c() {
+        let to = EntityState {
+            number: 1,
+            frame: 300,
+            angles: Vec3f::new(10.0, 20.0, 30.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, true, false),
+            vec![0x8C, 0x84, 0x02, 1, 0x2C, 0x01, 7, 14, 21]
+        );
+    }
+
+    // 256 <= skinnum < 0x10000: SKIN16 alone, short.
+    // bits = SKIN16 | MOREBITS3|MOREBITS2|MOREBITS1 = 0x2808080.
+    #[test]
+    fn delta_entity_skin16_is_short_like_c() {
+        let to = EntityState {
+            number: 2,
+            skinnum: 300,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x80, 0x80, 0x80, 0x02, 2, 0x2C, 0x01]
+        );
+    }
+
+    // Laser colours: C compares (unsigned)skinnum, so a negative i32 is
+    // >= 0x10000 and goes out as SKIN8|SKIN16 + long.
+    // bits = SKIN8|SKIN16 | MOREBITS3|2|1 = 0x2818080.
+    #[test]
+    fn delta_entity_negative_skinnum_is_long_like_c() {
+        let to = EntityState {
+            number: 2,
+            skinnum: 0xd0d1_d2d3_u32 as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x80, 0x80, 0x81, 0x02, 2, 0xD3, 0xD2, 0xD1, 0xD0]
+        );
+    }
+
+    // 256 <= effects < 0x8000: EFFECTS16 alone, short.
+    // bits = EFFECTS16 | MOREBITS2|MOREBITS1 = 0x88080.
+    #[test]
+    fn delta_entity_effects16_is_short_like_c() {
+        let to = EntityState {
+            number: 3,
+            effects: 300,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x80, 0x80, 0x08, 3, 0x2C, 0x01]
+        );
+    }
+
+    // effects >= 0x8000: EFFECTS8|EFFECTS16, long.
+    // bits = EFFECTS8|EFFECTS16 | MOREBITS2|MOREBITS1 = 0x8C080.
+    #[test]
+    fn delta_entity_effects_0x8000_is_long_like_c() {
+        let to = EntityState {
+            number: 3,
+            effects: 0x8000,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x80, 0xC0, 0x08, 3, 0x00, 0x80, 0x00, 0x00]
+        );
+    }
+
+    // 256 <= renderfx < 0x8000: RENDERFX16 alone, short.
+    // bits = RENDERFX16 | MOREBITS2|MOREBITS1 = 0x48080.
+    #[test]
+    fn delta_entity_renderfx16_is_short_like_c() {
+        let to = EntityState {
+            number: 3,
+            renderfx: 300,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x80, 0x80, 0x04, 3, 0x2C, 0x01]
+        );
+    }
+
+    // "event is not delta compressed, just 0 compressed": a repeated event
+    // is sent again. bits = EVENT = 0x20.
+    #[test]
+    fn delta_entity_resends_unchanged_nonzero_event() {
+        let from = EntityState {
+            number: 4,
+            event: 3,
+            ..Default::default()
+        };
+        assert_eq!(delta_bytes(&from, &from, false, false), vec![0x20, 4, 3]);
+    }
+
+    // OLDORIGIN only for new entities or RF_BEAM; a moving entity whose
+    // old_origin changed sends ORIGIN1 only (bits 0x01, coord 8*8 = 64).
+    #[test]
+    fn delta_entity_moving_non_beam_omits_oldorigin() {
+        let to = EntityState {
+            number: 5,
+            origin: Vec3f::new(8.0, 0.0, 0.0),
+            old_origin: Vec3f::new(8.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&EntityState::default(), &to, false, false),
+            vec![0x01, 5, 0x40, 0x00]
+        );
+    }
+
+    // RF_BEAM (128) forces OLDORIGIN even when nothing changed.
+    // bits = OLDORIGIN | MOREBITS3|2|1 = 0x1808080; coords 1,2,3 -> 8,16,24.
+    #[test]
+    fn delta_entity_beam_always_sends_oldorigin() {
+        let beam = EntityState {
+            number: 6,
+            renderfx: 128,
+            old_origin: Vec3f::new(1.0, 2.0, 3.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&beam, &beam, false, false),
+            vec![0x80, 0x80, 0x80, 0x01, 6, 8, 0, 16, 0, 24, 0]
+        );
+    }
+
+    // C sets U_NUMBER16 before the "nothing to send" check, so an unchanged
+    // entity >= 256 is still written: bits = NUMBER16|MOREBITS1 = 0x180.
+    #[test]
+    fn delta_entity_unchanged_number16_is_still_written_like_c() {
+        let ent = EntityState {
+            number: 300,
+            ..Default::default()
+        };
+        assert_eq!(
+            delta_bytes(&ent, &ent, false, false),
+            vec![0x80, 0x01, 0x2C, 0x01]
+        );
+    }
+
+    // C: Com_Error(ERR_FATAL) for "Unset entity number" and
+    // "Entity number >= MAX_EDICTS". Number 0 would also look like the
+    // packet-entities terminator.
+    #[test]
+    fn delta_entity_rejects_number_0_and_max_edicts() {
+        for number in [0, 1024, -1] {
+            let to = EntityState {
+                number,
+                modelindex: 1,
+                ..Default::default()
+            };
+            let mut buf = NetMsg::new();
+            assert!(
+                buf.write_delta_entity(&EntityState::default(), &to, true, true)
+                    .is_err(),
+                "number {number} must be rejected"
+            );
+            assert!(buf.is_empty());
+        }
     }
 
     #[test]
@@ -1316,7 +1547,8 @@ mod tests {
         };
 
         let mut buf = NetMsg::new();
-        buf.write_delta_entity(&from, &to, true, true);
+        buf.write_delta_entity(&from, &to, true, true)
+            .expect("valid number");
 
         // Must encode at minimum: flag bytes + entity number + origin x/y + modelindex
         // 1 flag byte + 1 entity number + 2*2 coords + 1 model = at least 8 bytes
