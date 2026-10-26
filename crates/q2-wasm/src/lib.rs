@@ -75,7 +75,7 @@ impl Engine {
 
     /// Run one frame: translate platform input, delegate to PlayerController, render.
     fn tick(&mut self, timestamp: f64, input: &mut q2_platform::wasm::input::WasmInputState) {
-        let dt = ((timestamp - self.last_time) / 1000.0).min(0.05) as f32;
+        let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
 
         // Translate platform-specific WasmInputState → platform-agnostic MoveInput
@@ -148,13 +148,25 @@ impl Engine {
             fov_x: 90.0,
             fov_y: q2_client::view::calc_fov(90.0, self.width as f32, self.height as f32),
             vieworg: self.player.view_origin(),
-            viewangles: Vec3f::new(self.player.pitch, self.player.yaw, 0.0),
+            // PlayerController stores pitch positive-up (pitch_delta is
+            // -(mouse_dy * sens)); RefDef uses Q2 viewangles, positive-down.
+            // The negation goes away when movement moves onto pmove (#12).
+            viewangles: Vec3f::new(-self.player.pitch, self.player.yaw, 0.0),
             time: (timestamp / 1000.0) as f32,
             ..Default::default()
         };
 
         self.renderer.render_frame(&fd, &[], &[], &[]);
     }
+}
+
+/// Seconds since the last frame for the movement tick, clamped to
+/// `0.0..=0.05`. Negative deltas (the first RAF timestamp can precede the
+/// `performance.now()` taken at engine creation) would run movement and
+/// gravity backwards for a frame; long stalls are capped.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
+    ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -221,11 +233,43 @@ pub fn self_test() -> String {
     "PASS".to_string()
 }
 
+/// Canvas attribute marking that an engine owns the canvas. The marker lives
+/// in the DOM rather than in a Rust global, per the no-global-state rule.
+#[cfg(target_arch = "wasm32")]
+const ENGINE_MARK: &str = "data-qwasm2-engine";
+
 /// Start the game engine. Called from JS after the page is ready.
 /// Fetches pak0.pak, initializes WebGL2, loads the first map, and starts the game loop.
+///
+/// Returns `Err` if an engine was already started on this canvas: a second
+/// engine would stack a second set of input listeners and a second
+/// requestAnimationFrame loop on the same canvas.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+    let canvas_el = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(&canvas_id))
+        .ok_or_else(|| JsValue::from_str(&format!("no element with id '{canvas_id}'")))?;
+    if canvas_el.has_attribute(ENGINE_MARK) {
+        return Err(JsValue::from_str(
+            "start_game: an engine is already running on this canvas",
+        ));
+    }
+    canvas_el.set_attribute(ENGINE_MARK, "")?;
+
+    let started = run_engine(canvas_id, pak_url).await;
+    if started.is_err() {
+        // Allow a retry after a failed start (e.g. the pak fetch failed).
+        if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
+            console::error_1(&e);
+        }
+    }
+    started
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
@@ -281,7 +325,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
 
     // 6. Load first map's BSP
-    let map_name = if map_list.iter().any(|m| *m == "maps/demo1.bsp") {
+    let map_name = if map_list.contains(&"maps/demo1.bsp") {
         "maps/demo1.bsp"
     } else if let Some(first) = map_list.first() {
         first
@@ -294,8 +338,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log(&format!("BSP loaded: {} bytes", bsp_data.len()));
 
     // 7. Parse BSP
-    let bsp = q2_render::bsp::BspData::load(&bsp_data)
-        .map_err(|e| JsValue::from_str(&format!("BSP parse error: {}", e)))?;
+    let bsp = q2_render::bsp::BspData::load(&bsp_data).map_err(q2err_to_js)?;
     log(&format!(
         "BSP parsed: {} verts, {} faces, {} texinfos, {} models",
         bsp.vertices.len(),
@@ -326,7 +369,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log("Input listeners attached (click canvas for pointer lock)");
 
     // 10. Find player start via game spawn system
-    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(&bsp.entities) {
+    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(&bsp.entities, "") {
         Some(s) => s,
         None => {
             log("WARNING: No info_player_start found in BSP — spawning at origin (may be inside solid)");
@@ -346,14 +389,11 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log(&format!("Map: {} — engine running", map_name));
 
     let engine = Rc::new(RefCell::new(engine));
+    // No catch_unwind: wasm32-unknown-unknown aborts on panic, so a frame
+    // panic traps the module; the panic hook (wasm_main) logs it.
     let frame_callback = Box::new(move |timestamp: f64| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut input = input_state.borrow_mut();
-            engine.borrow_mut().tick(timestamp, &mut input);
-        }));
-        if let Err(e) = result {
-            web_sys::console::error_1(&format!("[qwasm2-rs] Frame panic: {:?}", e).into());
-        }
+        let mut input = input_state.borrow_mut();
+        engine.borrow_mut().tick(timestamp, &mut input);
     }) as Box<dyn FnMut(f64)>;
 
     q2_platform::wasm::game_loop::start_game_loop(frame_callback)
@@ -437,6 +477,23 @@ mod tests {
         assert!(info.contains(&q2_shared::constants::PROTOCOL_VERSION.to_string()));
         assert!(info.contains(&q2_shared::constants::MAX_EDICTS.to_string()));
         assert!(info.contains(&q2_shared::constants::MAX_CLIENTS.to_string()));
+    }
+
+    #[test]
+    fn frame_dt_is_zero_when_timestamp_precedes_last_frame() {
+        // The first RAF timestamp can be earlier than performance.now()
+        // taken at engine creation.
+        assert_eq!(frame_dt_seconds(1000.0, 1010.0), 0.0);
+    }
+
+    #[test]
+    fn frame_dt_is_capped_at_50ms() {
+        assert_eq!(frame_dt_seconds(5000.0, 1000.0), 0.05);
+    }
+
+    #[test]
+    fn frame_dt_converts_milliseconds_to_seconds() {
+        assert!((frame_dt_seconds(1016.0, 1000.0) - 0.016).abs() < 1e-6);
     }
 
     #[test]

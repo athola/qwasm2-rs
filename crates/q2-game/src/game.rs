@@ -15,40 +15,41 @@ pub struct GameLogic {
     storage: EntityStorage,
     spawn_table: SpawnTable,
     framenum: i32,
-    /// Maps server client-slot index (0-based) to entity key.
+    /// Maps server client-slot index (0-based) to entity key; one entry per
+    /// client slot (C `game.maxclients`).
     player_slots: Vec<Option<EntityKey>>,
 }
 
 impl GameLogic {
-    pub fn new() -> Self {
+    /// Create the game for `max_clients` client slots (the server's
+    /// `maxclients`, clamped to `MAX_CLIENTS`). There is no cvar system on
+    /// the GameImport yet, so the count is passed in rather than read.
+    pub fn new(max_clients: usize) -> Self {
         Self {
             storage: EntityStorage::new(MAX_EDICTS),
             spawn_table: SpawnTable::new(),
             framenum: 0,
-            player_slots: vec![None; MAX_CLIENTS],
+            player_slots: vec![None; max_clients.min(MAX_CLIENTS)],
         }
     }
 
-    fn ensure_slot(&mut self, idx: usize) {
-        debug_assert!(idx < MAX_CLIENTS, "player index {} out of range", idx);
-    }
-}
-
-impl Default for GameLogic {
-    fn default() -> Self {
-        Self::new()
+    /// `true` if `idx` names a client slot. The server only passes valid
+    /// slots in C; out-of-range indices are logged and ignored here rather
+    /// than panicking on the slot table.
+    fn valid_slot(&self, idx: usize) -> bool {
+        let valid = idx < self.player_slots.len();
+        if !valid {
+            tracing::warn!(slot = idx, "client slot out of range");
+        }
+        valid
     }
 }
 
 impl GameExport for GameLogic {
-    fn api_version(&self) -> i32 {
-        3
-    }
-
     fn init(&mut self, import: &dyn GameImport) {
         import.dprintf("GameLogic initialised\n");
-        // Mirrors G_Init in g_main.c: advertise max client count via configstring.
-        import.configstring(CS_MAXCLIENTS as i32, "8");
+        // C sets this in SP_worldspawn from the maxclients cvar (g_spawn.c).
+        import.configstring(CS_MAXCLIENTS as i32, &self.player_slots.len().to_string());
     }
 
     fn shutdown(&mut self) {
@@ -58,7 +59,14 @@ impl GameExport for GameLogic {
     }
 
     fn spawn_entities(&mut self, mapname: &str, entstring: &str, _spawnpoint: &str) {
-        let entities = parse_entity_string(entstring);
+        // C aborts the map load (gi.error) on a malformed entity string.
+        let entities = match parse_entity_string(entstring) {
+            Ok(entities) => entities,
+            Err(e) => {
+                tracing::error!(map = mapname, "spawn_entities: {e}");
+                return;
+            }
+        };
         for props in &entities {
             let key = match self.storage.spawn() {
                 Some(k) => k,
@@ -81,7 +89,9 @@ impl GameExport for GameLogic {
     }
 
     fn client_connect(&mut self, ent_idx: usize, _userinfo: &str) -> bool {
-        self.ensure_slot(ent_idx);
+        if !self.valid_slot(ent_idx) {
+            return false;
+        }
         if let Some(old_key) = self.player_slots[ent_idx].take() {
             self.storage.free(old_key);
         }
@@ -89,7 +99,9 @@ impl GameExport for GameLogic {
     }
 
     fn client_begin(&mut self, ent_idx: usize) {
-        self.ensure_slot(ent_idx);
+        if !self.valid_slot(ent_idx) {
+            return;
+        }
         if let Some(old_key) = self.player_slots[ent_idx].take() {
             self.storage.free(old_key);
         }
@@ -105,7 +117,9 @@ impl GameExport for GameLogic {
     }
 
     fn client_disconnect(&mut self, ent_idx: usize) {
-        self.ensure_slot(ent_idx);
+        if !self.valid_slot(ent_idx) {
+            return;
+        }
         if let Some(key) = self.player_slots[ent_idx].take() {
             self.storage.free(key);
         }
@@ -133,7 +147,11 @@ mod tests {
     use crate::traits::GameImport;
     use q2_shared::types::*;
 
-    struct NoopImport;
+    /// No-op import that records configstring writes.
+    #[derive(Default)]
+    struct NoopImport {
+        configstrings: std::cell::RefCell<Vec<(i32, String)>>,
+    }
 
     impl GameImport for NoopImport {
         fn bprintf(&self, _: i32, _: &str) {}
@@ -168,7 +186,11 @@ mod tests {
         fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> {
             Vec::new()
         }
-        fn configstring(&self, _: i32, _: &str) {}
+        fn configstring(&self, num: i32, string: &str) {
+            self.configstrings
+                .borrow_mut()
+                .push((num, string.to_string()));
+        }
         fn write_byte(&self, _: i32) {}
         fn write_short(&self, _: i32) {}
         fn write_long(&self, _: i32) {}
@@ -192,27 +214,73 @@ mod tests {
     }
 
     #[test]
-    fn game_logic_init() {
-        let mut game = GameLogic::new();
-        game.init(&NoopImport);
+    fn init_advertises_the_configured_client_count() {
+        let import = NoopImport::default();
+        let mut game = GameLogic::new(4);
+        game.init(&import);
+        assert_eq!(
+            *import.configstrings.borrow(),
+            vec![(CS_MAXCLIENTS as i32, "4".to_string())]
+        );
         assert_eq!(game.framenum, 0);
         assert_eq!(game.storage.count(), 0);
     }
 
     #[test]
+    fn client_count_is_clamped_to_max_clients() {
+        let import = NoopImport::default();
+        let mut game = GameLogic::new(MAX_CLIENTS + 7);
+        game.init(&import);
+        assert_eq!(import.configstrings.borrow()[0].1, MAX_CLIENTS.to_string());
+    }
+
+    #[test]
+    fn client_calls_out_of_range_are_rejected_without_panic() {
+        let mut game = GameLogic::new(4);
+        assert!(!game.client_connect(4, ""));
+        assert!(!game.client_connect(MAX_CLIENTS + 1, ""));
+        game.client_begin(4);
+        game.client_disconnect(MAX_CLIENTS + 1);
+        game.client_think(4, &UserCmd::default());
+        assert_eq!(game.storage.count(), 0, "no player spawned for a bad slot");
+    }
+
+    #[test]
     fn spawn_entities_populates_storage() {
-        let mut game = GameLogic::new();
+        let mut game = GameLogic::new(4);
         let entstring = r#"
 { "classname" "worldspawn" "message" "Test" }
 { "classname" "info_player_start" "origin" "0 0 0" }
 "#;
         game.spawn_entities("test_map", entstring, "");
         assert_eq!(game.storage.count(), 2);
+        let mut classnames: Vec<&str> = game
+            .storage
+            .iter()
+            .map(|(_, ent)| ent.game.classname.as_str())
+            .collect();
+        classnames.sort_unstable();
+        assert_eq!(classnames, ["info_player_start", "worldspawn"]);
+    }
+
+    #[test]
+    fn spawn_entities_with_truncated_text_spawns_nothing() {
+        let mut game = GameLogic::new(4);
+        let entstring = r#"
+{ "classname" "worldspawn" }
+{ "classname" "info_player_start" "origin" "0 0 0"
+"#;
+        game.spawn_entities("test_map", entstring, "");
+        assert_eq!(
+            game.storage.count(),
+            0,
+            "a corrupt entity lump must not half-load"
+        );
     }
 
     #[test]
     fn client_connect_and_begin() {
-        let mut game = GameLogic::new();
+        let mut game = GameLogic::new(4);
         assert!(game.client_connect(0, r"name\test\skin\male/grunt"));
         game.client_begin(0);
         // Player entity should exist
@@ -224,7 +292,7 @@ mod tests {
 
     #[test]
     fn client_disconnect_frees_entity() {
-        let mut game = GameLogic::new();
+        let mut game = GameLogic::new(4);
         game.client_connect(0, "");
         game.client_begin(0);
         let pre_count = game.storage.count();
@@ -235,7 +303,7 @@ mod tests {
 
     #[test]
     fn run_frame_increments_framenum() {
-        let mut game = GameLogic::new();
+        let mut game = GameLogic::new(4);
         for _ in 0..10 {
             game.run_frame();
         }
@@ -244,7 +312,7 @@ mod tests {
 
     #[test]
     fn shutdown_resets_state() {
-        let mut game = GameLogic::new();
+        let mut game = GameLogic::new(4);
         game.client_connect(0, "");
         game.client_begin(0);
         game.run_frame();

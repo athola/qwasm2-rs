@@ -127,10 +127,10 @@ pub struct Server {
     pub baselines: Vec<EntityState>,
     /// Frame counter, incremented each server frame.
     pub framenum: i32,
-    /// Current server time in seconds.
-    pub time: f32,
-    /// Duration of one server frame in seconds.
-    pub frametime: f32,
+    /// Game time in milliseconds of the last game frame (`framenum * 100`),
+    /// or the time the next frame is due right after a map load. Integer
+    /// milliseconds like C `sv.time`, so it never drifts.
+    pub time: u32,
 }
 
 impl Default for Server {
@@ -142,8 +142,7 @@ impl Default for Server {
             configstrings: Vec::new(),
             baselines: Vec::new(),
             framenum: 0,
-            time: 0.0,
-            frametime: 0.0,
+            time: 0,
         }
     }
 }
@@ -156,30 +155,19 @@ impl Default for Server {
 ///
 /// Corresponds to `server_static_t` in the C reference. Challenge tracking,
 /// demo recording, and network entity ring-buffer fields are omitted for now.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ServerStatic {
     /// `true` once `SV_InitGame` has completed.
     pub initialized: bool,
-    /// Wall-clock time in seconds (always increasing).
-    pub realtime: f32,
+    /// Wall-clock time in milliseconds, clamped to stay within one game
+    /// frame of `Server::time` (C `svs.realtime`).
+    pub realtime: u32,
     /// The map command string (e.g. `"*intro.cin+base1"`).
     pub mapcmd: String,
     /// Per-slot client data; length == `max_clients`.
     pub clients: Vec<ServerClient>,
     /// Maximum number of client slots.
     pub max_clients: usize,
-}
-
-impl Default for ServerStatic {
-    fn default() -> Self {
-        Self {
-            initialized: false,
-            realtime: 0.0,
-            mapcmd: String::new(),
-            clients: Vec::new(),
-            max_clients: 0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +190,7 @@ mod tests {
 
         sv.state = ServerState::Game;
         sv.framenum = 1;
-        sv.time = 0.1;
+        sv.time = 100;
         assert_eq!(sv.state, ServerState::Game);
         assert_eq!(sv.framenum, 1);
     }
@@ -249,23 +237,6 @@ mod tests {
         let cl = ServerClient::default();
         assert_eq!(cl.rate, 5000);
         assert_eq!(cl.last_frame, -1);
-    }
-
-    #[test]
-    fn server_frame_accumulation() {
-        let mut sv = Server {
-            state: ServerState::Game,
-            frametime: 0.1,
-            ..Default::default()
-        };
-
-        for _ in 0..10 {
-            sv.framenum += 1;
-            sv.time += sv.frametime;
-        }
-
-        assert_eq!(sv.framenum, 10);
-        assert!((sv.time - 1.0).abs() < 1e-5);
     }
 
     #[test]

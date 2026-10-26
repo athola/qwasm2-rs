@@ -5,9 +5,6 @@
 
 use q2_shared::types::*;
 
-// Re-export from canonical location so game code can use `traits::CVarHandle`.
-pub use q2_shared::CVarHandle;
-
 // ---------------------------------------------------------------------------
 // GameImport — server callbacks available to the game module
 // ---------------------------------------------------------------------------
@@ -27,7 +24,7 @@ pub use q2_shared::CVarHandle;
 /// gi.write_position(origin);
 /// gi.multicast(origin, Multicast::PVS);  // ← flush
 /// ```
-pub trait GameImport: Send + Sync {
+pub trait GameImport {
     // -- printing ----------------------------------------------------------
 
     /// Broadcast a print message to all connected clients.
@@ -183,7 +180,7 @@ pub trait GameImport: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Game-to-server interface.  Mirrors `game_export_t` from `game.h`.
-pub trait GameExport: Send + Sync {
+pub trait GameExport {
     /// API version (must be `GAME_API_VERSION == 3`).
     fn api_version(&self) -> i32 {
         3
@@ -218,8 +215,13 @@ mod tests {
     use super::*;
 
     /// A no-op mock that proves `GameImport` is object-safe and
-    /// implementable.
-    struct MockGameImport;
+    /// implementable. The `Rc` marker makes it `!Send + !Sync`, so the tests
+    /// also prove the trait does not demand thread-safety the single-threaded
+    /// engine never uses.
+    #[derive(Default)]
+    struct MockGameImport {
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
 
     impl GameImport for MockGameImport {
         fn bprintf(&self, _printlevel: i32, _msg: &str) {}
@@ -251,11 +253,14 @@ mod tests {
             _start: Vec3f,
             _mins: Vec3f,
             _maxs: Vec3f,
-            _end: Vec3f,
+            end: Vec3f,
             _pass_ent: Option<usize>,
             _content_mask: i32,
         ) -> Trace {
-            Trace::default()
+            Trace {
+                endpos: end,
+                ..Trace::default()
+            }
         }
         fn point_contents(&self, _point: Vec3f) -> i32 {
             0
@@ -303,7 +308,7 @@ mod tests {
     #[test]
     fn game_import_is_object_safe() {
         // Prove the trait is object-safe by constructing a trait object.
-        let gi: Box<dyn GameImport> = Box::new(MockGameImport);
+        let gi: Box<dyn GameImport> = Box::new(MockGameImport::default());
         // Call methods through the vtable — this tests dispatch, not return values.
         gi.bprintf(0, "broadcast");
         gi.dprintf("debug");
@@ -320,25 +325,21 @@ mod tests {
     }
 
     #[test]
-    fn game_import_trace_returns_valid_default() {
-        let gi: &dyn GameImport = &MockGameImport;
-        let tr = gi.trace(
-            Vec3f::ZERO,
-            Vec3f::ZERO,
-            Vec3f::ZERO,
-            Vec3f::new(100.0, 0.0, 0.0),
-            None,
-            0,
-        );
-        // Trace::default() has fraction=1.0, meaning no collision
+    fn game_import_unobstructed_trace_ends_at_end_point() {
+        let gi: &dyn GameImport = &MockGameImport::default();
+        let end = Vec3f::new(100.0, 0.0, 0.0);
+        let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
+        // Contract: fraction 1.0 (no hit) implies endpos == end.
         assert_eq!(tr.fraction, 1.0);
+        assert_eq!(tr.endpos, end);
         assert!(!tr.allsolid);
     }
 
     #[test]
     fn game_import_box_edicts_returns_empty() {
-        let gi: &dyn GameImport = &MockGameImport;
-        let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 0);
+        let gi: &dyn GameImport = &MockGameImport::default();
+        // area_type 1 = AREA_SOLID; 0 is not a valid area type.
+        let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 1);
         assert!(edicts.is_empty());
     }
 }

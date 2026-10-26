@@ -3,12 +3,13 @@
 //! `ServerGameImport` implements `q2_game::traits::GameImport` so the game
 //! module can call back into the server during a game frame.
 //!
-//! Interior-mutable state (message buffer, configstring updates) is guarded by
-//! a `Mutex` to satisfy the `Send + Sync` bound on `GameImport`.  In the
-//! single-threaded WASM target the lock is always uncontended.
+//! `GameImport` methods take `&self`, so the message buffer and configstring
+//! mirror live in a `RefCell`. The engine is single-threaded, so the trait
+//! carries no `Send + Sync` bound and no lock is needed.
 
-use std::sync::Mutex;
+use std::cell::RefCell;
 
+use q2_common::net_msg::NetMsg;
 use q2_game::traits::GameImport;
 use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 
@@ -16,12 +17,14 @@ use q2_shared::{constants::MAX_CONFIGSTRINGS, types::*};
 // Interior-mutable state
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
 struct GiInner {
     /// Outbound message buffer accumulating write_* calls; discarded (not sent)
     /// when multicast/unicast is called until proper routing is implemented.
-    msg_buf: Vec<u8>,
-    /// Mirror of Server::configstrings, updated by game calls to configstring().
+    /// Uses `NetMsg` so game-written temp entities encode byte-for-byte like
+    /// every other server message (MSG_Write* in C).
+    msg_buf: NetMsg,
+    /// Game-written configstrings; `Server::frame` copies dirty slots into
+    /// `Server::configstrings` after each game frame.
     configstrings: Vec<String>,
     /// Tracks which configstring slots were written since the last drain.
     dirty: Vec<bool>,
@@ -30,7 +33,7 @@ struct GiInner {
 impl GiInner {
     fn new() -> Self {
         Self {
-            msg_buf: Vec::new(),
+            msg_buf: NetMsg::new(),
             configstrings: vec![String::new(); MAX_CONFIGSTRINGS],
             dirty: vec![false; MAX_CONFIGSTRINGS],
         }
@@ -43,7 +46,7 @@ impl GiInner {
 
 /// Server implementation of the `GameImport` trait.
 pub struct ServerGameImport {
-    inner: Mutex<GiInner>,
+    inner: RefCell<GiInner>,
 }
 
 impl std::fmt::Debug for ServerGameImport {
@@ -55,7 +58,7 @@ impl std::fmt::Debug for ServerGameImport {
 impl ServerGameImport {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(GiInner::new()),
+            inner: RefCell::new(GiInner::new()),
         }
     }
 
@@ -66,7 +69,7 @@ impl ServerGameImport {
     /// protocol to erase a slot).  Clears the dirty flags so subsequent calls
     /// return only new writes.
     pub fn drain_configstring_updates(&self) -> Vec<(usize, String)> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.borrow_mut();
         let updates: Vec<(usize, String)> = inner
             .dirty
             .iter()
@@ -151,12 +154,16 @@ impl GameImport for ServerGameImport {
         _start: Vec3f,
         _mins: Vec3f,
         _maxs: Vec3f,
-        _end: Vec3f,
+        end: Vec3f,
         _pass_ent: Option<usize>,
         _content_mask: i32,
     ) -> Trace {
-        // CP-3: no BSP loaded — return an unobstructed trace (fraction = 1.0).
-        Trace::default()
+        // CP-3: no BSP loaded — return an unobstructed trace. A trace that
+        // hits nothing reaches `end` (fraction 1.0), as in C SV_Trace.
+        Trace {
+            endpos: end,
+            ..Trace::default()
+        }
     }
 
     fn point_contents(&self, _point: Vec3f) -> i32 {
@@ -196,7 +203,7 @@ impl GameImport for ServerGameImport {
             return;
         }
         let idx = num as usize;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.borrow_mut();
         if idx < inner.configstrings.len() {
             inner.configstrings[idx] = string.to_string();
             inner.dirty[idx] = true;
@@ -206,65 +213,45 @@ impl GameImport for ServerGameImport {
     // -- network writing (buffered; flushed on multicast/unicast) -----------
 
     fn write_byte(&self, c: i32) {
-        self.inner.lock().unwrap().msg_buf.push(c as u8);
+        self.inner.borrow_mut().msg_buf.write_byte(c);
     }
 
     fn write_short(&self, c: i32) {
-        let mut inner = self.inner.lock().unwrap();
-        let bytes = (c as i16).to_le_bytes();
-        inner.msg_buf.extend_from_slice(&bytes);
+        self.inner.borrow_mut().msg_buf.write_short(c);
     }
 
     fn write_long(&self, c: i32) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.msg_buf.extend_from_slice(&c.to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_long(c);
     }
 
     fn write_float(&self, f: f32) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.msg_buf.extend_from_slice(&f.to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_float(f);
     }
 
     fn write_string(&self, s: &str) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.msg_buf.extend_from_slice(s.as_bytes());
-        inner.msg_buf.push(0); // null-terminate
+        self.inner.borrow_mut().msg_buf.write_string(s);
     }
 
     fn write_position(&self, pos: Vec3f) {
-        let mut inner = self.inner.lock().unwrap();
-        let encode = |f: f32| -> i16 { (f * 8.0) as i16 };
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.x).to_le_bytes());
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.y).to_le_bytes());
-        inner
-            .msg_buf
-            .extend_from_slice(&encode(pos.z).to_le_bytes());
+        self.inner.borrow_mut().msg_buf.write_position(pos);
     }
 
     fn write_dir(&self, dir: Vec3f) {
-        // Stub: should quantise to the nearest BYTEDIRS entry (162 directions).
-        // Writing byte 0 keeps the stream aligned until quantization is wired up.
-        let _ = dir;
-        self.inner.lock().unwrap().msg_buf.push(0);
+        self.inner.borrow_mut().msg_buf.write_dir(dir);
     }
 
     fn write_angle(&self, f: f32) {
-        let byte = ((f * 256.0 / 360.0) as i32 & 255) as u8;
-        self.inner.lock().unwrap().msg_buf.push(byte);
+        self.inner.borrow_mut().msg_buf.write_angle(f);
     }
 
     // -- multicast / unicast (flush message buffer) -------------------------
 
     fn multicast(&self, _origin: Vec3f, _to: Multicast) {
-        self.inner.lock().unwrap().msg_buf.clear();
+        self.inner.borrow_mut().msg_buf.clear();
     }
 
     fn unicast(&self, _ent_idx: usize, _reliable: bool) {
-        self.inner.lock().unwrap().msg_buf.clear();
+        self.inner.borrow_mut().msg_buf.clear();
     }
 
     // -- command args --------------------------------------------------------
@@ -293,6 +280,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unobstructed_trace_ends_at_requested_end_point() {
+        let gi = ServerGameImport::new();
+        let end = Vec3f::new(100.0, -20.0, 8.0);
+        let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
+        assert_eq!(tr.fraction, 1.0);
+        assert_eq!(tr.endpos, end);
+        assert!(!tr.allsolid && !tr.startsolid);
+    }
+
+    #[test]
     fn configstring_stored() {
         let gi = ServerGameImport::new();
         gi.configstring(0, "base1");
@@ -310,12 +307,12 @@ mod tests {
         gi.write_byte(42);
         gi.write_byte(99);
         {
-            let inner = gi.inner.lock().unwrap();
+            let inner = gi.inner.borrow();
             assert_eq!(inner.msg_buf.len(), 2);
         }
         gi.unicast(0, true);
         {
-            let inner = gi.inner.lock().unwrap();
+            let inner = gi.inner.borrow();
             assert!(inner.msg_buf.is_empty());
         }
     }
@@ -324,52 +321,103 @@ mod tests {
     fn write_string_null_terminates() {
         let gi = ServerGameImport::new();
         gi.write_string("hello");
-        let inner = gi.inner.lock().unwrap();
-        assert_eq!(inner.msg_buf.last(), Some(&0u8));
+        let inner = gi.inner.borrow();
+        assert_eq!(inner.msg_buf.data().last(), Some(&0u8));
     }
 
     #[test]
-    fn send_sync_bound() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<ServerGameImport>();
+    fn configstring_still_writable_after_panic_during_buffer_access() {
+        let gi = ServerGameImport::new();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = gi.inner.borrow_mut();
+            panic!("game callback panicked while the buffer was borrowed");
+        }));
+        assert!(caught.is_err());
+
+        gi.configstring(2, "after_panic");
+        let updates = gi.drain_configstring_updates();
+        assert_eq!(updates, vec![(2, "after_panic".to_string())]);
     }
 
     #[test]
     fn write_short_encodes_little_endian() {
         let gi = ServerGameImport::new();
         gi.write_short(0x1234);
-        let inner = gi.inner.lock().unwrap();
-        assert_eq!(&inner.msg_buf[..], &0x1234i16.to_le_bytes());
+        let inner = gi.inner.borrow();
+        assert_eq!(inner.msg_buf.data(), &0x1234i16.to_le_bytes());
     }
 
     #[test]
     fn write_long_encodes_little_endian() {
         let gi = ServerGameImport::new();
         gi.write_long(0x0A0B_0C0D);
-        let inner = gi.inner.lock().unwrap();
-        assert_eq!(&inner.msg_buf[..], &0x0A0B_0C0Di32.to_le_bytes());
+        let inner = gi.inner.borrow();
+        assert_eq!(inner.msg_buf.data(), &0x0A0B_0C0Di32.to_le_bytes());
     }
 
     #[test]
     fn write_float_encodes_little_endian() {
         let gi = ServerGameImport::new();
         gi.write_float(1.5);
-        let inner = gi.inner.lock().unwrap();
-        assert_eq!(&inner.msg_buf[..], &1.5f32.to_le_bytes());
+        let inner = gi.inner.borrow();
+        assert_eq!(inner.msg_buf.data(), &1.5f32.to_le_bytes());
     }
 
     #[test]
     fn write_position_scales_by_8() {
         let gi = ServerGameImport::new();
         gi.write_position(q2_shared::types::Vec3f::new(16.0, -8.0, 0.5));
-        let inner = gi.inner.lock().unwrap();
-        // coord wire format: (f * 8.0) as i16, three components
-        let x: i16 = i16::from_le_bytes([inner.msg_buf[0], inner.msg_buf[1]]);
-        let y: i16 = i16::from_le_bytes([inner.msg_buf[2], inner.msg_buf[3]]);
-        let z: i16 = i16::from_le_bytes([inner.msg_buf[4], inner.msg_buf[5]]);
+        let inner = gi.inner.borrow();
+        // coord wire format: (int)(f * 8) written as a short, three components
+        let x: i16 = i16::from_le_bytes([inner.msg_buf.data()[0], inner.msg_buf.data()[1]]);
+        let y: i16 = i16::from_le_bytes([inner.msg_buf.data()[2], inner.msg_buf.data()[3]]);
+        let z: i16 = i16::from_le_bytes([inner.msg_buf.data()[4], inner.msg_buf.data()[5]]);
         assert_eq!(x, (16.0f32 * 8.0) as i16);
         assert_eq!(y, (-8.0f32 * 8.0) as i16);
         assert_eq!(z, (0.5f32 * 8.0) as i16);
+    }
+
+    fn written(gi: &ServerGameImport) -> Vec<u8> {
+        gi.inner.borrow().msg_buf.data().to_vec()
+    }
+
+    fn netmsg_bytes(write: impl FnOnce(&mut q2_common::net_msg::NetMsg)) -> Vec<u8> {
+        let mut msg = q2_common::net_msg::NetMsg::new();
+        write(&mut msg);
+        msg.data().to_vec()
+    }
+
+    #[test]
+    fn write_dir_up_encodes_bytedirs_index_5() {
+        let gi = ServerGameImport::new();
+        gi.write_dir(Vec3f::new(0.0, 0.0, 1.0));
+        assert_eq!(&written(&gi)[..], &[5u8]);
+    }
+
+    #[test]
+    fn write_dir_matches_netmsg_encoding() {
+        let dirs = [
+            Vec3f::new(1.0, 0.0, 0.0),
+            Vec3f::new(0.0, -1.0, 0.0),
+            Vec3f::new(0.0, 0.0, -1.0),
+            Vec3f::new(0.6, 0.0, 0.8),
+            Vec3f::new(-0.48, 0.36, 0.8),
+        ];
+        for dir in dirs {
+            let gi = ServerGameImport::new();
+            gi.write_dir(dir);
+            let expected = netmsg_bytes(|m| m.write_dir(dir));
+            assert_eq!(&written(&gi)[..], &expected[..], "dir {dir:?}");
+        }
+    }
+
+    #[test]
+    fn write_position_beyond_4096_wraps_like_netmsg() {
+        let pos = Vec3f::new(5000.0, -5000.0, 4095.875);
+        let gi = ServerGameImport::new();
+        gi.write_position(pos);
+        let expected = netmsg_bytes(|m| m.write_position(pos));
+        assert_eq!(&written(&gi)[..], &expected[..]);
     }
 
     #[test]
@@ -377,9 +425,9 @@ mod tests {
         let gi = ServerGameImport::new();
         // 90 degrees → (90 * 256 / 360) & 255 = 64
         gi.write_angle(90.0);
-        let inner = gi.inner.lock().unwrap();
+        let inner = gi.inner.borrow();
         let expected = ((90.0f32 * 256.0 / 360.0) as i32 & 255) as u8;
-        assert_eq!(inner.msg_buf[0], expected);
+        assert_eq!(inner.msg_buf.data()[0], expected);
     }
 
     #[test]
@@ -391,7 +439,7 @@ mod tests {
             q2_shared::types::Vec3f::new(0.0, 0.0, 0.0),
             q2_shared::types::Multicast::All,
         );
-        let inner = gi.inner.lock().unwrap();
+        let inner = gi.inner.borrow();
         assert!(inner.msg_buf.is_empty());
     }
 

@@ -2134,10 +2134,8 @@ dependencies = [
 name = "q2-game"
 version = "0.1.2"
 dependencies = [
- "bincode",
  "q2-common",
  "q2-shared",
- "serde",
  "slotmap",
  "tracing",
 ]
@@ -2168,9 +2166,6 @@ dependencies = [
  "glow",
  "js-sys",
  "q2-common",
- "q2-render-api",
- "q2-shared",
- "tracing",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -2217,7 +2212,6 @@ dependencies = [
 name = "q2-wasm"
 version = "0.1.2"
 dependencies = [
- "glow",
  "js-sys",
  "q2-client",
  "q2-common",

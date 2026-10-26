@@ -15,7 +15,6 @@ q2-client = { path = "../q2-client" }
 q2-render = { path = "../q2-render" }
 q2-render-api = { path = "../q2-render-api" }
 q2-platform = { path = "../q2-platform" }
-glow = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [

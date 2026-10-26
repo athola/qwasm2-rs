@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use q2_common::error::{Q2Error, Q2Result};
+
 use crate::entity::{EntityKey, EntityStorage};
 
 // ---------------------------------------------------------------------------
@@ -20,45 +22,36 @@ use crate::entity::{EntityKey, EntityStorage};
 /// }
 /// ```
 ///
+/// Tokens follow C `COM_Parse` (quoted strings or bare words, `//` comments).
 /// Keys starting with `_` are editor-only comments and are discarded.
-pub fn parse_entity_string(entstring: &str) -> Vec<HashMap<String, String>> {
+/// Malformed text is an error, as in C `SpawnEntities` / `ED_ParseEdict`,
+/// so a corrupt entity lump never loads as a partial map.
+pub fn parse_entity_string(entstring: &str) -> Q2Result<Vec<HashMap<String, String>>> {
     let mut result = Vec::new();
     let mut chars = entstring.chars().peekable();
 
-    loop {
-        // Skip whitespace looking for '{'
-        skip_whitespace(&mut chars);
-        match chars.peek() {
-            Some('{') => {
-                chars.next(); // consume '{'
-            }
-            _ => break, // end of string or unexpected — done
+    while let Some(token) = next_token(&mut chars) {
+        if !token.starts_with('{') {
+            return Err(Q2Error::Drop(format!(
+                "ED_LoadFromFile: found {token} when expecting {{"
+            )));
         }
 
         let mut entity: HashMap<String, String> = HashMap::new();
-
         loop {
-            skip_whitespace(&mut chars);
-            match chars.peek() {
-                Some('}') => {
-                    chars.next(); // consume '}'
-                    break;
-                }
-                Some('"') => {
-                    let key = parse_quoted_string(&mut chars);
-                    skip_whitespace(&mut chars);
-                    let value = parse_quoted_string(&mut chars);
-
-                    // Discard editor-only keys (leading underscore).
-                    if !key.starts_with('_') {
-                        entity.insert(key, value);
-                    }
-                }
-                Some(_) => {
-                    // Token without quotes (rare but tolerated) — skip it.
-                    chars.next();
-                }
-                None => break, // premature EOF
+            let key = next_token(&mut chars).ok_or_else(eof_without_brace)?;
+            if key.starts_with('}') {
+                break;
+            }
+            let value = next_token(&mut chars).ok_or_else(eof_without_brace)?;
+            if value.starts_with('}') {
+                return Err(Q2Error::Drop(
+                    "ED_ParseEntity: closing brace without data".into(),
+                ));
+            }
+            // Discard editor-only keys (leading underscore).
+            if !key.starts_with('_') {
+                entity.insert(key, value);
             }
         }
 
@@ -67,18 +60,39 @@ pub fn parse_entity_string(entstring: &str) -> Vec<HashMap<String, String>> {
         }
     }
 
-    result
+    Ok(result)
+}
+
+fn eof_without_brace() -> Q2Error {
+    Q2Error::Drop("ED_ParseEntity: EOF without closing brace".into())
+}
+
+/// Next token per C `COM_Parse`; `None` at end of input.
+fn next_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
+    loop {
+        skip_whitespace(chars);
+        let mut lookahead = chars.clone();
+        if lookahead.next() == Some('/') && lookahead.next() == Some('/') {
+            chars.find(|&c| c == '\n');
+            continue;
+        }
+        break;
+    }
+    match chars.peek()? {
+        '"' => Some(parse_quoted_string(chars)),
+        _ => {
+            let mut word = String::new();
+            while let Some(c) = chars.next_if(|c| !c.is_ascii_whitespace()) {
+                word.push(c);
+            }
+            Some(word)
+        }
+    }
 }
 
 /// Advance past whitespace characters.
 fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    while let Some(&c) = chars.peek() {
-        if c.is_ascii_whitespace() {
-            chars.next();
-        } else {
-            break;
-        }
-    }
+    while chars.next_if(|c| c.is_ascii_whitespace()).is_some() {}
 }
 
 /// Parse a `"quoted string"`, consuming the surrounding double quotes.
@@ -164,18 +178,19 @@ impl Default for SpawnTable {
 // ---------------------------------------------------------------------------
 
 /// Parse an "origin" string like `"128 64 0"` into a `Vec3f`.
-fn parse_origin(props: &HashMap<String, String>) -> q2_shared::types::Vec3f {
-    if let Some(origin_str) = props.get("origin") {
-        let parts: Vec<f32> = origin_str
-            .split_whitespace()
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect();
-        if parts.len() == 3 {
-            return q2_shared::types::Vec3f::new(parts[0], parts[1], parts[2]);
+///
+/// Returns `None` when the key is missing or is not exactly three numbers,
+/// so a real `"0 0 0"` origin is distinguishable from a malformed one.
+fn parse_origin(props: &HashMap<String, String>) -> Option<q2_shared::types::Vec3f> {
+    let origin_str = props.get("origin")?;
+    let parts: Result<Vec<f32>, _> = origin_str.split_whitespace().map(str::parse).collect();
+    match parts.as_deref() {
+        Ok([x, y, z]) => Some(q2_shared::types::Vec3f::new(*x, *y, *z)),
+        _ => {
+            tracing::debug!("malformed origin string: {:?}", origin_str);
+            None
         }
-        tracing::debug!("malformed origin string: {:?}", origin_str);
     }
-    q2_shared::types::Vec3f::ZERO
 }
 
 /// Parse an "angle" string into entity angles (Quake convention: yaw only).
@@ -197,7 +212,7 @@ pub fn sp_info_player_start(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_start".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin(props).unwrap_or_default();
         ent.state.angles = parse_angle(props);
     }
 }
@@ -210,7 +225,7 @@ pub fn sp_info_player_deathmatch(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_deathmatch".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin(props).unwrap_or_default();
         ent.state.angles = parse_angle(props);
     }
 }
@@ -230,7 +245,7 @@ pub fn sp_worldspawn(storage: &mut EntityStorage, key: EntityKey, props: &HashMa
 pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "light".to_string();
-        ent.state.origin = parse_origin(props);
+        ent.state.origin = parse_origin(props).unwrap_or_default();
         // Lights have no runtime behaviour — entity can be freed later.
         let _ = props;
     }
@@ -240,76 +255,66 @@ pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<Str
 // Player spawn point finder
 // ---------------------------------------------------------------------------
 
-/// Player spawn classnames in priority order.
-const SPAWN_CLASSNAMES: &[&str] = &[
-    "info_player_start",
-    "info_player_deathmatch",
-    "info_player_coop",
-    "info_player_intermission",
-    "misc_teleporter_dest",
-];
-
-/// Find the best player spawn point from a BSP entity string.
+/// Find the player spawn point in a BSP entity string.
 ///
-/// Prefers unnamed `info_player_start` (the default spawn when starting
-/// a map fresh). Named spawns (with `targetname`) are used for level
-/// transitions and are lower priority.
+/// Follows the single-player branch of C `SelectSpawnPoint`
+/// (game/player/client.c): with an empty `spawnpoint`, the first
+/// `info_player_start` without a `targetname`, else any `info_player_start`;
+/// with a `spawnpoint`, only the `info_player_start` whose `targetname`
+/// matches it case-insensitively (level transitions). C errors when nothing
+/// matches; this returns `None`.
 ///
-/// Returns `(origin, yaw_angle)` or `None` if no spawn entity found.
-pub fn find_player_start(entstring: &str) -> Option<(q2_shared::types::Vec3f, f32)> {
-    let entities = parse_entity_string(entstring);
-
-    // Collect spawn candidates
-    struct SpawnCandidate {
-        classname: String,
+/// Prototype extension: the standalone WASM build has no deathmatch/coop
+/// mode, so a map without any `info_player_start` falls back to the first
+/// `info_player_deathmatch`, then `info_player_coop` (the classes C picks
+/// in those modes).
+///
+/// Returns `(origin, yaw_angle)`. Spawn entities with a malformed origin
+/// are skipped.
+pub fn find_player_start(
+    entstring: &str,
+    spawnpoint: &str,
+) -> Option<(q2_shared::types::Vec3f, f32)> {
+    struct SpawnCandidate<'a> {
+        classname: &'a str,
+        targetname: Option<&'a str>,
         origin: q2_shared::types::Vec3f,
-        targetname: String,
         angle: f32,
     }
 
-    let mut spawns: Vec<SpawnCandidate> = Vec::new();
-
-    for ent in &entities {
-        let classname = match ent.get("classname") {
-            Some(c) => c.clone(),
-            None => continue,
-        };
-        // Reuse parse_origin; skip entities that have no "origin" key at all.
-        if !ent.contains_key("origin") {
-            continue;
+    let entities = match parse_entity_string(entstring) {
+        Ok(entities) => entities,
+        Err(e) => {
+            tracing::error!("find_player_start: {e}");
+            return None;
         }
-        let origin = parse_origin(ent);
-        if origin == q2_shared::types::Vec3f::ZERO
-            && ent.get("origin").is_none_or(|s| s.trim() != "0 0 0")
-        {
-            continue; // malformed origin (parse_origin returned zero as fallback)
-        }
-        let targetname = ent.get("targetname").cloned().unwrap_or_default();
-        let angle = ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    };
+    let spawns: Vec<SpawnCandidate<'_>> = entities
+        .iter()
+        .filter_map(|ent| {
+            Some(SpawnCandidate {
+                classname: ent.get("classname")?,
+                targetname: ent.get("targetname").map(String::as_str),
+                origin: parse_origin(ent)?,
+                angle: ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            })
+        })
+        .collect();
+    let of_class = |class: &'static str| spawns.iter().filter(move |s| s.classname == class);
 
-        spawns.push(SpawnCandidate {
-            classname,
-            origin,
-            targetname,
-            angle,
-        });
-    }
-
-    // Find best spawn by priority: prefer unnamed spawns first
-    for target in SPAWN_CLASSNAMES {
-        if let Some(s) = spawns
-            .iter()
-            .find(|s| s.classname == *target && s.targetname.is_empty())
-        {
-            return Some((s.origin, s.angle));
-        }
-        if let Some(s) = spawns.iter().find(|s| s.classname == *target) {
-            return Some((s.origin, s.angle));
-        }
-    }
-
-    // Fallback: any entity with an origin
-    spawns.first().map(|s| (s.origin, s.angle))
+    let chosen = if spawnpoint.is_empty() {
+        of_class("info_player_start")
+            .find(|s| s.targetname.is_none())
+            .or_else(|| of_class("info_player_start").next())
+            .or_else(|| of_class("info_player_deathmatch").next())
+            .or_else(|| of_class("info_player_coop").next())
+    } else {
+        of_class("info_player_start").find(|s| {
+            s.targetname
+                .is_some_and(|t| t.eq_ignore_ascii_case(spawnpoint))
+        })
+    };
+    chosen.map(|s| (s.origin, s.angle))
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +334,7 @@ mod tests {
 "angle" "90"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0]["classname"], "info_player_start");
         assert_eq!(entities[0]["origin"], "0 0 0");
@@ -353,7 +358,7 @@ mod tests {
 "_color" "1 1 1"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities.len(), 3);
 
         assert_eq!(entities[0]["classname"], "worldspawn");
@@ -369,8 +374,36 @@ mod tests {
 
     #[test]
     fn parse_entity_string_empty() {
-        let entities = parse_entity_string("");
+        let entities = parse_entity_string("").unwrap();
         assert!(entities.is_empty());
+    }
+
+    #[test]
+    fn parse_rejects_entity_without_closing_brace() {
+        // C ED_ParseEdict: "EOF without closing brace".
+        assert!(parse_entity_string(r#"{ "classname" "worldspawn""#).is_err());
+        assert!(parse_entity_string(r#"{ "classname" "worldspawn" "message""#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_key_followed_by_closing_brace() {
+        // C ED_ParseEdict: "closing brace without data".
+        assert!(parse_entity_string(r#"{ "classname" }"#).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_text_where_opening_brace_expected() {
+        // C SpawnEntities: "found %s when expecting {".
+        assert!(parse_entity_string(r#"garbage { "classname" "light" }"#).is_err());
+        assert!(parse_entity_string(r#"{ "classname" "light" } stray"#).is_err());
+    }
+
+    #[test]
+    fn parse_reads_unquoted_tokens_like_com_parse() {
+        let entities = parse_entity_string("{ classname light origin \"1 2 3\" }").unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0]["classname"], "light");
+        assert_eq!(entities[0]["origin"], "1 2 3");
     }
 
     #[test]
@@ -381,7 +414,7 @@ mod tests {
 "message" "line1\nline2"
 }
 "#;
-        let entities = parse_entity_string(input);
+        let entities = parse_entity_string(input).unwrap();
         assert_eq!(entities[0]["message"], "line1\nline2");
     }
 
@@ -448,7 +481,7 @@ mod tests {
 "angle" "90"
 }
 "#;
-        let (origin, angle) = find_player_start(input).unwrap();
+        let (origin, angle) = find_player_start(input, "").unwrap();
         // Should pick the unnamed one
         assert_eq!(origin, q2_shared::types::Vec3f::new(0.0, 0.0, 0.0));
         assert_eq!(angle, 90.0);
@@ -464,7 +497,7 @@ mod tests {
 "angle" "45"
 }
 "#;
-        let (origin, angle) = find_player_start(input).unwrap();
+        let (origin, angle) = find_player_start(input, "").unwrap();
         assert_eq!(origin, q2_shared::types::Vec3f::new(100.0, 200.0, 300.0));
         assert_eq!(angle, 45.0);
     }
@@ -481,14 +514,14 @@ mod tests {
 "origin" "100 100 100"
 }
 "#;
-        let (origin, _) = find_player_start(input).unwrap();
+        let (origin, _) = find_player_start(input, "").unwrap();
         // info_player_start has higher priority than deathmatch
         assert_eq!(origin, q2_shared::types::Vec3f::new(100.0, 100.0, 100.0));
     }
 
     #[test]
     fn find_player_start_none_when_empty() {
-        assert!(find_player_start("").is_none());
+        assert!(find_player_start("", "").is_none());
     }
 
     #[test]
@@ -499,6 +532,93 @@ mod tests {
 "message" "Test Map"
 }
 "#;
-        assert!(find_player_start(input).is_none());
+        assert!(find_player_start(input, "").is_none());
+    }
+
+    #[test]
+    fn find_player_start_accepts_zero_origin_written_as_floats() {
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "0 0 0.0"
+"angle" "180"
+}
+"#;
+        let (origin, angle) = find_player_start(input, "").unwrap();
+        assert_eq!(origin, q2_shared::types::Vec3f::ZERO);
+        assert_eq!(angle, 180.0);
+    }
+
+    #[test]
+    fn find_player_start_skips_origin_with_non_numeric_token() {
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "1 x 3 4"
+}
+"#;
+        assert!(find_player_start(input, "").is_none());
+    }
+
+    #[test]
+    fn find_player_start_ignores_non_spawn_entities() {
+        // C SelectSpawnPoint never spawns the player at a light.
+        let input = r#"
+{
+"classname" "light"
+"origin" "64 64 64"
+}
+{
+"classname" "info_player_intermission"
+"origin" "32 32 32"
+}
+"#;
+        assert!(find_player_start(input, "").is_none());
+    }
+
+    #[test]
+    fn find_player_start_selects_spawn_matching_spawnpoint() {
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "0 0 0"
+}
+{
+"classname" "info_player_start"
+"origin" "100 200 300"
+"targetname" "From_Base2"
+"angle" "45"
+}
+"#;
+        // Q_stricmp: the match is case-insensitive.
+        let (origin, angle) = find_player_start(input, "from_base2").unwrap();
+        assert_eq!(origin, q2_shared::types::Vec3f::new(100.0, 200.0, 300.0));
+        assert_eq!(angle, 45.0);
+    }
+
+    #[test]
+    fn find_player_start_none_when_spawnpoint_has_no_match() {
+        // C: gi.error("Couldn't find spawn point %s").
+        let input = r#"
+{
+"classname" "info_player_start"
+"origin" "0 0 0"
+}
+"#;
+        assert!(find_player_start(input, "missing").is_none());
+    }
+
+    #[test]
+    fn find_player_start_uses_deathmatch_spawn_when_map_has_no_player_start() {
+        let input = r#"
+{
+"classname" "info_player_deathmatch"
+"origin" "8 16 24"
+"angle" "270"
+}
+"#;
+        let (origin, angle) = find_player_start(input, "").unwrap();
+        assert_eq!(origin, q2_shared::types::Vec3f::new(8.0, 16.0, 24.0));
+        assert_eq!(angle, 270.0);
     }
 }

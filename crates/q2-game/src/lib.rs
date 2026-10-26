@@ -1,4 +1,5 @@
-//! Qwasm2-rs: Game logic — entities, AI, combat, weapons, items, physics, save/load
+//! Qwasm2-rs: Game logic — entity storage, entity-string spawning, and the
+//! GameImport/GameExport traits
 //!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0

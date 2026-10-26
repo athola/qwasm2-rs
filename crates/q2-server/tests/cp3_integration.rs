@@ -13,7 +13,7 @@ use q2_server::{
     state::{Server, ServerState, ServerStatic},
     ServerGameImport,
 };
-use q2_shared::constants::CS_MAXCLIENTS;
+use q2_shared::constants::{CS_MAXCLIENTS, CS_SKY};
 
 /// Minimal entity string for map initialisation: just a worldspawn and a
 /// player start.  A real map has hundreds of entities; this is enough to
@@ -36,7 +36,7 @@ fn cp3_server_runs_100_frames() {
     let gi = ServerGameImport::new();
 
     // 2. Create and initialise the game module.
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
     game.init(&gi);
 
     // 3. Initialise server with 1 client slot.
@@ -54,23 +54,33 @@ fn cp3_server_runs_100_frames() {
     // 6. Simulate a client connecting and entering the game.
     let accepted = game.client_connect(0, r"name\TestPlayer\skin\male/grunt");
     assert!(accepted, "client_connect must accept the connection");
+    assert!(
+        !game.client_connect(1, r"name\Extra"),
+        "a 1-slot game must reject slot 1"
+    );
     game.client_begin(0);
 
-    // 7. Run 100 server frames at 10 Hz (100 ms per frame = 100,000 µs).
-    for _ in 0..100 {
-        sv.frame(&mut svs, 100_000, &mut game);
+    // 7. Call the server at 10 Hz (100 ms = 100,000 µs per call). map() sets
+    //    sv.time = 1000 like C SV_SpawnServer, so the first call only clamps
+    //    realtime up to 900 ms; each later call runs exactly one game frame.
+    for _ in 0..101 {
+        sv.frame(&mut svs, 100_000, &mut game, &gi);
     }
 
     // 8. Verify frame counters.
     assert_eq!(sv.framenum, 100, "server must have run exactly 100 frames");
-    assert!(sv.time > 0.0, "server time must advance");
-    assert!(svs.realtime > 0.0, "realtime must advance");
+    assert_eq!(sv.time, 100 * 100, "sv.time is framenum * 100 ms");
+    assert_eq!(svs.realtime, sv.time, "realtime tracks game time at 10 Hz");
+    assert_eq!(
+        sv.configstrings[CS_MAXCLIENTS], "1",
+        "configstring written by the game must reach the server"
+    );
 }
 
 #[test]
 fn cp3_client_disconnect_does_not_panic() {
     let gi = ServerGameImport::new();
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
     game.init(&gi);
 
     let mut svs = ServerStatic::default();
@@ -81,30 +91,42 @@ fn cp3_client_disconnect_does_not_panic() {
     game.client_connect(0, "");
     game.client_begin(0);
 
-    // Run a few frames, then disconnect.
+    // Run a few 60 Hz calls, then disconnect.
     for _ in 0..5 {
-        sv.frame(&mut svs, 16_667, &mut game);
+        sv.frame(&mut svs, 16_667, &mut game, &gi);
     }
+    let framenum_before = sv.framenum;
     game.client_disconnect(0);
 
-    // Server must continue running after disconnect.
-    for _ in 0..5 {
-        sv.frame(&mut svs, 16_667, &mut game);
+    // Server must keep running game frames after the disconnect.
+    for _ in 0..10 {
+        sv.frame(&mut svs, 16_667, &mut game, &gi);
     }
-    assert_eq!(sv.framenum, 10);
+    assert!(
+        sv.framenum > framenum_before,
+        "game frames must continue after disconnect"
+    );
 }
 
 #[test]
 fn cp3_configstring_written_by_game_survives_frame() {
     let gi = ServerGameImport::new();
-    // Write a configstring through the import before init.
-    gi.configstring(0, "cp3_test");
+    let mut game = GameLogic::new(1);
+    let mut svs = ServerStatic::default();
+    svs.init_game(1);
+    let mut sv = Server::default();
+    sv.map(&mut svs, "cp3_test").unwrap();
 
-    let updates = gi.drain_configstring_updates();
-    let found = updates
-        .iter()
-        .any(|(idx, val)| *idx == 0 && val == "cp3_test");
-    assert!(found, "configstring(0, ...) must be readable via drain");
+    // A game-side configstring write (C: gi.configstring during a frame).
+    gi.configstring(CS_SKY as i32, "unit1_");
+    assert!(sv.configstrings[CS_SKY].is_empty());
+
+    // First call clamps realtime to 900 ms, second runs the game frame.
+    sv.frame(&mut svs, 100_000, &mut game, &gi);
+    sv.frame(&mut svs, 100_000, &mut game, &gi);
+
+    assert_eq!(sv.framenum, 1);
+    assert_eq!(sv.configstrings[CS_SKY], "unit1_");
 }
 
 /// Verify that vtable dispatch actually routes GameImport callbacks from inside
@@ -116,15 +138,15 @@ fn cp3_configstring_written_by_game_survives_frame() {
 #[test]
 fn cp3_game_init_dispatches_configstring_through_vtable() {
     let gi = ServerGameImport::new();
-    let mut game = GameLogic::new();
+    let mut game = GameLogic::new(1);
 
-    // init() calls gi.configstring(CS_MAXCLIENTS, "8") through &dyn GameImport.
+    // init() calls gi.configstring(CS_MAXCLIENTS, "1") through &dyn GameImport.
     game.init(&gi);
 
     let updates = gi.drain_configstring_updates();
     let found = updates
         .iter()
-        .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "8");
+        .any(|(idx, val)| *idx == CS_MAXCLIENTS && val == "1");
     assert!(
         found,
         "GameLogic::init must dispatch configstring(CS_MAXCLIENTS) to ServerGameImport"

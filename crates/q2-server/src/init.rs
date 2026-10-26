@@ -29,18 +29,20 @@ impl Server {
         self.state = ServerState::Loading;
         self.name = map_name.to_string();
         self.framenum = 0;
-        self.time = 0.0;
+        // C SV_SpawnServer: realtime restarts and the first game frame is
+        // due at 1000 ms (sv_init.c:210, :244).
+        self.time = 1000;
+        svs.realtime = 0;
 
         // Reset model list (slot 0 is unused; slot 1 will be the world model).
         self.models.clear();
         self.models.resize(MAX_MODELS, String::new());
 
-        // Allocate configstrings and set the map name.
-        self.configstrings.resize(MAX_CONFIGSTRINGS, String::new());
+        // Fresh configstrings and baselines: C SV_SpawnServer zeroes all of
+        // `sv` (memset), so nothing from the previous map survives.
+        self.configstrings = vec![String::new(); MAX_CONFIGSTRINGS];
         self.configstrings[CS_NAME] = map_name.to_string();
-
-        // Allocate entity baselines.
-        self.baselines.resize(MAX_EDICTS, EntityState::default());
+        self.baselines = vec![EntityState::default(); MAX_EDICTS];
 
         // Demote any spawned clients back to connected so they will
         // re-enter via ClientBegin after the map loads.
@@ -51,10 +53,10 @@ impl Server {
             client.last_frame = -1;
         }
 
-        // TODO: CM_LoadMap — load the BSP collision model.
-        // TODO: SV_ClearWorld — reset the spatial partitioning tree.
-        // TODO: ge->SpawnEntities — let the game module spawn edicts.
-        // TODO: SV_CreateBaseline — snapshot initial entity state.
+        // TODO(#11): CM_LoadMap — load the BSP collision model.
+        // TODO(#11): SV_ClearWorld — reset the spatial partitioning tree.
+        // TODO(#11): ge->SpawnEntities — let the game module spawn edicts.
+        // TODO(#11): SV_CreateBaseline — snapshot initial entity state.
 
         // All precaches complete — go live.
         self.state = ServerState::Game;
@@ -63,16 +65,14 @@ impl Server {
 }
 
 impl ServerStatic {
-    /// One-time server initialization (corresponds to `SV_InitGame()`).
+    /// Server (re)initialization (corresponds to `SV_InitGame()`).
     ///
-    /// Allocates client slots and marks the server as initialized. Should
-    /// only be called once; subsequent map changes reuse the existing slots.
+    /// Allocates client slots and marks the server as initialized. Like C,
+    /// calling it on an initialized server restarts it: every client slot is
+    /// reallocated (connected clients are dropped) with the new count.
+    /// `max_clients` is clamped to `MAX_CLIENTS` (sv_init.c:417).
     pub fn init_game(&mut self, max_clients: usize) {
-        if self.initialized {
-            // Already initialized — a map change, not a fresh start.
-            return;
-        }
-
+        let max_clients = max_clients.min(MAX_CLIENTS);
         self.max_clients = max_clients;
         self.clients = (0..max_clients)
             .map(|i| ServerClient {
@@ -97,17 +97,48 @@ mod tests {
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
         svs.init_game(4);
+        svs.realtime = 5000;
 
         sv.map(&mut svs, "base1").expect("map() should succeed");
 
         assert_eq!(sv.state, ServerState::Game);
         assert_eq!(sv.name, "base1");
         assert_eq!(sv.framenum, 0);
-        assert_eq!(sv.time, 0.0);
+        assert_eq!(sv.time, 1000, "first game frame is due at 1000 ms");
+        assert_eq!(svs.realtime, 0, "realtime restarts with the map");
         assert_eq!(sv.configstrings[CS_NAME], "base1");
         assert_eq!(sv.configstrings.len(), MAX_CONFIGSTRINGS);
         assert_eq!(sv.baselines.len(), MAX_EDICTS);
         assert_eq!(sv.models.len(), MAX_MODELS);
+    }
+
+    #[test]
+    fn map_change_clears_previous_map_configstrings_and_baselines() {
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+
+        sv.map(&mut svs, "a").unwrap();
+        sv.configstrings[CS_MODELS + 1] = "maps/a.bsp".into();
+        sv.configstrings[CS_SOUNDS + 3] = "world/amb1.wav".into();
+        sv.baselines[5].modelindex = 7;
+
+        sv.map(&mut svs, "b").unwrap();
+
+        assert_eq!(sv.configstrings[CS_NAME], "b");
+        for (i, cs) in sv.configstrings.iter().enumerate() {
+            if i != CS_NAME {
+                assert!(
+                    cs.is_empty(),
+                    "configstring {i} leaked from previous map: {cs:?}"
+                );
+            }
+        }
+        assert_eq!(sv.baselines.len(), MAX_EDICTS);
+        assert_eq!(
+            sv.baselines[5].modelindex, 0,
+            "baseline leaked from previous map"
+        );
     }
 
     #[test]
@@ -140,13 +171,31 @@ mod tests {
     }
 
     #[test]
-    fn init_game_is_idempotent() {
+    fn init_game_second_call_restarts_with_new_client_count() {
         let mut svs = ServerStatic::default();
         svs.init_game(4);
-        svs.init_game(16); // second call should be a no-op
+        svs.clients[0].state = crate::state::ClientState::Spawned;
 
-        assert_eq!(svs.max_clients, 4);
-        assert_eq!(svs.clients.len(), 4);
+        // C SV_InitGame on an initialized server shuts it down and
+        // reallocates the client slots from the current maxclients.
+        svs.init_game(16);
+
+        assert!(svs.initialized);
+        assert_eq!(svs.max_clients, 16);
+        assert_eq!(svs.clients.len(), 16);
+        assert!(svs
+            .clients
+            .iter()
+            .all(|c| c.state == crate::state::ClientState::Free));
+    }
+
+    #[test]
+    fn init_game_clamps_client_count_to_max_clients() {
+        let mut svs = ServerStatic::default();
+        svs.init_game(MAX_CLIENTS + 1);
+
+        assert_eq!(svs.max_clients, MAX_CLIENTS);
+        assert_eq!(svs.clients.len(), MAX_CLIENTS);
     }
 
     #[test]

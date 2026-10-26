@@ -11,6 +11,7 @@
 //! This Rust version uses `Vec`-based lists instead of intrusive linked
 //! lists, and indices instead of raw pointers.
 
+use q2_shared::constants::MAX_EDICTS;
 use q2_shared::types::{Solid, Vec3f};
 
 /// Depth limit when building the area tree (matches `AREA_DEPTH` in C).
@@ -160,8 +161,17 @@ impl ServerWorld {
     ///
     /// Corresponds to the tail end of `SV_LinkEdict()` in the C codebase
     /// (the part that inserts the entity into an area-node list).
-    // TODO: migrate from raw usize indices to SlotMap generational keys per ADR-001
+    ///
+    /// Indices at or beyond `MAX_EDICTS` are ignored: C edicts live in a
+    /// fixed `MAX_EDICTS` array, and an unchecked index would grow `links`
+    /// without bound.
+    // TODO(#9): migrate from raw usize indices to SlotMap generational keys per ADR-001
     pub fn link_entity(&mut self, ent_idx: usize, mins: Vec3f, maxs: Vec3f, solid: Solid) {
+        if ent_idx >= MAX_EDICTS {
+            tracing::warn!(ent_idx, "link_entity: index beyond MAX_EDICTS ignored");
+            return;
+        }
+
         // Unlink first if already linked.
         self.unlink_entity(ent_idx);
 
@@ -338,6 +348,68 @@ mod tests {
             Vec3f::new(4096.0, 4096.0, 4096.0),
         );
         w
+    }
+
+    #[test]
+    fn link_entity_rejects_index_at_or_beyond_max_edicts() {
+        let mut w = make_world();
+        let mins = Vec3f::new(-16.0, -16.0, -24.0);
+        let maxs = Vec3f::new(16.0, 16.0, 32.0);
+
+        w.link_entity(MAX_EDICTS, mins, maxs, Solid::Bbox);
+        w.link_entity(usize::MAX / 2, mins, maxs, Solid::Bbox);
+
+        assert!(
+            w.links.len() <= MAX_EDICTS,
+            "links grew to {}",
+            w.links.len()
+        );
+        assert!(w.area_edicts(mins, maxs, AREA_SOLID).is_empty());
+
+        // The last valid index still links.
+        w.link_entity(MAX_EDICTS - 1, mins, maxs, Solid::Bbox);
+        assert_eq!(w.area_edicts(mins, maxs, AREA_SOLID), vec![MAX_EDICTS - 1]);
+    }
+
+    #[test]
+    fn area_edicts_before_clear_is_empty() {
+        let mut w = ServerWorld::new();
+        let mins = Vec3f::new(-16.0, -16.0, -16.0);
+        let maxs = Vec3f::new(16.0, 16.0, 16.0);
+        w.link_entity(1, mins, maxs, Solid::Bbox);
+        assert!(w.area_edicts(mins, maxs, AREA_SOLID).is_empty());
+    }
+
+    #[test]
+    fn entity_straddling_root_split_stays_in_root_node() {
+        // A cube world's root splits Y at 0 (C picks Y unless X is strictly
+        // larger). Like SV_LinkEdict, a box
+        // whose min equals the split distance is not strictly greater, so
+        // it stays in the root and is found from either side.
+        let mut w = make_world();
+        w.link_entity(
+            3,
+            Vec3f::new(10.0, 0.0, 0.0),
+            Vec3f::new(20.0, 8.0, 8.0),
+            Solid::Bbox,
+        );
+        w.link_entity(
+            4,
+            Vec3f::new(10.0, -8.0, 0.0),
+            Vec3f::new(20.0, 8.0, 8.0),
+            Solid::Bbox,
+        );
+
+        assert_eq!(w.links[3].as_ref().map(|l| l.node_idx), Some(0));
+        assert_eq!(w.links[4].as_ref().map(|l| l.node_idx), Some(0));
+
+        let mut left = w.area_edicts(
+            Vec3f::new(0.0, -100.0, 0.0),
+            Vec3f::new(30.0, 0.0, 30.0),
+            AREA_SOLID,
+        );
+        left.sort_unstable();
+        assert_eq!(left, vec![3, 4]);
     }
 
     #[test]
