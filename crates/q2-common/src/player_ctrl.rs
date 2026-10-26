@@ -6,6 +6,7 @@
 
 use crate::collision::CollisionMap;
 use crate::pmove::{PM_DUCKSPEED, PM_MAXSPEED};
+use q2_shared::constants::MASK_PLAYERSOLID;
 use q2_shared::types::Vec3f;
 
 // ---------------------------------------------------------------------------
@@ -16,8 +17,6 @@ const GRAVITY: f32 = 800.0;
 const JUMP_VELOCITY: f32 = 270.0;
 /// C `cl_forwardspeed` default; `+speed` (run) doubles it before the pmove cap.
 const MOVE_SPEED: f32 = 200.0;
-/// CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW | CONTENTS_MONSTER
-const MASK_PLAYERSOLID: i32 = 1 | 0x10000 | 2 | 0x0200_0000;
 const STEP_HEIGHT: f32 = 18.0;
 
 const PLAYER_MINS_STAND: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);

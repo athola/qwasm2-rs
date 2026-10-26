@@ -46,8 +46,7 @@ const MAX_MAP_LEAFS: usize = 65536;
 const MAX_MAP_LEAFBRUSHES: usize = 65536;
 
 // Content flags
-const CONTENTS_SOLID: i32 = 1;
-const CONTENTS_MONSTER: i32 = 0x0200_0000;
+use q2_shared::constants::{CONTENTS_MONSTER, CONTENTS_SOLID};
 
 // On-disk struct sizes (bytes)
 const DPLANE_SIZE: usize = 20; // 3 floats + 1 float + 1 int

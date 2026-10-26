@@ -18,6 +18,14 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_STRING_TOKENS: usize = 80;
 pub const MAX_TOKEN_CHARS: usize = 1024;
 
+// Brush content flags (shared.h)
+pub const CONTENTS_SOLID: i32 = 1;
+pub const CONTENTS_WINDOW: i32 = 2;
+pub const CONTENTS_PLAYERCLIP: i32 = 0x10000;
+pub const CONTENTS_MONSTER: i32 = 0x0200_0000;
+pub const MASK_PLAYERSOLID: i32 =
+    CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW | CONTENTS_MONSTER;
+
 // Network
 pub const MAX_MSGLEN: usize = 1400;
 pub const PACKET_HEADER: usize = 10;
@@ -101,6 +109,15 @@ mod tests {
         assert_eq!(CS_SOUNDS, CS_MODELS + MAX_MODELS);
         assert_eq!(CS_IMAGES, CS_SOUNDS + MAX_SOUNDS);
         assert_eq!(CS_GENERAL + MAX_GENERAL, MAX_CONFIGSTRINGS);
+    }
+
+    #[test]
+    fn content_flags_match_c_shared_h() {
+        assert_eq!(CONTENTS_SOLID, 1);
+        assert_eq!(CONTENTS_WINDOW, 2);
+        assert_eq!(CONTENTS_PLAYERCLIP, 0x10000);
+        assert_eq!(CONTENTS_MONSTER, 0x0200_0000);
+        assert_eq!(MASK_PLAYERSOLID, 0x0201_0003);
     }
 
     #[test]

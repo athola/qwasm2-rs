@@ -43,7 +43,7 @@ pub const PM_WATERSPEED: f32 = 400.0;
 // Content / surface flags needed by pmove (matches Quake 2 defines)
 // ---------------------------------------------------------------------------
 
-const CONTENTS_SOLID: i32 = 1;
+use q2_shared::constants::CONTENTS_SOLID;
 const CONTENTS_WATER: i32 = 0x00000020;
 const CONTENTS_SLIME: i32 = 0x00000010;
 const CONTENTS_LADDER: i32 = 0x20000000;
@@ -1717,7 +1717,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    const MASK_PLAYERSOLID: i32 = 1 | 0x10000 | 2 | 0x0200_0000;
+    use q2_shared::constants::MASK_PLAYERSOLID;
 
     /// Resting height on the floor BSP in 1/8 units. A hull exactly touching
     /// the floor (z = 24.0) counts as inside it for C CM_TestBoxInBrush, so
