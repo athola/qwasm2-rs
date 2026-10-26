@@ -23,30 +23,30 @@ A-14=R-16, A-17=R-40.
 
 ## Tasks
 
-- [ ] T0 Gate: `cargo fmt`, clippy `--all-targets -D warnings` green, pin
+- [x] T0 Gate (a3c1044): `cargo fmt`, clippy `--all-targets -D warnings` green, pin
   toolchain. Accept: fmt --check, clippy all-targets, tests all pass.
-- [ ] T1 Network/protocol (netchan.rs, net_msg.rs, q2-client parse.rs,
+- [x] T1 Network/protocol (netchan.rs, net_msg.rs, q2-client parse.rs,
   input.rs): C-1, C-2, C-3, C-4, C-5, C-6, C-7, C-8, C-9, C-10, C-11, C-12,
   C-13, M-11, M-12, S-1, S-9, S-10, S-11, S-12(skip-not-abort part), S-13,
   S-31, S-15. Tests: runt packet rejected; reliable overflow sets
   fatal_error; usercmd byte order equals C; entity encoding equals C bytes;
   truncated frame does not hang or store valid frame; negative entnum
   rejected; wrong protocol rejected; move scaling 200/400.
-- [ ] T2 q2-common core (collision, filesystem, cvar, cmd, zone, binary,
+- [x] T2 q2-common core (collision, filesystem, cvar, cmd, zone, binary,
   error, pmove, player_ctrl, PakReader Send+Sync + q2-platform pak.rs
   unsafe): C-14, C-15, C-16, C-17, C-18, C-19, C-20(partial), C-21, C-22,
   C-23/M-1, M-2, M-3, M-6, C-24, C-26, C-27, C-28, C-29, C-30, C-31, C-32,
   C-33, C-34, C-35, C-36, C-37(bounded parts), C-38, C-39, C-40, A-1,
   A-2(speed clamp + doc). Tests per finding as named in reports.
-- [ ] T3 Server/game/render/wasm (q2-server, q2-game, q2-render,
+- [x] T3 Server/game/render/wasm (q2-server, q2-game, q2-render,
   q2-render-api, q2-wasm, q2-platform except pak.rs): S-3, S-4, S-8, S-18,
   S-19, S-20, S-21, S-22(bound), S-23, S-24, S-25, S-26, S-29, M-13, M-15,
   R-3, R-4, R-13, R-14, R-15, R-16, R-28, R-30, R-31, A-3(configstring
   drain), A-22, A-23, A-24, A-25, A-26, GameImport/Export Send+Sync.
-- [ ] T4 Build/tooling/deps/docs: B-2..B-28, R-8, R-9, R-32..R-38, A-6..A-16,
+- [x] T4 Build/tooling/deps/docs: B-2..B-28, R-8, R-9, R-32..R-38, A-6..A-16,
   A-27, A-28. Accept: `make -n` for every target sane; CI runs fmt,
   clippy all-targets + wasm32 -D warnings, tests, audit.
-- [ ] T5 Integrate: merge T1-T4, full gate, `make wasm`, write report.
+- [x] T5 Integrate: merge T1-T4, full gate, `make wasm`, write report.
 
 ## Deferred (roadmap; mapped to existing issues)
 
@@ -58,4 +58,16 @@ traces) -> proposed new issues, not filed without approval.
 
 ## Deviations
 
-(record here)
+- Worker worktrees branched from 647c028; each was reset to a3c1044 before work.
+- T1: S-9 rejects unsorted entity numbers (stricter than C); S-13 validates
+  before clearing state; svc_temp_entity returns an error until #19.
+- T2: cbuf cap 32768 (Qwasm2 cmdparser.c), not 8192; non-numbered PAKs sort
+  by name; archived cvar quotes stripped; BSP child>parent check stricter
+  than C; C-20, C-18(d), LATCH-immediate deferred.
+- T3: no multi-frame catch-up (C runs one frame per call); dm/coop spawn
+  fallback kept; renderer pitch sign corrected, q2-wasm negates pitch until
+  #12; R-29 noted only.
+- T4: `make serve` removed; `--all`/PAK_WEB_ALLOW removed, spec marked;
+  Playwright 1.58 -> 1.64.1.
+- T5: calc_fov clamp, A-24, A-26 (client), workspace inheritance for nine
+  crates and doc edge fixes done by the integrator.
