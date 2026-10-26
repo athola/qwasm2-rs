@@ -1758,6 +1758,78 @@ mod tests {
     }
 
     #[test]
+    fn read_past_end_sets_overflowed() {
+        let mut buf = NetMsg::from_bytes(&[1]);
+        assert_eq!(buf.read_short(), -1);
+        assert!(buf.is_overflowed());
+    }
+
+    #[test]
+    fn begin_reading_resets_cursor_and_overflow() {
+        let mut buf = NetMsg::from_bytes(&[7]);
+        assert_eq!(buf.read_byte(), 7);
+        assert_eq!(buf.read_byte(), -1);
+        buf.begin_reading();
+        assert!(!buf.is_overflowed());
+        assert_eq!(buf.read_cursor(), 0);
+        assert_eq!(buf.read_byte(), 7);
+    }
+
+    #[test]
+    fn write_short_and_char_negative_bytes() {
+        let mut buf = NetMsg::new();
+        buf.write_short(-2);
+        buf.write_char(-1);
+        assert_eq!(buf.data(), &[0xFE, 0xFF, 0xFF]);
+    }
+
+    // C SV_EmitPacketEntities remove record: U_REMOVE (0x40), plus
+    // U_NUMBER16|U_MOREBITS1 for numbers >= 256 (bits 0x1C0), then the
+    // number; the list ends with MSG_WriteShort(0).
+    #[test]
+    fn packet_entities_remove_bytes_match_c() {
+        let old = [
+            EntityState {
+                number: 1,
+                ..Default::default()
+            },
+            EntityState {
+                number: 300,
+                ..Default::default()
+            },
+        ];
+        let mut buf = NetMsg::new();
+        buf.write_packet_entities_list(&old, &[], &[], 0)
+            .expect("valid entities");
+        assert_eq!(buf.data(), &[18, 0x40, 1, 0xC0, 0x01, 0x2C, 0x01, 0, 0]);
+    }
+
+    // C SV_WritePlayerstateToClient always sets PS_WEAPONINDEX (1 << 12);
+    // fov changed sets PS_FOV (1 << 11): pflags 0x1800, then gunindex, fov,
+    // and the statbits long.
+    #[test]
+    fn write_player_state_bytes_match_c() {
+        let new = PlayerState {
+            fov: 90.0,
+            gunindex: 3,
+            ..Default::default()
+        };
+        let mut buf = NetMsg::new();
+        buf.write_player_state(&PlayerState::default(), &new);
+        assert_eq!(buf.data(), &[17, 0x00, 0x18, 3, 90, 0, 0, 0, 0]);
+    }
+
+    // A changed stat sets its statbits bit and is sent as a short.
+    #[test]
+    fn write_player_state_sends_changed_stats() {
+        let mut new = PlayerState::default();
+        new.stats[1] = -3;
+        let mut buf = NetMsg::new();
+        buf.write_player_state(&PlayerState::default(), &new);
+        assert_eq!(&buf.data()[4..], &[0x02, 0, 0, 0, 0xFD, 0xFF]);
+    }
+
+    #[test]
     fn default_creates_empty() {
         let buf = NetMsg::default();
         assert!(buf.is_empty());
