@@ -2,6 +2,7 @@
 name = "q2-devserver"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "q2-devserver"

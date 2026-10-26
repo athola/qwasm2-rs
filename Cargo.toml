@@ -20,6 +20,8 @@ members = [
 [workspace.package]
 version = "0.1.2"
 edition = "2021"
+# Matches the toolchain pinned in rust-toolchain.toml; older compilers are untested.
+rust-version = "1.97"
 
 [workspace.dependencies]
 glam = { version = "0.29", features = ["serde"] }
