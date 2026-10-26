@@ -1122,6 +1122,27 @@ impl CollisionMap {
     // Trace — sweep a box through the world
     // -----------------------------------------------------------------------
 
+    /// Trace against the world model and report the world entity on a hit.
+    ///
+    /// The world-clip half of C `CL_PMTrace` / `SV_Trace`: `box_trace` knows
+    /// nothing of entities, and pmove only counts a trace as ground when an
+    /// entity is set. Argument order follows the C wrappers. Clipping against
+    /// other entities stays with the callers that own them (#11, #19).
+    pub fn world_trace(
+        &mut self,
+        start: Vec3f,
+        mins: Vec3f,
+        maxs: Vec3f,
+        end: Vec3f,
+        brush_mask: i32,
+    ) -> Trace {
+        let mut trace = self.box_trace(start, end, mins, maxs, 0, brush_mask);
+        if trace.fraction < 1.0 {
+            trace.ent_index = Some(0);
+        }
+        trace
+    }
+
     /// Trace a box through the world BSP.
     ///
     /// Takes `&mut self` because `check_count` is used to avoid testing the
@@ -2944,6 +2965,33 @@ pub(crate) mod tests {
             Vec3f::new(0.0, 45.0, 0.0),
         );
         assert!((t.endpos.x - 116.0).abs() < 1.0, "endpos {:?}", t.endpos);
+    }
+
+    #[test]
+    fn world_trace_marks_world_entity_only_on_hit_like_cl_pmtrace() {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        let mask = q2_shared::constants::MASK_PLAYERSOLID;
+
+        let hit = cm.world_trace(
+            Vec3f::new(0.0, 0.0, 100.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            Vec3f::new(0.0, 0.0, -100.0),
+            mask,
+        );
+        assert!(hit.fraction < 1.0);
+        assert_eq!(hit.ent_index, Some(0));
+
+        let miss = cm.world_trace(
+            Vec3f::new(0.0, 0.0, 100.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            Vec3f::new(0.0, 0.0, 50.0),
+            mask,
+        );
+        assert_eq!(miss.fraction, 1.0);
+        assert_eq!(miss.ent_index, None);
     }
 
     #[test]

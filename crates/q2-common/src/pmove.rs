@@ -144,8 +144,9 @@ pub struct Pmove {
     /// air control as in stock Quake 2.
     pub airaccelerate: f32,
     /// Trace callback supplied by caller. Like C `SV_Trace`, it must set
-    /// `ent_index` (the world is `Some(0)`): a trace with no entity never
-    /// counts as ground. `CollisionMap::box_trace` leaves it `None`.
+    /// `ent_index` on a hit (the world is `Some(0)`): a trace with no entity
+    /// never counts as ground. `CollisionMap::world_trace` does this for the
+    /// world; `box_trace` leaves it `None`.
     pub trace: TraceFn,
     /// Point-contents callback supplied by caller.
     pub pointcontents: PointContentsFn,
@@ -1724,9 +1725,9 @@ mod tests {
     /// PM_SnapPosition settles one eighth higher.
     const REST_Z: i16 = 24 * 8 + 1;
 
-    /// Pmove on the floor BSP (solid below z=0). Like C SV_Trace, every
-    /// trace reports the world entity. `step` adds a box entity, merged the
-    /// way SV_ClipMoveToEntities merges entity traces.
+    /// Pmove on the floor BSP (solid below z=0). World hits report the world
+    /// entity via `world_trace`, as C CL_PMTrace does. `step` adds a box
+    /// entity, merged the way SV_ClipMoveToEntities merges entity traces.
     fn pmove_on_floor(origin_z: i16, step: Option<(Vec3f, Vec3f)>) -> Pmove {
         let mut cm = CollisionMap::new();
         cm.load_map(&build_floor_bsp()).unwrap();
@@ -1738,7 +1739,7 @@ mod tests {
         pm.s.origin = [0, 0, origin_z];
         pm.trace = Box::new(move |start, mins, maxs, end| {
             let mut cm = cm2.borrow_mut();
-            let mut t = cm.box_trace(start, end, mins, maxs, 0, MASK_PLAYERSOLID);
+            let mut t = cm.world_trace(start, mins, maxs, end, MASK_PLAYERSOLID);
             if let Some((bmins, bmaxs)) = step {
                 let h = cm.headnode_for_box(bmins, bmaxs);
                 let tb = cm.box_trace(start, end, mins, maxs, h, MASK_PLAYERSOLID);
@@ -1746,11 +1747,11 @@ mod tests {
                     let world_startsolid = t.startsolid;
                     t = tb;
                     t.startsolid |= world_startsolid;
+                    t.ent_index = Some(1); // the step entity
                 } else if tb.startsolid {
                     t.startsolid = true;
                 }
             }
-            t.ent_index = Some(0);
             t
         });
         pm.pointcontents = Box::new(move |p| cm.borrow().point_contents(p, 0));
