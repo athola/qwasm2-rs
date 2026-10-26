@@ -178,19 +178,22 @@ impl Default for SpawnTable {
 // ---------------------------------------------------------------------------
 
 /// Parse an "origin" string like `"128 64 0"` into a `Vec3f`.
-///
-/// Returns `None` when the key is missing or is not exactly three numbers,
-/// so a real `"0 0 0"` origin is distinguishable from a malformed one.
-fn parse_origin(props: &HashMap<String, String>) -> Option<q2_shared::types::Vec3f> {
-    let origin_str = props.get("origin")?;
-    let parts: Result<Vec<f32>, _> = origin_str.split_whitespace().map(str::parse).collect();
+/// Returns `None` unless the string is exactly three numbers, so a real
+/// `"0 0 0"` origin is distinguishable from a malformed one.
+pub fn parse_origin(s: &str) -> Option<q2_shared::types::Vec3f> {
+    let parts: Result<Vec<f32>, _> = s.split_whitespace().map(str::parse).collect();
     match parts.as_deref() {
         Ok([x, y, z]) => Some(q2_shared::types::Vec3f::new(*x, *y, *z)),
         _ => {
-            tracing::debug!("malformed origin string: {:?}", origin_str);
+            tracing::debug!("malformed origin string: {:?}", s);
             None
         }
     }
+}
+
+/// The entity's `origin` key, or `None` when missing or malformed.
+fn origin_from_props(props: &HashMap<String, String>) -> Option<q2_shared::types::Vec3f> {
+    props.get("origin").and_then(|s| parse_origin(s))
 }
 
 /// Parse an "angle" string into entity angles (Quake convention: yaw only).
@@ -212,7 +215,7 @@ pub fn sp_info_player_start(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_start".to_string();
-        ent.state.origin = parse_origin(props).unwrap_or_default();
+        ent.state.origin = origin_from_props(props).unwrap_or_default();
         ent.state.angles = parse_angle(props);
     }
 }
@@ -225,7 +228,7 @@ pub fn sp_info_player_deathmatch(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "info_player_deathmatch".to_string();
-        ent.state.origin = parse_origin(props).unwrap_or_default();
+        ent.state.origin = origin_from_props(props).unwrap_or_default();
         ent.state.angles = parse_angle(props);
     }
 }
@@ -245,7 +248,7 @@ pub fn sp_worldspawn(storage: &mut EntityStorage, key: EntityKey, props: &HashMa
 pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "light".to_string();
-        ent.state.origin = parse_origin(props).unwrap_or_default();
+        ent.state.origin = origin_from_props(props).unwrap_or_default();
         // Lights have no runtime behaviour — entity can be freed later.
         let _ = props;
     }
@@ -295,7 +298,7 @@ pub fn find_player_start(
             Some(SpawnCandidate {
                 classname: ent.get("classname")?,
                 targetname: ent.get("targetname").map(String::as_str),
-                origin: parse_origin(ent)?,
+                origin: origin_from_props(ent)?,
                 angle: ent.get("angle").and_then(|s| s.parse().ok()).unwrap_or(0.0),
             })
         })

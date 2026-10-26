@@ -702,6 +702,7 @@ dependencies = [
 name = "q2-game"
 version = "0.1.2"
 dependencies = [
+ "bitflags",
  "q2-common",
  "q2-shared",
  "slotmap",

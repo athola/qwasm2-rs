@@ -9,6 +9,7 @@ q2-shared = { path = "../q2-shared" }
 q2-common = { path = "../q2-common" }
 slotmap = { workspace = true }
 tracing = { workspace = true }
+bitflags = { workspace = true }
 
 [lints]
 workspace = true

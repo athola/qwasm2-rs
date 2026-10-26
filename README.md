@@ -7,9 +7,13 @@ Quake 2 engine rewrite in Rust, targeting WebAssembly.
 Loads real Quake 2 game data (PAK files, BSP maps), renders with
 WebGL2, and runs player movement in the browser.
 
-> **Status: alpha.** The server frame loop, game logic, and Q2 wire-protocol
-> delta machinery are implemented. The renderer and full WASM platform
-> integration are in progress. Expect breaking changes.
+> **Status: alpha.** The browser build loads demo maps, renders BSP
+> geometry, and supports first-person movement (a simplified
+> `PlayerController`; the pmove port is not wired in yet). Game logic
+> (Phase 2) is implemented and tested in `q2-game`: physics, combat, 42
+> items, 11 weapons, 20 monster types, and AI, but nothing runs it in the
+> browser yet. The server frame loop and Q2 wire-protocol delta machinery
+> are implemented and exercised by tests. Expect breaking changes.
 
 ## Progress
 
@@ -137,7 +141,7 @@ function-pointer tables and backend coupling:
 | `q2-common` | Engine services: collision, pmove, filesystem, cvars | q2-shared |
 | `q2-render-api` | Renderer trait + data types (no implementation) | q2-shared |
 | `q2-render` | GL3/GLES3 renderer backend | q2-shared, q2-common, q2-render-api |
-| `q2-game` | Game logic, entity system (SlotMap), spawn | q2-shared, q2-common |
+| `q2-game` | Game logic: entities (SlotMap), spawn, physics, combat, items, weapons, AI, 20 monsters, player | q2-shared, q2-common |
 | `q2-server` | Server state, frame loop, world | q2-shared, q2-common, q2-game |
 | `q2-client` | Client state, parsing, input, view | q2-shared, q2-common |
 | `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-common |
@@ -200,6 +204,12 @@ against the C source before modifying.
 
 ## Documentation
 
+- [Conversion Plan](docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md)
+  — phase progress, next-session roadmap, critical path to playable
+- [Phase 2 Specification](docs/specification.md) — game logic
+  requirements and acceptance criteria
+- [Phase 2 Implementation Plan](docs/implementation-plan.md) — task
+  breakdown, dependency graph, sprint results
 - [ADR-001: Crate Decomposition](docs/adr/001-crate-decomposition-and-trait-boundaries.md)
   — workspace structure and trait boundary rationale
 - [CLAUDE.md](CLAUDE.md) — project-level instructions for AI-assisted

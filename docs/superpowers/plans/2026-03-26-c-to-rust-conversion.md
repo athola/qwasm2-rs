@@ -2,14 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-## Progress (as of 2026-03-26)
+## Progress (as of 2026-04-10)
 
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Phase 0: Scaffolding | **DONE** | Workspace, 13 crates, CI, clippy, WASM entry point, bundler |
 | Phase 1 Tasks 1.1–1.6 | **DONE** | types, constants, protocol, errors, cvars, commands, net_msg (76 tests) |
 | Phase 1 Tasks 1.7–1.11 | **DONE** | zone (9 tests), filesystem + PakReader lazy WASM backend (17 tests), collision (27 tests), pmove (8 tests), netchan (10 tests) |
-| Phase 2: Game Logic | **DONE** | GameLogic, EntityStorage, SpawnTable, GameExport trait impl (CP-2 reached) |
+| Phase 2: Game Logic | **DONE** (core) | GameLogic, EntityStorage, SpawnTable, GameExport trait impl; physics, combat, items, weapons, AI, 20 monsters, player (CP-2 reached). Gaps: #14-17 |
 | Phase 3: Server | **CP-3 reached** | state, frame loop, GameImport bridge, ServerWorld — networking (client_handler, send/recv) deferred to Phase 4 |
 | Phase 4: Client | **In progress** | delta machinery done: parse_frame, player-state delta, packet-entity delta (24 parse tests + 6 state tests) — entity interpolation, prediction, view not started |
 | Phase 5: Renderer | TODO | |
@@ -17,11 +17,18 @@
 | Phase 7: P2P Networking | TODO | |
 | Phase 8: Integration | TODO | |
 
-**Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile.
+**Additional completed work not in original plan:** `q2-wasm` (WASM entry point with self-test, WebGL2 check), `q2-bundler` (single-file HTML bundler with base64-inlined WASM), Playwright browser tests, Makefile, `q2-render-api` (Renderer trait).
 
 **Next up:** Phase 5 (renderer — BSP loading + GL3). Phase 1 is complete; Phase 3 reached CP-3; Phase 4 delta parsing is done.
 
 **Critical path to playable:** Phase 5 (renderer — BSP loading + GL3) → Phase 4 remaining (entity interpolation + view) → Phase 6 (WASM platform — game loop + pointer lock). This gets to CP-5b (move around a rendered map in the browser).
+
+**Phase 2 gaps (tracked, not blocking):**
+- #14: Monster attack/pain animation expansion (all 20 types have stand/die; need full state machines)
+- #15: Save/load with serde + callback registry
+- #16: Player weapon state machine + DM rules
+- #17: Full SV_Push with entity displacement rollback
+
 
 **C source reference:** `~/Qwasm2/src/` (Yamagi Quake II with Emscripten WASM port)
 
