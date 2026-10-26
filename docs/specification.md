@@ -1,8 +1,16 @@
 # PAK Web Filter Pipeline — Specification
 
 **Date**: 2026-05-01  
-**Status**: Draft  
+**Status**: Superseded in part (see revision note)  
 **Derived from**: `docs/project-brief.md`
+
+> **Revision 2026-10-26 (superseded in part).** What shipped differs from
+> this draft: `q2-pak-repack` keeps every file unless `--allow` is given (no
+> default allowlist; there is no `--all` flag), `brotli` is an unconditional
+> dependency, and `make pak-web` repacks all assets. The demo pak is ~50 MB
+> raw and ~28 MB as Brotli, so the size targets below (≤ 8 MB / ≤ 3 MB) are
+> not met; they depend on audio/texture transcoding that has not started.
+> The Makefile and `crates/q2-pak-repack` are the source of truth.
 
 ## Overview
 
