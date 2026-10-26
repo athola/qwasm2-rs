@@ -306,8 +306,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     log(&format!("BSP loaded: {} bytes", bsp_data.len()));
 
     // 7. Parse BSP
-    let bsp = q2_render::bsp::BspData::load(&bsp_data)
-        .map_err(|e| JsValue::from_str(&format!("BSP parse error: {}", e)))?;
+    let bsp = q2_render::bsp::BspData::load(&bsp_data).map_err(q2err_to_js)?;
     log(&format!(
         "BSP parsed: {} verts, {} faces, {} texinfos, {} models",
         bsp.vertices.len(),
