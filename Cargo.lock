@@ -691,7 +691,9 @@ name = "q2-devserver"
 version = "0.1.2"
 dependencies = [
  "axum",
+ "tempfile",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",

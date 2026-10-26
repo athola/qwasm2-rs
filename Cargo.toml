@@ -39,7 +39,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 js-sys = "0.3"
 axum = "0.8"
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.6", features = ["fs"] }
 base64 = "0.22"
 
 [workspace.lints.rust]
