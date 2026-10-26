@@ -62,16 +62,14 @@ impl Server {
 }
 
 impl ServerStatic {
-    /// One-time server initialization (corresponds to `SV_InitGame()`).
+    /// Server (re)initialization (corresponds to `SV_InitGame()`).
     ///
-    /// Allocates client slots and marks the server as initialized. Should
-    /// only be called once; subsequent map changes reuse the existing slots.
+    /// Allocates client slots and marks the server as initialized. Like C,
+    /// calling it on an initialized server restarts it: every client slot is
+    /// reallocated (connected clients are dropped) with the new count.
+    /// `max_clients` is clamped to `MAX_CLIENTS` (sv_init.c:417).
     pub fn init_game(&mut self, max_clients: usize) {
-        if self.initialized {
-            // Already initialized — a map change, not a fresh start.
-            return;
-        }
-
+        let max_clients = max_clients.min(MAX_CLIENTS);
         self.max_clients = max_clients;
         self.clients = (0..max_clients)
             .map(|i| ServerClient {
@@ -168,13 +166,31 @@ mod tests {
     }
 
     #[test]
-    fn init_game_is_idempotent() {
+    fn init_game_second_call_restarts_with_new_client_count() {
         let mut svs = ServerStatic::default();
         svs.init_game(4);
-        svs.init_game(16); // second call should be a no-op
+        svs.clients[0].state = crate::state::ClientState::Spawned;
 
-        assert_eq!(svs.max_clients, 4);
-        assert_eq!(svs.clients.len(), 4);
+        // C SV_InitGame on an initialized server shuts it down and
+        // reallocates the client slots from the current maxclients.
+        svs.init_game(16);
+
+        assert!(svs.initialized);
+        assert_eq!(svs.max_clients, 16);
+        assert_eq!(svs.clients.len(), 16);
+        assert!(svs
+            .clients
+            .iter()
+            .all(|c| c.state == crate::state::ClientState::Free));
+    }
+
+    #[test]
+    fn init_game_clamps_client_count_to_max_clients() {
+        let mut svs = ServerStatic::default();
+        svs.init_game(MAX_CLIENTS + 1);
+
+        assert_eq!(svs.max_clients, MAX_CLIENTS);
+        assert_eq!(svs.clients.len(), MAX_CLIENTS);
     }
 
     #[test]
