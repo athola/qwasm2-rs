@@ -213,7 +213,7 @@ pub(crate) fn strtol(s: &str) -> i32 {
 }
 
 /// C `sscanf("%f %f %f")`: missing components stay 0.
-fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
+pub(crate) fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
     let mut v = [0.0f32; 3];
     for (slot, part) in v.iter_mut().zip(s.split_whitespace()) {
         *slot = q2_common::cvar::parse_value(part);

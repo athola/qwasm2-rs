@@ -210,6 +210,8 @@ pub struct ClientData {
     /// the player (C `gclient_t.old_pmove`).
     pub old_pmove: PmoveState,
     pub ping: i32,
+    /// Until when the HUD shows the last pickup (C `pickup_msg_time`).
+    pub pickup_msg_time: f32,
     pub pers: ClientPersistent,
     pub resp: ClientRespawn,
 }

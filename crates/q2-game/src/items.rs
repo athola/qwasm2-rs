@@ -1244,7 +1244,7 @@ pub fn use_item(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activ
 }
 
 /// C ref: `Touch_Item` (single player: no deathmatch instant use, no coop
-/// stay; sounds and the pickup HUD flash are not ported).
+/// stay; pickup sounds and the screen flash are not ported).
 pub fn touch_item(
     world: &mut GameWorld,
     key: EntityKey,
@@ -1268,6 +1268,26 @@ pub fn touch_item(
         return; // not a grabbable item
     };
     let taken = pickup(world, key, other);
+    if taken {
+        // Show the icon and name on the status bar.
+        let item = world.entities.get(key).and_then(|e| e.game.item);
+        let icon = item
+            .and_then(|i| world.items.get(i))
+            .map_or(0, |it| world.gi.image_index(it.icon));
+        let time = world.level.time;
+        if let Some(client) = world
+            .entities
+            .get_mut(other)
+            .and_then(|o| o.client.as_mut())
+        {
+            client.ps.stats[q2_shared::constants::STAT_PICKUP_ICON] = icon as i16;
+            if let Some(i) = item {
+                client.ps.stats[q2_shared::constants::STAT_PICKUP_STRING] =
+                    (q2_shared::constants::CS_ITEMS + i) as i16;
+            }
+            client.pickup_msg_time = time + 3.0;
+        }
+    }
 
     let targets_used = world
         .entities

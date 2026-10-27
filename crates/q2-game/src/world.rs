@@ -37,6 +37,8 @@ pub struct LevelLocals {
     pub total_monsters: i32,
     pub killed_monsters: i32,
     pub current_entity: Option<EntityKey>,
+    /// Image index of `i_health` (C `level.pic_health`).
+    pub pic_health: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +398,58 @@ impl GameWorld {
 // MockGameImport — for unit testing game code without a real server
 // ---------------------------------------------------------------------------
 
+/// The single-player status bar layout program (C g_spawn.c
+/// `single_statusbar`), run by the client's SCR_ExecuteLayoutString.
+pub const SINGLE_STATUSBAR: &str = concat!(
+    "yb\t-24 ",
+    // health
+    "xv\t0 ",
+    "hnum ",
+    "xv\t50 ",
+    "pic 0 ",
+    // ammo
+    "if 2 ",
+    "\txv\t100 ",
+    "\tanum ",
+    "\txv\t150 ",
+    "\tpic 2 ",
+    "endif ",
+    // armor
+    "if 4 ",
+    "\txv\t200 ",
+    "\trnum ",
+    "\txv\t250 ",
+    "\tpic 4 ",
+    "endif ",
+    // selected item
+    "if 6 ",
+    "\txv\t296 ",
+    "\tpic 6 ",
+    "endif ",
+    "yb\t-50 ",
+    // picked up item
+    "if 7 ",
+    "\txv\t0 ",
+    "\tpic 7 ",
+    "\txv\t26 ",
+    "\tyb\t-42 ",
+    "\tstat_string 8 ",
+    "\tyb\t-50 ",
+    "endif ",
+    // timer
+    "if 9 ",
+    "\txv\t262 ",
+    "\tnum\t2\t10 ",
+    "\txv\t296 ",
+    "\tpic\t9 ",
+    "endif ",
+    // help / weapon icon
+    "if 11 ",
+    "\txv\t148 ",
+    "\tpic\t11 ",
+    "endif ",
+);
+
 /// C `AREA_TRIGGERS` for `GameImport::box_edicts`.
 pub const AREA_TRIGGERS: i32 = 2;
 
@@ -417,6 +471,8 @@ pub struct MockGameImport {
     pub models: RefCell<Vec<String>>,
     /// Entity numbers `box_edicts` reports.
     pub box_edicts: RefCell<Vec<usize>>,
+    /// Image names in registration order; index = position + 1.
+    pub images: RefCell<Vec<String>>,
 }
 
 impl GameImport for MockGameImport {
@@ -431,8 +487,13 @@ impl GameImport for MockGameImport {
     fn sound_index(&self, _: &str) -> i32 {
         0
     }
-    fn image_index(&self, _: &str) -> i32 {
-        0
+    fn image_index(&self, name: &str) -> i32 {
+        let mut images = self.images.borrow_mut();
+        let pos = images.iter().position(|i| i == name).unwrap_or_else(|| {
+            images.push(name.to_string());
+            images.len() - 1
+        });
+        pos as i32 + 1
     }
     fn set_model(&self, _: usize, name: &str) -> ModelInfo {
         if name.is_empty() {
@@ -545,6 +606,49 @@ impl GameWorld {
         self.register_func_spawns();
         self.register_misc_spawns();
         self.register_monster_spawns();
+    }
+
+    /// The configstrings and images C SP_worldspawn publishes (single
+    /// player).
+    fn worldspawn_configstrings(&mut self, fields: &HashMap<String, String>) {
+        use q2_shared::constants::{
+            CS_CDTRACK, CS_ITEMS, CS_NAME, CS_SKY, CS_SKYAXIS, CS_SKYROTATE, CS_STATUSBAR,
+        };
+        // SetItemNames.
+        for (i, item) in self.items.iter().enumerate() {
+            self.gi
+                .configstring((CS_ITEMS + i) as i32, item.pickup_name);
+        }
+        self.level.nextmap = fields.get("nextmap").cloned().unwrap_or_default();
+        match fields.get("message").filter(|m| !m.is_empty()) {
+            Some(message) => {
+                self.gi.configstring(CS_NAME as i32, message);
+                self.level.level_name = message.clone();
+            }
+            None => self.level.level_name = self.level.mapname.clone(),
+        }
+        let sky = fields.get("sky").filter(|s| !s.is_empty());
+        self.gi
+            .configstring(CS_SKY as i32, sky.map_or("unit1_", String::as_str));
+        let skyrotate = fields
+            .get("skyrotate")
+            .map_or(0.0, |v| q2_common::cvar::parse_value(v));
+        self.gi
+            .configstring(CS_SKYROTATE as i32, &format!("{skyrotate:.6}"));
+        let axis = fields
+            .get("skyaxis")
+            .map_or(Vec3f::ZERO, |v| crate::spawn::scan_vector(v));
+        self.gi.configstring(
+            CS_SKYAXIS as i32,
+            &format!("{:.6} {:.6} {:.6}", axis.x, axis.y, axis.z),
+        );
+        let sounds = fields.get("sounds").map_or(0, |v| crate::spawn::strtol(v));
+        self.gi.configstring(CS_CDTRACK as i32, &sounds.to_string());
+        self.gi.configstring(CS_STATUSBAR as i32, SINGLE_STATUSBAR);
+        self.gi.image_index("i_help");
+        self.level.pic_health = self.gi.image_index("i_health");
+        self.gi.image_index("help");
+        self.gi.image_index("field_3");
     }
 
     /// Run one game frame — the main game tick.
@@ -667,6 +771,9 @@ impl GameWorld {
                     self.set_model(key, model);
                 }
                 sfn(&mut self.entities, key, fields);
+                if classname == "worldspawn" {
+                    self.worldspawn_configstrings(fields);
+                }
                 if let Some(model) = crate::spawn::classname_model(&classname) {
                     self.set_model(key, model);
                 }
@@ -1000,6 +1107,45 @@ mod tests {
             None,
             "point entities draw nothing"
         );
+    }
+
+    fn configstring(gi: &MockGameImport, index: usize) -> Option<String> {
+        gi.configstrings
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(i, _)| *i == index as i32)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn worldspawn_writes_the_statusbar_sky_name_and_item_names() {
+        use q2_shared::constants::{CS_ITEMS, CS_NAME, CS_SKY, CS_STATUSBAR};
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" \"sky\" \"unit3_\" \"message\" \"Outer Base\" }",
+            "",
+        );
+        let bar = configstring(&gi, CS_STATUSBAR).expect("statusbar");
+        assert!(bar.starts_with("yb\t-24 ") && bar.contains("hnum"), "{bar}");
+        assert_eq!(configstring(&gi, CS_SKY).as_deref(), Some("unit3_"));
+        assert_eq!(configstring(&gi, CS_NAME).as_deref(), Some("Outer Base"));
+        let shotgun = world.find_item("weapon_shotgun").unwrap();
+        assert_eq!(
+            configstring(&gi, CS_ITEMS + shotgun).as_deref(),
+            Some("Shotgun")
+        );
+    }
+
+    #[test]
+    fn worldspawn_without_a_sky_key_uses_unit1() {
+        use q2_shared::constants::CS_SKY;
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert_eq!(configstring(&gi, CS_SKY).as_deref(), Some("unit1_"));
     }
 
     #[test]
