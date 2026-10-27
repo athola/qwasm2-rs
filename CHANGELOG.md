@@ -43,8 +43,8 @@ All notable changes to qwasm2-rs are documented here.
   misc objects carry their C models
 - Worldspawn publishes the status bar, sky, item names and light styles;
   `G_SetStats` fills health, armor and pickup stats
-- q2-client: HUD layout interpreter (`SCR_ExecuteLayoutString`), entity
-  interpolation (`CL_AddPacketEntities`) and light style values
+- q2-client: HUD layout interpreter (`SCR_ExecuteLayoutString`) and
+  entity interpolation (`CL_AddPacketEntities`)
 - q2-render: PCX, WAL, TGA, MD2 and SP2 parsers; the world drawn textured
   and lightmapped with sky, warp and translucent surfaces; brush entities,
   lit and interpolated MD2 models, and 2D pics and conchars (#20)
