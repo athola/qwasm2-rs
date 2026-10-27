@@ -55,6 +55,6 @@ the table without an ADR note, and toolchain upgrades are explicit changes
 that can bring their own lint fixes. Findings that were too large for the
 review pass are tracked as issues: entity numbering and SlotMap world links
 (#9, #31), map loading and spawn reset (#11), a complete `GameImport` (#18,
-#10), client opcodes, prediction and stufftext (#19, #6, #7), moving the
-browser player onto pmove (#12), and loading the world through the Renderer
+#10), client opcodes, prediction and stufftext (#19, #6, #7), the player's pmove
+touches and trigger contacts (#12), and loading the world through the Renderer
 trait (#20).

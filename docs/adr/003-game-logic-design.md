@@ -19,7 +19,7 @@ and implementation plan that lived in `docs/specification.md` and
 
 `GameWorld` replaces the C globals. It owns the entity storage, level and
 game locals, the item table, the spawn table, and the engine callbacks
-(`gi: Box<dyn GameImport>`). Game code receives `&mut GameWorld` plus an
+(`gi: Rc<dyn GameImport>`). Game code receives `&mut GameWorld` plus an
 `EntityKey`, never `&mut Entity`, which keeps the borrow checker satisfied
 when one entity's callback touches another.
 
