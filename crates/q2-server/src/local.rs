@@ -8,7 +8,8 @@ use q2_common::error::Q2Result;
 use q2_game::traits::GameExport;
 use q2_game::world::GameWorld;
 use q2_shared::constants::MAX_EDICTS;
-use q2_shared::types::{PlayerState, UserCmd, Vec3f};
+use q2_shared::constants::SVF_NOCLIENT;
+use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
 use crate::state::{Server, ServerStatic};
 use crate::ServerGameImport;
@@ -56,6 +57,33 @@ impl LocalGame {
         let key = self.game.entities.key_for_number(LOCAL_PLAYER)?;
         let ent = self.game.entities.get(key)?;
         Some((ent.state.origin, ent.client.as_ref()?.ps.clone()))
+    }
+
+    /// The entities a client is sent this frame, by number. C ref:
+    /// `SV_BuildClientFrame`'s filter; without vis data every entity is in
+    /// the PVS.
+    pub fn entity_states(&self) -> Vec<EntityState> {
+        let mut states: Vec<EntityState> = self
+            .game
+            .entities
+            .iter()
+            .map(|(_, e)| e)
+            .filter(|e| e.in_use && e.state.number > 0 && e.svflags & SVF_NOCLIENT == 0)
+            // Ignore entities that have nothing to show or play.
+            .filter(|e| {
+                let s = &e.state;
+                s.modelindex != 0 || s.effects != 0 || s.sound != 0 || s.event != 0
+            })
+            .map(|e| e.state.clone())
+            .collect();
+        states.sort_by_key(|s| s.number);
+        states
+    }
+
+    /// The server's configstring `index` (model names live under
+    /// `CS_MODELS`).
+    pub fn configstring(&self, index: usize) -> &str {
+        self.sv.configstrings.get(index).map_or("", String::as_str)
     }
 
     /// The game, for inspection.
