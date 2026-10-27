@@ -1149,6 +1149,7 @@ fn sp_func_generic(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap
 fn sp_func_nonsolid(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = fields.get("classname").cloned().unwrap_or_default();
+        ent.state.modelindex = 0; // C never calls setmodel: nothing to draw
     }
 }
 
@@ -1416,7 +1417,9 @@ mod tests {
             "",
         );
         let key = world.find_by_classname(None, "func_areaportal").unwrap();
-        assert_eq!(world.entities.get(key).unwrap().solid, Solid::Not);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.solid, Solid::Not);
+        assert_eq!(ent.state.modelindex, 0, "not drawn");
     }
 
     #[test]

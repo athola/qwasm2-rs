@@ -93,7 +93,7 @@ fn trigger_push_touch(
     let movedir = world
         .entities
         .get(self_key)
-        .map(|e| e.game.move_origin) // using move_origin to store movedir
+        .map(|e| e.game.movedir)
         .unwrap_or(Vec3f::new(0.0, 0.0, 1.0));
 
     if let Some(ent) = world.entities.get_mut(other_key) {
@@ -228,8 +228,20 @@ impl GameWorld {
 }
 
 // All spawn functions follow the SpawnFn signature from spawn.rs.
-use crate::entity::EntityStorage;
+use crate::entity::{Entity, EntityStorage};
 use std::collections::HashMap;
+
+/// C ref: `InitTrigger`: an invisible, non-moving touch volume (its model
+/// and bounds come from spawn_entities' set_model).
+fn init_trigger(ent: &mut Entity) {
+    if ent.state.angles != Vec3f::ZERO {
+        ent.game.movedir = GameWorld::set_movedir(ent.state.angles);
+        ent.state.angles = Vec3f::ZERO;
+    }
+    ent.solid = Solid::Trigger;
+    ent.game.movetype = MoveType::None;
+    ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+}
 
 fn sp_trigger_multiple(
     storage: &mut EntityStorage,
@@ -238,8 +250,7 @@ fn sp_trigger_multiple(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_multiple".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_touch);
         ent.game.wait = fields
             .get("wait")
@@ -251,8 +262,7 @@ fn sp_trigger_multiple(
 fn sp_trigger_once(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_once".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_once_touch);
         let _ = fields;
     }
@@ -269,8 +279,7 @@ fn sp_trigger_relay(storage: &mut EntityStorage, key: EntityKey, fields: &HashMa
 fn sp_trigger_push(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_push".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_push_touch);
         ent.game.speed = fields
             .get("speed")
@@ -282,8 +291,7 @@ fn sp_trigger_push(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap
 fn sp_trigger_hurt(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_hurt".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_hurt_touch);
         ent.game.dmg = fields.get("dmg").and_then(|v| v.parse().ok()).unwrap_or(5);
     }
@@ -296,8 +304,7 @@ fn sp_trigger_gravity(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_gravity".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_gravity_touch);
         ent.game.gravity = fields
             .get("gravity")
@@ -364,8 +371,7 @@ fn sp_trigger_monsterjump(
 ) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "trigger_monsterjump".to_string();
-        ent.solid = Solid::Trigger;
-        ent.game.movetype = MoveType::None;
+        init_trigger(ent);
         ent.touch = Some(trigger_push_touch); // Similar to push.
         ent.game.speed = fields
             .get("speed")
@@ -377,6 +383,33 @@ fn sp_trigger_monsterjump(
 // ==========================================================================
 // Tests
 // ==========================================================================
+
+#[cfg(test)]
+mod init_trigger_tests {
+    use crate::world::test_world_recording;
+    use q2_shared::constants::SVF_NOCLIENT;
+    use q2_shared::types::{Solid, Vec3f};
+
+    #[test]
+    fn trigger_brushes_are_never_sent_to_clients() {
+        let (mut world, gi) = test_world_recording();
+        gi.inline_bounds
+            .borrow_mut()
+            .insert("*1".into(), (Vec3f::ZERO, Vec3f::splat(32.0)));
+        world.init_game();
+        world.spawn_entities(
+            "t",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"trigger_multiple\" \"model\" \"*1\" \"angle\" \"90\" }",
+            "",
+        );
+        let key = world.find_by_classname(None, "trigger_multiple").unwrap();
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.svflags & SVF_NOCLIENT, SVF_NOCLIENT);
+        assert_eq!(ent.solid, Solid::Trigger);
+        assert_eq!(ent.state.angles, Vec3f::ZERO);
+        assert!((ent.game.movedir.y - 1.0).abs() < 1e-6);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -469,7 +502,7 @@ mod tests {
         {
             let ent = world.entities.get_mut(trigger).unwrap();
             ent.game.speed = 800.0;
-            ent.game.move_origin = Vec3f::new(0.0, 0.0, 1.0); // push up
+            ent.game.movedir = Vec3f::new(0.0, 0.0, 1.0); // push up
         }
 
         let player = world.spawn().unwrap();
