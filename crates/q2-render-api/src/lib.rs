@@ -178,7 +178,10 @@ pub struct Particle {
 /// The renderer trait — implemented by GL3, software, etc.
 ///
 /// Corresponds to `refexport_t` in the C code (ref.h).
-pub trait Renderer: Send {
+///
+/// Not `Send`: a GL context is bound to its thread, and the GL3 renderer
+/// holds a file loader that shares the (single-threaded) wasm filesystem.
+pub trait Renderer {
     /// Initialize the renderer with the given window dimensions.
     /// Returns `Err(Q2Error::Drop)` on failure, like C R_Init returning false.
     fn init(&mut self, width: i32, height: i32) -> Q2Result<()>;
