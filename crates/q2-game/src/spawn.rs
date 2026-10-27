@@ -330,6 +330,57 @@ pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<Str
 // Tests
 // ---------------------------------------------------------------------------
 
+/// The model a C spawn function gives a monster or misc entity with
+/// `gi.modelindex` (or `self->model`). Spawn functions here only see
+/// `EntityStorage`, so `spawn_entities` registers it after they run.
+pub fn classname_model(classname: &str) -> Option<&'static str> {
+    Some(match classname {
+        "monster_soldier_light" | "monster_soldier" | "monster_soldier_ss" => {
+            "models/monsters/soldier/tris.md2"
+        }
+        "monster_infantry" | "turret_driver" => "models/monsters/infantry/tris.md2",
+        "monster_gunner" => "models/monsters/gunner/tris.md2",
+        "monster_gladiator" => "models/monsters/gladiatr/tris.md2",
+        "monster_berserker" => "models/monsters/berserk/tris.md2",
+        "monster_brain" => "models/monsters/brain/tris.md2",
+        "monster_chick" | "misc_easterchick" | "misc_easterchick2" => {
+            "models/monsters/bitch/tris.md2"
+        }
+        "monster_flipper" => "models/monsters/flipper/tris.md2",
+        "monster_floater" => "models/monsters/float/tris.md2",
+        "monster_flyer" => "models/monsters/flyer/tris.md2",
+        "monster_hover" => "models/monsters/hover/tris.md2",
+        "monster_insane" | "misc_insane" => "models/monsters/insane/tris.md2",
+        "monster_medic" => "models/monsters/medic/tris.md2",
+        "monster_mutant" => "models/monsters/mutant/tris.md2",
+        "monster_parasite" => "models/monsters/parasite/tris.md2",
+        "monster_supertank" => "models/monsters/boss1/tris.md2",
+        "monster_tank" | "monster_tank_commander" | "misc_eastertank" => {
+            "models/monsters/tank/tris.md2"
+        }
+        "monster_boss2" => "models/monsters/boss2/tris.md2",
+        "monster_jorg" => "models/monsters/boss3/jorg/tris.md2",
+        "monster_makron" | "monster_boss3_stand" => "models/monsters/boss3/rider/tris.md2",
+        "monster_commander_body" => "models/monsters/commandr/tris.md2",
+        "misc_explobox" => "models/objects/barrels/tris.md2",
+        "misc_banner" => "models/objects/banner/tris.md2",
+        "misc_deadsoldier" => "models/deadbods/dude/tris.md2",
+        "misc_satellite_dish" => "models/objects/satellite/tris.md2",
+        "misc_strogg_ship" => "models/ships/strogg1/tris.md2",
+        "misc_viper" => "models/ships/viper/tris.md2",
+        "misc_bigviper" => "models/ships/bigviper/tris.md2",
+        "misc_viper_bomb" => "models/objects/bomb/tris.md2",
+        "misc_blackhole" => "models/objects/black/tris.md2",
+        "misc_gib_arm" => "models/objects/gibs/arm/tris.md2",
+        "misc_gib_leg" => "models/objects/gibs/leg/tris.md2",
+        "misc_gib_head" => "models/objects/gibs/head/tris.md2",
+        "misc_teleporter" | "misc_teleporter_dest" => "models/objects/dmspot/tris.md2",
+        "light_mine1" => "models/objects/minelite/light1/tris.md2",
+        "light_mine2" => "models/objects/minelite/light2/tris.md2",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

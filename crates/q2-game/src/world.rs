@@ -667,6 +667,9 @@ impl GameWorld {
                     self.set_model(key, model);
                 }
                 sfn(&mut self.entities, key, fields);
+                if let Some(model) = crate::spawn::classname_model(&classname) {
+                    self.set_model(key, model);
+                }
                 self.link_entity(key);
 
                 // Run monster_start for monster entities.
@@ -961,6 +964,42 @@ mod tests {
         world.free_entity(trigger);
         world.touch_triggers(player);
         assert_eq!(world.entities.get(trigger).map_or(0, |e| e.game.count), 0);
+    }
+
+    #[test]
+    fn monsters_and_misc_models_get_their_c_model_index_at_spawn() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            concat!(
+                "{ \"classname\" \"worldspawn\" }\n",
+                "{ \"classname\" \"monster_soldier\" }\n",
+                "{ \"classname\" \"misc_explobox\" }\n",
+                "{ \"classname\" \"info_notnull\" }",
+            ),
+            "",
+        );
+        let model_of = |classname: &str| {
+            let key = world.find_by_classname(None, classname).unwrap();
+            let index = world.entities.get(key).unwrap().state.modelindex;
+            usize::try_from(index - 1)
+                .ok()
+                .map(|i| gi.models.borrow()[i].clone())
+        };
+        assert_eq!(
+            model_of("monster_soldier").as_deref(),
+            Some("models/monsters/soldier/tris.md2")
+        );
+        assert_eq!(
+            model_of("misc_explobox").as_deref(),
+            Some("models/objects/barrels/tris.md2")
+        );
+        assert_eq!(
+            model_of("info_notnull"),
+            None,
+            "point entities draw nothing"
+        );
     }
 
     #[test]
