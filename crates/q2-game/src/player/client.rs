@@ -113,31 +113,30 @@ impl GameWorld {
     }
 
     /// C SelectSpawnPoint, single-player part. With no `game.spawnpoint`
-    /// the first start without a targetname is used, else any start; with
-    /// one, only the start whose targetname matches (case-insensitively).
-    /// C raises gi.error when nothing matches; here the caller logs it.
+    /// the first start without a targetname is used, else any start, else
+    /// (not C) a deathmatch start; with one, only the start whose targetname
+    /// matches (case-insensitively). C raises gi.error when nothing matches;
+    /// here the caller logs it.
     fn select_spawn_point(&self) -> Option<EntityKey> {
         let wanted = self.game.spawnpoint.as_str();
         // By entity number, the order C's G_Find walks g_edicts.
-        let starts = || {
+        let of_class = |class: &'static str| {
             (0..self.game.maxentities.max(0) as usize)
                 .filter_map(|n| self.entities.key_for_number(n))
                 .filter_map(|k| self.entities.get(k).map(|e| (k, e)))
-                .filter(|(_, e)| e.in_use && e.game.classname == "info_player_start")
+                .filter(move |(_, e)| e.in_use && e.game.classname == class)
         };
-        let chosen = if wanted.is_empty() {
-            starts().find(|(_, e)| e.game.targetname.is_empty())
-        } else {
-            starts().find(|(_, e)| e.game.targetname.eq_ignore_ascii_case(wanted))
-        };
-        chosen
-            .or_else(|| {
-                if wanted.is_empty() {
-                    starts().next()
-                } else {
-                    None
-                }
-            })
+        if !wanted.is_empty() {
+            return of_class("info_player_start")
+                .find(|(_, e)| e.game.targetname.eq_ignore_ascii_case(wanted))
+                .map(|(k, _)| k);
+        }
+        of_class("info_player_start")
+            .find(|(_, e)| e.game.targetname.is_empty())
+            .or_else(|| of_class("info_player_start").next())
+            // Not C: single player has no deathmatch fallback, but the
+            // browser runs deathmatch maps without a deathmatch mode.
+            .or_else(|| of_class("info_player_deathmatch").next())
             .map(|(k, _)| k)
     }
 
@@ -381,6 +380,26 @@ mod tests {
         world.begin_client(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.state.origin, Vec3f::new(-1768.0, 1536.0, 138.0));
+    }
+
+    #[test]
+    fn begin_client_falls_back_to_a_deathmatch_start_on_maps_without_player_starts() {
+        // Deviation kept from the old browser spawn: C single player raises
+        // gi.error here, but the browser has no deathmatch mode to switch to.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "q2dm1",
+            concat!(
+                "{ \"classname\" \"worldspawn\" }\n",
+                "{ \"classname\" \"info_player_deathmatch\" \"origin\" \"64 64 16\" }",
+            ),
+            "",
+        );
+        let key = world.connect_client(1, "").unwrap();
+        world.begin_client(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(64.0, 64.0, 26.0));
     }
 
     #[test]
