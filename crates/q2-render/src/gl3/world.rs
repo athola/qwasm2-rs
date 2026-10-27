@@ -64,9 +64,12 @@ pub struct Batch {
 }
 
 pub struct WorldMesh {
+    /// Vertices of the world and of every inline submodel.
     pub vertices: Vec<f32>,
-    /// Opaque batches first, translucent last.
+    /// World batches (model 0): opaque first, translucent last.
     pub batches: Vec<Batch>,
+    /// Batches of inline model `*n` at index `n - 1`, same ordering.
+    pub submodels: Vec<Vec<Batch>>,
     pub lightmaps: LightmapAtlas,
 }
 
@@ -81,7 +84,7 @@ struct BatchKey {
 
 /// Corner positions of a face from its surfedge loop; `None` when the loop
 /// is out of range or has fewer than 3 usable corners.
-fn face_positions(bsp: &BspData, face: &BspFace) -> Option<Vec<[f32; 3]>> {
+pub(super) fn face_positions(bsp: &BspData, face: &BspFace) -> Option<Vec<[f32; 3]>> {
     let count = usize::try_from(face.num_edges).ok().filter(|&n| n >= 3)?;
     let first = usize::try_from(face.first_edge).ok()?;
     let positions: Vec<[f32; 3]> = bsp
@@ -101,14 +104,17 @@ fn face_positions(bsp: &BspData, face: &BspFace) -> Option<Vec<[f32; 3]>> {
     (positions.len() >= 3).then_some(positions)
 }
 
-fn world_face_range(bsp: &BspData) -> std::ops::Range<usize> {
+/// Faces of model `model` (0 is the world); without a model lump the world
+/// is every face.
+fn model_face_range(bsp: &BspData, model: usize) -> std::ops::Range<usize> {
     let index = |v: i32| usize::try_from(v).ok();
-    let range = match bsp.models.first() {
-        Some(model) => match (index(model.first_face), index(model.num_faces)) {
+    let range = match bsp.models.get(model) {
+        Some(m) => match (index(m.first_face), index(m.num_faces)) {
             (Some(first), Some(count)) => first..first.saturating_add(count),
             _ => 0..0,
         },
-        None => 0..bsp.faces.len(),
+        None if model == 0 => 0..bsp.faces.len(),
+        None => 0..0,
     };
     range.start.min(bsp.faces.len())..range.end.min(bsp.faces.len())
 }
@@ -132,13 +138,36 @@ fn classify(texinfo: &BspTexInfo) -> (Shading, Translucency) {
     (shading, translucency)
 }
 
-/// Build the world mesh. Sky and nodraw faces are omitted; malformed faces
-/// (bad indices, lightmap too large for a page) are skipped.
+/// Build the mesh of the world and all inline submodels, sharing one vertex
+/// buffer and lightmap atlas (C keeps every model's surfaces in one lump).
 pub fn build_world_mesh(bsp: &BspData, images: &WorldImages) -> WorldMesh {
     let mut atlas = LightmapAtlas::new();
+    let mut vertices = Vec::new();
+    let mut per_model: Vec<Vec<Batch>> = (0..bsp.models.len().max(1))
+        .map(|model| build_model_batches(bsp, images, model, &mut atlas, &mut vertices))
+        .collect();
+    let batches = per_model.remove(0);
+    WorldMesh {
+        vertices,
+        batches,
+        submodels: per_model,
+        lightmaps: atlas,
+    }
+}
+
+/// Append one model's faces to `vertices` and return its draw batches. Sky and
+/// nodraw faces are omitted; malformed faces (bad indices, lightmap too large
+/// for a page) are skipped.
+fn build_model_batches(
+    bsp: &BspData,
+    images: &WorldImages,
+    model: usize,
+    atlas: &mut LightmapAtlas,
+    vertices: &mut Vec<f32>,
+) -> Vec<Batch> {
     let mut pending: Vec<(BatchKey, Vec<f32>)> = Vec::new();
 
-    for face in &bsp.faces[world_face_range(bsp)] {
+    for face in &bsp.faces[model_face_range(bsp, model)] {
         let Some(texinfo_index) = usize::try_from(face.texinfo_idx).ok() else {
             continue;
         };
@@ -217,7 +246,6 @@ pub fn build_world_mesh(bsp: &BspData, images: &WorldImages) -> WorldMesh {
     }
 
     pending.sort_by_key(|(key, _)| *key);
-    let mut vertices = Vec::new();
     let mut batches: Vec<Batch> = Vec::new();
     for (key, triangles) in pending {
         let count = i32::try_from(triangles.len() / VERTEX_FLOATS).unwrap_or(i32::MAX);
@@ -252,11 +280,7 @@ pub fn build_world_mesh(bsp: &BspData, images: &WorldImages) -> WorldMesh {
             });
         }
     }
-    WorldMesh {
-        vertices,
-        batches,
-        lightmaps: atlas,
-    }
+    batches
 }
 
 #[cfg(test)]
@@ -588,6 +612,45 @@ mod tests {
         assert!(build_world_mesh(&bsp, &imgs).vertices.is_empty());
         bsp.models = vec![model(0, 1)];
         assert!(!build_world_mesh(&bsp, &imgs).vertices.is_empty());
+    }
+
+    #[test]
+    fn submodel_faces_get_their_own_batches_after_the_world_in_one_buffer() {
+        let mut bsp = empty_bsp();
+        bsp.texinfo
+            .push(texinfo(0, [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]));
+        for _ in 0..3 {
+            add_face(&mut bsp, &TRI, 0, -1);
+        }
+        let model = |first_face, num_faces| BspModel {
+            mins: Vec3f::ZERO,
+            maxs: Vec3f::ZERO,
+            origin: Vec3f::ZERO,
+            head_node: 0,
+            first_face,
+            num_faces,
+        };
+        // World owns face 0; *1 owns faces 1 and 2; *2 owns none.
+        bsp.models = vec![model(0, 1), model(1, 2), model(3, 0)];
+        let mesh = build_world_mesh(&bsp, &images(&[(64, 64)], vec![1]));
+
+        assert_eq!(mesh.submodels.len(), 2);
+        assert_eq!(
+            (mesh.batches[0].first_vertex, mesh.batches[0].vertex_count),
+            (0, 3)
+        );
+        assert_eq!(mesh.submodels[0].len(), 1);
+        assert_eq!(
+            (
+                mesh.submodels[0][0].first_vertex,
+                mesh.submodels[0][0].vertex_count
+            ),
+            (3, 6)
+        );
+        assert!(mesh.submodels[1].is_empty());
+        assert_eq!(mesh.vertices.len(), 9 * VERTEX_FLOATS);
+        // All three faces share the atlas page the world allocated first.
+        assert_eq!(mesh.lightmaps.pages.len(), 1);
     }
 
     #[test]
