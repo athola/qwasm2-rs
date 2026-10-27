@@ -72,15 +72,16 @@ and a native SDL2 backend are planned but have no code or dependencies yet.
 | 2 Game logic | Core done, see ADR-003; gaps #14-#17 |
 | 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
-| 5 Renderer | Flat-shaded BSP world renders; textures and lightmaps open (#20) |
+| 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles, dynamic lights, sprites and texture animation open (#20) |
 | 6 WASM platform | Game loop, pointer lock, input and resize done; saves open (#21) |
 | 7 P2P networking | Not started (#22) |
 | 8 Integration | Server and game run in-process in the browser (`LocalGame`); networking open (#23) |
 
 The browser build runs the server and the full game in one process and
-moves the player with the pmove port through the server's traces. Still
-missing in play: entity rendering, brush-entity collision (the game never
-calls `set_model`), and trigger touches (#12).
+moves the player with the pmove port through the server's traces. Brush
+entities collide, doors, platforms and buttons work, triggers and items
+react to the player, and entities and the status bar are drawn. Still
+missing in play: weapons and the rest of the player state machine (#16).
 
 ## Consequences
 

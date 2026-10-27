@@ -5,6 +5,10 @@ All notable changes to qwasm2-rs are documented here.
 ## [Unreleased]
 
 ### Changed (breaking)
+- `GameImport::set_model` returns `ModelInfo` (index and inline-model
+  bounds); `Pmove::ground_entity` is the entity number (`Option<usize>`)
+  and `Pmove` gains `touchents`; `Renderer` no longer requires `Send` and
+  gains `draw_get_pic_size`
 - `GameExport::init` takes no import (`GameWorld::new` receives an
   `Rc<dyn GameImport>`), client calls take entity numbers, and
   `GameImport::link_entity` takes an `EntityLink`; `GameLogic`,
@@ -31,6 +35,20 @@ All notable changes to qwasm2-rs are documented here.
   `BspData::entities` is gone (use `CollisionMap::entity_string`)
 
 ### Added
+- Brush entities get their inline-model bounds and collide; doors,
+  plats and buttons port C's movers, touch fields and `Move_Calc`
+- `ClientThink` fires `G_TouchTriggers` and pmove's touch list, and
+  records the entity stood on (#12)
+- Map items spawn, drop to the floor and can be picked up; monsters and
+  misc objects carry their C models
+- Worldspawn publishes the status bar, sky, item names and light styles;
+  `G_SetStats` fills health, armor and pickup stats
+- q2-client: HUD layout interpreter (`SCR_ExecuteLayoutString`), entity
+  interpolation (`CL_AddPacketEntities`) and light style values
+- q2-render: PCX, WAL, TGA, MD2 and SP2 parsers; the world drawn textured
+  and lightmapped with sky, warp and translucent surfaces; brush entities,
+  lit and interpolated MD2 models, and 2D pics and conchars (#20)
+- The browser draws entities and the status bar every frame
 - The browser runs an in-process server with the full game
   (`q2_server::local::LocalGame`): the map's entities spawn and think, and
   the player moves with pmove in `ClientThink` through `SV_Trace`

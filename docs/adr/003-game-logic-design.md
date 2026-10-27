@@ -53,7 +53,7 @@ anti-cheat. Deferred with issues: full monster attack and pain animations
 (#14), save/load (#15), the player weapon state machine and deathmatch rules
 (#16), and `SV_Push` rollback (#17).
 
-## Current state (2026-10-26)
+## Current state (2026-10-27)
 
 `GameWorld` implements `GameExport` and is the only game: q2-server drives
 it, and the browser runs it in-process through `q2_server::local::LocalGame`.
@@ -62,12 +62,19 @@ Entities carry C edict numbers (0 the world, `1..=maxclients` the clients,
 name entities the way C does. The game passes the import `EntityLink`s
 (`SV_LinkEdict`'s inputs) and the server clips traces against them.
 `ClientThink` runs pmove; spawning follows `ED_ParseEdict`,
-`SelectSpawnPoint` and `PutClientInServer`.
+`SelectSpawnPoint` and `PutClientInServer`, and its tail fires
+`G_TouchTriggers` and pmove's touch list.
 
-Not yet ported: pmove's touch list and `G_TouchTriggers` (triggers don't
-fire on the player), the ground entity's identity, `gi.setmodel` for brush
-entities (doors and platforms have no bounds), and the per-type spawn
-details tracked in #11, #14 and #16.
+Spawn functions see only `EntityStorage`, so `spawn_entities` does the
+parts of C `SP_*` functions that need the import: `gi.setmodel` for every
+`*n` model before the spawn function (brush entities get their
+inline-model bounds), the C model path for monsters and misc objects from
+one classname table, worldspawn's configstrings (status bar, sky, item
+names, light styles), `SP_light`, and a link for every entity afterwards.
+Map items go through `SpawnItem` as in `ED_CallSpawn`. Doors, plats and
+buttons follow C's `Move_Calc` movers; `func_door_rotating` and
+`func_door_secret` are still static brushes. Remaining per-type spawn
+details are tracked in #11, #14 and #16.
 
 ## Consequences
 

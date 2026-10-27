@@ -10,10 +10,12 @@ WebGL2, and runs player movement in the browser.
 > **Status: alpha.** The browser build loads a demo map into an
 > in-process server running the full game logic (`q2-game`: physics,
 > combat, items, weapons, AI, 20 monster types) and moves the player with
-> the C pmove port through the server's collision. The renderer draws only
-> the world, so monsters and items are not visible yet; brush entities
-> (doors, platforms) have no collision and triggers do not fire on the
-> player (#12). Expect breaking changes.
+> the C pmove port through the server's collision. Doors, platforms and
+> buttons collide and open, triggers fire on the player, and items can be
+> picked up. The renderer draws the world textured and lightmapped with sky
+> and warp surfaces, brush entities and MD2 models, and the status bar.
+> Weapons, animated light styles and sound are not in yet (#16, #20).
+> Expect breaking changes.
 
 ## Progress
 
@@ -24,8 +26,8 @@ WebGL2, and runs player movement in the browser.
 | CP-2 Game Logic | Entity spawn, GameExport trait, AI frame | done |
 | CP-3 Server | Frame loop runs the game; map loading, SV_Trace and entity links; the browser runs it in-process | done |
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
-| CP-5 First Frame | Textured BSP map renders in browser | next |
-| CP-5b Playable | WASD + mouselook, HUD, rendered world | — |
+| CP-5 First Frame | Textured BSP map renders in browser | done |
+| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (no weapons yet) |
 | CP-7 Multiplayer | Two browser tabs connect via Matchbox | — |
 
 ## Features
