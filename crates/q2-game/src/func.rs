@@ -380,9 +380,9 @@ impl GameWorld {
         self.spawn_table
             .insert("func_conveyor".to_string(), sp_func_generic);
         self.spawn_table
-            .insert("func_areaportal".to_string(), sp_func_generic);
+            .insert("func_areaportal".to_string(), sp_func_nonsolid);
         self.spawn_table
-            .insert("func_clock".to_string(), sp_func_generic);
+            .insert("func_clock".to_string(), sp_func_nonsolid);
         self.spawn_table
             .insert("func_wall".to_string(), sp_func_generic);
         self.spawn_table
@@ -577,6 +577,15 @@ fn sp_func_generic(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap
     }
 }
 
+/// func_areaportal and func_clock: C SP_func_areaportal never sets a solid
+/// (a solid portal brush would close every doorway it sits in), and
+/// func_clock is a point entity.
+fn sp_func_nonsolid(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap<String, String>) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.game.classname = fields.get("classname").cloned().unwrap_or_default();
+    }
+}
+
 // ==========================================================================
 // Tests
 // ==========================================================================
@@ -585,6 +594,22 @@ fn sp_func_generic(storage: &mut EntityStorage, key: EntityKey, fields: &HashMap
 mod tests {
     use super::*;
     use crate::world::test_world;
+
+    #[test]
+    fn areaportal_brush_is_not_solid_so_it_never_blocks_its_doorway() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        gi.inline_bounds
+            .borrow_mut()
+            .insert("*3".into(), (Vec3f::ZERO, Vec3f::splat(64.0)));
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"func_areaportal\" \"model\" \"*3\" }",
+            "",
+        );
+        let key = world.find_by_classname(None, "func_areaportal").unwrap();
+        assert_eq!(world.entities.get(key).unwrap().solid, Solid::Not);
+    }
 
     #[test]
     fn register_func_spawns() {
