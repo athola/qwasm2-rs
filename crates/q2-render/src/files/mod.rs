@@ -1,4 +1,4 @@
-//! Parsers for Quake 2 asset formats the renderer consumes: PCX, WAL, MD2, SP2.
+//! Parsers for Quake 2 asset formats the renderer consumes: PCX, WAL, MD2, SP2, TGA.
 //!
 //! All parsers take a byte slice, never read out of bounds, and report
 //! malformed data as `Q2Error::Drop` (C `Com_Error(ERR_DROP)` / failed load).
@@ -8,6 +8,7 @@ pub mod md2;
 pub mod palette;
 pub mod pcx;
 pub mod sp2;
+pub mod tga;
 pub mod wal;
 
 use q2_common::error::{Q2Error, Q2Result};
