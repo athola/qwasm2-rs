@@ -12,11 +12,19 @@
 //!
 //! which satisfies CM_LoadMap's rules (leaf 0 solid, an empty leaf exists,
 //! children numbered above their parents).
+//!
+//! Inline model `*1` is a door-sized box, `DOOR_MINS`..`DOOR_MAXS`, reached
+//! only through its own head node 2 (x = 96: front -> leaf 3, the box brush;
+//! back -> leaf 1), so the world tree does not see it.
 
 #![allow(dead_code)] // each test binary uses a different subset
 
 /// x coordinate of the wall's face.
 pub const WALL_X: f32 = 256.0;
+
+/// Bounds of inline model `*1` as stored in the BSP.
+pub const DOOR_MINS: [f32; 3] = [96.0, -64.0, 0.0];
+pub const DOOR_MAXS: [f32; 3] = [128.0, 64.0, 128.0];
 
 /// Entity string with a worldspawn and a player start on the floor.
 pub const ENTSTRING: &str = "{\n\"classname\" \"worldspawn\"\n}\n{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 24\"\n\"angle\" \"90\"\n}\n";
@@ -72,9 +80,14 @@ fn node(w: &mut Writer, plane: i32, front: i32, back: i32) {
 
 /// The floor-and-wall map as `.bsp` bytes. It also carries `ENTSTRING`.
 pub fn floor_wall_bsp() -> Vec<u8> {
+    floor_wall_bsp_with(ENTSTRING)
+}
+
+/// The floor-and-wall map with `entities` as its entity lump.
+pub fn floor_wall_bsp_with(entities: &str) -> Vec<u8> {
     let mut lumps: [Vec<u8>; 19] = Default::default();
 
-    lumps[0] = format!("{ENTSTRING}\0").into_bytes();
+    lumps[0] = format!("{entities}\0").into_bytes();
 
     let mut w = Writer::default();
     // 0-5: floor brush, x/y in [-500, 500], z in [-500, 0].
@@ -93,11 +106,21 @@ pub fn floor_wall_bsp() -> Vec<u8> {
     plane(&mut w, [0.0, 0.0, -1.0], 500.0, 5);
     // 12: node 1's split, +X at the wall face.
     plane(&mut w, [1.0, 0.0, 0.0], WALL_X, 0);
+    // 13-18: the *1 box brush.
+    plane(&mut w, [1.0, 0.0, 0.0], DOOR_MAXS[0], 0);
+    plane(&mut w, [-1.0, 0.0, 0.0], -DOOR_MINS[0], 3);
+    plane(&mut w, [0.0, 1.0, 0.0], DOOR_MAXS[1], 1);
+    plane(&mut w, [0.0, -1.0, 0.0], -DOOR_MINS[1], 4);
+    plane(&mut w, [0.0, 0.0, 1.0], DOOR_MAXS[2], 2);
+    plane(&mut w, [0.0, 0.0, -1.0], -DOOR_MINS[2], 5);
+    // 19: node 2's split, the box's -X face.
+    plane(&mut w, [1.0, 0.0, 0.0], DOOR_MINS[0], 0);
     lumps[1] = w.0;
 
     let mut w = Writer::default();
     node(&mut w, 0, 1, -1); // z = 0: above -> node 1, below -> leaf 0
     node(&mut w, 12, -3, -2); // x = WALL_X: beyond -> leaf 2, before -> leaf 1
+    node(&mut w, 19, -4, -2); // *1: x = 96: beyond -> leaf 3, before -> leaf 1
     lumps[4] = w.0;
 
     let mut w = Writer::default();
@@ -114,15 +137,17 @@ pub fn floor_wall_bsp() -> Vec<u8> {
     leaf(&mut w, CONTENTS_SOLID, 0, 1); // floor
     leaf(&mut w, 0, 0, 0); // open air
     leaf(&mut w, CONTENTS_SOLID, 1, 1); // wall
+    leaf(&mut w, CONTENTS_SOLID, 2, 1); // *1 box
     lumps[8] = w.0;
 
     let mut w = Writer::default();
     w.u16(0);
     w.u16(1);
+    w.u16(2);
     lumps[10] = w.0; // leaf brushes
 
     let mut w = Writer::default();
-    for first in [0, 6] {
+    for first in [0, 6, 12] {
         w.i32(first);
         w.i32(6);
         w.i32(CONTENTS_SOLID);
@@ -130,7 +155,7 @@ pub fn floor_wall_bsp() -> Vec<u8> {
     lumps[14] = w.0; // brushes
 
     let mut w = Writer::default();
-    for plane in 0..12u16 {
+    for plane in (0..12u16).chain(13..19) {
         w.u16(plane);
         w.i16(0);
     }
@@ -153,7 +178,12 @@ pub fn floor_wall_bsp() -> Vec<u8> {
     w.i32(0);
     w.i32(0);
     w.i32(0); // head node, first face, num faces
-    lumps[13] = w.0; // world model
+    DOOR_MINS.iter().chain(&DOOR_MAXS).for_each(|&v| w.f32(v));
+    (0..3).for_each(|_| w.f32(0.0)); // origin
+    w.i32(2);
+    w.i32(0);
+    w.i32(0);
+    lumps[13] = w.0; // world model, *1
 
     let mut w = Writer::default();
     (0..4).for_each(|_| w.i32(0));

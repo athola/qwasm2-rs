@@ -8,8 +8,9 @@ use q2_shared::types::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::items::ItemDef;
 use crate::spawn::SpawnTable;
-use crate::traits::{EntityLink, GameImport};
+use crate::traits::{EntityLink, GameImport, ModelInfo};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
@@ -198,6 +199,24 @@ impl GameWorld {
         self.gi.link_entity(&EntityLink { owner, ..link });
     }
 
+    /// C `gi.setmodel`: modelindex from the server, and for an inline model
+    /// its bounds, then link.
+    pub fn set_model(&mut self, key: EntityKey, name: &str) {
+        let Some(number) = self.number_of(key) else {
+            return;
+        };
+        let info = self.gi.set_model(number, name);
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        ent.state.modelindex = info.index;
+        if let Some((mins, maxs)) = info.bounds {
+            ent.mins = mins;
+            ent.maxs = maxs;
+            self.link_entity(key);
+        }
+    }
+
     /// Entity number of `key`, as passed to GameImport calls.
     pub fn number_of(&self, key: EntityKey) -> Option<usize> {
         self.entities
@@ -355,6 +374,10 @@ pub struct MockGameImport {
     pub configstrings: RefCell<Vec<(i32, String)>>,
     /// Returned by the next `trace` call instead of an unobstructed trace.
     pub next_trace: RefCell<Option<Trace>>,
+    /// Inline-model bounds `set_model` reports, by name (`*n`).
+    pub inline_bounds: RefCell<HashMap<String, (Vec3f, Vec3f)>>,
+    /// Model names in registration order; index = position + 1.
+    pub models: RefCell<Vec<String>>,
 }
 
 impl GameImport for MockGameImport {
@@ -372,7 +395,23 @@ impl GameImport for MockGameImport {
     fn image_index(&self, _: &str) -> i32 {
         0
     }
-    fn set_model(&self, _: usize, _: &str) {}
+    fn set_model(&self, _: usize, name: &str) -> ModelInfo {
+        if let Some(n) = name.strip_prefix('*').and_then(|n| n.parse::<i32>().ok()) {
+            return ModelInfo {
+                index: n + 1,
+                bounds: self.inline_bounds.borrow().get(name).copied(),
+            };
+        }
+        let mut models = self.models.borrow_mut();
+        let pos = models.iter().position(|m| m == name).unwrap_or_else(|| {
+            models.push(name.to_string());
+            models.len() - 1
+        });
+        ModelInfo {
+            index: pos as i32 + 1,
+            bounds: None,
+        }
+    }
 
     fn trace(
         &self,
@@ -555,7 +594,14 @@ impl GameWorld {
                     crate::spawn::apply_spawn_fields(ent, fields);
                 }
 
+                // Every C brush-entity SP_* calls gi.setmodel(ent, ent->model)
+                // before sizing itself, and every SP_* links; done once here
+                // because spawn functions only see EntityStorage.
+                if let Some(model) = fields.get("model").filter(|m| m.starts_with('*')) {
+                    self.set_model(key, model);
+                }
                 sfn(&mut self.entities, key, fields);
+                self.link_entity(key);
 
                 // Run monster_start for monster entities.
                 let is_monster = self
@@ -714,6 +760,81 @@ mod tests {
         assert_eq!(ent.state.angles, Vec3f::new(0.0, 90.0, 0.0)); // F_ANGLEHACK
         assert_eq!(ent.game.health, 40); // strtol stops at the 'x'
         assert_eq!(ent.game.move_origin, Vec3f::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn set_model_takes_inline_bounds_and_links_like_pf_setmodel() {
+        let (mut world, gi) = test_world_recording();
+        gi.inline_bounds.borrow_mut().insert(
+            "*1".into(),
+            (Vec3f::new(-8.0, -8.0, 0.0), Vec3f::new(8.0, 8.0, 64.0)),
+        );
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().solid = Solid::Bsp;
+        world.set_model(key, "*1");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.modelindex, 2, "*1 is model index 2");
+        assert_eq!(ent.mins, Vec3f::new(-8.0, -8.0, 0.0));
+        assert_eq!(ent.maxs, Vec3f::new(8.0, 8.0, 64.0));
+        let link = *gi.links.borrow().last().expect("linked");
+        assert_eq!(link.modelindex, 2);
+        assert_eq!(link.absmax, Vec3f::new(9.0, 9.0, 65.0));
+    }
+
+    #[test]
+    fn set_model_keeps_bounds_for_non_inline_models() {
+        let (mut world, gi) = test_world_recording();
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().maxs = Vec3f::splat(16.0);
+        world.set_model(key, "models/items/armor/body/tris.md2");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.maxs, Vec3f::splat(16.0));
+        assert_eq!(
+            ent.state.modelindex, 1,
+            "mock registers the first model at 1"
+        );
+        assert!(gi.links.borrow().is_empty(), "C links only inline models");
+    }
+
+    #[test]
+    fn spawn_entities_gives_brush_entities_their_model_and_links_them() {
+        let (mut world, gi) = test_world_recording();
+        gi.inline_bounds.borrow_mut().insert(
+            "*1".into(),
+            (Vec3f::new(0.0, 0.0, 0.0), Vec3f::new(32.0, 8.0, 96.0)),
+        );
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"func_wall\" \"model\" \"*1\" }",
+            "",
+        );
+        let key = world.find_by_classname(None, "func_wall").expect("spawned");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.model, "*1");
+        assert_eq!(ent.size, Vec3f::new(32.0, 8.0, 96.0));
+        let number = ent.state.number as usize;
+        assert!(
+            gi.links
+                .borrow()
+                .iter()
+                .any(|l| l.number == number && l.solid == Solid::Bsp),
+            "brush entity linked with its bounds"
+        );
+    }
+
+    #[test]
+    fn spawn_entities_links_point_entities_after_their_spawn_function() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"trigger_relay\" \"targetname\" \"r\" }",
+            "",
+        );
+        let key = world.find_by_targetname(None, "r").unwrap();
+        let number = world.number_of(key).unwrap();
+        assert!(gi.links.borrow().iter().any(|l| l.number == number));
     }
 
     #[test]

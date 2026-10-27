@@ -100,6 +100,33 @@ fn walking_forward_stops_at_the_wall() {
 }
 
 #[test]
+fn walking_forward_stops_at_a_func_wall_brush_entity() {
+    let entities = format!(
+        "{}{{\n\"classname\" \"func_wall\"\n\"model\" \"*1\"\n}}\n",
+        common::ENTSTRING
+    );
+    let mut g = Game::start_on("floor_wall", &common::floor_wall_bsp_with(&entities));
+    for _ in 0..10 {
+        g.tick(&UserCmd::default());
+    }
+    let forward = UserCmd {
+        forwardmove: 200,
+        angles: [0, angle2short(-90.0), 0],
+        ..Default::default()
+    };
+    for _ in 0..40 {
+        g.tick(&forward);
+    }
+    let face = common::DOOR_MINS[0] - 16.0;
+    assert!(g.origin().x > face - 1.0, "reached it: {:?}", g.origin());
+    assert!(
+        g.origin().x <= face + 0.125,
+        "blocked by *1: {:?}",
+        g.origin()
+    );
+}
+
+#[test]
 fn jumping_leaves_the_ground_and_lands_again() {
     let mut g = Game::start();
     for _ in 0..10 {

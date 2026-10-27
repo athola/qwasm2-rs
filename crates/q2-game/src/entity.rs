@@ -224,6 +224,8 @@ pub struct GameEntityData {
     pub flags: EntityFlags,
     pub freetime: f32,
     pub classname: String,
+    /// Map "model" key (C `ent->model`): `*n` for brush entities.
+    pub model: String,
     pub spawnflags: i32,
     pub timestamp: f32,
 

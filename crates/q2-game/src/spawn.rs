@@ -231,6 +231,7 @@ pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<Stri
         let g = &mut ent.game;
         match key.to_ascii_lowercase().as_str() {
             "classname" => g.classname = value.clone(),
+            "model" => g.model = value.clone(),
             "spawnflags" => g.spawnflags = strtol(value),
             "speed" => g.speed = strtod(value),
             "accel" => g.accel = strtod(value),

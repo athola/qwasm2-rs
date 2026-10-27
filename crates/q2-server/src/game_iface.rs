@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use q2_common::collision::CollisionMap;
 use q2_common::error::Q2Result;
 use q2_common::net_msg::NetMsg;
-use q2_game::traits::{EntityLink, GameImport};
+use q2_game::traits::{EntityLink, GameImport, ModelInfo};
 use q2_shared::{
     constants::{
         CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MAX_CONFIGSTRINGS, MAX_EDICTS,
@@ -245,13 +245,21 @@ impl GameImport for ServerGameImport {
             .find_index(name, CS_IMAGES, MAX_IMAGES)
     }
 
-    /// Registers the model. C PF_setmodel also writes the edict's
-    /// modelindex and inline-model bounds; the game owns its entities, so it
-    /// does that part itself (not yet ported: brush entities have no bounds).
-    fn set_model(&self, _ent_idx: usize, name: &str) {
-        if !name.starts_with('*') {
-            self.model_index(name);
+    /// C PF_setmodel: SV_ModelIndex (`*n` is already registered by
+    /// SV_SpawnServer) plus CM_InlineModel's bounds for `*n`.
+    fn set_model(&self, _ent_idx: usize, name: &str) -> ModelInfo {
+        let index = self.model_index(name);
+        let bounds = name
+            .strip_prefix('*')
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|n| {
+                let inner = self.inner.borrow();
+                inner.collision.model(n).map(|m| (m.mins, m.maxs))
+            });
+        if name.starts_with('*') && bounds.is_none() {
+            tracing::error!(name, "CM_InlineModel: bad number");
         }
+        ModelInfo { index, bounds }
     }
 
     // -- collision -----------------------------------------------------------

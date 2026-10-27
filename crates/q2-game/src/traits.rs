@@ -32,6 +32,15 @@ pub struct EntityLink {
     pub svflags: u32,
 }
 
+/// What `GameImport::set_model` reports back.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ModelInfo {
+    /// Configstring index under `CS_MODELS` (0 when the table is full).
+    pub index: i32,
+    /// `(mins, maxs)` of an inline model; `None` for file models.
+    pub bounds: Option<(Vec3f, Vec3f)>,
+}
+
 // ---------------------------------------------------------------------------
 // GameImport — server callbacks available to the game module
 // ---------------------------------------------------------------------------
@@ -99,8 +108,10 @@ pub trait GameImport {
     /// Precache an image and return its configstring index.
     fn image_index(&self, name: &str) -> i32;
 
-    /// Set the model on an entity (updates `configstrings[CS_MODELS + index]`).
-    fn set_model(&self, ent_idx: usize, name: &str);
+    /// C PF_setmodel's server half: register `name` and, for an inline
+    /// model (`*n`), report its bounds. The game owns its entities, so
+    /// `GameWorld::set_model` writes them and links.
+    fn set_model(&self, ent_idx: usize, name: &str) -> ModelInfo;
 
     // -- collision ---------------------------------------------------------
 
@@ -280,7 +291,9 @@ mod tests {
         fn image_index(&self, _name: &str) -> i32 {
             0
         }
-        fn set_model(&self, _ent_idx: usize, _name: &str) {}
+        fn set_model(&self, _ent_idx: usize, _name: &str) -> ModelInfo {
+            ModelInfo::default()
+        }
         fn trace(
             &self,
             _start: Vec3f,

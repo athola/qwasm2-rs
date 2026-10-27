@@ -180,6 +180,66 @@ fn bsp_entity_clips_with_its_inline_model_moved_to_its_origin() {
 }
 
 #[test]
+fn set_model_reports_inline_index_and_spread_bounds_like_pf_setmodel() {
+    let gi = ServerGameImport::new();
+    // Registered by Server::map in C SV_SpawnServer; mirrored here.
+    gi.load_map(&common::floor_wall_bsp()).unwrap();
+    assert_eq!(gi.model_index("maps/test.bsp"), 1);
+    assert_eq!(gi.model_index("*1"), 2);
+
+    let info = gi.set_model(9, "*1");
+    assert_eq!(info.index, 2);
+    let (mins, maxs) = info.bounds.expect("inline model bounds");
+    let one = Vec3f::ONE;
+    assert_eq!(
+        mins,
+        Vec3f::from(common::DOOR_MINS) - one,
+        "CM spreads by 1"
+    );
+    assert_eq!(maxs, Vec3f::from(common::DOOR_MAXS) + one);
+
+    let file = gi.set_model(9, "models/items/armor/body/tris.md2");
+    assert_eq!(file.index, 3);
+    assert_eq!(file.bounds, None);
+}
+
+#[test]
+fn set_model_of_a_missing_inline_model_has_no_bounds() {
+    let gi = loaded();
+    assert_eq!(gi.set_model(9, "*7").bounds, None);
+}
+
+#[test]
+fn bsp_entity_with_its_own_inline_model_blocks_at_that_brush() {
+    let gi = loaded();
+    // SV_SpawnServer's registration: the map at 1, then *1 at 2.
+    gi.model_index("maps/test.bsp");
+    let (mins, maxs) = gi.set_model(5, "*1").bounds.unwrap();
+    gi.link_entity(&EntityLink {
+        number: 5,
+        mins,
+        maxs,
+        absmin: mins - Vec3f::ONE,
+        absmax: maxs + Vec3f::ONE,
+        solid: Solid::Bsp,
+        modelindex: gi.model_index("*1"),
+        ..Default::default()
+    });
+    let tr = point_trace(
+        &gi,
+        Vec3f::new(0.0, 0.0, 64.0),
+        Vec3f::new(200.0, 0.0, 64.0),
+        None,
+    );
+    assert!(
+        (tr.endpos.x - 96.0).abs() < 0.1,
+        "door face at x=96: {:?}",
+        tr.endpos
+    );
+    assert_eq!(tr.ent_index, Some(5));
+}
+
+#[test]
 fn point_contents_ors_the_world_with_linked_entities() {
     let gi = loaded();
     assert_eq!(
