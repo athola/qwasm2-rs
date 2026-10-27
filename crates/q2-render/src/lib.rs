@@ -12,4 +12,5 @@
 //! - Inherent: 0
 
 pub mod bsp;
+pub mod files;
 pub mod gl3;
