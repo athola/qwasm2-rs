@@ -220,6 +220,11 @@ pub trait Renderer {
     /// Draw a 2D image at screen position (for HUD/menu).
     fn draw_pic(&mut self, x: i32, y: i32, name: &str);
 
+    /// Size in pixels of a 2D image, or `None` when it cannot be found
+    /// (C `Draw_GetPicSize` reports `-1, -1`). `name` is resolved like the
+    /// names passed to [`Renderer::draw_pic`].
+    fn draw_get_pic_size(&mut self, name: &str) -> Option<(i32, i32)>;
+
     /// Draw a stretched 2D image.
     fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str);
 
