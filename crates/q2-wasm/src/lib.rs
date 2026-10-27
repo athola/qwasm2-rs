@@ -441,6 +441,9 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     ));
 
     // 7b. Upload BSP geometry to GPU
+    // The renderer reads textures, sky and palette through the same filesystem.
+    let loader_fs = Rc::new(fs);
+    renderer.set_file_loader(Box::new(move |path| loader_fs.load_file(path).ok()));
     renderer.load_bsp(&bsp);
     log("BSP geometry uploaded to GPU");
 
