@@ -7,6 +7,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+pub mod entities;
 pub mod input;
 pub mod layout;
 pub mod parse;
