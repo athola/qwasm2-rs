@@ -17,13 +17,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 #[cfg(target_arch = "wasm32")]
-use q2_common::player_ctrl::{MoveInput, PlayerController};
-#[cfg(target_arch = "wasm32")]
 use q2_render::gl3::Gl3Renderer;
 #[cfg(target_arch = "wasm32")]
 use q2_render_api::*;
-#[cfg(target_arch = "wasm32")]
-use q2_shared::types::Vec3f;
 
 // ---------------------------------------------------------------------------
 // Error bridging: Q2Error → JsValue
@@ -36,18 +32,15 @@ fn q2err_to_js(err: q2_common::Q2Error) -> JsValue {
 }
 
 // ---------------------------------------------------------------------------
-// Engine — thin orchestrator using PlayerController
+// Engine — browser input and rendering around a local server and game
 // ---------------------------------------------------------------------------
-
-/// Mouse sensitivity (degrees per pixel of mouse movement).
-#[cfg(target_arch = "wasm32")]
-const MOUSE_SENSITIVITY: f32 = 0.15;
 
 #[cfg(target_arch = "wasm32")]
 struct Engine {
     renderer: Gl3Renderer,
-    collision: q2_common::collision::CollisionMap,
-    player: PlayerController,
+    local: q2_server::local::LocalGame,
+    /// Client-side input and view angles (C `cl.viewangles`).
+    input: q2_client::input::InputState,
     canvas: web_sys::HtmlCanvasElement,
     view: ViewSize,
     last_time: f64,
@@ -57,87 +50,50 @@ struct Engine {
 impl Engine {
     fn new(
         renderer: Gl3Renderer,
-        collision: q2_common::collision::CollisionMap,
+        local: q2_server::local::LocalGame,
         canvas: web_sys::HtmlCanvasElement,
         view: ViewSize,
-        spawn_pos: Vec3f,
-        spawn_yaw: f32,
     ) -> Self {
         Self {
             renderer,
-            collision,
-            player: PlayerController::new(spawn_pos, spawn_yaw),
+            local,
+            input: q2_client::input::InputState::default(),
             canvas,
             view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
         }
     }
 
-    /// Run one frame: translate platform input, delegate to PlayerController, render.
+    /// Run one frame: build a user command from the browser input, apply it
+    /// to the local player (C ClientThink), advance the server (game frames
+    /// at 10 Hz), and render from the player's eye.
     fn tick(&mut self, timestamp: f64, input: &mut q2_platform::wasm::input::WasmInputState) {
         let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
 
-        // Translate platform-specific WasmInputState → platform-agnostic MoveInput
-        let mouse_dx = input.mouse_dx;
-        let mouse_dy = input.mouse_dy;
+        let (mouse_dx, mouse_dy) = (input.mouse_dx, input.mouse_dy);
         input.mouse_dx = 0.0;
         input.mouse_dy = 0.0;
 
-        use q2_platform::keymap::*;
+        // C CL_ClampPitch works against the server's delta_angles.
+        let delta_pitch = self
+            .local
+            .player()
+            .map(|(_, ps)| f32::from(ps.pmove.delta_angles[0]) * (360.0 / 65536.0))
+            .unwrap_or(0.0);
+        turn_view(
+            &mut self.input,
+            &input.keys,
+            mouse_dx,
+            mouse_dy,
+            dt,
+            delta_pitch,
+        );
+        apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
+        let cmd = self.input.build_cmd(cmd_msec(dt));
 
-        let mut yaw_delta = -(mouse_dx * MOUSE_SENSITIVITY);
-        let mut pitch_delta = -(mouse_dy * MOUSE_SENSITIVITY);
-
-        // Keyboard look / turn
-        let strafe_mode = input.keys[K_ALT as usize];
-        if input.keys[K_LEFTARROW as usize] && !strafe_mode {
-            yaw_delta += 120.0 * dt.min(0.1);
-        }
-        if input.keys[K_RIGHTARROW as usize] && !strafe_mode {
-            yaw_delta -= 120.0 * dt.min(0.1);
-        }
-        if input.keys[K_DEL as usize] || input.keys[b'z' as usize] {
-            pitch_delta += 80.0 * dt.min(0.1);
-        }
-        if input.keys[K_PGDN as usize] {
-            pitch_delta -= 80.0 * dt.min(0.1);
-        }
-
-        // Movement axes
-        let mut forward: f32 = 0.0;
-        let mut right: f32 = 0.0;
-        if input.keys[b'w' as usize] || input.keys[K_UPARROW as usize] {
-            forward += 1.0;
-        }
-        if input.keys[b's' as usize] || input.keys[K_DOWNARROW as usize] {
-            forward -= 1.0;
-        }
-        if input.keys[b'a' as usize] || input.keys[b',' as usize] {
-            right -= 1.0;
-        }
-        if input.keys[b'd' as usize] || input.keys[b'.' as usize] {
-            right += 1.0;
-        }
-        if input.keys[K_LEFTARROW as usize] && strafe_mode {
-            right -= 1.0;
-        }
-        if input.keys[K_RIGHTARROW as usize] && strafe_mode {
-            right += 1.0;
-        }
-
-        let move_input = MoveInput {
-            forward,
-            right,
-            yaw_delta,
-            pitch_delta,
-            jump: input.keys[K_SPACE as usize],
-            duck: input.keys[b'c' as usize],
-            run: input.keys[K_SHIFT as usize],
-        };
-
-        // Delegate physics to PlayerController
-        self.player.tick(dt, &move_input, &mut self.collision);
+        self.local.think(&cmd);
+        self.local.frame((dt * 1_000_000.0) as u32);
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -151,7 +107,9 @@ impl Engine {
             }
         }
 
-        // Render frame
+        let Some((origin, ps)) = self.local.player() else {
+            return;
+        };
         let fd = RefDef {
             x: 0,
             y: 0,
@@ -159,11 +117,8 @@ impl Engine {
             height: self.view.height,
             fov_x: FOV_X,
             fov_y: self.view.fov_y,
-            vieworg: self.player.view_origin(),
-            // PlayerController stores pitch positive-up (pitch_delta is
-            // -(mouse_dy * sens)); RefDef uses Q2 viewangles, positive-down.
-            // The negation goes away when movement moves onto pmove (#12).
-            viewangles: Vec3f::new(-self.player.pitch, self.player.yaw, 0.0),
+            vieworg: origin + ps.viewoffset,
+            viewangles: ps.viewangles + ps.kick_angles,
             time: (timestamp / 1000.0) as f32,
             ..Default::default()
         };
@@ -179,6 +134,98 @@ impl Engine {
 #[cfg(any(target_arch = "wasm32", test))]
 fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
     ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
+}
+
+/// Mouse sensitivity (degrees per pixel of mouse movement).
+#[cfg(any(target_arch = "wasm32", test))]
+const MOUSE_SENSITIVITY: f32 = 0.15;
+
+/// C `cl_yawspeed` / `cl_pitchspeed` defaults: keyboard turning, deg/s.
+#[cfg(any(target_arch = "wasm32", test))]
+const CL_YAWSPEED: f32 = 140.0;
+#[cfg(any(target_arch = "wasm32", test))]
+const CL_PITCHSPEED: f32 = 150.0;
+
+/// Move time for a user command (C CL_FinishMove): the frame time in whole
+/// milliseconds, or 100 when it is over 250 ("time was unreasonable").
+#[cfg(any(target_arch = "wasm32", test))]
+fn cmd_msec(dt_seconds: f32) -> u8 {
+    let ms = (dt_seconds * 1000.0) as i32;
+    if ms > 250 {
+        100
+    } else {
+        ms.max(0) as u8
+    }
+}
+
+/// Browser key and mouse-button state into movement and button input, with
+/// Quake 2's default bindings (WASD and arrows, alt+arrows strafe, space
+/// jump, c crouch, shift run, ctrl or mouse1 attack).
+#[cfg(any(target_arch = "wasm32", test))]
+fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::input::InputState) {
+    use q2_platform::keymap::*;
+    let down = |k: u8| keys[k as usize];
+    let axis = |pos: bool, neg: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
+    let strafe = down(K_ALT);
+    input.forward_move = axis(
+        down(b'w') || down(K_UPARROW),
+        down(b's') || down(K_DOWNARROW),
+    );
+    input.side_move = axis(
+        down(b'd') || down(b'.') || (strafe && down(K_RIGHTARROW)),
+        down(b'a') || down(b',') || (strafe && down(K_LEFTARROW)),
+    );
+    input.jump = down(K_SPACE);
+    input.crouch = down(b'c');
+    input.run = down(K_SHIFT);
+    input.attack = down(K_CTRL) || mouse_buttons & 1 != 0;
+    input.keys = *keys;
+}
+
+/// Turn the view by mouse movement and the turn keys (C CL_AdjustAngles and
+/// the mouse move), then clamp pitch as C CL_ClampPitch does against the
+/// player's `delta_pitch` (degrees, already in -180..180).
+#[cfg(any(target_arch = "wasm32", test))]
+fn turn_view(
+    input: &mut q2_client::input::InputState,
+    keys: &[bool; 256],
+    mouse_dx: f32,
+    mouse_dy: f32,
+    dt: f32,
+    delta_pitch: f32,
+) {
+    use q2_platform::keymap::*;
+    let down = |k: u8| keys[k as usize];
+    let angles = &mut input.view_angles;
+    angles.y -= mouse_dx * MOUSE_SENSITIVITY;
+    angles.x += mouse_dy * MOUSE_SENSITIVITY;
+    if !down(K_ALT) {
+        if down(K_LEFTARROW) {
+            angles.y += CL_YAWSPEED * dt;
+        }
+        if down(K_RIGHTARROW) {
+            angles.y -= CL_YAWSPEED * dt;
+        }
+    }
+    if down(K_PGDN) {
+        angles.x -= CL_PITCHSPEED * dt; // +lookup
+    }
+    if down(K_DEL) {
+        angles.x += CL_PITCHSPEED * dt; // +lookdown
+    }
+
+    if angles.x + delta_pitch < -360.0 {
+        angles.x += 360.0;
+    }
+    if angles.x + delta_pitch > 360.0 {
+        angles.x -= 360.0;
+    }
+    if angles.x + delta_pitch > 89.0 {
+        angles.x = 89.0 - delta_pitch;
+    }
+    if angles.x + delta_pitch < -89.0 {
+        angles.x = -89.0 - delta_pitch;
+    }
 }
 
 /// Horizontal fov the view is fitted to (C `fov` cvar default).
@@ -397,48 +444,29 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     renderer.load_bsp(&bsp);
     log("BSP geometry uploaded to GPU");
 
-    // 8. Load collision map
-    let mut collision = q2_common::collision::CollisionMap::new();
-    collision.load_map(&bsp_data).map_err(q2err_to_js)?;
-    log(&format!(
-        "Collision map loaded: {} models, {} brushes, {} nodes, {} leafs, {} planes",
-        collision.num_models(),
-        collision.num_brushes(),
-        collision.num_nodes(),
-        collision.num_leafs(),
-        collision.num_planes(),
-    ));
-
-    // 9. Set up input
+    // 8. Input
     let input_state =
         q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
     log("Input listeners attached (click canvas for pointer lock)");
 
-    // 10. Find player start via game spawn system
-    let (spawn_pos, spawn_yaw) = match q2_game::spawn::find_player_start(
-        collision.entity_string(),
-        "",
-    ) {
-        Some(s) => s,
-        None => {
-            log("WARNING: No info_player_start found in BSP — spawning at origin (may be inside solid)");
-            (Vec3f::ZERO, 0.0)
-        }
-    };
+    // 9. Server and game: load collision, spawn the map's entities, and put
+    //    the local player in at the player start.
+    let short_name = map_name
+        .trim_start_matches("maps/")
+        .trim_end_matches(".bsp");
+    let local = q2_server::local::LocalGame::start(short_name, &bsp_data).map_err(q2err_to_js)?;
     log(&format!(
-        "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
-        spawn_pos.x, spawn_pos.y, spawn_pos.z, spawn_yaw
+        "Game: {} entities spawned",
+        local.game().entities.count()
     ));
+    if let Some((origin, ps)) = local.player() {
+        log(&format!(
+            "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
+            origin.x, origin.y, origin.z, ps.viewangles.y
+        ));
+    }
 
-    let mut engine = Engine::new(
-        renderer,
-        collision,
-        canvas.clone(),
-        view,
-        spawn_pos,
-        spawn_yaw,
-    );
-    engine.player.snap_to_ground(&mut engine.collision);
+    let engine = Engine::new(renderer, local, canvas.clone(), view);
 
     // 11. Start game loop
     log("Starting game loop...");
@@ -514,6 +542,63 @@ fn console_error_panic_hook_setup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_msec_is_the_frame_time_with_c_unreasonable_time_rule() {
+        assert_eq!(cmd_msec(0.016), 16);
+        assert_eq!(cmd_msec(0.25), 250);
+        // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
+        assert_eq!(cmd_msec(0.4), 100);
+        assert_eq!(cmd_msec(-1.0), 0);
+    }
+
+    #[test]
+    fn apply_keys_maps_wasd_jump_crouch_run_and_attack() {
+        use q2_platform::keymap::{K_CTRL, K_SHIFT, K_SPACE};
+        let mut keys = [false; 256];
+        keys[b'w' as usize] = true;
+        keys[b'd' as usize] = true;
+        keys[K_SPACE as usize] = true;
+        keys[K_SHIFT as usize] = true;
+        let mut input = q2_client::input::InputState::default();
+        apply_keys(&keys, 0, &mut input);
+        assert_eq!((input.forward_move, input.side_move), (1.0, 1.0));
+        assert!(input.jump && input.run && !input.crouch && !input.attack);
+
+        keys[K_CTRL as usize] = true;
+        apply_keys(&keys, 0, &mut input);
+        assert!(input.attack, "ctrl is +attack");
+        apply_keys(&[false; 256], 1, &mut input);
+        assert!(input.attack, "mouse1 is +attack");
+        assert_eq!(input.forward_move, 0.0);
+    }
+
+    #[test]
+    fn turn_view_follows_c_mouse_signs_and_clamps_pitch() {
+        let mut input = q2_client::input::InputState::default();
+        // Mouse right turns right (yaw down), mouse down looks down (+pitch).
+        turn_view(&mut input, &[false; 256], 10.0, 10.0, 0.0, 0.0);
+        assert!(input.view_angles.y < 0.0 && input.view_angles.x > 0.0);
+
+        // CL_ClampPitch: pitch + delta pitch stays within +-89.
+        turn_view(&mut input, &[false; 256], 0.0, 100_000.0, 0.0, 0.0);
+        assert_eq!(input.view_angles.x, 89.0);
+        turn_view(&mut input, &[false; 256], 0.0, -100_000.0, 0.0, 10.0);
+        assert_eq!(input.view_angles.x, -99.0);
+    }
+
+    #[test]
+    fn turn_view_arrow_keys_turn_at_cl_yawspeed() {
+        use q2_platform::keymap::K_LEFTARROW;
+        let mut input = q2_client::input::InputState::default();
+        let mut keys = [false; 256];
+        keys[K_LEFTARROW as usize] = true;
+        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
+        assert!(
+            (input.view_angles.y - 70.0).abs() < 1e-4,
+            "140 deg/s for 0.5 s"
+        );
+    }
 
     #[test]
     fn view_size_fits_vertical_fov_to_canvas_aspect() {

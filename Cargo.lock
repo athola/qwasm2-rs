@@ -784,6 +784,7 @@ dependencies = [
  "q2-platform",
  "q2-render",
  "q2-render-api",
+ "q2-server",
  "q2-shared",
  "wasm-bindgen",
  "wasm-bindgen-futures",

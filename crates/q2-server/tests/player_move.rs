@@ -4,26 +4,11 @@
 
 mod common;
 
-use std::rc::Rc;
-
 use q2_common::pmove::PMF_ON_GROUND;
-use q2_game::{traits::GameExport, world::GameWorld};
-use q2_server::{
-    state::{Server, ServerStatic},
-    ServerGameImport,
-};
-use q2_shared::constants::MAX_EDICTS;
+use q2_server::local::LocalGame;
 use q2_shared::types::{PlayerState, UserCmd, Vec3f};
 
-/// Entity number of the only client.
-const PLAYER: usize = 1;
-
-struct Game {
-    sv: Server,
-    svs: ServerStatic,
-    gi: Rc<ServerGameImport>,
-    game: GameWorld,
-}
+struct Game(LocalGame);
 
 impl Game {
     /// The fixture map with one client in the game at the player start.
@@ -33,40 +18,24 @@ impl Game {
 
     /// `bsp` with one client in the game at its player start.
     fn start_on(name: &str, bsp: &[u8]) -> Self {
-        let gi = Rc::new(ServerGameImport::new());
-        let mut game = GameWorld::new(gi.clone(), MAX_EDICTS);
-        game.set_max_clients(1);
-        game.init();
-        let mut svs = ServerStatic::default();
-        svs.init_game(1);
-        let mut sv = Server::default();
-        sv.map(&mut svs, name, bsp, &gi, &mut game)
-            .expect("fixture loads");
-        assert!(game.client_connect(PLAYER, r"\name\Tester"));
-        game.client_begin(PLAYER);
-        Game { sv, svs, gi, game }
+        Game(LocalGame::start(name, bsp).expect("map loads"))
     }
 
     /// 100 ms of play: two 50 ms client commands, then a server frame, the
     /// way a client sends usercmds faster than the 10 Hz game runs.
     fn tick(&mut self, cmd: &UserCmd) {
         for _ in 0..2 {
-            self.game
-                .client_think(PLAYER, &UserCmd { msec: 50, ..*cmd });
+            self.0.think(&UserCmd { msec: 50, ..*cmd });
         }
-        self.sv
-            .frame(&mut self.svs, 100_000, &mut self.game, &self.gi);
+        self.0.frame(100_000);
     }
 
     fn origin(&self) -> Vec3f {
-        let key = self.game.entities.key_for_number(PLAYER).unwrap();
-        self.game.entities.get(key).unwrap().state.origin
+        self.0.player().expect("player in game").0
     }
 
     fn ps(&self) -> PlayerState {
-        let key = self.game.entities.key_for_number(PLAYER).unwrap();
-        let ent = self.game.entities.get(key).unwrap();
-        ent.client.as_ref().unwrap().ps.clone()
+        self.0.player().expect("player in game").1
     }
 }
 

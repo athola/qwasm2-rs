@@ -10,6 +10,7 @@
 pub mod frame;
 pub mod game_iface;
 pub mod init;
+pub mod local;
 pub mod state;
 pub mod world;
 

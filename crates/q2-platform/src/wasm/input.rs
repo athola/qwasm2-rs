@@ -148,11 +148,33 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
         closure.forget();
     }
 
-    // Click canvas to request pointer lock (FPS-style mouse capture)
+    // Click canvas to request pointer lock (FPS-style mouse capture). Current
+    // browsers return a Promise that rejects when the lock is refused;
+    // web-sys's binding drops it, which surfaces as an uncaught rejection, so
+    // call it through JS and log the refusal instead.
     {
         let canvas_clone = canvas.clone();
+        let on_refused = Closure::wrap(Box::new(move |err: JsValue| {
+            let reason = js_sys::Reflect::get(&err, &"message".into())
+                .ok()
+                .and_then(|m| m.as_string())
+                .unwrap_or_default();
+            web_sys::console::warn_1(&format!("[qwasm2] pointer lock refused: {reason}").into());
+        }) as Box<dyn FnMut(JsValue)>);
         let closure = Closure::wrap(Box::new(move |_: MouseEvent| {
-            canvas_clone.request_pointer_lock();
+            let request = js_sys::Reflect::get(&canvas_clone, &"requestPointerLock".into())
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+            if let Some(request) = request {
+                match request.call0(&canvas_clone) {
+                    Ok(result) => {
+                        if let Ok(promise) = result.dyn_into::<js_sys::Promise>() {
+                            let _ = promise.catch(&on_refused);
+                        }
+                    }
+                    Err(e) => web_sys::console::warn_1(&e),
+                }
+            }
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("click", closure.as_ref().unchecked_ref())
