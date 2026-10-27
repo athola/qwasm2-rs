@@ -217,6 +217,40 @@ impl GameWorld {
         }
     }
 
+    /// Call the touch function of every trigger `key`'s box overlaps.
+    /// C ref: `G_TouchTriggers` (g_utils.c).
+    pub fn touch_triggers(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get(key) else {
+            return;
+        };
+        // Dead things don't activate triggers.
+        let alive_kind =
+            ent.client.is_some() || ent.svflags & q2_shared::constants::SVF_MONSTER != 0;
+        if alive_kind && ent.game.health <= 0 {
+            return;
+        }
+        let hits = self.gi.box_edicts(
+            ent.absmin,
+            ent.absmax,
+            q2_shared::constants::MAX_EDICTS,
+            AREA_TRIGGERS,
+        );
+        for number in hits {
+            // A trigger earlier in the list may have freed this one.
+            let Some(hit) = self.entities.key_for_number(number) else {
+                continue;
+            };
+            let touch = self
+                .entities
+                .get(hit)
+                .filter(|e| e.in_use)
+                .and_then(|e| e.touch);
+            if let Some(touch) = touch {
+                touch(self, hit, key, None, None);
+            }
+        }
+    }
+
     /// Entity number of `key`, as passed to GameImport calls.
     pub fn number_of(&self, key: EntityKey) -> Option<usize> {
         self.entities
@@ -362,6 +396,9 @@ impl GameWorld {
 // MockGameImport — for unit testing game code without a real server
 // ---------------------------------------------------------------------------
 
+/// C `AREA_TRIGGERS` for `GameImport::box_edicts`.
+pub const AREA_TRIGGERS: i32 = 2;
+
 /// `GameImport` for testing game logic without a real server.
 ///
 /// Calls return safe defaults; links, unlinks and trace pass-entities are
@@ -378,6 +415,8 @@ pub struct MockGameImport {
     pub inline_bounds: RefCell<HashMap<String, (Vec3f, Vec3f)>>,
     /// Model names in registration order; index = position + 1.
     pub models: RefCell<Vec<String>>,
+    /// Entity numbers `box_edicts` reports.
+    pub box_edicts: RefCell<Vec<usize>>,
 }
 
 impl GameImport for MockGameImport {
@@ -454,8 +493,10 @@ impl GameImport for MockGameImport {
     fn unlink_entity(&self, number: usize) {
         self.unlinks.borrow_mut().push(number);
     }
-    fn box_edicts(&self, _: Vec3f, _: Vec3f, _: usize, _: i32) -> Vec<usize> {
-        Vec::new()
+    fn box_edicts(&self, _: Vec3f, _: Vec3f, max_count: usize, _: i32) -> Vec<usize> {
+        let mut hits = self.box_edicts.borrow().clone();
+        hits.truncate(max_count);
+        hits
     }
 
     fn configstring(&self, num: i32, string: &str) {
@@ -849,6 +890,54 @@ mod tests {
         let key = world.find_by_targetname(None, "r").unwrap();
         let number = world.number_of(key).unwrap();
         assert!(gi.links.borrow().iter().any(|l| l.number == number));
+    }
+
+    fn touched(
+        world: &mut GameWorld,
+        trigger: EntityKey,
+        _other: EntityKey,
+        _: Option<&Plane>,
+        _: Option<&Surface>,
+    ) {
+        world.entities.get_mut(trigger).unwrap().game.count += 1;
+    }
+
+    /// A live client and a trigger `box_edicts` reports overlapping it.
+    fn client_in_trigger() -> (GameWorld, EntityKey, EntityKey) {
+        let (mut world, gi) = test_world_recording();
+        let player = world.spawn().unwrap();
+        let ent = world.entities.get_mut(player).unwrap();
+        ent.client = Some(crate::entity::ClientData::default());
+        ent.game.health = 100;
+        let trigger = world.spawn().unwrap();
+        world.entities.get_mut(trigger).unwrap().touch = Some(touched);
+        gi.box_edicts
+            .borrow_mut()
+            .push(world.number_of(trigger).unwrap());
+        (world, player, trigger)
+    }
+
+    #[test]
+    fn touch_triggers_calls_each_overlapping_trigger() {
+        let (mut world, player, trigger) = client_in_trigger();
+        world.touch_triggers(player);
+        assert_eq!(world.entities.get(trigger).unwrap().game.count, 1);
+    }
+
+    #[test]
+    fn touch_triggers_ignores_dead_clients() {
+        let (mut world, player, trigger) = client_in_trigger();
+        world.entities.get_mut(player).unwrap().game.health = 0;
+        world.touch_triggers(player);
+        assert_eq!(world.entities.get(trigger).unwrap().game.count, 0);
+    }
+
+    #[test]
+    fn touch_triggers_skips_freed_triggers() {
+        let (mut world, player, trigger) = client_in_trigger();
+        world.free_entity(trigger);
+        world.touch_triggers(player);
+        assert_eq!(world.entities.get(trigger).map_or(0, |e| e.game.count), 0);
     }
 
     #[test]

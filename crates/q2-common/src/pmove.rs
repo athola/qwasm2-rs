@@ -118,6 +118,9 @@ pub type PointContentsFn = Box<dyn Fn(Vec3f) -> i32>;
 // The main Pmove interface
 // ---------------------------------------------------------------------------
 
+/// C `MAXTOUCH`: entities one pmove can report touching.
+pub const MAXTOUCH: usize = 32;
+
 pub struct Pmove {
     /// Networked player-movement state (modified in place).
     pub s: PmoveState,
@@ -133,8 +136,10 @@ pub struct Pmove {
     pub mins: Vec3f,
     /// Bounding box maxs.
     pub maxs: Vec3f,
-    /// True when standing on a ground entity.
-    pub ground_entity: bool,
+    /// Entity number stood on (C `groundentity`; the world is 0).
+    pub ground_entity: Option<usize>,
+    /// Entities the move ran into, up to `MAXTOUCH` (C `touchents`).
+    pub touchents: Vec<usize>,
     /// Water content flags at player position.
     pub watertype: i32,
     /// 0 = not in water, 1..3 = depth.
@@ -243,6 +248,13 @@ fn pm_slide_move(pm: &mut Pmove, pml: &mut PmLocal) -> bool {
 
         if trace.fraction == 1.0 {
             break; // moved the entire distance
+        }
+
+        // Save the entity for contact.
+        if let Some(n) = trace.ent_index {
+            if pm.touchents.len() < MAXTOUCH {
+                pm.touchents.push(n);
+            }
         }
 
         blocked = true;
@@ -367,7 +379,7 @@ fn pm_friction(pm: &mut Pmove, pml: &mut PmLocal) {
     let mut drop = 0.0_f32;
 
     // Ground friction.
-    let on_ground_non_slick = pm.ground_entity
+    let on_ground_non_slick = pm.ground_entity.is_some()
         && pml
             .ground_surface
             .as_ref()
@@ -477,14 +489,14 @@ fn pm_add_currents(pm: &Pmove, pml: &PmLocal, wishvel: &mut Vec3f) {
         }
 
         let mut s = PM_WATERSPEED;
-        if pm.waterlevel == 1 && pm.ground_entity {
+        if pm.waterlevel == 1 && pm.ground_entity.is_some() {
             s /= 2.0;
         }
         *wishvel += v * s;
     }
 
     // Conveyor belts (ground currents)
-    if pm.ground_entity {
+    if pm.ground_entity.is_some() {
         let mut v = Vec3f::ZERO;
         if (pml.ground_contents & CONTENTS_CURRENT_0) != 0 {
             v.x += 1.0;
@@ -585,7 +597,7 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
         }
 
         pm_step_slide_move(pm, pml);
-    } else if pm.ground_entity {
+    } else if pm.ground_entity.is_some() {
         // Walking on ground.
         pml.velocity.z = 0.0;
         pm_accelerate(pml, wishdir, wishspeed, PM_ACCELERATE);
@@ -691,19 +703,19 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
 
     if pml.velocity.z > 180.0 {
         pm.s.pm_flags &= !PMF_ON_GROUND;
-        pm.ground_entity = false;
+        pm.ground_entity = None;
     } else {
         let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, point);
         pml.ground_plane = trace.plane.clone();
         pml.ground_surface = trace.surface.clone();
         pml.ground_contents = trace.contents;
 
-        let has_ent = trace.ent_index.is_some();
-        if !has_ent || (f64::from(trace.plane.normal.z) < 0.7 && !trace.startsolid) {
-            pm.ground_entity = false;
+        if trace.ent_index.is_none() || (f64::from(trace.plane.normal.z) < 0.7 && !trace.startsolid)
+        {
+            pm.ground_entity = None;
             pm.s.pm_flags &= !PMF_ON_GROUND;
         } else {
-            pm.ground_entity = true;
+            pm.ground_entity = trace.ent_index;
 
             // Hitting solid ground ends a waterjump.
             if (pm.s.pm_flags & PMF_TIME_WATERJUMP) != 0 {
@@ -723,6 +735,12 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
                         pm.s.pm_time = 18;
                     }
                 }
+            }
+        }
+
+        if let Some(n) = trace.ent_index {
+            if pm.touchents.len() < MAXTOUCH {
+                pm.touchents.push(n);
             }
         }
     }
@@ -801,7 +819,7 @@ fn pm_check_duck(pm: &mut Pmove, pml: &PmLocal) {
 // ---------------------------------------------------------------------------
 
 fn pm_dead_move(pm: &Pmove, pml: &mut PmLocal) {
-    if !pm.ground_entity {
+    if pm.ground_entity.is_none() {
         return;
     }
 
@@ -887,7 +905,7 @@ fn pm_check_jump(pm: &mut Pmove, pml: &mut PmLocal) {
     }
 
     if pm.waterlevel >= 2 {
-        pm.ground_entity = false;
+        pm.ground_entity = None;
 
         if pml.velocity.z <= -300.0 {
             return;
@@ -904,12 +922,12 @@ fn pm_check_jump(pm: &mut Pmove, pml: &mut PmLocal) {
         return;
     }
 
-    if !pm.ground_entity {
+    if pm.ground_entity.is_none() {
         return;
     }
 
     pm.s.pm_flags |= PMF_JUMP_HELD;
-    pm.ground_entity = false;
+    pm.ground_entity = None;
     pml.velocity.z += 270.0;
 
     if pml.velocity.z < 270.0 {
@@ -1051,7 +1069,8 @@ impl Pmove {
         // Clear per-frame outputs.
         self.viewangles = Vec3f::ZERO;
         self.viewheight = 0.0;
-        self.ground_entity = false;
+        self.ground_entity = None;
+        self.touchents.clear();
         self.watertype = 0;
         self.waterlevel = 0;
 
@@ -1191,7 +1210,8 @@ mod tests {
             viewheight: 0.0,
             mins: Vec3f::new(-16.0, -16.0, -24.0),
             maxs: Vec3f::new(16.0, 16.0, 32.0),
-            ground_entity: true,
+            ground_entity: Some(0),
+            touchents: Vec::new(),
             watertype: 0,
             waterlevel: 0,
             airaccelerate: 0.0,
@@ -1257,7 +1277,7 @@ mod tests {
             frametime: 0.016,
             ..PmLocal::default()
         };
-        pm.ground_entity = true;
+        pm.ground_entity = Some(0);
 
         let speed_before = pml.velocity.length();
         pm_friction(&mut pm, &mut pml);
@@ -1492,12 +1512,12 @@ mod tests {
         pm.trace = ground_trace(0.7);
         let mut pml = PmLocal::default();
         pm_categorize_position(&mut pm, &mut pml);
-        assert!(!pm.ground_entity);
+        assert!(pm.ground_entity.is_none());
         assert_eq!(pm.s.pm_flags & PMF_ON_GROUND, 0);
 
         pm.trace = ground_trace(0.7000001);
         pm_categorize_position(&mut pm, &mut pml);
-        assert!(pm.ground_entity);
+        assert!(pm.ground_entity.is_some());
     }
 
     #[test]
@@ -1645,7 +1665,7 @@ mod tests {
         // C PM_AirMove: `if (pm_airaccelerate) PM_AirAccelerate(wishdir,
         // wishspeed, pm_accelerate)`; wishspd is capped at 30.
         let mut pm = make_test_pmove();
-        pm.ground_entity = false;
+        pm.ground_entity = None;
         pm.airaccelerate = 1.0;
         pm.cmd.forwardmove = 300;
         let mut pml = PmLocal {
@@ -1662,7 +1682,7 @@ mod tests {
     #[test]
     fn air_move_without_airaccelerate_uses_accel_1() {
         let mut pm = make_test_pmove();
-        pm.ground_entity = false;
+        pm.ground_entity = None;
         pm.cmd.forwardmove = 300;
         let mut pml = PmLocal {
             forward: Vec3f::new(1.0, 0.0, 0.0),
@@ -1735,7 +1755,7 @@ mod tests {
         let cm2 = cm.clone();
         let mut pm = make_test_pmove();
         pm.s.pm_flags = 0;
-        pm.ground_entity = false;
+        pm.ground_entity = None;
         pm.s.origin = [0, 0, origin_z];
         pm.trace = Box::new(move |start, mins, maxs, end| {
             let mut cm = cm2.borrow_mut();
@@ -1763,10 +1783,57 @@ mod tests {
         let mut pm = pmove_on_floor(REST_Z, None);
         pm.cmd.msec = 16;
         pm.run();
-        assert!(pm.ground_entity);
+        assert!(pm.ground_entity.is_some());
         assert_ne!(pm.s.pm_flags & PMF_ON_GROUND, 0);
         assert_eq!(pm.s.origin, [0, 0, REST_Z]);
         assert_eq!(pm.viewheight, 22.0);
+    }
+
+    #[test]
+    fn run_on_the_floor_reports_the_world_as_ground_entity_and_touch() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.ground_entity, Some(0));
+        assert!(pm.touchents.contains(&0), "{:?}", pm.touchents);
+    }
+
+    #[test]
+    fn run_standing_on_an_entity_reports_its_number_as_ground_entity() {
+        let top = 16.0;
+        let rest = ((top + 24.0) * 8.0) as i16 + 1;
+        let step = (Vec3f::new(-64.0, -64.0, -8.0), Vec3f::new(64.0, 64.0, top));
+        let mut pm = pmove_on_floor(rest, Some(step));
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.ground_entity, Some(1));
+        assert!(pm.touchents.contains(&1));
+    }
+
+    #[test]
+    fn run_walking_into_an_entity_adds_it_to_the_touch_list_once_per_hit() {
+        // A wall entity just ahead in +x, taller than a step.
+        let wall = (Vec3f::new(24.0, -64.0, 0.0), Vec3f::new(64.0, 64.0, 128.0));
+        let mut pm = pmove_on_floor(REST_Z, Some(wall));
+        pm.cmd.msec = 50;
+        pm.cmd.forwardmove = 400;
+        let mut touched = false;
+        for _ in 0..20 {
+            pm.run();
+            assert!(pm.touchents.len() <= MAXTOUCH);
+            touched |= pm.touchents.contains(&1);
+        }
+        assert!(touched, "the wall entity was touched");
+        assert_eq!(pm.ground_entity, Some(0), "still on the world floor");
+    }
+
+    #[test]
+    fn run_clears_last_frames_touches() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.touchents = vec![7; MAXTOUCH];
+        pm.cmd.msec = 16;
+        pm.run();
+        assert!(!pm.touchents.contains(&7));
     }
 
     #[test]
@@ -1796,7 +1863,7 @@ mod tests {
         assert_ne!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
         assert_eq!(pm.s.velocity[2], ((270.0f32 - 800.0 * 0.016) * 8.0) as i16);
         // Holding jump does not jump again after landing.
-        assert!(!pm.ground_entity);
+        assert!(pm.ground_entity.is_none());
     }
 
     #[test]

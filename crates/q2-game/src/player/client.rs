@@ -159,9 +159,6 @@ impl GameWorld {
     /// Move the player by one user command with pmove, tracing through the
     /// server. C ref: `ClientThink` (player/client.c).
     ///
-    /// Not yet ported (#12): pmove's touch list and G_TouchTriggers, and the
-    /// identity of the ground entity (the Rust pmove only reports whether
-    /// there is ground, so it is recorded as the world).
     pub fn think_client(&mut self, key: EntityKey, cmd: &UserCmd) {
         let Some(number) = self.number_of(key) else {
             return;
@@ -207,7 +204,8 @@ impl GameWorld {
             viewheight: 0.0,
             mins: Vec3f::ZERO,
             maxs: Vec3f::ZERO,
-            ground_entity: false,
+            ground_entity: None,
+            touchents: Vec::new(),
             watertype: 0,
             waterlevel: 0,
             airaccelerate: 0.0,
@@ -218,7 +216,12 @@ impl GameWorld {
         };
         pm.run();
 
-        let world = self.entities.key_for_number(0);
+        let ground = pm
+            .ground_entity
+            .and_then(|n| self.entities.key_for_number(n));
+        let ground_linkcount = ground
+            .and_then(|g| self.entities.get(g))
+            .map(|g| g.linkcount);
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
@@ -231,7 +234,11 @@ impl GameWorld {
         ent.game.viewheight = pm.viewheight;
         ent.game.waterlevel = pm.waterlevel;
         ent.game.watertype = pm.watertype;
-        ent.game.ground_entity = if pm.ground_entity { world } else { None };
+        ent.game.ground_entity = ground;
+        if let Some(linkcount) = ground_linkcount {
+            ent.game.groundentity_linkcount = linkcount;
+        }
+        let noclip = ent.game.movetype == MoveType::Noclip;
         let dead = ent.game.deadflag != DeadFlag::No;
         if let Some(client) = ent.client.as_mut() {
             client.ps.pmove = pm.s;
@@ -248,6 +255,24 @@ impl GameWorld {
         }
 
         self.link_entity(key);
+
+        if !noclip {
+            self.touch_triggers(key);
+        }
+
+        // Touch other objects, each once.
+        for (i, &number) in pm.touchents.iter().enumerate() {
+            if pm.touchents[..i].contains(&number) {
+                continue; // duplicated
+            }
+            let Some(other) = self.entities.key_for_number(number) else {
+                continue;
+            };
+            let touch = self.entities.get(other).and_then(|e| e.touch);
+            if let Some(touch) = touch {
+                touch(self, other, key, None, None);
+            }
+        }
     }
 
     /// Per-frame setup for a client at the start of the server frame.

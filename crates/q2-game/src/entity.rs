@@ -240,6 +240,9 @@ pub struct GameEntityData {
 
     // -- entity references -------------------------------------------------
     pub ground_entity: Option<EntityKey>,
+    /// The ground entity's `linkcount` when it was stood on (C
+    /// `groundentity_linkcount`), to notice it moving.
+    pub groundentity_linkcount: i32,
     pub enemy: Option<EntityKey>,
     pub oldenemy: Option<EntityKey>,
     pub activator: Option<EntityKey>,

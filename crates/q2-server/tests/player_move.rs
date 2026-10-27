@@ -126,6 +126,84 @@ fn walking_forward_stops_at_a_func_wall_brush_entity() {
     );
 }
 
+/// `ENTSTRING` plus `extra` entity blocks.
+fn map_with(extra: &str) -> Vec<u8> {
+    common::floor_wall_bsp_with(&format!("{}{extra}", common::ENTSTRING))
+}
+
+fn walk_east(g: &mut Game, ticks: usize) {
+    let forward = UserCmd {
+        forwardmove: 200,
+        angles: [0, angle2short(-90.0), 0],
+        ..Default::default()
+    };
+    for _ in 0..ticks {
+        g.tick(&forward);
+    }
+}
+
+#[test]
+fn walking_up_to_a_door_opens_it_and_the_player_walks_through() {
+    let map = map_with("{\n\"classname\" \"func_door\"\n\"model\" \"*1\"\n\"angle\" \"-1\"\n}\n");
+    let mut g = Game::start_on("floor_wall", &map);
+    for _ in 0..10 {
+        g.tick(&UserCmd::default());
+    }
+    walk_east(&mut g, 60);
+    let face = common::WALL_X - 16.0;
+    assert!(
+        g.origin().x > face - 1.0,
+        "passed the door to the wall: {:?}",
+        g.origin()
+    );
+}
+
+#[test]
+fn walking_into_a_trigger_once_fires_its_killtarget() {
+    let map = map_with(concat!(
+        "{\n\"classname\" \"trigger_once\"\n\"model\" \"*1\"\n\"killtarget\" \"victim\"\n}\n",
+        "{\n\"classname\" \"info_notnull\"\n\"targetname\" \"victim\"\n}\n",
+    ));
+    let mut g = Game::start_on("floor_wall", &map);
+    let alive = |g: &Game| {
+        g.0.game()
+            .find_by_targetname(None, "victim")
+            .is_some_and(|k| g.0.game().entities.get(k).is_some_and(|e| e.in_use))
+    };
+    for _ in 0..10 {
+        g.tick(&UserCmd::default());
+    }
+    assert!(alive(&g));
+    walk_east(&mut g, 40);
+    assert!(!alive(&g), "trigger fired when the player entered *1");
+}
+
+#[test]
+fn standing_on_a_brush_entity_makes_it_the_ground_entity() {
+    // Start above *1's brush (top z = 128) instead of the floor.
+    let entities = concat!(
+        "{\n\"classname\" \"worldspawn\"\n}\n",
+        "{\n\"classname\" \"info_player_start\"\n\"origin\" \"112 0 160\"\n}\n",
+        "{\n\"classname\" \"func_wall\"\n\"model\" \"*1\"\n}\n",
+    );
+    let mut g = Game::start_on("floor_wall", &common::floor_wall_bsp_with(entities));
+    for _ in 0..20 {
+        g.tick(&UserCmd::default());
+    }
+    let game = g.0.game();
+    let wall = game.find_by_classname(None, "func_wall").unwrap();
+    let player = game.entities.key_for_number(1).unwrap();
+    assert_eq!(
+        game.entities.get(player).unwrap().game.ground_entity,
+        Some(wall)
+    );
+    assert!(
+        (g.origin().z - (common::DOOR_MAXS[2] + 24.0)).abs() <= 0.25,
+        "{:?}",
+        g.origin()
+    );
+}
+
 #[test]
 fn jumping_leaves_the_ground_and_lands_again() {
     let mut g = Game::start();
