@@ -44,6 +44,13 @@ struct Engine {
     canvas: web_sys::HtmlCanvasElement,
     view: ViewSize,
     last_time: f64,
+    models: ModelTable,
+    /// Entity states of the last two game frames, to interpolate between.
+    previous: Vec<q2_shared::types::EntityState>,
+    current: Vec<q2_shared::types::EntityState>,
+    /// The game frame `current` came from, and when it arrived.
+    game_frame: i32,
+    game_frame_time: f64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -61,6 +68,53 @@ impl Engine {
             canvas,
             view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
+            models: ModelTable::default(),
+            previous: Vec::new(),
+            current: Vec::new(),
+            game_frame: -1,
+            game_frame_time: 0.0,
+        }
+    }
+
+    /// Take the game's entities when a new 10 Hz frame has run (C
+    /// CL_ParseFrame keeps the previous one for interpolation), and keep
+    /// the renderer's models in step with the model configstrings.
+    fn sync_frame(&mut self, timestamp: f64) {
+        let framenum = self.local.game().level.framenum;
+        if framenum == self.game_frame {
+            return;
+        }
+        self.game_frame = framenum;
+        self.game_frame_time = timestamp;
+        self.previous = std::mem::replace(&mut self.current, self.local.entity_states());
+        let local = &self.local;
+        let renderer = &mut self.renderer;
+        self.models.sync(
+            |i| local.configstring(i),
+            |name| renderer.register_model(name),
+        );
+    }
+
+    /// Draw the status bar program over the 3D view (C SCR_DrawStats).
+    fn draw_hud(&mut self, stats: &[i16; 32]) {
+        use q2_client::layout::{execute_layout, HudDraw, LayoutInput};
+        let local = &self.local;
+        let configstring = |i: usize| local.configstring(i);
+        let draws = execute_layout(
+            local.configstring(q2_shared::constants::CS_STATUSBAR),
+            &LayoutInput {
+                width: self.view.width,
+                height: self.view.height,
+                stats,
+                configstrings: &configstring,
+                serverframe: self.game_frame,
+            },
+        );
+        for draw in draws {
+            match draw {
+                HudDraw::Pic { x, y, name } => self.renderer.draw_pic(x, y, &name),
+                HudDraw::Char { x, y, ch } => self.renderer.draw_char(x, y, i32::from(ch)),
+            }
         }
     }
 
@@ -94,6 +148,7 @@ impl Engine {
 
         self.local.think(&cmd);
         self.local.frame((dt * 1_000_000.0) as u32);
+        self.sync_frame(timestamp);
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -123,7 +178,18 @@ impl Engine {
             ..Default::default()
         };
 
-        self.renderer.render_frame(&fd, &[], &[], &[]);
+        let lerpfrac = lerp_fraction(timestamp - self.game_frame_time);
+        let views = q2_client::entities::entity_views(
+            &self.current,
+            &self.previous,
+            lerpfrac,
+            timestamp as f32,
+            (q2_server::local::LOCAL_PLAYER - 1) as i32,
+        );
+        let entities = render_entities(&views, &self.models);
+        self.renderer.render_frame(&fd, &entities, &[], &[]);
+        self.draw_hud(&ps.stats);
+        self.renderer.end_frame();
     }
 }
 
@@ -134,6 +200,84 @@ impl Engine {
 #[cfg(any(target_arch = "wasm32", test))]
 fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
     ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
+}
+
+/// The renderer's handle for each `CS_MODELS` index (C `cl.model_draw`),
+/// re-registered when the server changes a model configstring.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Default)]
+struct ModelTable {
+    names: Vec<String>,
+    handles: Vec<q2_render_api::ModelHandle>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl ModelTable {
+    /// Register every changed name from `configstring(CS_MODELS + i)`.
+    /// Index 1 is the world map, which the renderer already has.
+    fn sync<'a>(
+        &mut self,
+        configstring: impl Fn(usize) -> &'a str,
+        mut register: impl FnMut(&str) -> q2_render_api::ModelHandle,
+    ) {
+        use q2_shared::constants::{CS_MODELS, MAX_MODELS};
+        self.names.resize(MAX_MODELS, String::new());
+        self.handles
+            .resize(MAX_MODELS, q2_render_api::ModelHandle::NONE);
+        for i in 2..MAX_MODELS {
+            let name = configstring(CS_MODELS + i);
+            if self.names[i] != name {
+                self.names[i] = name.to_string();
+                self.handles[i] = if name.is_empty() {
+                    q2_render_api::ModelHandle::NONE
+                } else {
+                    register(name)
+                };
+            }
+        }
+    }
+
+    fn handle(&self, modelindex: i32) -> q2_render_api::ModelHandle {
+        usize::try_from(modelindex)
+            .ok()
+            .and_then(|i| self.handles.get(i).copied())
+            .unwrap_or(q2_render_api::ModelHandle::NONE)
+    }
+}
+
+/// The renderer's entity list for `views`; models it could not register
+/// are left out.
+#[cfg(any(target_arch = "wasm32", test))]
+fn render_entities(
+    views: &[q2_client::entities::EntityView],
+    models: &ModelTable,
+) -> Vec<q2_render_api::RenderEntity> {
+    views
+        .iter()
+        .filter_map(|v| {
+            let model = models.handle(v.modelindex);
+            (model != q2_render_api::ModelHandle::NONE).then(|| q2_render_api::RenderEntity {
+                model,
+                frame: v.frame,
+                oldframe: v.oldframe,
+                backlerp: v.backlerp,
+                origin: v.origin,
+                oldorigin: v.origin,
+                angles: v.angles,
+                alpha: v.alpha,
+                flags: v.flags,
+                skinnum: v.skinnum,
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// How far the view is between the last two 10 Hz game frames (C
+/// `cl.lerpfrac`), from the milliseconds since the newest one arrived.
+#[cfg(any(target_arch = "wasm32", test))]
+fn lerp_fraction(ms_since_frame: f64) -> f32 {
+    (ms_since_frame / 100.0).clamp(0.0, 1.0) as f32
 }
 
 /// Mouse sensitivity (degrees per pixel of mouse movement).
@@ -469,6 +613,23 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         ));
     }
 
+    // C CL_PrepRefresh: the sky comes from the server's configstrings.
+    {
+        use q2_shared::constants::{CS_SKY, CS_SKYAXIS, CS_SKYROTATE};
+        let rotate = q2_common::cvar::parse_value(local.configstring(CS_SKYROTATE));
+        let axis: Vec<f32> = local
+            .configstring(CS_SKYAXIS)
+            .split_whitespace()
+            .map(q2_common::cvar::parse_value)
+            .collect();
+        let axis = q2_shared::types::Vec3f::new(
+            axis.first().copied().unwrap_or(0.0),
+            axis.get(1).copied().unwrap_or(0.0),
+            axis.get(2).copied().unwrap_or(0.0),
+        );
+        renderer.set_sky(local.configstring(CS_SKY), rotate, axis);
+    }
+
     let engine = Engine::new(renderer, local, canvas.clone(), view);
 
     // 11. Start game loop
@@ -545,6 +706,70 @@ fn console_error_panic_hook_setup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_table_registers_changed_names_once_and_skips_the_world() {
+        use q2_shared::constants::CS_MODELS;
+        let mut table = ModelTable::default();
+        let mut registered = Vec::new();
+        let strings = |i: usize| match i - CS_MODELS {
+            1 => "maps/demo1.bsp",
+            2 => "*1",
+            3 => "models/monsters/soldier/tris.md2",
+            _ => "",
+        };
+        let mut register = |name: &str| {
+            registered.push(name.to_string());
+            q2_render_api::ModelHandle::new(registered.len() as i32)
+        };
+        table.sync(strings, &mut register);
+        table.sync(strings, &mut register);
+        assert_eq!(registered, ["*1", "models/monsters/soldier/tris.md2"]);
+        assert_eq!(table.handle(3), q2_render_api::ModelHandle::new(2));
+        assert_eq!(table.handle(1), q2_render_api::ModelHandle::NONE);
+        assert_eq!(table.handle(-4), q2_render_api::ModelHandle::NONE);
+    }
+
+    #[test]
+    fn render_entities_leaves_out_unregistered_models() {
+        use q2_client::entities::EntityView;
+        let mut table = ModelTable::default();
+        table.sync(
+            |i| {
+                if i == q2_shared::constants::CS_MODELS + 2 {
+                    "*1"
+                } else {
+                    ""
+                }
+            },
+            |_| q2_render_api::ModelHandle::new(7),
+        );
+        let view = |modelindex| EntityView {
+            modelindex,
+            frame: 3,
+            oldframe: 2,
+            backlerp: 0.5,
+            origin: q2_shared::types::Vec3f::ONE,
+            angles: q2_shared::types::Vec3f::ZERO,
+            skinnum: 1,
+            flags: 0,
+            alpha: 1.0,
+        };
+        let ents = render_entities(&[view(2), view(9)], &table);
+        assert_eq!(ents.len(), 1);
+        assert_eq!(ents[0].model, q2_render_api::ModelHandle::new(7));
+        assert_eq!(
+            (ents[0].frame, ents[0].oldframe, ents[0].skinnum),
+            (3, 2, 1)
+        );
+    }
+
+    #[test]
+    fn lerp_fraction_covers_one_game_frame() {
+        assert_eq!(lerp_fraction(-5.0), 0.0);
+        assert_eq!(lerp_fraction(50.0), 0.5);
+        assert_eq!(lerp_fraction(250.0), 1.0);
+    }
 
     #[test]
     fn cmd_msec_is_the_frame_time_with_c_unreasonable_time_rule() {
