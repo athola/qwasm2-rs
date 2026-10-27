@@ -1,7 +1,26 @@
 //! GL3/GLES3 renderer backend using the `glow` crate.
 //!
-//! Renders BSP world geometry as flat-shaded triangles with per-face
-//! colouring derived from the face's plane normal (pseudo-lighting).
+//! Draws the BSP world textured and lightmapped like the C GL3 renderer,
+//! with a sky box behind it. Pure logic lives in submodules so it can be
+//! tested without a GL context:
+//! - [`texture`]: `.wal` loading, palette conversion, texture upload
+//! - [`lightmap`]: surface extents and lightmap atlas packing
+//! - [`world`]: face batching into one vertex buffer
+//! - [`sky`]: sky box geometry and image lookup
+//! - [`shader`] / [`draw`]: the GL program and draw loops
+//!
+//! Deferred relative to C: texture animation chains (`texinfo.next`), light
+//! styles other than the first lightmap, dynamic lights, back-to-front
+//! sorting of translucent surfaces, PVS/frustum culling (the whole world is
+//! drawn every frame), and subdivision of warp surfaces (the warp is
+//! per-fragment, so it is not needed).
+
+mod draw;
+mod lightmap;
+mod shader;
+mod sky;
+mod texture;
+mod world;
 
 use glow::HasContext;
 use q2_render_api::*;
@@ -9,12 +28,17 @@ use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use crate::bsp::BspData;
+use crate::files::palette::Palette;
+use draw::{SkyGpu, WorldGpu};
+use shader::WorldUniforms;
+use sky::{DEFAULT_SKY, SKY_SUFFIXES};
+use texture::{load_palette, load_world_images, notexture, FileLoader, Image};
 
-/// Compiled GPU mesh: VAO + vertex count, ready to draw.
-struct GpuMesh {
-    vao: glow::VertexArray,
-    vbo: glow::Buffer,
-    vertex_count: i32,
+/// Parameters from the last `set_sky` call.
+struct SkySetting {
+    name: String,
+    rotate: f32,
+    axis: [f32; 3],
 }
 
 /// GL3 renderer state.
@@ -23,12 +47,16 @@ pub struct Gl3Renderer {
     width: i32,
     height: i32,
     initialized: bool,
-    /// Shader program for world geometry.
-    world_program: Option<glow::Program>,
-    /// Uploaded world mesh.
-    world_mesh: Option<GpuMesh>,
-    /// Uniform locations.
-    u_view_proj: Option<glow::UniformLocation>,
+    /// Shader program for world and sky.
+    program: Option<glow::Program>,
+    uniforms: Option<WorldUniforms>,
+    world: Option<WorldGpu>,
+    sky: Option<SkyGpu>,
+    sky_setting: SkySetting,
+    /// C `ri.FS_LoadFile`.
+    file_loader: Option<FileLoader>,
+    /// From `pics/colormap.pcx`; needed to convert `.wal` pixels.
+    palette: Option<Palette>,
 }
 
 impl Gl3Renderer {
@@ -38,9 +66,17 @@ impl Gl3Renderer {
             width: 0,
             height: 0,
             initialized: false,
-            world_program: None,
-            world_mesh: None,
-            u_view_proj: None,
+            program: None,
+            uniforms: None,
+            world: None,
+            sky: None,
+            sky_setting: SkySetting {
+                name: DEFAULT_SKY.to_string(),
+                rotate: 0.0,
+                axis: [0.0, 0.0, 1.0],
+            },
+            file_loader: None,
+            palette: None,
         }
     }
 
@@ -49,160 +85,76 @@ impl Gl3Renderer {
         self.gl = Some(gl);
     }
 
-    /// Load BSP world geometry onto the GPU.
+    /// Give the renderer access to game files (textures, sky boxes, palette).
+    /// Call before [`Gl3Renderer::load_bsp`].
+    pub fn set_file_loader(&mut self, loader: FileLoader) {
+        self.palette = load_palette(&loader);
+        if self.palette.is_none() {
+            tracing::error!("GL3: no palette, world textures will show as notexture");
+        }
+        self.file_loader = Some(loader);
+    }
+
+    /// Load BSP world geometry, textures and lightmaps onto the GPU.
     pub fn load_bsp(&mut self, bsp: &BspData) {
-        let gl = match &self.gl {
-            Some(gl) => gl,
-            None => return,
+        let Some(gl) = &self.gl else {
+            return;
         };
+        let no_files: FileLoader = Box::new(|_| None);
+        let loader = self.file_loader.as_ref().unwrap_or(&no_files);
 
-        let verts = build_world_vertices(bsp);
-
-        let vertex_count = (verts.len() / 6) as i32;
+        let images = load_world_images(&bsp.texinfo, loader, self.palette.as_ref());
+        let mesh = world::build_world_mesh(bsp, &images);
         tracing::info!(
-            "GL3: uploading {} triangles ({} verts)",
-            vertex_count / 3,
-            vertex_count
+            "GL3: uploading {} triangles, {} textures, {} lightmap pages",
+            mesh.vertices.len() / (sky::VERTEX_FLOATS * 3),
+            images.images.len(),
+            mesh.lightmaps.pages.len()
         );
-
-        // SAFETY: The VAO/VBO are created here on `gl`, the renderer's only
-        // context, and a replaced mesh was created on the same context by an
-        // earlier load_bsp. `verts` is a live
-        // `Vec<f32>` whose backing allocation is valid for the duration of this
-        // block. `f32` has no padding, and `verts.len() * size_of::<f32>()`
-        // cannot overflow because `Vec` guarantees its allocation fits in
-        // `isize`. The resulting `&[u8]` borrows `verts` immutably and is
-        // consumed by `buffer_data_u8_slice` before `verts` is dropped.
-        unsafe {
-            let vao = match gl.create_vertex_array() {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("GL3: failed to create VAO: {}", e);
-                    return;
+        match draw::upload_world(gl, &images, &mesh) {
+            Ok(uploaded) => {
+                // A map change replaces the world; free the previous map's objects.
+                if let Some(old) = self.world.replace(uploaded) {
+                    draw::free_world(gl, old);
                 }
-            };
-            let vbo = match gl.create_buffer() {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("GL3: failed to create VBO: {}", e);
-                    gl.delete_vertex_array(vao);
-                    return;
-                }
-            };
-
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-
-            let bytes: &[u8] = core::slice::from_raw_parts(
-                verts.as_ptr() as *const u8,
-                verts.len() * core::mem::size_of::<f32>(),
-            );
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
-
-            // position: location 0, 3 floats, stride 24, offset 0
-            gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 24, 0);
-
-            // color: location 1, 3 floats, stride 24, offset 12
-            gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 24, 12);
-
-            gl.bind_vertex_array(None);
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
-
-            // A map change replaces the mesh; free the previous map's buffers.
-            if let Some(old) = self.world_mesh.replace(GpuMesh {
-                vao,
-                vbo,
-                vertex_count,
-            }) {
-                gl.delete_vertex_array(old.vao);
-                gl.delete_buffer(old.vbo);
             }
+            Err(error) => tracing::error!("GL3: failed to upload world: {error}"),
+        }
+        if self.sky.is_none() {
+            self.reload_sky();
         }
     }
 
-    /// Compile the world shader program.
-    fn compile_shaders(gl: &glow::Context) -> Result<glow::Program, String> {
-        // SAFETY: Every shader and program handle is created on `gl` within
-        // this block and deleted on it on each error path; only the linked
-        // program escapes, to a caller that owns the same context.
-        unsafe {
-            let program = gl
-                .create_program()
-                .map_err(|e| format!("create_program failed: {e}"))?;
-
-            let vs_src = r#"#version 300 es
-                precision highp float;
-                layout(location = 0) in vec3 a_position;
-                layout(location = 1) in vec3 a_color;
-                uniform mat4 u_view_proj;
-                out vec3 v_color;
-                void main() {
-                    gl_Position = u_view_proj * vec4(a_position, 1.0);
-                    v_color = a_color;
+    /// Load the six faces of the current sky; missing faces use notexture.
+    fn reload_sky(&mut self) {
+        let Some(gl) = &self.gl else {
+            return;
+        };
+        let no_files: FileLoader = Box::new(|_| None);
+        let loader = self.file_loader.as_ref().unwrap_or(&no_files);
+        let name = self.sky_setting.name.as_str();
+        let faces: [Image; 6] = SKY_SUFFIXES.map(|suffix| {
+            sky::load_sky_image(loader, name, suffix).unwrap_or_else(|| {
+                tracing::warn!("GL3: can't load sky {name}{suffix}");
+                notexture()
+            })
+        });
+        match draw::upload_sky(gl, &faces) {
+            Ok(uploaded) => {
+                if let Some(old) = self.sky.replace(uploaded) {
+                    draw::free_sky(gl, old);
                 }
-            "#;
-
-            let fs_src = r#"#version 300 es
-                precision mediump float;
-                in vec3 v_color;
-                out vec4 frag_color;
-                void main() {
-                    frag_color = vec4(v_color, 1.0);
-                }
-            "#;
-
-            let vs = gl.create_shader(glow::VERTEX_SHADER).map_err(|e| {
-                gl.delete_program(program);
-                format!("create vertex shader failed: {e}")
-            })?;
-            gl.shader_source(vs, vs_src);
-            gl.compile_shader(vs);
-            if !gl.get_shader_compile_status(vs) {
-                let log = gl.get_shader_info_log(vs);
-                gl.delete_shader(vs);
-                gl.delete_program(program);
-                let msg = format!("VS compile error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
             }
-
-            let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| {
-                gl.delete_shader(vs);
-                gl.delete_program(program);
-                format!("create fragment shader failed: {e}")
-            })?;
-            gl.shader_source(fs, fs_src);
-            gl.compile_shader(fs);
-            if !gl.get_shader_compile_status(fs) {
-                let log = gl.get_shader_info_log(fs);
-                gl.delete_shader(fs);
-                gl.delete_shader(vs);
-                gl.delete_program(program);
-                let msg = format!("FS compile error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
-            }
-
-            gl.attach_shader(program, vs);
-            gl.attach_shader(program, fs);
-            gl.link_program(program);
-            if !gl.get_program_link_status(program) {
-                let log = gl.get_program_info_log(program);
-                gl.delete_shader(vs);
-                gl.delete_shader(fs);
-                gl.delete_program(program);
-                let msg = format!("Program link error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
-            }
-
-            gl.delete_shader(vs);
-            gl.delete_shader(fs);
-
-            Ok(program)
+            Err(error) => tracing::error!("GL3: failed to upload sky: {error}"),
         }
+    }
+
+    /// Sky box transform: view without translation, then the sky's own spin.
+    fn sky_view_proj(&self, fd: &RefDef) -> [f32; 16] {
+        let proj = perspective_matrix(fd);
+        let view = view_matrix_at(Vec3f::ZERO, fd.viewangles);
+        let spin = sky::rotation_matrix(fd.time * self.sky_setting.rotate, self.sky_setting.axis);
+        mat4_mul(&mat4_mul(&proj, &view), &spin)
     }
 }
 
@@ -233,19 +185,19 @@ impl Renderer for Gl3Renderer {
         self.width = width;
         self.height = height;
 
-        let prog = Self::compile_shaders(gl)
+        let (prog, uniforms) = shader::compile_world_program(gl)
             .map_err(|e| Q2Error::Drop(format!("Failed to compile world shaders: {e}")))?;
 
         // SAFETY: `prog` and any previous program were created by this same
-        // `gl` context in `compile_shaders`, and `old` is no longer referenced
-        // once replaced.
+        // `gl` context in `compile_world_program`, and `old` is no longer
+        // referenced once replaced.
         unsafe {
             // A repeated init replaces the program; free the old one.
-            if let Some(old) = self.world_program.replace(prog) {
+            if let Some(old) = self.program.replace(prog) {
                 gl.delete_program(old);
             }
-            self.u_view_proj = gl.get_uniform_location(prog, "u_view_proj");
         }
+        self.uniforms = Some(uniforms);
 
         // SAFETY: State-only calls on the live context `gl`; no object
         // handles are passed.
@@ -265,20 +217,22 @@ impl Renderer for Gl3Renderer {
 
     fn shutdown(&mut self) {
         if let Some(gl) = &self.gl {
-            // SAFETY: The mesh and program were created on this same `gl` by
-            // load_bsp / init and are taken out of `self` before deletion, so
-            // no deleted handle is used again.
+            if let Some(world) = self.world.take() {
+                draw::free_world(gl, world);
+            }
+            if let Some(sky) = self.sky.take() {
+                draw::free_sky(gl, sky);
+            }
+            // SAFETY: The program was created on this same `gl` by init and is
+            // taken out of `self` before deletion, so no deleted handle is
+            // used again.
             unsafe {
-                if let Some(mesh) = self.world_mesh.take() {
-                    gl.delete_vertex_array(mesh.vao);
-                    gl.delete_buffer(mesh.vbo);
-                }
-                if let Some(prog) = self.world_program.take() {
+                if let Some(prog) = self.program.take() {
                     gl.delete_program(prog);
                 }
             }
         }
-        self.u_view_proj = None;
+        self.uniforms = None;
         self.initialized = false;
     }
 
@@ -311,34 +265,37 @@ impl Renderer for Gl3Renderer {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        // Draw world if loaded
-        if let (Some(prog), Some(mesh), Some(u_loc)) =
-            (&self.world_program, &self.world_mesh, &self.u_view_proj)
-        {
-            let vp = build_view_projection(fd);
+        let (Some(program), Some(uniforms)) = (&self.program, &self.uniforms) else {
+            tracing::trace!("GL3: skipping draw, renderer not initialised");
+            return;
+        };
+        // SAFETY: `program` was created on this same `gl` by init and is
+        // still owned by `self`.
+        unsafe { gl.use_program(Some(*program)) };
 
-            // SAFETY: `prog`, `u_loc` and `mesh.vao` were created on this same
-            // `gl` by init / load_bsp and are still owned (not deleted) by
-            // `self`.
-            unsafe {
-                gl.use_program(Some(*prog));
-                gl.uniform_matrix_4_f32_slice(Some(u_loc), false, &vp);
-                gl.bind_vertex_array(Some(mesh.vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, mesh.vertex_count);
-                gl.bind_vertex_array(None);
-                gl.use_program(None);
-            }
-        } else {
-            tracing::trace!(
-                "GL3: skipping world draw — program={}, mesh={}, uniform={}",
-                self.world_program.is_some(),
-                self.world_mesh.is_some(),
-                self.u_view_proj.is_some(),
-            );
+        if let Some(sky) = &self.sky {
+            draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
         }
+        if let Some(world) = &self.world {
+            draw::draw_world(gl, uniforms, world, &build_view_projection(fd), fd.time);
+        }
+
+        // SAFETY: Unbinding the program is a state-only call.
+        unsafe { gl.use_program(None) };
     }
 
-    fn set_sky(&mut self, _name: &str, _rotate: f32, _axis: Vec3f) {}
+    fn set_sky(&mut self, name: &str, rotate: f32, axis: Vec3f) {
+        self.sky_setting = SkySetting {
+            name: if name.is_empty() {
+                DEFAULT_SKY.to_string()
+            } else {
+                name.to_string()
+            },
+            rotate,
+            axis: [axis.x, axis.y, axis.z],
+        };
+        self.reload_sky();
+    }
     fn draw_pic(&mut self, _x: i32, _y: i32, _name: &str) {}
     fn draw_stretch_pic(&mut self, _x: i32, _y: i32, _w: i32, _h: i32, _name: &str) {}
     fn draw_char(&mut self, _x: i32, _y: i32, _ch: i32) {}
@@ -356,90 +313,6 @@ impl Renderer for Gl3Renderer {
     }
 
     fn end_frame(&mut self) {}
-}
-
-/// Build the world model's triangle list: position (3 f32) + colour (3 f32)
-/// per vertex, fan-triangulated from each face's edge loop. Kept free of GL
-/// so malformed BSP indices can be tested without a context.
-fn build_world_vertices(bsp: &BspData) -> Vec<f32> {
-    // Signed on-disk counts and offsets go through try_from: a negative
-    // value cast with `as usize` becomes huge (capacity-overflow panic,
-    // or index arithmetic that overflows).
-    let index = |v: i32| usize::try_from(v).ok();
-    let mut verts: Vec<f32> = Vec::new();
-
-    // Only render world model (model 0) faces
-    let face_range = match bsp.models.first() {
-        Some(model) => match (index(model.first_face), index(model.num_faces)) {
-            (Some(first), Some(count)) => first..first.saturating_add(count),
-            _ => 0..0,
-        },
-        None => 0..bsp.faces.len(),
-    };
-    let faces = bsp
-        .faces
-        .get(face_range.start..face_range.end.min(bsp.faces.len()));
-
-    let light_dir = Vec3f::new(0.5, 0.3, 0.9).normalize();
-    for face in faces.unwrap_or_default() {
-        let (Ok(num_edges), Some(first_edge)) =
-            (usize::try_from(face.num_edges), index(face.first_edge))
-        else {
-            continue;
-        };
-        if num_edges < 3 {
-            continue;
-        }
-        let texinfo = usize::try_from(face.texinfo_idx)
-            .ok()
-            .and_then(|i| bsp.texinfo.get(i));
-
-        // Skip sky/nodraw surfaces (SURF_SKY=4, SURF_NODRAW=128)
-        if texinfo.is_some_and(|ti| ti.flags & (4 | 128) != 0) {
-            continue;
-        }
-
-        // Get the face's plane normal for pseudo-lighting
-        let normal = match bsp.planes.get(face.plane_idx as usize) {
-            Some(plane) if face.side != 0 => -plane.normal,
-            Some(plane) => plane.normal,
-            None => Vec3f::new(0.0, 0.0, 1.0),
-        };
-
-        // Compute face color from normal (simple directional light)
-        let ndotl = normal.dot(light_dir).max(0.0);
-        let ambient = 0.15;
-        let brightness = ambient + (1.0 - ambient) * ndotl;
-
-        // Vary base color by texinfo index for visual variety
-        let (r, g, b) = face_color(face.texinfo_idx as usize, brightness);
-
-        // Collect face vertices via surface_edges -> edges -> vertices.
-        // A surfedge >= 0 walks its edge forwards, < 0 backwards.
-        let surface_edges = bsp
-            .surface_edges
-            .get(first_edge..)
-            .unwrap_or_default()
-            .iter()
-            .take(num_edges);
-        let face_verts: Vec<Vec3f> = surface_edges
-            .filter_map(|&se| {
-                let edge = bsp.edges.get(se.unsigned_abs() as usize)?;
-                let vi = if se >= 0 { edge.v[0] } else { edge.v[1] };
-                bsp.vertices.get(vi as usize).map(|v| v.position)
-            })
-            .collect();
-
-        // Fan triangulate: v0, v1, v2, then v0, v2, v3, etc.
-        if let Some((&v0, rest)) = face_verts.split_first() {
-            for pair in rest.windows(2) {
-                for v in [v0, pair[0], pair[1]] {
-                    verts.extend_from_slice(&[v.x, v.y, v.z, r, g, b]);
-                }
-            }
-        }
-    }
-    verts
 }
 
 /// Build a combined view-projection matrix from RefDef.
@@ -487,6 +360,12 @@ fn perspective_matrix(fd: &RefDef) -> [f32; 16] {
 /// translate(-vieworg)`. `viewangles` use the Q2 convention (pitch > 0
 /// looks down).
 fn view_matrix(fd: &RefDef) -> [f32; 16] {
+    view_matrix_at(fd.vieworg, fd.viewangles)
+}
+
+/// [`view_matrix`] for an explicit eye position and angles; the sky box uses
+/// a zero position so it stays centred on the eye.
+fn view_matrix_at(origin: Vec3f, angles: Vec3f) -> [f32; 16] {
     // Column-major: first put the Z axis going up.
     #[rustfmt::skip]
     const Z_UP_TO_GL: [f32; 16] = [
@@ -495,8 +374,8 @@ fn view_matrix(fd: &RefDef) -> [f32; 16] {
          0.0, 1.0,  0.0, 0.0,
          0.0, 0.0,  0.0, 1.0,
     ];
-    let rot = rot_around_axis_xyz(-fd.viewangles.z, -fd.viewangles.x, -fd.viewangles.y);
-    let o = fd.vieworg;
+    let rot = rot_around_axis_xyz(-angles.z, -angles.x, -angles.y);
+    let o = origin;
     #[rustfmt::skip]
     let translate = [
         1.0, 0.0, 0.0, 0.0,
@@ -536,25 +415,6 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
-/// Knuth multiplicative hash constant (golden ratio * 2^32).
-const KNUTH_HASH: usize = 2654435761;
-
-/// Assign a color to a face based on its texinfo index and lighting.
-fn face_color(texinfo_idx: usize, brightness: f32) -> (f32, f32, f32) {
-    let h = texinfo_idx.wrapping_mul(KNUTH_HASH) & 0xFFFFFF;
-    let base_r = ((h >> 16) & 0xFF) as f32 / 255.0;
-    let base_g = ((h >> 8) & 0xFF) as f32 / 255.0;
-    let base_b = (h & 0xFF) as f32 / 255.0;
-
-    // Desaturate and apply brightness for a more natural look
-    let grey = 0.3 + (base_r + base_g + base_b) / 3.0 * 0.4;
-    let r = (grey * 0.6 + base_r * 0.4) * brightness;
-    let g = (grey * 0.6 + base_g * 0.4) * brightness;
-    let b = (grey * 0.6 + base_b * 0.4) * brightness;
-
-    (r.min(1.0), g.min(1.0), b.min(1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,45 +452,6 @@ mod tests {
         ];
         let r = mat4_mul(&id, &id);
         assert_eq!(r, id);
-    }
-
-    #[test]
-    fn face_color_deterministic() {
-        let (r1, g1, b1) = face_color(0, 1.0);
-        let (r2, g2, b2) = face_color(0, 1.0);
-        assert_eq!(r1, r2);
-        assert_eq!(g1, g2);
-        assert_eq!(b1, b2);
-    }
-
-    #[test]
-    fn face_color_in_range() {
-        // All outputs must be in [0.0, 1.0] for any index and brightness
-        for idx in [0, 1, 42, 255, 1000, usize::MAX / 2] {
-            for &brightness in &[0.0, 0.5, 1.0, 2.0] {
-                let (r, g, b) = face_color(idx, brightness);
-                assert!(
-                    (0.0..=1.0).contains(&r),
-                    "r={r} out of range for idx={idx}, brightness={brightness}"
-                );
-                assert!(
-                    (0.0..=1.0).contains(&g),
-                    "g={g} out of range for idx={idx}, brightness={brightness}"
-                );
-                assert!(
-                    (0.0..=1.0).contains(&b),
-                    "b={b} out of range for idx={idx}, brightness={brightness}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn face_color_different_indices_differ() {
-        let c0 = face_color(0, 1.0);
-        let c1 = face_color(1, 1.0);
-        // Different texinfo indices should produce different colors
-        assert_ne!(c0, c1);
     }
 
     #[test]
@@ -790,94 +611,8 @@ mod tests {
         }
     }
 
-    use crate::bsp::{BspEdge, BspFace, BspModel, BspVertex};
-
-    /// One triangle face (edges 1..=3 via surfedges) in an otherwise empty BSP.
-    fn triangle_bsp() -> BspData {
-        let v = |x, y, z| BspVertex {
-            position: Vec3f::new(x, y, z),
-        };
+    fn empty_bsp() -> BspData {
         BspData {
-            vertices: vec![v(0.0, 0.0, 0.0), v(64.0, 0.0, 0.0), v(0.0, 64.0, 0.0)],
-            // Edge 0 is the unused sentinel, as in real maps.
-            edges: vec![
-                BspEdge { v: [0, 0] },
-                BspEdge { v: [0, 1] },
-                BspEdge { v: [1, 2] },
-                BspEdge { v: [2, 0] },
-            ],
-            surface_edges: vec![1, 2, 3],
-            faces: vec![BspFace {
-                plane_idx: 0,
-                side: 0,
-                first_edge: 0,
-                num_edges: 3,
-                texinfo_idx: -1,
-                styles: [0; 4],
-                light_ofs: -1,
-            }],
-            planes: vec![],
-            texinfo: vec![],
-            models: vec![],
-            visibility: vec![],
-            nodes: vec![],
-            lightmap_data: vec![],
-            leafs: vec![],
-            leaf_faces: vec![],
-        }
-    }
-
-    #[test]
-    fn build_world_vertices_emits_one_triangle_per_triangle_face() {
-        let verts = build_world_vertices(&triangle_bsp());
-        assert_eq!(verts.len(), 3 * 6, "3 vertices x (position + colour)");
-        assert_eq!(&verts[6..9], &[64.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn build_world_vertices_skips_negative_num_edges() {
-        let mut bsp = triangle_bsp();
-        bsp.faces[0].num_edges = -1;
-        assert!(build_world_vertices(&bsp).is_empty());
-    }
-
-    #[test]
-    fn build_world_vertices_skips_negative_first_edge() {
-        let mut bsp = triangle_bsp();
-        bsp.faces[0].first_edge = -1;
-        assert!(build_world_vertices(&bsp).is_empty());
-    }
-
-    #[test]
-    fn build_world_vertices_ignores_negative_model_face_range() {
-        let mut bsp = triangle_bsp();
-        let model = |first_face, num_faces| BspModel {
-            mins: Vec3f::ZERO,
-            maxs: Vec3f::ZERO,
-            origin: Vec3f::ZERO,
-            head_node: 0,
-            first_face,
-            num_faces,
-        };
-        bsp.models = vec![model(0, -1)];
-        assert!(build_world_vertices(&bsp).is_empty());
-        bsp.models = vec![model(-1, 1)];
-        assert!(build_world_vertices(&bsp).is_empty());
-    }
-
-    #[test]
-    fn build_world_vertices_skips_min_int_surface_edge() {
-        let mut bsp = triangle_bsp();
-        bsp.surface_edges[1] = i32::MIN;
-        // Two usable vertices remain: not enough for a triangle.
-        assert!(build_world_vertices(&bsp).is_empty());
-    }
-
-    #[test]
-    fn load_bsp_no_gl_returns_early() {
-        let mut r = Gl3Renderer::new();
-        // No GL context set — load_bsp should return without panicking
-        let bsp = BspData {
             vertices: vec![],
             edges: vec![],
             surface_edges: vec![],
@@ -890,9 +625,16 @@ mod tests {
             lightmap_data: vec![],
             leafs: vec![],
             leaf_faces: vec![],
-        };
-        r.load_bsp(&bsp);
-        assert!(r.world_mesh.is_none());
+        }
+    }
+
+    #[test]
+    fn load_bsp_no_gl_returns_early() {
+        let mut r = Gl3Renderer::new();
+        // No GL context set: load_bsp should return without panicking
+        r.load_bsp(&empty_bsp());
+        assert!(r.world.is_none());
+        assert!(r.sky.is_none());
     }
 
     #[test]
@@ -903,5 +645,109 @@ mod tests {
         // GL backend, but we verify the initial state and that init fails
         // without one — which implicitly validates set_gl_context's role.
         assert!(r.init(800, 600).is_err());
+    }
+
+    #[test]
+    fn sky_defaults_to_unit1_until_set() {
+        let mut r = Gl3Renderer::new();
+        assert_eq!(r.sky_setting.name, "unit1_");
+        r.set_sky("city_", 5.0, Vec3f::new(0.0, 1.0, 0.0));
+        assert_eq!(r.sky_setting.name, "city_");
+        assert_eq!(r.sky_setting.rotate, 5.0);
+        assert_eq!(r.sky_setting.axis, [0.0, 1.0, 0.0]);
+        // An empty name (map without a sky key) restores the default.
+        r.set_sky("", 0.0, Vec3f::ZERO);
+        assert_eq!(r.sky_setting.name, "unit1_");
+    }
+
+    #[test]
+    fn file_loader_reads_palette_from_colormap() {
+        let mut pcx = vec![0u8; 200];
+        pcx.extend((0..=255u8).flat_map(|i| [i, 0, 0]));
+        let mut r = Gl3Renderer::new();
+        assert!(r.palette.is_none());
+        r.set_file_loader(Box::new(move |path| {
+            (path == "pics/colormap.pcx").then(|| pcx.clone())
+        }));
+        assert_eq!(r.palette.as_ref().unwrap().0[7], [7, 0, 0]);
+        assert!(r.file_loader.is_some());
+    }
+
+    #[test]
+    fn missing_colormap_leaves_palette_unset_but_keeps_loader() {
+        let mut r = Gl3Renderer::new();
+        r.set_file_loader(Box::new(|_| None));
+        assert!(r.palette.is_none());
+        assert!(r.file_loader.is_some());
+    }
+
+    #[test]
+    fn sky_view_proj_ignores_eye_position() {
+        let r = Gl3Renderer::new();
+        let at = |x| RefDef {
+            width: 640,
+            height: 480,
+            fov_y: 90.0,
+            vieworg: Vec3f::new(x, 0.0, 0.0),
+            viewangles: Vec3f::new(0.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(r.sky_view_proj(&at(0.0)), r.sky_view_proj(&at(500.0)));
+    }
+
+    /// Skips (returns `None`) when `pak0.pak` is not available.
+    fn stock_loader() -> Option<FileLoader> {
+        use q2_common::filesystem::{FileSystem, Pack};
+        let root = std::env::var_os("Q2_GAMEDATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gamedata")
+            });
+        let pak_path = root.join("baseq2/pak0.pak");
+        if !pak_path.is_file() {
+            return None;
+        }
+        let mut filesystem = FileSystem::new("baseq2");
+        filesystem.add_pack(Pack::load(&pak_path).expect("pak0.pak parses"));
+        Some(Box::new(move |path| filesystem.load_file(path).ok()))
+    }
+
+    #[test]
+    fn stock_map_builds_textured_lit_mesh_and_sky() {
+        let Some(loader) = stock_loader() else {
+            return;
+        };
+        let palette = load_palette(&loader).expect("colormap loads");
+        let bsp = BspData::load(&loader("maps/demo1.bsp").expect("demo1 in pak0")).unwrap();
+
+        let images = load_world_images(&bsp.texinfo, &loader, Some(&palette));
+        let missing = images.texinfo_image.iter().filter(|&&i| i == 0).count();
+        assert_eq!(missing, 0, "every demo1 texture resolves to a real .wal");
+
+        let mesh = world::build_world_mesh(&bsp, &images);
+        assert!(mesh.vertices.len() > 1000 * sky::VERTEX_FLOATS);
+        assert!(!mesh.lightmaps.pages.is_empty());
+        let end = mesh.batches.last().map(|b| b.first_vertex + b.vertex_count);
+        assert_eq!(
+            end,
+            i32::try_from(mesh.vertices.len() / sky::VERTEX_FLOATS).ok()
+        );
+        // Lightmap UVs of lit faces stay inside the atlas page.
+        let lit_ranges = mesh
+            .batches
+            .iter()
+            .filter(|b| b.shading == world::Shading::Lit);
+        for batch in lit_ranges {
+            let first = batch.first_vertex as usize * sky::VERTEX_FLOATS;
+            let count = batch.vertex_count as usize * sky::VERTEX_FLOATS;
+            for vertex in mesh.vertices[first..first + count].chunks(sky::VERTEX_FLOATS) {
+                assert!((0.0..=1.0).contains(&vertex[5]) && (0.0..=1.0).contains(&vertex[6]));
+            }
+        }
+
+        for suffix in SKY_SUFFIXES {
+            let face = sky::load_sky_image(&loader, DEFAULT_SKY, suffix).expect("unit1 sky face");
+            assert!(face.width > 0 && face.rgba.len() == face.width * face.height * 4);
+        }
     }
 }
