@@ -8,6 +8,7 @@
 //! - Inherent: 0
 
 pub mod input;
+pub mod layout;
 pub mod parse;
 pub mod state;
 pub mod view;
