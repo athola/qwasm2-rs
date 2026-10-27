@@ -311,14 +311,12 @@ pub fn sp_worldspawn(storage: &mut EntityStorage, key: EntityKey, props: &HashMa
     }
 }
 
-/// Spawn function for `light` — lights are stripped at runtime (no entity
-/// needed), but we record the classname so the spawn system doesn't warn.
+/// Spawn function for `light`; `GameWorld::spawn_light` then frees it or
+/// publishes its switchable style (C SP_light needs configstrings).
 pub fn sp_light(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
         ent.game.classname = "light".to_string();
         ent.state.origin = origin_from_props(props).unwrap_or_default();
-        // Lights have no runtime behaviour — entity can be freed later.
-        let _ = props;
     }
 }
 

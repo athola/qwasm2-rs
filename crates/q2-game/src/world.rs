@@ -398,6 +398,37 @@ impl GameWorld {
 // MockGameImport — for unit testing game code without a real server
 // ---------------------------------------------------------------------------
 
+/// C SP_worldspawn's light styles 0-11: a letter per 0.1 s, 'a' dark, 'm'
+/// normal, 'z' double bright.
+const LIGHT_STYLES: [&str; 12] = [
+    "m",
+    "mmnmmommommnonmmonqnmmo",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+    "mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
+    "mamamamamama",
+    "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+    "nmonqnmomnmomomno",
+    "mmmaaaabcdefgmmmmaaaammmaamm",
+    "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+    "aaaaaaaazzzzzzzz",
+    "mmamammmmammamamaaamammma",
+    "abcdefghijklmnopqrrqponmlkjihgfedcba",
+];
+
+/// `light` spawnflag.
+const LIGHT_START_OFF: i32 = 1;
+
+/// C ref: `light_use`.
+fn light_use(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.game.spawnflags ^= LIGHT_START_OFF;
+    let on = ent.game.spawnflags & LIGHT_START_OFF == 0;
+    let style = ent.game.style;
+    world.set_light_style(style, on);
+}
+
 /// The single-player status bar layout program (C g_spawn.c
 /// `single_statusbar`), run by the client's SCR_ExecuteLayoutString.
 pub const SINGLE_STATUSBAR: &str = concat!(
@@ -649,6 +680,37 @@ impl GameWorld {
         self.level.pic_health = self.gi.image_index("i_health");
         self.gi.image_index("help");
         self.gi.image_index("field_3");
+
+        // Light styles: 0 normal, then C's animated presets; 63 is testing.
+        for (style, pattern) in LIGHT_STYLES.iter().enumerate() {
+            self.gi
+                .configstring((q2_shared::constants::CS_LIGHTS + style) as i32, pattern);
+        }
+        self.gi
+            .configstring((q2_shared::constants::CS_LIGHTS + 63) as i32, "a");
+    }
+
+    /// C SP_light: untargeted lights are freed; switchable styles (32 and
+    /// up) start on or off and toggle when used.
+    fn spawn_light(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        if ent.game.targetname.is_empty() {
+            self.free_entity(key);
+            return;
+        }
+        if ent.game.style >= 32 {
+            ent.use_fn = Some(light_use);
+            let on = ent.game.spawnflags & LIGHT_START_OFF == 0;
+            let style = ent.game.style;
+            self.set_light_style(style, on);
+        }
+    }
+
+    fn set_light_style(&self, style: i32, on: bool) {
+        let index = q2_shared::constants::CS_LIGHTS as i32 + style;
+        self.gi.configstring(index, if on { "m" } else { "a" });
     }
 
     /// Run one game frame — the main game tick.
@@ -773,6 +835,8 @@ impl GameWorld {
                 sfn(&mut self.entities, key, fields);
                 if classname == "worldspawn" {
                     self.worldspawn_configstrings(fields);
+                } else if classname == "light" {
+                    self.spawn_light(key);
                 }
                 if let Some(model) = crate::spawn::classname_model(&classname) {
                     self.set_model(key, model);
@@ -1137,6 +1201,60 @@ mod tests {
             configstring(&gi, CS_ITEMS + shotgun).as_deref(),
             Some("Shotgun")
         );
+    }
+
+    #[test]
+    fn worldspawn_publishes_the_standard_light_styles() {
+        use q2_shared::constants::CS_LIGHTS;
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert_eq!(configstring(&gi, CS_LIGHTS).as_deref(), Some("m"));
+        assert_eq!(
+            configstring(&gi, CS_LIGHTS + 1).as_deref(),
+            Some("mmnmmommommnonmmonqnmmo")
+        );
+        assert_eq!(
+            configstring(&gi, CS_LIGHTS + 11).as_deref(),
+            Some("abcdefghijklmnopqrrqponmlkjihgfedcba")
+        );
+        assert_eq!(configstring(&gi, CS_LIGHTS + 63).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn switchable_light_publishes_its_style_and_toggles_when_used() {
+        use q2_shared::constants::CS_LIGHTS;
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            concat!(
+                "{ \"classname\" \"worldspawn\" }\n",
+                "{ \"classname\" \"light\" \"targetname\" \"l\" \"style\" \"32\" \"spawnflags\" \"1\" }\n",
+                "{ \"classname\" \"light\" \"style\" \"33\" }",
+            ),
+            "",
+        );
+        assert_eq!(
+            configstring(&gi, CS_LIGHTS + 32).as_deref(),
+            Some("a"),
+            "START_OFF"
+        );
+        let light = world.find_by_targetname(None, "l").unwrap();
+        let use_fn = world
+            .entities
+            .get(light)
+            .unwrap()
+            .use_fn
+            .expect("light_use");
+        use_fn(&mut world, light, light, light);
+        assert_eq!(configstring(&gi, CS_LIGHTS + 32).as_deref(), Some("m"));
+        let untargeted = world
+            .entities
+            .iter()
+            .filter(|(_, e)| e.in_use && e.game.classname == "light")
+            .count();
+        assert_eq!(untargeted, 1, "C frees lights nothing targets");
     }
 
     #[test]
