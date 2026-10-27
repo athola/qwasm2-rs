@@ -267,6 +267,8 @@ pub struct GameEntityData {
     pub yaw_speed: f32,
     pub move_origin: Vec3f,
     pub move_angles: Vec3f,
+    /// Unit direction a mover opens along (C `movedir`, G_SetMovedir).
+    pub movedir: Vec3f,
 
     // -- timing ------------------------------------------------------------
     pub pain_debounce_time: f32,

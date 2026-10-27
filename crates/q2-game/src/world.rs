@@ -535,7 +535,9 @@ impl GameWorld {
                 ent.state.old_origin = origin;
             }
 
-            // Run entity physics + think.
+            // Run entity physics + think. Move_Calc starts a move this
+            // frame only when called from the mover's own think.
+            self.level.current_entity = Some(key);
             self.run_entity(key);
         }
 
@@ -614,6 +616,18 @@ impl GameWorld {
                 }
             }
             // Unknown classnames are silently skipped (logged in full impl).
+        }
+
+        // Entities a spawn function created itself (a plat's trigger); C
+        // links them inside the SP_* function.
+        let unlinked: Vec<EntityKey> = self
+            .entities
+            .iter()
+            .filter(|(_, e)| e.in_use && e.linkcount == 0)
+            .map(|(k, _)| k)
+            .collect();
+        for key in unlinked {
+            self.link_entity(key);
         }
     }
 }

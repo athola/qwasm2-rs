@@ -197,7 +197,7 @@ fn origin_from_props(props: &HashMap<String, String>) -> Option<q2_shared::types
 }
 
 /// C `strtol(s, NULL, 10)`: optional sign and leading digits, 0 if none.
-fn strtol(s: &str) -> i32 {
+pub(crate) fn strtol(s: &str) -> i32 {
     let t = s.trim_start();
     let (sign, digits) = match t.strip_prefix('-') {
         Some(rest) => (-1i64, rest),
