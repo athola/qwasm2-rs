@@ -9,6 +9,7 @@
 use crate::constants::*;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
+use q2_shared::types::*;
 
 // ---------------------------------------------------------------------------
 // Armor info — matches gitem_armor_t from local.h
@@ -1109,6 +1110,186 @@ impl GameWorld {
     pub fn find_item(&self, classname: &str) -> Option<usize> {
         find_item_index(&self.items, classname)
     }
+
+    /// Find an item index by pickup name (C `FindItem`).
+    pub fn find_item_by_name(&self, name: &str) -> Option<usize> {
+        find_item_index_by_name(&self.items, name)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spawning and touching items in the world (g_items.c)
+// ---------------------------------------------------------------------------
+
+/// spawnflags (C g_items.c).
+const ITEM_TRIGGER_SPAWN: i32 = 0x0000_0001;
+const ITEM_NO_TOUCH: i32 = 0x0000_0002;
+const ITEM_TARGETS_USED: i32 = 0x0004_0000;
+
+/// C `world_model_flags`: everything except ammo and health spins.
+fn world_model_flags(item: &ItemDef) -> u32 {
+    let spins = ItemFlags::WEAPON | ItemFlags::ARMOR | ItemFlags::POWERUP | ItemFlags::KEY;
+    if item.flags.intersects(spins) {
+        q2_shared::constants::EF_ROTATE
+    } else {
+        0
+    }
+}
+
+/// C's health spawns (SP_item_health*): the "Health" item with a model and
+/// amount of its own.
+pub fn health_spawn(classname: &str) -> Option<(&'static str, i32)> {
+    Some(match classname {
+        "item_health" => ("models/items/healing/medium/tris.md2", 10),
+        "item_health_small" => ("models/items/healing/stimpack/tris.md2", 2),
+        "item_health_large" => ("models/items/healing/large/tris.md2", 25),
+        "item_health_mega" => ("models/items/mega_h/tris.md2", 100),
+        _ => return None,
+    })
+}
+
+impl GameWorld {
+    /// Make `key` a world item that drops to the floor once the other
+    /// solids are in. C ref: `SpawnItem`.
+    pub fn spawn_item(&mut self, key: EntityKey, item: usize) {
+        let flags = self.items.get(item).map_or(0, world_model_flags);
+        let time = self.level.time;
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        if ent.game.spawnflags != 0 && ent.game.classname != "key_power_cube" {
+            tracing::debug!(classname = %ent.game.classname, "item has invalid spawnflags set");
+            ent.game.spawnflags = 0;
+        }
+        ent.game.item = Some(item);
+        ent.game.nextthink = time + 2.0 * FRAMETIME; // items start after other solids
+        ent.think = Some(droptofloor);
+        ent.state.effects = flags;
+        ent.state.renderfx = q2_shared::constants::RF_GLOW;
+    }
+}
+
+/// C ref: `droptofloor`.
+pub fn droptofloor(world: &mut GameWorld, key: EntityKey) {
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.mins = Vec3f::splat(-15.0);
+    ent.maxs = Vec3f::splat(15.0);
+    let model = if ent.game.model.is_empty() {
+        let world_model = ent.game.item.and_then(|i| world.items.get(i));
+        world_model.map_or("", |it| it.world_model).to_string()
+    } else {
+        ent.game.model.clone()
+    };
+    world.set_model(key, &model);
+
+    let Some(number) = world.number_of(key) else {
+        return;
+    };
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.solid = Solid::Trigger;
+    ent.game.movetype = MoveType::Toss;
+    ent.touch = Some(touch_item);
+    let (origin, mins, maxs) = (ent.state.origin, ent.mins, ent.maxs);
+    let dest = origin + Vec3f::new(0.0, 0.0, -128.0);
+    let tr = world.gi.trace(
+        origin,
+        mins,
+        maxs,
+        dest,
+        Some(number),
+        q2_shared::constants::MASK_SOLID,
+    );
+    if tr.startsolid {
+        tracing::debug!(?origin, "droptofloor: startsolid");
+        world.free_entity(key);
+        return;
+    }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.state.origin = tr.endpos;
+    if ent.game.spawnflags & ITEM_NO_TOUCH != 0 {
+        ent.solid = Solid::Bbox;
+        ent.touch = None;
+        ent.state.effects &= !q2_shared::constants::EF_ROTATE;
+        ent.state.renderfx &= !q2_shared::constants::RF_GLOW;
+    }
+    if ent.game.spawnflags & ITEM_TRIGGER_SPAWN != 0 {
+        ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
+        ent.solid = Solid::Not;
+        ent.use_fn = Some(use_item);
+    }
+    world.link_entity(key);
+}
+
+/// A trigger-spawned item appears. C ref: `Use_Item`.
+pub fn use_item(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
+    ent.use_fn = None;
+    if ent.game.spawnflags & ITEM_NO_TOUCH != 0 {
+        ent.solid = Solid::Bbox;
+        ent.touch = None;
+    } else {
+        ent.solid = Solid::Trigger;
+        ent.touch = Some(touch_item);
+    }
+    world.link_entity(key);
+}
+
+/// C ref: `Touch_Item` (single player: no deathmatch instant use, no coop
+/// stay; sounds and the pickup HUD flash are not ported).
+pub fn touch_item(
+    world: &mut GameWorld,
+    key: EntityKey,
+    other: EntityKey,
+    _plane: Option<&Plane>,
+    _surf: Option<&Surface>,
+) {
+    let Some(o) = world.entities.get(other) else {
+        return;
+    };
+    if o.client.is_none() || o.game.health < 1 {
+        return; // dead people can't pick up
+    }
+    let pickup = world
+        .entities
+        .get(key)
+        .and_then(|e| e.game.item)
+        .and_then(|i| world.items.get(i))
+        .and_then(|it| it.pickup);
+    let Some(pickup) = pickup else {
+        return; // not a grabbable item
+    };
+    let taken = pickup(world, key, other);
+
+    let targets_used = world
+        .entities
+        .get(key)
+        .is_none_or(|e| e.game.spawnflags & ITEM_TARGETS_USED != 0);
+    if !targets_used {
+        world.use_targets(key, other);
+        if let Some(e) = world.entities.get_mut(key) {
+            e.game.spawnflags |= ITEM_TARGETS_USED;
+        }
+    }
+    if !taken {
+        return;
+    }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    if ent.game.flags.contains(EntityFlags::RESPAWN) {
+        ent.game.flags.remove(EntityFlags::RESPAWN);
+    } else {
+        world.free_entity(key);
+    }
 }
 
 // ==========================================================================
@@ -1119,6 +1300,125 @@ impl GameWorld {
 mod tests {
     use super::*;
     use crate::world::test_world;
+
+    use q2_shared::constants::{EF_ROTATE, RF_GLOW};
+    use q2_shared::types::{Solid, Trace};
+
+    fn spawned(entities: &str) -> (GameWorld, std::rc::Rc<crate::world::MockGameImport>) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "t",
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{entities}"),
+            "",
+        );
+        (world, gi)
+    }
+
+    fn player(world: &mut GameWorld, health: i32) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.client = Some(crate::entity::ClientData::default());
+        ent.game.health = health;
+        ent.game.max_health = 100;
+        key
+    }
+
+    #[test]
+    fn map_item_drops_to_the_floor_on_its_second_frame_with_its_world_model() {
+        let (mut world, gi) =
+            spawned("{ \"classname\" \"weapon_shotgun\" \"origin\" \"0 0 100\" }");
+        let key = world
+            .find_by_classname(None, "weapon_shotgun")
+            .expect("items spawn");
+        world.run_frame();
+        assert_eq!(
+            world.entities.get(key).unwrap().state.modelindex,
+            0,
+            "not yet"
+        );
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 0.5,
+            endpos: Vec3f::new(0.0, 0.0, 15.0),
+            ..Default::default()
+        });
+        world.run_frame();
+        let ent = world.entities.get(key).unwrap();
+        let index = ent.state.modelindex as usize;
+        assert_eq!(
+            gi.models.borrow()[index - 1],
+            "models/weapons/g_shotg/tris.md2"
+        );
+        assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 15.0));
+        assert_eq!(ent.solid, Solid::Trigger);
+        assert_eq!(
+            (ent.mins, ent.maxs),
+            (Vec3f::splat(-15.0), Vec3f::splat(15.0))
+        );
+        assert_eq!(ent.state.effects & EF_ROTATE, EF_ROTATE);
+        assert_eq!(ent.state.renderfx & RF_GLOW, RF_GLOW);
+    }
+
+    #[test]
+    fn item_stuck_in_solid_is_removed() {
+        let (mut world, gi) = spawned("{ \"classname\" \"ammo_shells\" }");
+        let key = world.find_by_classname(None, "ammo_shells").unwrap();
+        world.run_frame();
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            startsolid: true,
+            ..Default::default()
+        });
+        world.run_frame();
+        assert!(!world.entities.get(key).is_some_and(|e| e.in_use));
+    }
+
+    #[test]
+    fn health_items_spawn_with_their_model_and_amount() {
+        let (mut world, gi) = spawned("{ \"classname\" \"item_health_large\" }");
+        let key = world.find_by_classname(None, "item_health_large").unwrap();
+        run_frames(&mut world, 2);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.count, 25);
+        let index = ent.state.modelindex as usize;
+        assert_eq!(
+            gi.models.borrow()[index - 1],
+            "models/items/healing/large/tris.md2"
+        );
+        assert_eq!(ent.state.effects & EF_ROTATE, 0, "health does not spin");
+    }
+
+    fn run_frames(world: &mut GameWorld, n: usize) {
+        for _ in 0..n {
+            world.run_frame();
+        }
+    }
+
+    #[test]
+    fn touching_an_item_picks_it_up_fires_its_targets_and_removes_it() {
+        let (mut world, _gi) = spawned(concat!(
+            "{ \"classname\" \"weapon_shotgun\" \"target\" \"t\" }\n",
+            "{ \"classname\" \"info_notnull\" \"targetname\" \"t\" }",
+        ));
+        let item = world.find_by_classname(None, "weapon_shotgun").unwrap();
+        run_frames(&mut world, 2);
+        let p = player(&mut world, 100);
+        let touch = world.entities.get(item).unwrap().touch.expect("Touch_Item");
+        touch(&mut world, item, p, None, None);
+        let index = world.find_item("weapon_shotgun").unwrap();
+        let client = world.entities.get(p).unwrap().client.as_ref().unwrap();
+        assert_eq!(client.pers.inventory[index], 1);
+        assert!(!world.entities.get(item).is_some_and(|e| e.in_use));
+    }
+
+    #[test]
+    fn dead_players_cannot_pick_items_up() {
+        let (mut world, _gi) = spawned("{ \"classname\" \"weapon_shotgun\" }");
+        let item = world.find_by_classname(None, "weapon_shotgun").unwrap();
+        run_frames(&mut world, 2);
+        let p = player(&mut world, 0);
+        touch_item(&mut world, item, p, None, None);
+        assert!(world.entities.get(item).is_some_and(|e| e.in_use));
+    }
 
     #[test]
     fn item_list_has_correct_count() {

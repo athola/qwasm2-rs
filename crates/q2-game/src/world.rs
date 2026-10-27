@@ -435,6 +435,9 @@ impl GameImport for MockGameImport {
         0
     }
     fn set_model(&self, _: usize, name: &str) -> ModelInfo {
+        if name.is_empty() {
+            return ModelInfo::default();
+        }
         if let Some(n) = name.strip_prefix('*').and_then(|n| n.parse::<i32>().ok()) {
             return ModelInfo {
                 index: n + 1,
@@ -619,7 +622,27 @@ impl GameWorld {
                 None => continue,
             };
 
-            // Try spawn table first.
+            // C ED_CallSpawn: items first (health has its own spawns), then
+            // the spawn table.
+            let item = match crate::items::health_spawn(&classname) {
+                Some(_) => self.find_item_by_name("Health"),
+                None => self.find_item(&classname),
+            };
+            if let Some(item) = item {
+                let Some(key) = self.entities.spawn() else {
+                    break; // Storage full.
+                };
+                if let Some(ent) = self.entities.get_mut(key) {
+                    crate::spawn::apply_spawn_fields(ent, fields);
+                    if let Some((model, count)) = crate::items::health_spawn(&classname) {
+                        ent.game.model = model.to_string();
+                        ent.game.count = count;
+                    }
+                }
+                self.spawn_item(key, item);
+                continue;
+            }
+
             let spawn_fn = self.spawn_table.get(&classname).copied();
 
             if let Some(sfn) = spawn_fn {

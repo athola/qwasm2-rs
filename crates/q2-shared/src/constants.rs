@@ -27,6 +27,18 @@ pub const CONTENTS_DEADMONSTER: i32 = 0x0400_0000;
 pub const MASK_PLAYERSOLID: i32 =
     CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW | CONTENTS_MONSTER;
 pub const MASK_DEADSOLID: i32 = CONTENTS_SOLID | CONTENTS_PLAYERCLIP | CONTENTS_WINDOW;
+pub const MASK_SOLID: i32 = CONTENTS_SOLID | CONTENTS_WINDOW;
+
+// entity_state_t effects and refresh flags (shared.h)
+/// Bonus items spin.
+pub const EF_ROTATE: u32 = 0x0000_0001;
+/// Drawn only through a mirror or third-person camera: the viewer's own body.
+pub const RF_VIEWERMODEL: i32 = 2;
+pub const RF_WEAPONMODEL: i32 = 4;
+pub const RF_FULLBRIGHT: i32 = 8;
+pub const RF_TRANSLUCENT: i32 = 32;
+/// Pulse lighting for bonus items.
+pub const RF_GLOW: i32 = 512;
 
 // Network
 pub const MAX_MSGLEN: usize = 1400;
@@ -122,6 +134,17 @@ mod tests {
         assert_eq!(CONTENTS_DEADMONSTER, 0x0400_0000);
         assert_eq!(MASK_PLAYERSOLID, 0x0201_0003);
         assert_eq!(MASK_DEADSOLID, 0x0001_0003);
+        assert_eq!(MASK_SOLID, 3);
+    }
+
+    #[test]
+    fn render_flags_match_c_shared_h() {
+        assert_eq!(EF_ROTATE, 1);
+        assert_eq!(RF_VIEWERMODEL, 2);
+        assert_eq!(RF_WEAPONMODEL, 4);
+        assert_eq!(RF_FULLBRIGHT, 8);
+        assert_eq!(RF_TRANSLUCENT, 32);
+        assert_eq!(RF_GLOW, 512);
     }
 
     #[test]
