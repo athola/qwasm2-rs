@@ -7,13 +7,13 @@ Quake 2 engine rewrite in Rust, targeting WebAssembly.
 Loads real Quake 2 game data (PAK files, BSP maps), renders with
 WebGL2, and runs player movement in the browser.
 
-> **Status: alpha.** The browser build loads demo maps, renders BSP
-> geometry, and supports first-person movement (a simplified
-> `PlayerController`; the pmove port is not wired in yet). Game logic
-> (Phase 2) is implemented and tested in `q2-game`: physics, combat, 42
-> items, 11 weapons, 20 monster types, and AI, but nothing runs it in the
-> browser yet. The server frame loop and Q2 wire-protocol delta machinery
-> are implemented and exercised by tests. Expect breaking changes.
+> **Status: alpha.** The browser build loads a demo map into an
+> in-process server running the full game logic (`q2-game`: physics,
+> combat, items, weapons, AI, 20 monster types) and moves the player with
+> the C pmove port through the server's collision. The renderer draws only
+> the world, so monsters and items are not visible yet; brush entities
+> (doors, platforms) have no collision and triggers do not fire on the
+> player (#12). Expect breaking changes.
 
 ## Progress
 
@@ -22,7 +22,7 @@ WebGL2, and runs player movement in the browser.
 | CP-0 Scaffold | Workspace compiles to WASM | done |
 | CP-1 Types & Physics | Types serialize, collision traces pass | done |
 | CP-2 Game Logic | Entity spawn, GameExport trait, AI frame | done |
-| CP-3 Server | Frame loop runs; GameImport bridge exercised by integration tests (no entry point runs the server yet) | done |
+| CP-3 Server | Frame loop runs the game; map loading, SV_Trace and entity links; the browser runs it in-process | done |
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | next |
 | CP-5b Playable | WASD + mouselook, HUD, rendered world | — |
@@ -33,16 +33,15 @@ WebGL2, and runs player movement in the browser.
 - 14-crate Cargo workspace with strict dependency DAG
   (compiler-enforced subsystem boundaries)
 - BSP map loading and rendering via WebGL2 / GLES3
-- Player movement: the browser uses `PlayerController`, a simplified
-  mover. A port of the original C `pmove` exists in q2-common but is not
-  wired in yet (tracked in #12 and #19)
+- Player movement: C `pmove` in `ClientThink`, tracing through the
+  server's map and linked entities
 - `PakReader` trait with lazy WASM backend — avoids copying the full
   PAK (~100 MB) into linear memory until individual assets are requested
 - Q2 wire-protocol delta machinery: `parse_frame`, player-state delta,
   packet-entity delta (30 tests)
 - Server frame loop with `GameImport`/`GameExport` traits replacing C
-  function-pointer tables (exercised by integration tests; not yet used
-  by the browser entry point)
+  function-pointer tables; the browser runs server and game in one process
+  (`q2_server::local::LocalGame`)
 - Single-file HTML bundle (`dist/qwasm2.html`) — no install needed
   for end users
 - Automatic demo game data download (`make gamedata`)
@@ -145,7 +144,7 @@ function-pointer tables and backend coupling:
 | `q2-server` | Server state, frame loop, world | q2-shared, q2-common, q2-game |
 | `q2-client` | Client state, parsing, input, view | q2-shared, q2-common |
 | `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-common |
-| `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-game, q2-client, q2-render-api, q2-render, q2-platform |
+| `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-game, q2-server, q2-client, q2-render-api, q2-render, q2-platform |
 | `q2-net` | Placeholder for P2P networking (WebRTC via Matchbox, #22) | none |
 | `q2-bin` | Placeholder for a native binary | none |
 | `q2-devserver` | Axum dev server for local development (Brotli content negotiation) | none |

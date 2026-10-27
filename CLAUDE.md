@@ -28,7 +28,7 @@ q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-r
 ### Key boundaries
 - **Renderer**: `q2-render-api::Renderer` trait. Backends implement it.
 - **Game logic**: `q2-game::traits::GameImport/GameExport` traits replace C function-pointer tables.
-- **Player movement**: `q2-common::player_ctrl::PlayerController` (simplified mover used by the browser). The faithful `q2-common::pmove` port is not wired in yet (#12, #19).
+- **Player movement**: `q2-common::pmove`, run by the game's `ClientThink` with traces through `q2-server::ServerGameImport` (C `SV_Trace`). The browser runs server and game in-process via `q2-server::local::LocalGame`.
 - **Platform**: `q2-platform` — WASM-specific code gated on `cfg(target_arch = "wasm32")`.
 
 ### q2-game patterns

@@ -72,12 +72,13 @@ Engine       q2-game         -> q2-shared, q2-common
              q2-render       -> q2-shared, q2-common, q2-render-api
              q2-server       -> q2-shared, q2-common, q2-game
 Adapter      q2-platform     -> q2-common
-Entry point  q2-wasm         -> q2-shared, q2-common, q2-game, q2-client,
-                                q2-render-api, q2-render, q2-platform
+Entry point  q2-wasm         -> q2-shared, q2-common, q2-game, q2-server,
+                                q2-client, q2-render-api, q2-render,
+                                q2-platform
 ```
 
 q2-common and q2-render-api are siblings: neither depends on the other.
-q2-server is not yet used by an entry point. q2-bin, q2-net and the tools
+q2-bin, q2-net and the tools
 (q2-devserver, q2-bundler, q2-pak-repack) have no workspace dependencies.
 
 ### Entity Storage
@@ -134,6 +135,12 @@ client decoder together. ADR-005 holds the parity rules.
   both the collision and render loaders; collision owns the entity string.
 - **Unsafe** now exists only in q2-render (8 blocks), after the q2-platform
   `unsafe impl`s were removed.
+- **Game boundary.** `GameExport::init` takes no import; the game holds an
+  `Rc<dyn GameImport>` from construction and client calls take entity
+  numbers (`slot + 1`). `GameImport::link_entity` takes an `EntityLink`,
+  since the server cannot read the game's entities as C reads `edict_t`.
+- **q2-wasm depends on q2-server**, running server and game in-process
+  through `LocalGame`.
 
 ## Review Triggers
 

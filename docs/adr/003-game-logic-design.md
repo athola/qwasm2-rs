@@ -55,17 +55,24 @@ anti-cheat. Deferred with issues: full monster attack and pain animations
 
 ## Current state (2026-10-26)
 
-q2-game has about 13,000 lines and 233 tests; CP-2 passes. Two entry points
-exist side by side: `GameLogic` is a small `GameExport` implementation that
-q2-server drives in its integration tests, and `GameWorld` is the full game,
-exercised by its own tests through `MockGameImport`. `GameWorld` does not yet
-implement `GameExport`, so neither the server nor the browser runs the full
-game; connecting it is part of #18 and #23.
+`GameWorld` implements `GameExport` and is the only game: q2-server drives
+it, and the browser runs it in-process through `q2_server::local::LocalGame`.
+Entities carry C edict numbers (0 the world, `1..=maxclients` the clients,
+`G_Spawn`'s reuse rule for the rest) so `GameImport` calls and trace results
+name entities the way C does. The game passes the import `EntityLink`s
+(`SV_LinkEdict`'s inputs) and the server clips traces against them.
+`ClientThink` runs pmove; spawning follows `ED_ParseEdict`,
+`SelectSpawnPoint` and `PutClientInServer`.
+
+Not yet ported: pmove's touch list and `G_TouchTriggers` (triggers don't
+fire on the player), the ground entity's identity, `gi.setmodel` for brush
+entities (doors and platforms have no bounds), and the per-type spawn
+details tracked in #11, #14 and #16.
 
 ## Consequences
 
 Callbacks taking `&mut GameWorld` keep game code safe Rust without
 `RefCell` webs, at the price of entity lookups by key in every callback.
-Holding the engine callbacks inside `GameWorld` differs from the
-`GameExport::init(&dyn GameImport)` shape used by `GameLogic`; whichever
-integration lands must settle on one.
+The engine callbacks are an `Rc<dyn GameImport>` held from construction,
+so a pmove trace closure can hold its own handle while game code borrows
+`&mut self`; the server shares the same `Rc<ServerGameImport>`.

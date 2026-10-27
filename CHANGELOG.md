@@ -5,6 +5,11 @@ All notable changes to qwasm2-rs are documented here.
 ## [Unreleased]
 
 ### Changed (breaking)
+- `GameExport::init` takes no import (`GameWorld::new` receives an
+  `Rc<dyn GameImport>`), client calls take entity numbers, and
+  `GameImport::link_entity` takes an `EntityLink`; `GameLogic`,
+  `PlayerController` and `q2_game::spawn::find_player_start` are removed
+- `Server::map` takes the BSP bytes, the import and the game
 - Entity and usercmd encoding now match C protocol 34 byte for byte (8-bit
   entity angles, FRAME8/FRAME16 as in C, `event` sent whenever non-zero,
   usercmd `msec`/`lightlevel` written last); new entities delta from
@@ -26,6 +31,15 @@ All notable changes to qwasm2-rs are documented here.
   `BspData::entities` is gone (use `CollisionMap::entity_string`)
 
 ### Added
+- The browser runs an in-process server with the full game
+  (`q2_server::local::LocalGame`): the map's entities spawn and think, and
+  the player moves with pmove in `ClientThink` through `SV_Trace`
+- `ServerGameImport` loads the map and implements C `SV_Trace`,
+  `SV_PointContents`, entity linking and `SV_FindIndex`;
+  `Server::map` follows `SV_SpawnServer`
+- Entities carry C edict numbers with `G_Spawn` reuse and `G_FreeEdict`
+  soft-free; spawning applies `ED_ParseEdict` fields and
+  `SelectSpawnPoint`
 - `CollisionMap::world_trace`, which reports the world entity on a hit
   like C CL_PMTrace, and `clip_move_to_entities` (C CL_ClipMoveToEntities)
   for client-side clipping against frame entities; unwired until client

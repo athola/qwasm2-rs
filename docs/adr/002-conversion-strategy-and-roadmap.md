@@ -70,20 +70,22 @@ and a native SDL2 backend are planned but have no code or dependencies yet.
 | 0 Scaffolding | Done |
 | 1 Common layer | Done: types, cvars, commands, net_msg, filesystem, collision, pmove, netchan |
 | 2 Game logic | Core done, see ADR-003; gaps #14-#17 |
-| 3 Server | CP-3 reached; map loading #11, frame loop #10, entity links #9/#31 open |
+| 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
 | 5 Renderer | Flat-shaded BSP world renders; textures and lightmaps open (#20) |
 | 6 WASM platform | Game loop, pointer lock, input and resize done; saves open (#21) |
 | 7 P2P networking | Not started (#22) |
-| 8 Integration | Not started (#23) |
+| 8 Integration | Server and game run in-process in the browser (`LocalGame`); networking open (#23) |
 
-The browser build moves the player with a simplified `PlayerController`, not
-the pmove port (#12, #19), and does not yet run the game logic or the server.
+The browser build runs the server and the full game in one process and
+moves the player with the pmove port through the server's traces. Still
+missing in play: entity rendering, brush-entity collision (the game never
+calls `set_model`), and trigger touches (#12).
 
 ## Consequences
 
 Each phase is reviewable and testable on its own, and checkpoints catch
-regressions at phase boundaries. The cost is that several subsystems exist
-before anything drives them: the server, the pmove port and the full game
-logic are tested but not yet part of the browser loop, so tests rather than
-play carry most of the verification until Phase 8.
+regressions at phase boundaries. The cost is that subsystems can exist
+before anything drives them; the client delta parser and the networking
+layers are tested but not yet part of the browser loop, so tests rather
+than play carry their verification until Phase 7 and 8.
