@@ -18,7 +18,8 @@ impl ClientState {
     ///
     /// Returns `Q2Error::Drop` where C `CL_ParseServerMessage` would raise
     /// ERR_DROP: an illegible opcode, out-of-place frame data, a malformed
-    /// frame, or reading past the end of the message. Parsing stops at the
+    /// frame, a configstring index out of range, or reading past the end
+    /// of the message. Parsing stops at the
     /// first error, since the rest of the stream can no longer be trusted.
     pub fn parse_server_message(&mut self, msg: &mut NetMsg) -> Q2Result<()> {
         loop {
@@ -33,7 +34,7 @@ impl ClientState {
 
             match op {
                 Ok(SvcOp::ServerData) => self.parse_server_data(msg)?,
-                Ok(SvcOp::ConfigString) => self.parse_config_string(msg),
+                Ok(SvcOp::ConfigString) => self.parse_config_string(msg)?,
                 Ok(SvcOp::SpawnBaseline) => self.parse_baseline(msg),
                 Ok(SvcOp::Print) => self.parse_print(msg),
                 Ok(SvcOp::StuffText) => self.parse_stufftext(msg),
@@ -121,23 +122,17 @@ impl ClientState {
         Ok(())
     }
 
-    fn parse_config_string(&mut self, msg: &mut NetMsg) {
+    fn parse_config_string(&mut self, msg: &mut NetMsg) -> Q2Result<()> {
         let index = msg.read_short();
         let value = msg.read_string();
-        if index < 0 {
-            tracing::warn!("Configstring: negative index {}", index);
-            return;
+        match usize::try_from(index)
+            .ok()
+            .and_then(|i| self.configstrings.get_mut(i))
+        {
+            Some(slot) => *slot = value,
+            None => q2_drop!("configstring > MAX_CONFIGSTRINGS ({index})"),
         }
-        let index = index as usize;
-        if index < self.configstrings.len() {
-            self.configstrings[index] = value;
-        } else {
-            tracing::warn!(
-                "Configstring: index {} out of range (max {})",
-                index,
-                self.configstrings.len()
-            );
-        }
+        Ok(())
     }
 
     /// Parse a SpawnBaseline message: entity bits + full delta from null state.
@@ -732,18 +727,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_string_oob_index_ignored() {
+    fn parse_config_string_oob_index_is_err_drop_like_c() {
         let mut cs = ClientState::default();
-        let original_len = cs.configstrings.len();
-
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::ConfigString as i32);
-        msg.write_short(MAX_CONFIGSTRINGS as i32 + 100);
-        msg.write_string("should_be_ignored");
+        msg.write_short(MAX_CONFIGSTRINGS as i32);
+        msg.write_string("should_be_rejected");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg).expect("valid message");
-        assert_eq!(cs.configstrings.len(), original_len);
+        assert!(cs.parse_server_message(&mut msg).is_err());
+        assert!(cs.configstrings.iter().all(|s| s.is_empty()));
     }
 
     #[test]
@@ -876,15 +869,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_string_negative_index_ignored() {
+    fn parse_config_string_negative_index_is_err_drop_like_c() {
         let mut cs = ClientState::default();
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::ConfigString as i32);
         msg.write_short(-1);
-        msg.write_string("should_be_ignored");
+        msg.write_string("should_be_rejected");
         msg.begin_reading();
 
-        cs.parse_server_message(&mut msg).expect("valid message");
+        assert!(cs.parse_server_message(&mut msg).is_err());
         assert!(cs.configstrings.iter().all(|s| s.is_empty()));
     }
 

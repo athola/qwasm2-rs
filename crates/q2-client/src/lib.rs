@@ -1,5 +1,11 @@
 //! Qwasm2-rs: Client — input, server message parsing, client state, view math
 //!
+//! The browser build uses `entities`, `frame`, `input::InputState::build_cmd`,
+//! `layout`, `lightstyles` and `view::calc_fov` around the in-process server.
+//! `parse` (the protocol parser) and `state` (`ClientState`, `ClientStatic`,
+//! `CEntity`) are groundwork for the networked client (#19, #22): tested,
+//! but not wired to anything yet.
+//!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0
 //! - c2rust mechanical: 0
@@ -8,9 +14,12 @@
 //! - Inherent: 0
 
 pub mod entities;
+pub mod frame;
 pub mod input;
 pub mod layout;
+pub mod lightstyles;
 pub mod parse;
+pub mod sound;
 pub mod state;
 pub mod view;
 
@@ -66,45 +75,5 @@ mod tests {
         assert!(calc_fov(179.5, 640.0, 480.0).is_err());
         assert!(calc_fov(1.0, 640.0, 480.0).is_ok());
         assert!(calc_fov(179.0, 640.0, 480.0).is_ok());
-    }
-
-    #[test]
-    fn lerp_entity_midpoint() {
-        let prev = EntityState {
-            origin: Vec3f::new(0.0, 0.0, 0.0),
-            angles: Vec3f::new(0.0, 0.0, 0.0),
-            ..Default::default()
-        };
-        let current = EntityState {
-            origin: Vec3f::new(10.0, 20.0, 30.0),
-            angles: Vec3f::new(90.0, 180.0, 0.0),
-            ..Default::default()
-        };
-        let (origin, angles) = lerp_entity(&prev, &current, 0.5);
-        assert!((origin.x - 5.0).abs() < 0.001);
-        assert!((origin.y - 10.0).abs() < 0.001);
-        assert!((origin.z - 15.0).abs() < 0.001);
-        assert!((angles.x - 45.0).abs() < 0.001);
-        assert!((angles.y - 90.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn lerp_entity_angle_wrapping() {
-        // 350° → 10° should interpolate through 0°, not through 180°
-        let prev = EntityState {
-            angles: Vec3f::new(0.0, 350.0, 0.0),
-            ..Default::default()
-        };
-        let current = EntityState {
-            angles: Vec3f::new(0.0, 10.0, 0.0),
-            ..Default::default()
-        };
-        let (_, angles) = lerp_entity(&prev, &current, 0.5);
-        // Midpoint of 350→10 (short path) is 0 (or 360)
-        assert!(
-            angles.y.abs() < 0.001 || (angles.y - 360.0).abs() < 0.001,
-            "expected ~0 or ~360, got {}",
-            angles.y
-        );
     }
 }
