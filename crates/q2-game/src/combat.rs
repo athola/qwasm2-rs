@@ -134,7 +134,7 @@ impl GameWorld {
 
     /// The power armor a player has switched on: the shield if carried,
     /// else the screen. C ref: `PowerArmorType` (g_items.c).
-    fn power_armor_type(&self, key: EntityKey) -> i32 {
+    pub(crate) fn power_armor_type(&self, key: EntityKey) -> i32 {
         let switched_on = self
             .entities
             .get(key)
@@ -423,6 +423,33 @@ impl GameWorld {
             take = 0;
         }
 
+        // Check for invulnerability.
+        let framenum = self.level.framenum;
+        let invincible = self
+            .client(target)
+            .is_some_and(|c| c.invincible_framenum > framenum);
+        if invincible && !dflags.contains(DamageFlags::NO_PROTECTION) {
+            let time = self.level.time;
+            let due = self
+                .entities
+                .get_mut(target)
+                .filter(|e| e.game.pain_debounce_time < time)
+                .map(|e| e.game.pain_debounce_time = time + 2.0)
+                .is_some();
+            if due {
+                let protect4 = self.gi.sound_index("items/protect4.wav");
+                self.gi.sound(
+                    self.number_of(target),
+                    CHAN_ITEM,
+                    protect4,
+                    1.0,
+                    ATTN_NORM,
+                    0.0,
+                );
+            }
+            take = 0;
+        }
+
         take -= self.check_power_armor(target, point, take, dflags);
         // Apply armor (if not god mode).
         if take > 0 {
@@ -676,6 +703,48 @@ mod tests {
     use crate::world::test_world;
 
     // -- can_damage tests --
+
+    #[test]
+    fn an_invulnerable_player_takes_nothing_and_hears_protect4_every_2_seconds() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        world.level.time = 10.0;
+        world.client_mut(key).unwrap().invincible_framenum = 200;
+        let hit = |world: &mut GameWorld, flags| {
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                30,
+                0,
+                flags,
+                MeansOfDeath::Unknown,
+            )
+        };
+        hit(&mut world, DamageFlags::empty());
+        hit(&mut world, DamageFlags::empty());
+        assert_eq!(world.entities.get(key).unwrap().game.health, 100);
+        let protect4 = world.gi.sound_index("items/protect4.wav");
+        let heard = gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .filter(|c| c.2 == protect4)
+            .count();
+        assert_eq!(heard, 1, "debounced");
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            12.0
+        );
+
+        hit(&mut world, DamageFlags::NO_PROTECTION);
+        assert_eq!(world.entities.get(key).unwrap().game.health, 70);
+    }
 
     #[test]
     fn can_damage_with_a_clear_line_of_sight() {

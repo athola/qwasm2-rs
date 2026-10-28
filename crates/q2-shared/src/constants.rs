@@ -77,6 +77,12 @@ pub const RF_DEPTHHACK: i32 = 16;
 pub const RF_TRANSLUCENT: i32 = 32;
 /// Pulse lighting for bonus items.
 pub const RF_GLOW: i32 = 512;
+pub const RF_SHELL_RED: i32 = 1024;
+pub const RF_SHELL_GREEN: i32 = 2048;
+pub const RF_SHELL_BLUE: i32 = 4096;
+pub const RF_IR_VISIBLE: i32 = 0x0000_8000;
+/// `rdflags`: the view is under water, slime or lava.
+pub const RDF_UNDERWATER: i32 = 1;
 pub const RF_FRAMELERP: i32 = 64;
 pub const RF_BEAM: i32 = 128;
 /// Leave a blood trail.
@@ -87,6 +93,12 @@ pub const EF_ROCKET: u32 = 0x0000_0010;
 pub const EF_GRENADE: u32 = 0x0000_0020;
 pub const EF_HYPERBLASTER: u32 = 0x0000_0040;
 pub const EF_BFG: u32 = 0x0000_0080;
+/// Colour shell (`RF_SHELL_*` picks the colours) and power screen.
+pub const EF_COLOR_SHELL: u32 = 0x0000_0100;
+pub const EF_POWERSCREEN: u32 = 0x0000_0200;
+/// Quad damage and invulnerability glows.
+pub const EF_QUAD: u32 = 0x0000_8000;
+pub const EF_PENT: u32 = 0x0001_0000;
 /// Client-side frame cycling: 0/1 and 2/3 at 2 Hz, all frames at 2 or 10 Hz.
 pub const EF_ANIM01: u32 = 0x0000_0400;
 pub const EF_ANIM23: u32 = 0x0000_0800;

@@ -1719,6 +1719,8 @@ pub fn touch_item(
                     (q2_shared::constants::CS_ITEMS + i) as i16;
             }
             client.pickup_msg_time = time + 3.0;
+            // Flash the screen.
+            client.bonus_alpha = 0.25;
             // Change the selected item.
             if let Some(i) = usable {
                 client.pers.selected_item = i as i32;
@@ -3082,6 +3084,11 @@ mod tests {
         let index = world.find_item("item_quad").unwrap();
         assert_eq!(world.client(key).unwrap().pers.selected_item, index as i32);
         assert!(heard(&gi, &world, "items/pkup.wav"));
+        assert_eq!(
+            world.client(key).unwrap().bonus_alpha,
+            0.25,
+            "the pickup flash"
+        );
     }
 
     #[test]

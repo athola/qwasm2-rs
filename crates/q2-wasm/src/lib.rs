@@ -399,7 +399,7 @@ impl Engine {
             return;
         };
         let (vieworg, viewangles) = self.frames.view(origin, ps, lerpfrac);
-        let stats = ps.stats;
+        let (stats, blend, rdflags) = (ps.stats, ps.blend, ps.rdflags);
         self.mix_sounds(&sounds, &flash_sounds, vieworg, viewangles, lerpfrac);
         let fd = RefDef {
             x: 0,
@@ -419,7 +419,9 @@ impl Engine {
             // C cl.refdef.areabits = cl.frame.areabits: shut area portals
             // hide the world behind them.
             areabits: self.local.area_bits(),
-            ..Default::default()
+            // C CL_CalcViewValues: the server's tint (powerups, liquids).
+            blend,
+            rdflags,
         };
 
         let views = q2_client::entities::entity_views(

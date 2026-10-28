@@ -3,7 +3,15 @@
 
 use q2_shared::types::*;
 
-use crate::constants::DAMAGE_TIME;
+use q2_shared::constants::{
+    CONTENTS_LAVA, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, EF_COLOR_SHELL, EF_PENT,
+    EF_POWERSCREEN, EF_QUAD, RDF_UNDERWATER, RF_IR_VISIBLE, RF_SHELL_BLUE, RF_SHELL_GREEN,
+    RF_SHELL_RED,
+};
+
+use crate::constants::{
+    EntityFlags, ATTN_NORM, CHAN_ITEM, DAMAGE_TIME, POWER_ARMOR_SCREEN, POWER_ARMOR_SHIELD,
+};
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
@@ -53,10 +61,147 @@ impl GameWorld {
     }
 }
 
+/// Mix `rgb` at alpha `a` over `blend`. C ref: `SV_AddBlend`.
+pub fn add_blend(rgb: [f32; 3], a: f32, blend: &mut [f32; 4]) {
+    if a <= 0.0 {
+        return;
+    }
+    let a2 = blend[3] + (1.0 - blend[3]) * a; // new total alpha
+    let a3 = blend[3] / a2; // fraction of color from old
+    for i in 0..3 {
+        blend[i] = blend[i] * a3 + rgb[i] * (1.0 - a3);
+    }
+    blend[3] = a2;
+}
+
+impl GameWorld {
+    /// The full-screen tint: what the eye is in, the running powerup
+    /// (with its warning sound three seconds before it runs out) and the
+    /// pickup flash. C ref: `SV_CalcBlend` (player/view.c); the damage
+    /// flash waits on `P_DamageFeedback`.
+    pub fn calc_blend(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get(key) else {
+            return;
+        };
+        let origin = ent.state.origin;
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        let contents = self.gi.point_contents(origin + client.ps.viewoffset);
+        let framenum = self.level.framenum;
+        let powerup = [
+            (
+                client.quad_framenum,
+                "items/damage2.wav",
+                [0.0, 0.0, 1.0],
+                0.08,
+            ),
+            (
+                client.invincible_framenum,
+                "items/protect2.wav",
+                [1.0, 1.0, 0.0],
+                0.08,
+            ),
+            (
+                client.enviro_framenum,
+                "items/airout.wav",
+                [0.0, 1.0, 0.0],
+                0.08,
+            ),
+            (
+                client.breather_framenum,
+                "items/airout.wav",
+                [0.4, 1.0, 0.4],
+                0.04,
+            ),
+        ]
+        .into_iter()
+        .find(|&(until, ..)| until > framenum);
+        if let Some((until, warning, ..)) = powerup {
+            if until - framenum == 30 {
+                // Beginning to fade.
+                let sound = self.gi.sound_index(warning);
+                self.gi
+                    .sound(self.number_of(key), CHAN_ITEM, sound, 1.0, ATTN_NORM, 0.0);
+            }
+        }
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        let blend = &mut client.ps.blend;
+        *blend = [0.0; 4];
+        if contents & (CONTENTS_LAVA | CONTENTS_SLIME | CONTENTS_WATER) != 0 {
+            client.ps.rdflags |= RDF_UNDERWATER;
+        } else {
+            client.ps.rdflags &= !RDF_UNDERWATER;
+        }
+        if contents & (CONTENTS_SOLID | CONTENTS_LAVA) != 0 {
+            add_blend([1.0, 0.3, 0.0], 0.6, blend);
+        } else if contents & CONTENTS_SLIME != 0 {
+            add_blend([0.0, 0.1, 0.05], 0.6, blend);
+        } else if contents & CONTENTS_WATER != 0 {
+            add_blend([0.5, 0.3, 0.2], 0.4, blend);
+        }
+        if let Some((until, _, rgb, alpha)) = powerup {
+            let remaining = until - framenum;
+            if remaining > 30 || remaining & 4 != 0 {
+                add_blend(rgb, alpha, blend);
+            }
+        }
+        if client.bonus_alpha > 0.0 {
+            add_blend([0.85, 0.7, 0.3], client.bonus_alpha, blend);
+        }
+        client.bonus_alpha = (client.bonus_alpha - 0.1).max(0.0);
+    }
+
+    /// The player's glows: power armor while it absorbs, quad and
+    /// invulnerability (blinking in their last three seconds), and god
+    /// mode's white shell; none when dead or in intermission. C ref:
+    /// `G_SetClientEffects` (player/view.c).
+    pub fn set_client_effects(&mut self, key: EntityKey) {
+        let (time, framenum) = (self.level.time, self.level.framenum);
+        let intermission = self.level.intermission_time != 0.0;
+        let power_armor = self.power_armor_type(key);
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        ent.state.effects = 0;
+        ent.state.renderfx = RF_IR_VISIBLE;
+        if ent.game.health <= 0 || intermission {
+            return;
+        }
+        if ent.game.powerarmor_time > time {
+            if power_armor == POWER_ARMOR_SCREEN {
+                ent.state.effects |= EF_POWERSCREEN;
+            } else if power_armor == POWER_ARMOR_SHIELD {
+                ent.state.effects |= EF_COLOR_SHELL;
+                ent.state.renderfx |= RF_SHELL_GREEN;
+            }
+        }
+        let glows = |until: i32| {
+            let remaining = until - framenum;
+            until > framenum && (remaining > 30 || remaining & 4 != 0)
+        };
+        if glows(client.quad_framenum) {
+            ent.state.effects |= EF_QUAD;
+        }
+        if glows(client.invincible_framenum) {
+            ent.state.effects |= EF_PENT;
+        }
+        // Show cheaters.
+        if ent.game.flags.contains(EntityFlags::GODMODE) {
+            ent.state.effects |= EF_COLOR_SHELL;
+            ent.state.renderfx |= RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::add_blend;
     use crate::constants::DAMAGE_TIME;
-    use crate::world::test_world;
+    use crate::entity::EntityKey;
+    use crate::world::{test_world, GameWorld};
     use q2_shared::types::Vec3f;
 
     #[test]
@@ -120,6 +265,172 @@ mod tests {
             world.client(key).unwrap().ps.kick_angles.x,
             0.0,
             "past: no kick"
+        );
+    }
+
+    use q2_shared::constants::*;
+
+    fn player_in(world: &mut GameWorld) -> EntityKey {
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        key
+    }
+
+    fn effects(world: &GameWorld, key: EntityKey) -> (u32, i32) {
+        let ent = world.entities.get(key).unwrap();
+        (ent.state.effects, ent.state.renderfx)
+    }
+
+    #[test]
+    fn quad_and_invulnerability_glow_and_blink_in_their_last_3_seconds() {
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().quad_framenum = 131;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key), (EF_QUAD, RF_IR_VISIBLE));
+        // remaining 30: & 4 is 4, on; remaining 27: & 4 is 0, off.
+        world.client_mut(key).unwrap().quad_framenum = 130;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, EF_QUAD);
+        world.client_mut(key).unwrap().quad_framenum = 127;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, 0);
+
+        world.client_mut(key).unwrap().invincible_framenum = 200;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, EF_PENT);
+    }
+
+    #[test]
+    fn absorbing_power_armor_shows_a_screen_or_a_green_shell() {
+        let mut world = test_world();
+        world.init_items();
+        let key = player_in(&mut world);
+        world.level.time = 5.0;
+        let cells = world.find_item_by_name("Cells").unwrap();
+        let screen = world.find_item_by_name("Power Screen").unwrap();
+        let shield = world.find_item_by_name("Power Shield").unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.flags |= crate::constants::EntityFlags::POWER_ARMOR;
+        ent.game.powerarmor_time = 5.2;
+        let client = world.client_mut(key).unwrap();
+        client.pers.inventory[cells] = 10;
+        client.pers.inventory[screen] = 1;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, EF_POWERSCREEN);
+        world.client_mut(key).unwrap().pers.inventory[shield] = 1;
+        world.set_client_effects(key);
+        assert_eq!(
+            effects(&world, key),
+            (EF_COLOR_SHELL, RF_IR_VISIBLE | RF_SHELL_GREEN)
+        );
+        world.level.time = 6.0;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, 0, "only while it absorbs");
+    }
+
+    #[test]
+    fn god_mode_shows_a_white_shell_and_the_dead_show_nothing() {
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        world.entities.get_mut(key).unwrap().game.flags |= crate::constants::EntityFlags::GODMODE;
+        world.set_client_effects(key);
+        assert_eq!(
+            effects(&world, key),
+            (
+                EF_COLOR_SHELL,
+                RF_IR_VISIBLE | RF_SHELL_RED | RF_SHELL_GREEN | RF_SHELL_BLUE
+            )
+        );
+        world.entities.get_mut(key).unwrap().game.health = 0;
+        world.client_mut(key).unwrap().quad_framenum = 500;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key), (0, RF_IR_VISIBLE));
+    }
+
+    #[test]
+    fn add_blend_mixes_colors_by_alpha_like_sv_addblend() {
+        let mut blend = [0.0; 4];
+        add_blend([1.0, 0.0, 0.0], 0.5, &mut blend);
+        assert_eq!(blend, [1.0, 0.0, 0.0, 0.5]);
+        add_blend([0.0, 0.0, 1.0], 0.5, &mut blend);
+        // a2 = 0.5 + 0.5 * 0.5 = 0.75; a3 = 0.5 / 0.75 = 2/3 old.
+        assert!((blend[0] - 2.0 / 3.0).abs() < 1e-6);
+        assert!((blend[2] - 1.0 / 3.0).abs() < 1e-6);
+        assert_eq!(blend[3], 0.75);
+        add_blend([0.0, 1.0, 0.0], 0.0, &mut blend);
+        assert_eq!(blend[3], 0.75, "no alpha, no change");
+    }
+
+    #[test]
+    fn the_view_tints_under_lava_slime_and_water_and_flags_underwater() {
+        for (contents, rgba) in [
+            (CONTENTS_LAVA, [1.0, 0.3, 0.0, 0.6]),
+            (CONTENTS_SLIME, [0.0, 0.1, 0.05, 0.6]),
+            (CONTENTS_WATER, [0.5, 0.3, 0.2, 0.4]),
+        ] {
+            let (mut world, gi) = crate::world::test_world_recording();
+            let key = player_in(&mut world);
+            gi.contents.set(contents);
+            world.calc_blend(key);
+            let client = world.client(key).unwrap();
+            assert_eq!(client.ps.blend, rgba);
+            assert_eq!(client.ps.rdflags & RDF_UNDERWATER, RDF_UNDERWATER);
+        }
+        let (mut world, _) = crate::world::test_world_recording();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER;
+        world.calc_blend(key);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.ps.blend, client.ps.rdflags), ([0.0; 4], 0));
+    }
+
+    #[test]
+    fn powerups_tint_the_view_and_warn_three_seconds_before_running_out() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().quad_framenum = 130;
+        world.calc_blend(key);
+        assert_eq!(world.client(key).unwrap().ps.blend, [0.0, 0.0, 1.0, 0.08]);
+        let fading = world.gi.sound_index("items/damage2.wav");
+        assert!(gi.sound_calls.borrow().iter().any(|c| c.2 == fading));
+
+        for (set, rgb, alpha, warning) in [
+            (1, [1.0, 1.0, 0.0], 0.08, "items/protect2.wav"),
+            (2, [0.0, 1.0, 0.0], 0.08, "items/airout.wav"),
+            (3, [0.4, 1.0, 0.4], 0.04, "items/airout.wav"),
+        ] {
+            let (mut world, gi) = crate::world::test_world_recording();
+            let key = player_in(&mut world);
+            let client = world.client_mut(key).unwrap();
+            match set {
+                1 => client.invincible_framenum = 130,
+                2 => client.enviro_framenum = 130,
+                _ => client.breather_framenum = 130,
+            }
+            world.calc_blend(key);
+            let blend = world.client(key).unwrap().ps.blend;
+            assert_eq!(blend, [rgb[0], rgb[1], rgb[2], alpha], "{warning}");
+            let index = world.gi.sound_index(warning);
+            assert!(gi.sound_calls.borrow().iter().any(|c| c.2 == index));
+        }
+    }
+
+    #[test]
+    fn a_pickup_flashes_the_view_and_fades_by_a_tenth_a_frame() {
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().bonus_alpha = 0.25;
+        world.calc_blend(key);
+        assert_eq!(world.client(key).unwrap().ps.blend, [0.85, 0.7, 0.3, 0.25]);
+        assert!((world.client(key).unwrap().bonus_alpha - 0.15).abs() < 1e-6);
+        world.calc_blend(key);
+        world.calc_blend(key);
+        assert_eq!(
+            world.client(key).unwrap().bonus_alpha,
+            0.0,
+            "not below zero"
         );
     }
 

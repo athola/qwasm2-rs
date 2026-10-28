@@ -1,12 +1,14 @@
 //! Player HUD — stat calculations for health, ammo, armor, weapon icon.
 //! C ref: `player/hud.c` (657 lines)
 
+use crate::constants::{EntityFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE};
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
 use q2_shared::constants::{
-    STAT_ARMOR, STAT_ARMOR_ICON, STAT_FRAGS, STAT_HEALTH, STAT_HEALTH_ICON, STAT_LAYOUTS,
-    STAT_PICKUP_ICON, STAT_PICKUP_STRING, STAT_SELECTED_ICON, STAT_SELECTED_ITEM,
+    STAT_AMMO, STAT_AMMO_ICON, STAT_ARMOR, STAT_ARMOR_ICON, STAT_FRAGS, STAT_HEALTH,
+    STAT_HEALTH_ICON, STAT_LAYOUTS, STAT_PICKUP_ICON, STAT_PICKUP_STRING, STAT_SELECTED_ICON,
+    STAT_SELECTED_ITEM, STAT_TIMER, STAT_TIMER_ICON,
 };
 
 impl GameWorld {
@@ -20,9 +22,41 @@ impl GameWorld {
     }
 
     /// Update player_state_t.stats[] with current HUD values.
-    /// C ref: `G_SetStats` (player/hud.c). Ammo, power armor, powerup
-    /// timers and the help icon wait on the weapon and powerup code (#16).
+    /// C ref: `G_SetStats` (player/hud.c); the help icon is not ported.
     pub fn update_player_stats(&mut self, key: EntityKey) {
+        // Power armor that ran out of cells switches off.
+        let mut power_armor = self.power_armor_type(key);
+        let cells = self
+            .find_item_by_name("Cells")
+            .and_then(|i| self.client(key).map(|c| c.pers.inventory[i]))
+            .unwrap_or(0);
+        if power_armor != POWER_ARMOR_NONE && cells == 0 {
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.flags.remove(EntityFlags::POWER_ARMOR);
+            }
+            let power2 = self.gi.sound_index("misc/power2.wav");
+            self.gi
+                .sound(self.number_of(key), CHAN_ITEM, power2, 1.0, ATTN_NORM, 0.0);
+            power_armor = POWER_ARMOR_NONE;
+        }
+        let ammo = self.client(key).map_or(0, |c| c.ammo_index);
+        let ammo_icon = (ammo != 0)
+            .then(|| self.items.get(ammo))
+            .flatten()
+            .map_or(0, |it| self.gi.image_index(it.icon));
+        let framenum = self.level.framenum;
+        let timer = self.client(key).and_then(|c| {
+            [
+                (c.quad_framenum, "p_quad"),
+                (c.invincible_framenum, "p_invulnerability"),
+                (c.enviro_framenum, "p_envirosuit"),
+                (c.breather_framenum, "p_rebreather"),
+            ]
+            .into_iter()
+            .find(|&(until, _)| until > framenum)
+        });
+        let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
+        let power_icon = self.gi.image_index("i_powershield");
         let armor = self.armor_index(key).map(|i| {
             let icon = self.items[i].icon;
             (self.gi.image_index(icon), i)
@@ -42,7 +76,16 @@ impl GameWorld {
         let stats = &mut client.ps.stats;
         stats[STAT_HEALTH_ICON] = pic_health as i16;
         stats[STAT_HEALTH] = health.max(-99) as i16;
+        let ammo_count = client.pers.inventory[client.ammo_index];
+        stats[STAT_AMMO_ICON] = ammo_icon as i16;
+        stats[STAT_AMMO] = if ammo_icon == 0 { 0 } else { ammo_count as i16 };
+        // Flash between power armor and other armor icon.
+        let show_power = power_armor != POWER_ARMOR_NONE && (armor.is_none() || framenum & 8 != 0);
         match armor {
+            _ if show_power => {
+                stats[STAT_ARMOR_ICON] = power_icon as i16;
+                stats[STAT_ARMOR] = cells as i16;
+            }
             Some((icon, index)) => {
                 stats[STAT_ARMOR_ICON] = icon as i16;
                 stats[STAT_ARMOR] = client.pers.inventory[index] as i16;
@@ -56,6 +99,9 @@ impl GameWorld {
             stats[STAT_PICKUP_ICON] = 0;
             stats[STAT_PICKUP_STRING] = 0;
         }
+        let (timer_icon, timer_left) = timer.unwrap_or((0, 0));
+        stats[STAT_TIMER_ICON] = timer_icon as i16;
+        stats[STAT_TIMER] = timer_left as i16;
         stats[STAT_SELECTED_ICON] = selected_icon as i16;
         stats[STAT_SELECTED_ITEM] = selected as i16;
         stats[STAT_LAYOUTS] = 0;
@@ -68,10 +114,145 @@ mod tests {
     use super::*;
     use crate::world::test_world;
 
-    use q2_shared::constants::{CS_ITEMS, STAT_PICKUP_ICON, STAT_PICKUP_STRING};
-
+    use q2_shared::constants::{
+        CS_ITEMS, STAT_AMMO, STAT_AMMO_ICON, STAT_ARMOR, STAT_ARMOR_ICON, STAT_PICKUP_ICON,
+        STAT_PICKUP_STRING, STAT_TIMER, STAT_TIMER_ICON,
+    };
     fn stats(world: &GameWorld, key: EntityKey) -> [i16; 32] {
         world.client(key).unwrap().ps.stats
+    }
+
+    fn armed_player() -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        (world, key, gi)
+    }
+
+    #[test]
+    fn the_ammo_stat_shows_the_current_weapons_ammo_icon_and_count() {
+        let (mut world, key, _) = armed_player();
+        world.update_player_stats(key);
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_AMMO_ICON],
+                stats(&world, key)[STAT_AMMO]
+            ),
+            (0, 0),
+            "blaster"
+        );
+        let shells = world.find_item_by_name("Shells").unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.ammo_index = shells;
+        client.pers.inventory[shells] = 17;
+        world.update_player_stats(key);
+        let icon = world.gi.image_index("a_shells") as i16;
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_AMMO_ICON],
+                stats(&world, key)[STAT_AMMO]
+            ),
+            (icon, 17)
+        );
+    }
+
+    #[test]
+    fn the_timer_stat_shows_the_first_running_powerup_in_c_order() {
+        let (mut world, key, _) = armed_player();
+        world.update_player_stats(key);
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_TIMER_ICON],
+                stats(&world, key)[STAT_TIMER]
+            ),
+            (0, 0)
+        );
+        world.client_mut(key).unwrap().breather_framenum = 150;
+        world.update_player_stats(key);
+        let breather = world.gi.image_index("p_rebreather") as i16;
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_TIMER_ICON],
+                stats(&world, key)[STAT_TIMER]
+            ),
+            (breather, 5)
+        );
+        world.client_mut(key).unwrap().enviro_framenum = 200;
+        world.update_player_stats(key);
+        assert_eq!(
+            stats(&world, key)[STAT_TIMER_ICON],
+            world.gi.image_index("p_envirosuit") as i16
+        );
+        world.client_mut(key).unwrap().invincible_framenum = 300;
+        world.update_player_stats(key);
+        assert_eq!(
+            stats(&world, key)[STAT_TIMER_ICON],
+            world.gi.image_index("p_invulnerability") as i16
+        );
+        world.client_mut(key).unwrap().quad_framenum = 399;
+        world.update_player_stats(key);
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_TIMER_ICON],
+                stats(&world, key)[STAT_TIMER]
+            ),
+            (world.gi.image_index("p_quad") as i16, 29)
+        );
+    }
+
+    #[test]
+    fn running_power_armor_shows_cells_and_flashes_with_body_armor() {
+        let (mut world, key, _) = armed_player();
+        let cells = world.find_item_by_name("Cells").unwrap();
+        let screen = world.find_item_by_name("Power Screen").unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.inventory[cells] = 40;
+        client.pers.inventory[screen] = 1;
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::POWER_ARMOR;
+        world.update_player_stats(key);
+        let shield_icon = world.gi.image_index("i_powershield") as i16;
+        assert_eq!(
+            (
+                stats(&world, key)[STAT_ARMOR_ICON],
+                stats(&world, key)[STAT_ARMOR]
+            ),
+            (shield_icon, 40)
+        );
+
+        // With body armor too, the icons alternate every 8 frames.
+        let jacket = world.find_item_by_name("Jacket Armor").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[jacket] = 25;
+        world.level.framenum = 96; // & 8 == 0: body armor
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_ARMOR], 25);
+        world.level.framenum = 104; // & 8 != 0: power armor
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_ARMOR], 40);
+    }
+
+    #[test]
+    fn power_armor_switches_off_when_the_cells_run_out() {
+        let (mut world, key, gi) = armed_player();
+        let screen = world.find_item_by_name("Power Screen").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[screen] = 1;
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::POWER_ARMOR;
+        world.update_player_stats(key);
+        assert!(!world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        let power2 = world.gi.sound_index("misc/power2.wav");
+        assert!(gi.sound_calls.borrow().iter().any(|c| c.2 == power2));
+        assert_eq!(stats(&world, key)[STAT_ARMOR_ICON], 0);
     }
 
     #[test]

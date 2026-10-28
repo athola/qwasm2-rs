@@ -97,6 +97,14 @@ All notable changes to qwasm2-rs are documented here.
   (`SetRespawn`/`DoRespawn`) and instant items and dropped quads are used
   on pickup; touching an item plays its pickup sound (health by size)
   and selects it when usable
+- Powerups take effect: invulnerability blocks damage (with C's
+  `protect4` clink every two seconds), quad and invulnerability glow and
+  blink before running out (`G_SetClientEffects`, also the power armor
+  screen or shell while it absorbs), the HUD shows the current weapon's
+  ammo, the powerup timer and power armor cells (`G_SetStats`; power
+  armor switches off when cells run out), and the view tints for
+  liquids, powerups and pickups with C's warning sounds three seconds
+  before a powerup ends (`SV_CalcBlend`), drawn under the HUD
 - Muzzle flashes (C `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`): the
   player's and monsters' gunfire is heard (C plays those sounds on the
   client, so they were silent) and lights the scene; the server hands

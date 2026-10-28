@@ -275,6 +275,8 @@ pub struct ClientData {
     pub grenade_blew_up: bool,
     /// Looping sound of the current weapon (C `weapon_sound`).
     pub weapon_sound: i32,
+    /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).
+    pub bonus_alpha: f32,
     /// Fading damage kick on the view (C `v_dmg_pitch`, `v_dmg_roll`,
     /// `v_dmg_time`).
     pub v_dmg_pitch: f32,

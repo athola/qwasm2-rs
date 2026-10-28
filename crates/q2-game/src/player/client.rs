@@ -711,7 +711,10 @@ impl GameWorld {
 
         for key in keys {
             self.update_player_view(key);
+            // After the view offset, so eye contents are right.
+            self.calc_blend(key);
             self.update_player_stats(key);
+            self.set_client_effects(key);
             self.set_client_sound(key);
             if let Some(client) = self.client_mut(key) {
                 client.kick_origin = Vec3f::ZERO;

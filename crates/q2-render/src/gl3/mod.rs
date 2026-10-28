@@ -423,6 +423,18 @@ impl Renderer for Gl3Renderer {
         dlights: &[DLight],
         _particles: &[Particle],
     ) {
+        // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
+        // goes over it.
+        if fd.blend[3] > 0.0 {
+            let [r, g, b, a] = fd.blend;
+            let scale = 1.0 / UI_INTENSITY_2D;
+            self.ui_queue.push(pics::quad(
+                pics::QuadImage::White,
+                (fd.x, fd.y, fd.width, fd.height),
+                [0.0, 0.0, 1.0, 1.0],
+                [r * scale, g * scale, b * scale, a],
+            ));
+        }
         let gl = match &self.gl {
             Some(gl) => gl,
             None => return,
@@ -665,6 +677,9 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
 }
+
+/// The 2D shader's colour scale (C `gl3_intensity_2D`).
+const UI_INTENSITY_2D: f32 = 1.5;
 
 /// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
 const MAX_DLIGHTS: usize = 32;
@@ -1627,6 +1642,43 @@ mod tests {
         assert!(r.ui_queue.is_empty());
         r.draw_char(0, -7, i32::from(b'A'));
         assert_eq!(r.ui_queue.len(), 1);
+    }
+
+    #[test]
+    fn a_view_blend_is_queued_as_a_full_view_flash_under_the_hud() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let fd = RefDef {
+            width: 100,
+            height: 50,
+            blend: [0.6, 0.3, 0.0, 0.5],
+            ..Default::default()
+        };
+        r.render_frame(&fd, &[], &[], &[]);
+        assert_eq!(r.ui_queue.len(), 1);
+        let flash = &r.ui_queue[0];
+        assert_eq!(flash.image, pics::QuadImage::White);
+        // The 2D shader scales colour by INTENSITY_2D; C's flash shader
+        // does not, so the colour is divided back out.
+        let color = &flash.vertices[4..8];
+        for (got, want) in color.iter().zip([0.4, 0.2, 0.0, 0.5]) {
+            assert!((got - want).abs() < 1e-6, "{color:?}");
+        }
+        assert_eq!((flash.vertices[0], flash.vertices[1]), (0.0, 0.0));
+        let right_bottom = &flash.vertices[5 * 8..5 * 8 + 2];
+        assert_eq!(right_bottom, &[100.0, 50.0]);
+
+        r.ui_queue.clear();
+        r.render_frame(
+            &RefDef {
+                width: 100,
+                height: 50,
+                ..Default::default()
+            },
+            &[],
+            &[],
+            &[],
+        );
+        assert!(r.ui_queue.is_empty(), "no alpha, no flash");
     }
 
     #[test]

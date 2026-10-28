@@ -917,6 +917,8 @@ pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
+    /// What `point_contents` answers everywhere.
+    pub contents: std::cell::Cell<i32>,
     pub links: RefCell<Vec<EntityLink>>,
     pub unlinks: RefCell<Vec<usize>>,
     pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
@@ -1069,7 +1071,7 @@ impl GameImport for MockGameImport {
     }
 
     fn point_contents(&self, _: Vec3f) -> i32 {
-        0
+        self.contents.get()
     }
     fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {
         true
