@@ -1,5 +1,5 @@
 .PHONY: help all build build-release wasm wasm-release bundle bundle-release \
-        play play-release devserver clean clean-gamedata \
+        play play-dev play-release devserver clean clean-gamedata \
         check test test-browser lint fmt fmt-check ci \
         gamedata gamedata-check gamedata-demo pak-web \
         prereqs prereq-rust prereq-wasm-pack prereq-7z prereq-curl
@@ -79,7 +79,8 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (overwr
 	mkdir -p "$(GAMEDATA)"; \
 	echo "Downloading Quake 2 demo installer..."; \
 	curl --fail -# -L -o "$$tmpdir/q2demo.exe" "$(DEMO_URL)"; \
-	sum=$$(shasum -a 256 "$$tmpdir/q2demo.exe" | cut -d' ' -f1); \
+	if command -v sha256sum > /dev/null 2>&1; then sha=sha256sum; else sha='shasum -a 256'; fi; \
+	sum=$$($$sha "$$tmpdir/q2demo.exe" | cut -d' ' -f1); \
 	if [ "$$sum" != "$(DEMO_SHA256)" ]; then \
 		echo "$(FAIL) Checksum mismatch for $(DEMO_URL)"; \
 		echo "  expected $(DEMO_SHA256)"; \
@@ -100,7 +101,8 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (overwr
 gamedata: gamedata-check ## Alias for gamedata-check
 
 # Rebuilt only when pak0.pak or the repacker changes; Brotli level 11 takes ~1 min.
-$(WEB_PAK_BR): $(GAMEDATA)/pak0.pak $(wildcard crates/q2-pak-repack/src/*.rs)
+$(WEB_PAK_BR): $(GAMEDATA)/pak0.pak $(wildcard crates/q2-pak-repack/src/*.rs) \
+		crates/q2-pak-repack/Cargo.toml Cargo.lock
 	cargo run $(CARGO_FLAGS) -p q2-pak-repack --release -- \
 		--in "$(GAMEDATA)/pak0.pak" \
 		--out "$(WEB_PAK)" \
@@ -111,10 +113,10 @@ pak-web: $(WEB_PAK_BR) ## Build web pak: all assets, Brotli-compressed (~28 MB w
 
 # --- Build pipeline ---
 wasm: prereq-wasm-pack ## Build WASM module (wasm-pack, debug)
-	wasm-pack build --dev --target web $(WASM_CRATE)
+	wasm-pack build --dev --target web $(WASM_CRATE) -- $(CARGO_FLAGS)
 
 wasm-release: prereq-wasm-pack ## Build WASM module (release, smaller)
-	wasm-pack build --target web --release $(WASM_CRATE)
+	wasm-pack build --target web --release $(WASM_CRATE) -- $(CARGO_FLAGS)
 
 bundle: wasm ## Build WASM + bundle into dist/qwasm2.html
 	cargo run $(CARGO_FLAGS) -p q2-bundler
@@ -123,7 +125,11 @@ bundle-release: wasm-release ## Release WASM + bundle into dist/qwasm2.html
 	cargo run $(CARGO_FLAGS) --release -p q2-bundler
 
 # --- Play ---
-play: prereq-rust bundle pak-web ## Build everything + launch devserver
+# Unoptimized wasm spends most of each frame in debug checks, so play uses
+# the release build; play-dev keeps the debug build for symbolized panics.
+play: play-release ## Build everything (optimized WASM) + launch devserver
+
+play-dev: prereq-rust bundle pak-web ## Debug WASM build + devserver (slow frames)
 	@echo ""
 	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html"
 	@echo ""
@@ -135,8 +141,8 @@ play-release: prereq-rust bundle-release pak-web ## Release build + devserver
 	@echo ""
 	PORT=$(PORT) cargo run $(CARGO_FLAGS) --release -p q2-devserver
 
-devserver: gamedata-check ## Run devserver only (no rebuild)
-	PORT=$(PORT) cargo run $(CARGO_FLAGS) -p q2-devserver
+devserver: pak-web ## Run devserver only (no WASM rebuild)
+	PORT=$(PORT) cargo run $(CARGO_FLAGS) --release -p q2-devserver
 
 # --- Native build ---
 all: build ## Build all crates (alias for build)
@@ -155,7 +161,8 @@ check: prereq-rust ## Type-check all crates (native + wasm32 libraries)
 test: prereq-rust ## Run all workspace tests (unit, integration, doc)
 	cargo test $(CARGO_FLAGS) --workspace
 
-test-browser: bundle ## Run Playwright browser tests (requires npm)
+# Tests the release bundle, the one `make play` ships.
+test-browser: bundle-release ## Run Playwright browser tests on the release bundle (requires npm)
 	cd tests/browser && npm ci && \
 		npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium && \
 		npx playwright test

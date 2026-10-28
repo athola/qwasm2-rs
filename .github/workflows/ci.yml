@@ -20,6 +20,7 @@ env:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       # Installs the toolchain, components and wasm32 target pinned in rust-toolchain.toml.
@@ -28,12 +29,32 @@ jobs:
       - run: make fmt-check
       - run: make lint
       - run: make check
+      # The map-data tests (map_load, player_move, PVS, gl3 stock maps) return
+      # early without pak0.pak, so fetch the demo pak before running them.
+      - name: Read demo pak checksum
+        id: demo
+        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+      - name: Restore demo pak0.pak
+        id: pak
+        uses: actions/cache@v4
+        with:
+          path: gamedata/baseq2/pak0.pak
+          key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
+      - name: Download demo pak0.pak
+        if: steps.pak.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          make gamedata-demo
+      # Fail loudly rather than let the map-data tests skip as green no-ops.
+      - run: test -f gamedata/baseq2/pak0.pak
       - run: make test
 
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - run: rustup toolchain install
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -41,6 +62,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - run: rustup toolchain install
@@ -48,5 +70,29 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      # Builds the wasm bundle (exercising the bundler's glue patching) and runs Playwright.
+      # The map-loading spec routes the pak request to the demo pak0.pak.
+      - name: Read demo pak checksum
+        id: demo
+        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+      - name: Restore demo pak0.pak
+        id: pak
+        uses: actions/cache@v4
+        with:
+          path: gamedata/baseq2/pak0.pak
+          key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
+      - name: Download demo pak0.pak
+        if: steps.pak.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          make gamedata-demo
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('tests/browser/package-lock.json') }}
+      # Builds the release wasm bundle (exercising the bundler's glue patching) and runs Playwright.
       - run: make test-browser PLAYWRIGHT_INSTALL_FLAGS=--with-deps
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-test-results
+          path: tests/browser/test-results
