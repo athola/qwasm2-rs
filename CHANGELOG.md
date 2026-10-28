@@ -89,6 +89,14 @@ All notable changes to qwasm2-rs are documented here.
   80 degree gun projection and the front 30% of the depth range
   (`RF_DEPTHHACK`) so it never pokes into walls; `RF_MINLIGHT` and
   `RF_DEPTHHACK` join `q2_shared::constants`
+- Powerups and power armor can be used (C `Use_Quad`,
+  `Use_Invulnerability`, `Use_Breather`, `Use_Envirosuit`,
+  `Use_Silencer`, `Use_PowerArmor`) and dropped (`Drop_General`,
+  `Drop_PowerArmor`); `Pickup_Powerup` keeps C's skill and coop limits,
+  power screens and shields can be picked up, deathmatch items respawn
+  (`SetRespawn`/`DoRespawn`) and instant items and dropped quads are used
+  on pickup; touching an item plays its pickup sound (health by size)
+  and selects it when usable
 - Muzzle flashes (C `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`): the
   player's and monsters' gunfire is heard (C plays those sounds on the
   client, so they were silent) and lights the scene; the server hands

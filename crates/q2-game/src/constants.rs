@@ -332,6 +332,10 @@ pub const DAMAGE_TIME: f32 = 0.5;
 /// (C `DF_WEAPONS_STAY`).
 pub const DF_WEAPONS_STAY: i32 = 0x0000_0004;
 
+/// `dmflags` bit: deathmatch powerups are used when picked up (C
+/// `DF_INSTANT_ITEMS`).
+pub const DF_INSTANT_ITEMS: i32 = 0x0000_0010;
+
 /// `dmflags` bit: firing uses no ammo (C `DF_INFINITE_AMMO`).
 pub const DF_INFINITE_AMMO: i32 = 0x0000_2000;
 

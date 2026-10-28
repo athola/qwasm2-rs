@@ -96,6 +96,7 @@ pub const EF_ANIM_ALLFAST: u32 = 0x0000_2000;
 pub const EF_TELEPORTER: u32 = 0x0002_0000;
 
 // entity_state_t events (shared.h entity_event_t)
+pub const EV_ITEM_RESPAWN: i32 = 1;
 pub const EV_PLAYER_TELEPORT: i32 = 6;
 pub const EV_OTHER_TELEPORT: i32 = 7;
 

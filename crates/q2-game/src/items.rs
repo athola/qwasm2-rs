@@ -1,10 +1,8 @@
 //! Item system — definitions, pickup handlers, and inventory management.
 //!
-//! Port of the item table and single-player pickups of `g_items.c`. Not
-//! ported: the skill rule that refuses extra powerups, weapon auto-switch
-//! (#16), item use, the player drop commands (`Drop_Weapon`, `Drop_Ammo`,
-//! `Drop_General`; `Drop_Item` itself is ported), and deathmatch/coop
-//! respawn.
+//! Port of the item table, pickups, item use and drops of `g_items.c`
+//! (weapon use and drop live in `player::weapon`). Not ported: the random
+//! pick among an item team when a deathmatch item respawns.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_items.c`
@@ -337,9 +335,9 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::ARMOR,
             tag: 0,
             armor_info: None,
-            pickup: None,
-            use_fn: None,
-            drop_fn: None,
+            pickup: Some(pickup_power_armor),
+            use_fn: Some(use_power_armor),
+            drop_fn: Some(drop_power_armor),
             view_model: "",
             weaponthink: None,
         },
@@ -355,9 +353,9 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::ARMOR,
             tag: 0,
             armor_info: None,
-            pickup: None,
-            use_fn: None,
-            drop_fn: None,
+            pickup: Some(pickup_power_armor),
+            use_fn: Some(use_power_armor),
+            drop_fn: Some(drop_power_armor),
             view_model: "",
             weaponthink: None,
         },
@@ -662,8 +660,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(use_quad),
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
         },
@@ -680,8 +678,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(use_invulnerability),
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
         },
@@ -698,8 +696,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(use_silencer),
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
         },
@@ -716,8 +714,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(use_breather),
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
         },
@@ -734,8 +732,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(use_envirosuit),
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
         },
@@ -1280,19 +1278,231 @@ fn pickup_ancient_head(world: &mut GameWorld, _item_ent: EntityKey, player: Enti
 
 /// Pickup handler for powerups and keys: one more in the inventory.
 /// C ref: `Pickup_Powerup` and `Pickup_Key` (single player).
+/// Carry a powerup, within the skill limit (medium two, hard one) and
+/// leaving coop's stay-put powerups to players without one; deathmatch
+/// map powerups come back after `quantity` seconds. C ref:
+/// `Pickup_Powerup`.
 fn pickup_powerup(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
-    let item_idx = world.entities.get(item_ent).and_then(|e| e.game.item);
-    let item_idx = match item_idx {
-        Some(i) => i,
-        None => return false,
+    let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
+        return false;
     };
-
-    // Add to inventory.
+    let quantity = world
+        .client(player)
+        .map_or(0, |c| c.pers.inventory[item_idx]);
+    let skill = world.game.skill;
+    if (skill == SKILL_MEDIUM && quantity >= 2) || (skill >= SKILL_HARD && quantity >= 1) {
+        return false;
+    }
+    let item = &world.items[item_idx];
+    if world.game.coop && item.flags.contains(ItemFlags::STAY_COOP) && quantity > 0 {
+        return false;
+    }
+    let respawn = item.quantity as f32;
     if let Some(client) = world.client_mut(player) {
         client.pers.inventory[item_idx] += 1;
     }
-
+    let dropped = world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
+    if world.game.deathmatch && !dropped {
+        set_respawn(world, item_ent, respawn);
+    }
     true
+}
+
+/// Hide a picked-up deathmatch item until `delay` seconds from now.
+/// C ref: `SetRespawn`.
+pub fn set_respawn(world: &mut GameWorld, key: EntityKey, delay: f32) {
+    let time = world.level.time;
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.game.flags |= EntityFlags::RESPAWN;
+    ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
+    ent.solid = Solid::Not;
+    ent.game.nextthink = time + delay;
+    ent.think = Some(do_respawn);
+    world.link_entity(key);
+}
+
+/// Bring a deathmatch item back with the respawn effect. C ref:
+/// `DoRespawn` (without its random pick among an item team).
+pub fn do_respawn(world: &mut GameWorld, key: EntityKey) {
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
+    ent.solid = Solid::Trigger;
+    ent.state.event = q2_shared::constants::EV_ITEM_RESPAWN;
+    world.link_entity(key);
+}
+
+/// Take one of `item` from the player's inventory to use it.
+fn spend(world: &mut GameWorld, key: EntityKey, item: usize) {
+    if let Some(client) = world.client_mut(key) {
+        client.pers.inventory[item] -= 1;
+    }
+    world.validate_selected_item(key);
+}
+
+/// Extend a powerup timer: 300 frames on from now, or on from its end
+/// while it still runs.
+fn extend(framenum: &mut i32, now: i32, frames: i32) {
+    if *framenum > now {
+        *framenum += frames;
+    } else {
+        *framenum = now + frames;
+    }
+}
+
+/// 30 seconds of quad damage, or what is left of a player-dropped one.
+/// C ref: `Use_Quad`.
+pub fn use_quad(world: &mut GameWorld, key: EntityKey, item: usize) {
+    spend(world, key, item);
+    let timeout = match std::mem::take(&mut world.quad_drop_timeout_hack) {
+        0 => 300,
+        left => left,
+    };
+    let now = world.level.framenum;
+    if let Some(client) = world.client_mut(key) {
+        extend(&mut client.quad_framenum, now, timeout);
+    }
+    world.item_sound(key, "items/damage.wav");
+}
+
+/// C ref: `Use_Breather`.
+pub fn use_breather(world: &mut GameWorld, key: EntityKey, item: usize) {
+    spend(world, key, item);
+    let now = world.level.framenum;
+    if let Some(client) = world.client_mut(key) {
+        extend(&mut client.breather_framenum, now, 300);
+    }
+}
+
+/// C ref: `Use_Envirosuit`.
+pub fn use_envirosuit(world: &mut GameWorld, key: EntityKey, item: usize) {
+    spend(world, key, item);
+    let now = world.level.framenum;
+    if let Some(client) = world.client_mut(key) {
+        extend(&mut client.enviro_framenum, now, 300);
+    }
+}
+
+/// C ref: `Use_Invulnerability`.
+pub fn use_invulnerability(world: &mut GameWorld, key: EntityKey, item: usize) {
+    spend(world, key, item);
+    let now = world.level.framenum;
+    if let Some(client) = world.client_mut(key) {
+        extend(&mut client.invincible_framenum, now, 300);
+    }
+    world.item_sound(key, "items/protect.wav");
+}
+
+/// C ref: `Use_Silencer`.
+pub fn use_silencer(world: &mut GameWorld, key: EntityKey, item: usize) {
+    spend(world, key, item);
+    if let Some(client) = world.client_mut(key) {
+        client.silencer_shots += 30;
+    }
+}
+
+/// C ref: `Drop_General`.
+pub fn drop_general(world: &mut GameWorld, key: EntityKey, item: usize) {
+    world.drop_item(key, item);
+    spend(world, key, item);
+}
+
+/// Carry power armor; in deathmatch the first one is switched on and map
+/// ones respawn. C ref: `Pickup_PowerArmor`.
+fn pickup_power_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
+        return false;
+    };
+    let quantity = world
+        .client(player)
+        .map_or(0, |c| c.pers.inventory[item_idx]);
+    if let Some(client) = world.client_mut(player) {
+        client.pers.inventory[item_idx] += 1;
+    }
+    if world.game.deathmatch {
+        let dropped = world
+            .entities
+            .get(item_ent)
+            .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
+        if !dropped {
+            let delay = world.items[item_idx].quantity as f32;
+            set_respawn(world, item_ent, delay);
+        }
+        // Auto-use for deathmatch only if we didn't already have one.
+        if quantity == 0 {
+            use_power_armor(world, player, item_idx);
+        }
+    }
+    true
+}
+
+/// Switch power armor on (it needs cells) or off. C ref: `Use_PowerArmor`.
+pub fn use_power_armor(world: &mut GameWorld, key: EntityKey, _item: usize) {
+    let on = world
+        .entities
+        .get(key)
+        .is_some_and(|e| e.game.flags.contains(EntityFlags::POWER_ARMOR));
+    if on {
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.game.flags.remove(EntityFlags::POWER_ARMOR);
+        }
+        world.auto_sound(key, "misc/power2.wav");
+        return;
+    }
+    let cells = world.find_item_by_name("Cells");
+    let has_cells =
+        cells.is_some_and(|i| world.client(key).is_some_and(|c| c.pers.inventory[i] > 0));
+    if !has_cells {
+        world.gi.cprintf(
+            world.number_of(key),
+            q2_shared::constants::PRINT_HIGH,
+            "No cells for power armor.\n",
+        );
+        return;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.flags |= EntityFlags::POWER_ARMOR;
+    }
+    world.auto_sound(key, "misc/power1.wav");
+}
+
+/// Dropping the last of the armor in use switches it off first. C ref:
+/// `Drop_PowerArmor`.
+pub fn drop_power_armor(world: &mut GameWorld, key: EntityKey, item: usize) {
+    let on = world
+        .entities
+        .get(key)
+        .is_some_and(|e| e.game.flags.contains(EntityFlags::POWER_ARMOR));
+    if on
+        && world
+            .client(key)
+            .is_some_and(|c| c.pers.inventory[item] == 1)
+    {
+        use_power_armor(world, key, item);
+    }
+    drop_general(world, key, item);
+}
+
+impl GameWorld {
+    /// `sound` on CHAN_ITEM from `key`.
+    fn item_sound(&self, key: EntityKey, sound: &str) {
+        let index = self.gi.sound_index(sound);
+        self.gi
+            .sound(self.number_of(key), CHAN_ITEM, index, 1.0, ATTN_NORM, 0.0);
+    }
+
+    /// `sound` on CHAN_AUTO from `key`.
+    fn auto_sound(&self, key: EntityKey, sound: &str) {
+        let index = self.gi.sound_index(sound);
+        self.gi
+            .sound(self.number_of(key), CHAN_AUTO, index, 1.0, ATTN_NORM, 0.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1342,6 +1552,8 @@ const ITEM_NO_TOUCH: i32 = 0x0000_0002;
 /// Set on an item thrown by a monster or player rather than placed by the
 /// map (C `DROPPED_ITEM`).
 pub const DROPPED_ITEM: i32 = 0x0001_0000;
+/// Set on an item a player dropped (C `DROPPED_PLAYER_ITEM`).
+pub const DROPPED_PLAYER_ITEM: i32 = 0x0002_0000;
 const ITEM_TARGETS_USED: i32 = 0x0004_0000;
 
 /// C `world_model_flags`: everything except ammo and health spins.
@@ -1499,6 +1711,7 @@ pub fn touch_item(
             .and_then(|i| world.items.get(i))
             .map_or(0, |it| world.gi.image_index(it.icon));
         let time = world.level.time;
+        let usable = item.filter(|&i| world.items[i].use_fn.is_some());
         if let Some(client) = world.client_mut(other) {
             client.ps.stats[q2_shared::constants::STAT_PICKUP_ICON] = icon as i16;
             if let Some(i) = item {
@@ -1506,6 +1719,50 @@ pub fn touch_item(
                     (q2_shared::constants::CS_ITEMS + i) as i16;
             }
             client.pickup_msg_time = time + 3.0;
+            // Change the selected item.
+            if let Some(i) = usable {
+                client.pers.selected_item = i as i32;
+                client.ps.stats[q2_shared::constants::STAT_SELECTED_ITEM] = i as i16;
+            }
+        }
+        let Some(item) = item else {
+            return;
+        };
+        let def = &world.items[item];
+        let health = def
+            .pickup
+            .is_some_and(|p| std::ptr::fn_addr_eq(p, pickup_health as PickupFn));
+        let sound = if health {
+            match world.entities.get(key).map_or(0, |e| e.game.count) {
+                2 => "items/s_health.wav",
+                10 => "items/n_health.wav",
+                25 => "items/l_health.wav",
+                _ => "items/m_health.wav",
+            }
+        } else {
+            def.pickup_sound
+        };
+        if !sound.is_empty() {
+            world.item_sound(other, sound);
+        }
+        // Activate the item instantly if appropriate; after the pickup
+        // sound so activation sounds override it.
+        let quad = def
+            .use_fn
+            .is_some_and(|u| std::ptr::fn_addr_eq(u, use_quad as UseItemFn));
+        let (flags, use_fn) = (def.flags, def.use_fn);
+        let ent = world.entities.get(key);
+        let player_drop = ent.is_some_and(|e| e.game.spawnflags & DROPPED_PLAYER_ITEM != 0);
+        let instant =
+            world.game.dmflags & DF_INSTANT_ITEMS != 0 && flags.contains(ItemFlags::INSTANT_USE);
+        if world.game.deathmatch && (instant || (quad && player_drop)) {
+            if quad && player_drop {
+                let nextthink = ent.map_or(0.0, |e| e.game.nextthink);
+                world.quad_drop_timeout_hack = ((nextthink - world.level.time) / FRAMETIME) as i32;
+            }
+            if let Some(use_fn) = use_fn {
+                use_fn(world, other, item);
+            }
         }
     }
 
@@ -2540,5 +2797,330 @@ mod tests {
             ],
             [0, 1, 2, 3, 4, 5]
         );
+    }
+
+    // ---- Powerups and power armor (C Use_*, Pickup_Powerup, ...) ----
+
+    fn powered() -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        (world, key, gi)
+    }
+
+    fn own(world: &mut GameWorld, key: EntityKey, name: &str, count: i32) -> usize {
+        let index = world.find_item_by_name(name).unwrap();
+        world.client_mut(key).unwrap().pers.inventory[index] = count;
+        index
+    }
+
+    fn use_named(world: &mut GameWorld, key: EntityKey, name: &str) {
+        let index = world.find_item_by_name(name).unwrap();
+        let use_fn = world.items[index].use_fn.expect("usable");
+        use_fn(world, key, index);
+    }
+
+    fn heard(gi: &crate::world::MockGameImport, world: &GameWorld, sound: &str) -> bool {
+        let index = world.gi.sound_index(sound);
+        gi.sound_calls.borrow().iter().any(|c| c.2 == index)
+    }
+
+    #[test]
+    fn quad_damage_lasts_30_seconds_and_stacks() {
+        let (mut world, key, gi) = powered();
+        let quad = own(&mut world, key, "Quad Damage", 2);
+        use_named(&mut world, key, "Quad Damage");
+        let client = world.client(key).unwrap();
+        assert_eq!(client.pers.inventory[quad], 1);
+        assert_eq!(client.quad_framenum, 400);
+        assert!(heard(&gi, &world, "items/damage.wav"));
+        use_named(&mut world, key, "Quad Damage");
+        assert_eq!(world.client(key).unwrap().quad_framenum, 700);
+    }
+
+    #[test]
+    fn a_dropped_quad_keeps_its_remaining_time() {
+        let (mut world, key, _) = powered();
+        own(&mut world, key, "Quad Damage", 1);
+        world.quad_drop_timeout_hack = 42;
+        use_named(&mut world, key, "Quad Damage");
+        assert_eq!(world.client(key).unwrap().quad_framenum, 142);
+        assert_eq!(world.quad_drop_timeout_hack, 0, "used up");
+    }
+
+    #[test]
+    fn invulnerability_breather_and_envirosuit_last_30_seconds() {
+        let (mut world, key, gi) = powered();
+        own(&mut world, key, "Invulnerability", 1);
+        own(&mut world, key, "Rebreather", 2);
+        own(&mut world, key, "Environment Suit", 1);
+        use_named(&mut world, key, "Invulnerability");
+        use_named(&mut world, key, "Rebreather");
+        use_named(&mut world, key, "Rebreather");
+        use_named(&mut world, key, "Environment Suit");
+        let client = world.client(key).unwrap();
+        assert_eq!(client.invincible_framenum, 400);
+        assert_eq!(client.breather_framenum, 700, "stacked");
+        assert_eq!(client.enviro_framenum, 400);
+        assert!(heard(&gi, &world, "items/protect.wav"));
+    }
+
+    #[test]
+    fn the_silencer_muffles_30_shots() {
+        let (mut world, key, _) = powered();
+        let silencer = own(&mut world, key, "Silencer", 1);
+        use_named(&mut world, key, "Silencer");
+        let client = world.client(key).unwrap();
+        assert_eq!(
+            (client.silencer_shots, client.pers.inventory[silencer]),
+            (30, 0)
+        );
+    }
+
+    #[test]
+    fn using_the_last_powerup_moves_the_selection_on() {
+        let (mut world, key, _) = powered();
+        let quad = own(&mut world, key, "Quad Damage", 1);
+        world.client_mut(key).unwrap().pers.selected_item = quad as i32;
+        use_named(&mut world, key, "Quad Damage");
+        let selected = world.client(key).unwrap().pers.selected_item;
+        assert_ne!(selected, quad as i32);
+    }
+
+    #[test]
+    fn powerups_drop_as_items() {
+        let (mut world, key, _) = powered();
+        let quad = own(&mut world, key, "Quad Damage", 1);
+        let drop_fn = world.items[quad].drop_fn.expect("droppable");
+        drop_fn(&mut world, key, quad);
+        assert_eq!(world.client(key).unwrap().pers.inventory[quad], 0);
+        assert!(world.find_by_classname(None, "item_quad").is_some());
+    }
+
+    fn powerup_on_floor(world: &mut GameWorld, classname: &str) -> EntityKey {
+        let item = world.find_item(classname).unwrap();
+        let ent = world.spawn().unwrap();
+        let e = world.entities.get_mut(ent).unwrap();
+        e.game.item = Some(item);
+        e.game.classname = classname.into();
+        ent
+    }
+
+    #[test]
+    fn harder_skills_limit_how_many_powerups_a_player_carries() {
+        let (mut world, key, _) = powered();
+        world.game.skill = SKILL_MEDIUM;
+        own(&mut world, key, "Quad Damage", 2);
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        assert!(
+            !pickup_powerup(&mut world, quad, key),
+            "medium: two at most"
+        );
+        own(&mut world, key, "Quad Damage", 1);
+        assert!(pickup_powerup(&mut world, quad, key));
+
+        world.game.skill = SKILL_HARD;
+        own(&mut world, key, "Quad Damage", 1);
+        assert!(!pickup_powerup(&mut world, quad, key), "hard: one at most");
+    }
+
+    #[test]
+    fn coop_leaves_a_stay_coop_powerup_for_players_who_have_none() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        own(&mut world, key, "Rebreather", 1);
+        let breather = powerup_on_floor(&mut world, "item_breather");
+        assert!(!pickup_powerup(&mut world, breather, key));
+        own(&mut world, key, "Rebreather", 0);
+        assert!(pickup_powerup(&mut world, breather, key));
+    }
+
+    #[test]
+    fn deathmatch_powerups_respawn_after_their_quantity_in_seconds() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        assert!(pickup_powerup(&mut world, quad, key));
+        let ent = world.entities.get(quad).unwrap();
+        assert!(ent.game.flags.contains(EntityFlags::RESPAWN));
+        assert_eq!(ent.solid, Solid::Not);
+        assert_eq!(ent.game.nextthink, 70.0);
+
+        world.level.time = 70.0;
+        let think = world.entities.get(quad).unwrap().think.unwrap();
+        think(&mut world, quad);
+        let ent = world.entities.get(quad).unwrap();
+        assert_eq!(ent.solid, Solid::Trigger);
+        assert_eq!(ent.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert_eq!(ent.state.event, q2_shared::constants::EV_ITEM_RESPAWN);
+    }
+
+    #[test]
+    fn a_dropped_deathmatch_powerup_does_not_respawn() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        world.entities.get_mut(quad).unwrap().game.spawnflags = DROPPED_ITEM;
+        assert!(pickup_powerup(&mut world, quad, key));
+        assert!(!world
+            .entities
+            .get(quad)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn power_armor_toggles_on_with_cells_and_off_again() {
+        let (mut world, key, gi) = powered();
+        own(&mut world, key, "Power Screen", 1);
+        use_named(&mut world, key, "Power Screen");
+        assert_eq!(
+            gi.cprints.borrow().last().map(|(_, m)| m.as_str()),
+            Some("No cells for power armor.\n")
+        );
+        assert!(!world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        own(&mut world, key, "Cells", 50);
+        use_named(&mut world, key, "Power Screen");
+        assert!(world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        assert!(heard(&gi, &world, "misc/power1.wav"));
+        use_named(&mut world, key, "Power Screen");
+        assert!(!world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        assert!(heard(&gi, &world, "misc/power2.wav"));
+    }
+
+    #[test]
+    fn dropping_the_last_power_armor_turns_it_off() {
+        let (mut world, key, _) = powered();
+        let screen = own(&mut world, key, "Power Screen", 1);
+        own(&mut world, key, "Cells", 50);
+        use_named(&mut world, key, "Power Screen");
+        let drop_fn = world.items[screen].drop_fn.unwrap();
+        drop_fn(&mut world, key, screen);
+        assert!(!world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        assert_eq!(world.client(key).unwrap().pers.inventory[screen], 0);
+    }
+
+    #[test]
+    fn picking_up_power_armor_auto_uses_the_first_in_deathmatch() {
+        let (mut world, key, _) = powered();
+        own(&mut world, key, "Cells", 50);
+        let shield = powerup_on_floor(&mut world, "item_power_shield");
+        let pickup = world.items[world.find_item("item_power_shield").unwrap()]
+            .pickup
+            .unwrap();
+        assert!(pickup(&mut world, shield, key));
+        assert!(
+            !world
+                .entities
+                .get(key)
+                .unwrap()
+                .game
+                .flags
+                .contains(EntityFlags::POWER_ARMOR),
+            "single player: kept off"
+        );
+
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        own(&mut world, key, "Cells", 50);
+        let shield = powerup_on_floor(&mut world, "item_power_shield");
+        assert!(pickup(&mut world, shield, key));
+        assert!(world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::POWER_ARMOR));
+        assert!(world
+            .entities
+            .get(shield)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn touching_a_usable_item_selects_it_and_plays_its_pickup_sound() {
+        let (mut world, key, gi) = powered();
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        touch_item(&mut world, quad, key, None, None);
+        let index = world.find_item("item_quad").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.selected_item, index as i32);
+        assert!(heard(&gi, &world, "items/pkup.wav"));
+    }
+
+    #[test]
+    fn health_pickups_sound_by_size_like_c() {
+        for (classname, count, sound) in [
+            ("item_health_small", 2, "items/s_health.wav"),
+            ("item_health", 10, "items/n_health.wav"),
+            ("item_health_large", 25, "items/l_health.wav"),
+            ("item_health_mega", 100, "items/m_health.wav"),
+        ] {
+            let (mut world, key, gi) = powered();
+            world.entities.get_mut(key).unwrap().game.health = 1;
+            let item = item_entity(&mut world, classname, count);
+            touch_item(&mut world, item, key, None, None);
+            assert!(heard(&gi, &world, sound), "{classname}");
+        }
+    }
+
+    #[test]
+    fn deathmatch_instant_items_are_used_on_pickup() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.game.dmflags = DF_INSTANT_ITEMS;
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        touch_item(&mut world, quad, key, None, None);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 400);
+    }
+
+    #[test]
+    fn a_player_dropped_quad_is_used_at_once_with_its_time_left() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let quad = powerup_on_floor(&mut world, "item_quad");
+        let e = world.entities.get_mut(quad).unwrap();
+        // C Drop_Item sets DROPPED_ITEM; a player's drop adds the other.
+        e.game.spawnflags = DROPPED_ITEM | DROPPED_PLAYER_ITEM;
+        e.game.nextthink = 15.0;
+        touch_item(&mut world, quad, key, None, None);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 150);
     }
 }

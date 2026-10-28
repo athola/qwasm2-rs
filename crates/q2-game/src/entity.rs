@@ -261,8 +261,12 @@ pub struct ClientData {
     /// `kick_origin`, `kick_angles`).
     pub kick_origin: Vec3f,
     pub kick_angles: Vec3f,
-    /// Level frame until which quad damage lasts (C `quad_framenum`).
+    /// Level frame until which each powerup lasts (C `quad_framenum`,
+    /// `invincible_framenum`, `breather_framenum`, `enviro_framenum`).
     pub quad_framenum: i32,
+    pub invincible_framenum: i32,
+    pub breather_framenum: i32,
+    pub enviro_framenum: i32,
     /// Machinegun climb, 0..9 shots (C `machinegun_shots`).
     pub machinegun_shots: i32,
     /// When a cooked hand grenade goes off, 0 when none (C

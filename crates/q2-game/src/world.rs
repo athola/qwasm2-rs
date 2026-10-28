@@ -132,6 +132,9 @@ pub struct GameWorld {
     /// What the last `t_damage` was from, for obituaries (C global
     /// `meansOfDeath`).
     pub means_of_death: crate::constants::MeansOfDeath,
+    /// Frames left on a player-dropped quad being picked up, for
+    /// `use_quad` (C `quad_drop_timeout_hack`); 0 for a fresh one.
+    pub quad_drop_timeout_hack: i32,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -160,6 +163,7 @@ impl GameWorld {
             clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
             means_of_death: crate::constants::MeansOfDeath::Unknown,
+            quad_drop_timeout_hack: 0,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),
