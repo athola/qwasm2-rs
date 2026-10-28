@@ -120,7 +120,14 @@ impl GameExport for GameWorld {
         }
     }
 
-    fn client_command(&mut self, _number: usize) {}
+    fn client_command(&mut self, number: usize) {
+        if !self.is_client_number(number) {
+            return;
+        }
+        if let Some(key) = self.entities.key_for_number(number) {
+            GameWorld::client_command(self, key);
+        }
+    }
 
     fn client_think(&mut self, number: usize, cmd: &UserCmd) {
         if !self.is_client_number(number) {

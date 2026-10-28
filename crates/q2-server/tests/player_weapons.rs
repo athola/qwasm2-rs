@@ -96,3 +96,23 @@ fn walking_over_a_shotgun_picks_it_up_and_raises_it() {
     run(&mut game, 20, 0);
     assert_eq!(gun(&game), "models/weapons/v_shotg/tris.md2");
 }
+
+#[test]
+fn a_use_command_switches_back_to_the_blaster() {
+    let shotgun = "{\n\"classname\" \"weapon_shotgun\"\n\"origin\" \"0 0 16\"\n}\n";
+    let map = common::floor_wall_bsp_with(&format!("{}{shotgun}", common::ENTSTRING));
+    let mut game = LocalGame::start("floor_wall", &map).expect("map loads");
+    let gun = |game: &LocalGame| {
+        let (_, ps) = game.player().unwrap();
+        game.configstring(CS_MODELS + ps.gunindex as usize)
+            .to_string()
+    };
+    run(&mut game, 20, 0);
+    assert_eq!(gun(&game), "models/weapons/v_shotg/tris.md2");
+    game.client_command("use Blaster");
+    run(&mut game, 20, 0);
+    assert_eq!(gun(&game), "models/weapons/v_blast/tris.md2");
+    game.client_command("weaplast");
+    run(&mut game, 20, 0);
+    assert_eq!(gun(&game), "models/weapons/v_shotg/tris.md2");
+}

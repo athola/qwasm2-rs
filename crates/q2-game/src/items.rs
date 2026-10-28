@@ -374,7 +374,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_BLASTER,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: None,
             view_model: "models/weapons/v_blast/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_blaster),
@@ -392,8 +392,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_SHOTGUN,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_shotgun),
         },
@@ -410,8 +410,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_SUPERSHOTGUN,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg2/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_supershotgun),
         },
@@ -428,8 +428,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_MACHINEGUN,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_machn/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_machinegun),
         },
@@ -446,8 +446,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_CHAINGUN,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_chain/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_chaingun),
         },
@@ -464,8 +464,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: AMMO_GRENADES,
             armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(drop_ammo),
             view_model: "models/weapons/v_handgr/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenade),
         },
@@ -482,8 +482,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_GRENADELAUNCHER,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_launch/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenadelauncher),
         },
@@ -500,8 +500,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_ROCKETLAUNCHER,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rocket/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_rocketlauncher),
         },
@@ -518,8 +518,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_HYPERBLASTER,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_hyperb/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_hyperblaster),
         },
@@ -536,8 +536,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_RAILGUN,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rail/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_railgun),
         },
@@ -554,8 +554,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             tag: WEAP_BFG,
             armor_info: None,
             pickup: Some(pickup_weapon),
-            use_fn: None,
-            drop_fn: None,
+            use_fn: Some(crate::player::weapon::use_weapon),
+            drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_bfg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_bfg),
         },
@@ -573,7 +573,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
         },
@@ -591,7 +591,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
         },
@@ -609,7 +609,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
         },
@@ -627,7 +627,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
         },
@@ -645,7 +645,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
         },
@@ -1206,6 +1206,39 @@ fn pickup_health(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
         world.link_entity(item_ent);
     }
     true
+}
+
+/// Throw one pickup's worth of ammo (or what is left); never the last
+/// grenades while they are the weapon in hand. C ref: `Drop_Ammo`.
+pub fn drop_ammo(world: &mut GameWorld, key: EntityKey, item: usize) {
+    let Some(dropped) = world.drop_item(key, item) else {
+        return;
+    };
+    let quantity = world.items[item].quantity;
+    let tag = world.items[item].tag;
+    let weapon_tag = world
+        .client(key)
+        .and_then(|c| c.pers.weapon)
+        .and_then(|w| world.items.get(w))
+        .map(|w| w.tag);
+    let have = world.client(key).map_or(0, |c| c.pers.inventory[item]);
+    let count = have.min(quantity);
+    if weapon_tag == Some(AMMO_GRENADES) && tag == AMMO_GRENADES && have - count <= 0 {
+        world.gi.cprintf(
+            world.number_of(key),
+            q2_shared::constants::PRINT_HIGH,
+            "Can't drop current weapon\n",
+        );
+        world.free_entity(dropped);
+        return;
+    }
+    if let Some(ent) = world.entities.get_mut(dropped) {
+        ent.game.count = count;
+    }
+    if let Some(client) = world.client_mut(key) {
+        client.pers.inventory[item] -= count;
+    }
+    world.validate_selected_item(key);
 }
 
 /// Drain the mega health bonus one point a second, then go away.

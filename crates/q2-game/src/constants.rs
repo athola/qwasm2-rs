@@ -328,6 +328,10 @@ pub const DEFAULT_SSHOTGUN_COUNT: i32 = 20;
 /// Seconds a damage kick takes to fade from the view (C `DAMAGE_TIME`).
 pub const DAMAGE_TIME: f32 = 0.5;
 
+/// `dmflags` bit: weapons stay put when picked up and can't be dropped
+/// (C `DF_WEAPONS_STAY`).
+pub const DF_WEAPONS_STAY: i32 = 0x0000_0004;
+
 /// `dmflags` bit: firing uses no ammo (C `DF_INFINITE_AMMO`).
 pub const DF_INFINITE_AMMO: i32 = 0x0000_2000;
 

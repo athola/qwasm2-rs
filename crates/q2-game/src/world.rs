@@ -944,6 +944,10 @@ pub struct MockGameImport {
     pub sound_calls: RefCell<Vec<SoundCall>>,
     /// Every `centerprintf` call, in order.
     pub centerprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// Every `cprintf` call (entity, text), in order.
+    pub cprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// The client command `argv`/`args` read, already tokenized.
+    pub command: RefCell<Vec<String>>,
     /// Every `set_area_portal_state` call, in order.
     pub portal_states: RefCell<Vec<(i32, bool)>>,
     /// Every `bprintf` call as (print level, text).
@@ -966,7 +970,9 @@ impl GameImport for MockGameImport {
     fn dprintf(&self, msg: &str) {
         self.dprints.borrow_mut().push(msg.to_string());
     }
-    fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
+    fn cprintf(&self, ent: Option<usize>, _: i32, msg: &str) {
+        self.cprints.borrow_mut().push((ent, msg.to_string()));
+    }
     fn centerprintf(&self, ent: Option<usize>, msg: &str) {
         self.centerprints.borrow_mut().push((ent, msg.to_string()));
     }
@@ -1102,13 +1108,17 @@ impl GameImport for MockGameImport {
     fn unicast(&self, _: usize, _: bool) {}
 
     fn argc(&self) -> i32 {
-        0
+        self.command.borrow().len() as i32
     }
-    fn argv(&self, _: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let command = self.command.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| command.get(n).cloned())
+            .unwrap_or_default()
     }
     fn args(&self) -> String {
-        String::new()
+        self.command.borrow().get(1..).unwrap_or_default().join(" ")
     }
     fn add_command_string(&self, text: &str) {
         self.commands.borrow_mut().push(text.to_string());

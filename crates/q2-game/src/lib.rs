@@ -9,6 +9,7 @@
 //! - Inherent: 0
 
 pub mod ai;
+pub mod cmds;
 pub mod combat;
 pub mod constants;
 pub mod entity;

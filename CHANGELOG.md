@@ -78,6 +78,12 @@ All notable changes to qwasm2-rs are documented here.
   cooked hand grenades that go off in the hand; picking up a new weapon
   switches to it, the weapon hum plays on the player and the BFG's pitch
   kick fades over `DAMAGE_TIME`
+- Weapon and inventory commands (C `ClientCommand`): `use`, `drop`,
+  `weapnext`, `weapprev`, `weaplast`, `invnext`/`invprev` (and the `w`/`p`
+  variants), `invuse`, `invdrop`, with C's messages; the browser binds
+  them like Q2's `default.cfg` (1-0 weapons, `[` `]` `'` Enter);
+  `LocalGame::client_command` runs one, and `ServerGameImport` answers
+  `argv`/`args` like `Cmd_TokenizeString`
 - Grenades: blasts record C's means of death by kind (launcher, hand,
   held) in `GameWorld::means_of_death`, set by every `t_damage` like C
   `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two

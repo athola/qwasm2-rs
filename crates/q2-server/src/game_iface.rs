@@ -63,6 +63,10 @@ struct GiInner {
     commands: String,
     /// Sounds the game started since the last `take_sounds`.
     sounds: Vec<SoundEvent>,
+    /// The client command being run (C `Cmd_TokenizeString`'s `cmd_argv`
+    /// and `cmd_args`), for the game's `argv`/`args`.
+    command_argv: Vec<String>,
+    command_args: String,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -106,6 +110,8 @@ impl GiInner {
             areas: vec![(0, 0); MAX_EDICTS],
             commands: String::new(),
             sounds: Vec::new(),
+            command_argv: Vec::new(),
+            command_args: String::new(),
         }
     }
 
@@ -225,6 +231,22 @@ impl ServerGameImport {
         Self {
             inner: RefCell::new(GiInner::new()),
         }
+    }
+
+    /// Tokenize a client's command for the game to read (C
+    /// `SV_ExecuteUserCommand` -> `Cmd_TokenizeString`): `args` is the
+    /// raw rest of the line after the first token, trailing whitespace
+    /// cut.
+    pub fn set_client_command(&self, text: &str) {
+        let line = text.split('\n').next().unwrap_or_default();
+        let rest = line.trim_start_matches(|c: char| c <= ' ');
+        let rest = rest.trim_start_matches(|c: char| c > ' ');
+        let args = rest
+            .trim_start_matches(|c: char| c <= ' ')
+            .trim_end_matches(|c: char| c <= ' ');
+        let mut inner = self.inner.borrow_mut();
+        inner.command_argv = q2_common::cmd::tokenize(text);
+        inner.command_args = args.to_string();
     }
 
     /// The console text queued by `add_command_string` since the last call.
@@ -787,15 +809,19 @@ impl GameImport for ServerGameImport {
     // -- command args --------------------------------------------------------
 
     fn argc(&self) -> i32 {
-        0
+        self.inner.borrow().command_argv.len() as i32
     }
 
-    fn argv(&self, _n: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let inner = self.inner.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| inner.command_argv.get(n).cloned())
+            .unwrap_or_default()
     }
 
     fn args(&self) -> String {
-        String::new()
+        self.inner.borrow().command_args.clone()
     }
 
     fn add_command_string(&self, text: &str) {
@@ -833,6 +859,29 @@ mod tests {
             time_ofs: 0.1,
             origin,
         }
+    }
+
+    #[test]
+    fn a_client_command_is_tokenized_for_argv_and_args_like_c() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("use  Super Shotgun \n");
+        assert_eq!(gi.argc(), 3);
+        assert_eq!(gi.argv(0), "use");
+        assert_eq!(gi.argv(2), "Shotgun");
+        assert_eq!(gi.argv(3), "");
+        assert_eq!(gi.argv(-1), "");
+        // C Cmd_Args: the raw rest of the line, trailing whitespace cut.
+        assert_eq!(gi.args(), "Super Shotgun");
+    }
+
+    #[test]
+    fn args_keeps_quotes_as_typed() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("say \"hi there\"");
+        assert_eq!(gi.argv(1), "hi there");
+        assert_eq!(gi.args(), "\"hi there\"");
+        gi.set_client_command("weapnext");
+        assert_eq!((gi.argc(), gi.args()), (1, String::new()));
     }
 
     #[test]

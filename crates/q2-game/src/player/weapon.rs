@@ -5,7 +5,7 @@ use q2_common::pmove::PMF_DUCKED;
 use q2_shared::constants::{
     BUTTON_ATTACK, EF_BLASTER, EF_HYPERBLASTER, MZ_BFG, MZ_BLASTER, MZ_CHAINGUN1, MZ_GRENADE,
     MZ_HYPERBLASTER, MZ_MACHINEGUN, MZ_RAILGUN, MZ_ROCKET, MZ_SHOTGUN, MZ_SILENCED, MZ_SSHOTGUN,
-    SVF_NOCLIENT,
+    PRINT_HIGH, SVF_NOCLIENT,
 };
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::{Multicast, Vec3f};
@@ -276,6 +276,67 @@ impl GameWorld {
         ent.owner = Some(who);
         ent.svflags = SVF_NOCLIENT;
         Some(noise)
+    }
+}
+
+/// Make `item` the weapon to switch to, if there is ammo for a shot (C
+/// `g_select_empty` 0). C ref: `Use_Weapon` (player/weapon.c).
+pub fn use_weapon(world: &mut GameWorld, key: EntityKey, item: usize) {
+    let Some(client) = world.client(key) else {
+        return;
+    };
+    // See if we're already using it.
+    if client.pers.weapon == Some(item) {
+        return;
+    }
+    let Some(weapon) = world.items.get(item) else {
+        return;
+    };
+    let ammo = (!weapon.ammo.is_empty() && !weapon.flags.contains(ItemFlags::AMMO))
+        .then(|| world.find_item_by_name(weapon.ammo))
+        .flatten();
+    if let Some(ammo) = ammo {
+        let have = client.pers.inventory[ammo];
+        let (ammo_name, weapon_name) = (world.items[ammo].pickup_name, weapon.pickup_name);
+        let problem = if have == 0 {
+            Some(format!("No {ammo_name} for {weapon_name}.\n"))
+        } else if have < weapon.quantity {
+            Some(format!("Not enough {ammo_name} for {weapon_name}.\n"))
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            world.gi.cprintf(world.number_of(key), PRINT_HIGH, &problem);
+            return;
+        }
+    }
+    // Change to this weapon when down.
+    if let Some(client) = world.client_mut(key) {
+        client.newweapon = Some(item);
+    }
+}
+
+/// Throw a spare weapon away; not the only copy of the one in hand, and
+/// not at all with weapons stay. C ref: `Drop_Weapon` (player/weapon.c).
+pub fn drop_weapon(world: &mut GameWorld, key: EntityKey, item: usize) {
+    if world.game.dmflags & DF_WEAPONS_STAY != 0 {
+        return;
+    }
+    let Some(client) = world.client(key) else {
+        return;
+    };
+    let in_hand = client.pers.weapon == Some(item) || client.newweapon == Some(item);
+    if in_hand && client.pers.inventory[item] == 1 {
+        world.gi.cprintf(
+            world.number_of(key),
+            PRINT_HIGH,
+            "Can't drop current weapon\n",
+        );
+        return;
+    }
+    world.drop_item(key, item);
+    if let Some(client) = world.client_mut(key) {
+        client.pers.inventory[item] -= 1;
     }
 }
 

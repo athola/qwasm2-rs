@@ -306,6 +306,9 @@ impl Engine {
         );
         apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
         self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
+        for command in bound_commands(&self.last_keys, &input.keys) {
+            self.local.client_command(command);
+        }
         self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
@@ -630,6 +633,40 @@ fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::inpu
     input.run = down(K_SHIFT);
     input.attack = down(K_CTRL) || mouse_buttons & 1 != 0;
     input.keys = *keys;
+}
+
+/// Command keys from Q2's default.cfg: weapons on the number row and the
+/// inventory keys. Each fires on the frame the key goes down (C key binds
+/// run on the down event).
+#[cfg(any(target_arch = "wasm32", test))]
+const BINDS: [(u8, &str); 14] = [
+    (b'1', "use Blaster"),
+    (b'2', "use Shotgun"),
+    (b'3', "use Super Shotgun"),
+    (b'4', "use Machinegun"),
+    (b'5', "use Chaingun"),
+    (b'6', "use Grenade Launcher"),
+    (b'7', "use Rocket Launcher"),
+    (b'8', "use HyperBlaster"),
+    (b'9', "use Railgun"),
+    (b'0', "use BFG10K"),
+    (b'[', "invprev"),
+    (b']', "invnext"),
+    (b'\'', "invdrop"),
+    (q2_platform::keymap::K_ENTER, "invuse"),
+];
+
+/// The bound commands whose keys went down since `last_keys`, in key
+/// order.
+#[cfg(any(target_arch = "wasm32", test))]
+fn bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
+    let mut commands: Vec<(u8, &str)> = BINDS
+        .iter()
+        .filter(|&&(k, _)| keys[k as usize] && !last_keys[k as usize])
+        .copied()
+        .collect();
+    commands.sort_by_key(|&(k, _)| k);
+    commands.into_iter().map(|(_, command)| command).collect()
 }
 
 /// Range of C's video menu brightness slider (`s_brightness_slider`), which
@@ -1397,6 +1434,44 @@ mod tests {
         let mut both = f8;
         both[K_F7 as usize] = true;
         assert_eq!(gamma_key_step(&up, &both), 0);
+    }
+
+    fn pressed(keys: &[u8]) -> [bool; 256] {
+        let mut down = [false; 256];
+        for &k in keys {
+            down[k as usize] = true;
+        }
+        down
+    }
+
+    #[test]
+    fn number_keys_use_weapons_like_q2_default_cfg() {
+        let none = [false; 256];
+        assert_eq!(bound_commands(&none, &pressed(b"1")), ["use Blaster"]);
+        assert_eq!(bound_commands(&none, &pressed(b"3")), ["use Super Shotgun"]);
+        assert_eq!(bound_commands(&none, &pressed(b"0")), ["use BFG10K"]);
+    }
+
+    #[test]
+    fn inventory_keys_bind_like_q2_default_cfg() {
+        use q2_platform::keymap::K_ENTER;
+        let none = [false; 256];
+        assert_eq!(bound_commands(&none, &pressed(b"[")), ["invprev"]);
+        assert_eq!(bound_commands(&none, &pressed(b"]")), ["invnext"]);
+        assert_eq!(bound_commands(&none, &pressed(b"'")), ["invdrop"]);
+        assert_eq!(bound_commands(&none, &pressed(&[K_ENTER])), ["invuse"]);
+    }
+
+    #[test]
+    fn a_bound_key_runs_its_command_once_per_press() {
+        let held = pressed(b"2");
+        assert!(bound_commands(&held, &held).is_empty());
+        assert!(bound_commands(&held, &[false; 256]).is_empty());
+        assert!(bound_commands(&[false; 256], &pressed(b"w")).is_empty());
+        assert_eq!(
+            bound_commands(&[false; 256], &pressed(b"12")),
+            ["use Blaster", "use Shotgun"]
+        );
     }
 
     #[test]

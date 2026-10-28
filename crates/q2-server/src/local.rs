@@ -75,6 +75,14 @@ impl LocalGame {
         })
     }
 
+    /// Run a console command as the local player's (C
+    /// `SV_ExecuteUserCommand` for a command the server does not handle
+    /// itself): `use Shotgun`, `weapnext`, `invdrop`, ...
+    pub fn client_command(&mut self, text: &str) {
+        self.gi.set_client_command(text);
+        self.game.client_command(LOCAL_PLAYER);
+    }
+
     /// Apply one user command to the local player (C ClientThink).
     pub fn think(&mut self, cmd: &UserCmd) {
         self.game.client_think(LOCAL_PLAYER, cmd);
