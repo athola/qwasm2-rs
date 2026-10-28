@@ -10,7 +10,8 @@ use q2_shared::constants::{
 };
 
 use crate::constants::{
-    EntityFlags, ATTN_NORM, CHAN_ITEM, DAMAGE_TIME, POWER_ARMOR_SCREEN, POWER_ARMOR_SHIELD,
+    DamageFlags, EntityFlags, MeansOfDeath, ATTN_NORM, CHAN_AUTO, CHAN_BODY, CHAN_ITEM, CHAN_VOICE,
+    DAMAGE_TIME, POWER_ARMOR_SCREEN, POWER_ARMOR_SHIELD,
 };
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
@@ -152,6 +153,171 @@ impl GameWorld {
             add_blend([0.85, 0.7, 0.3], client.bonus_alpha, blend);
         }
         client.bonus_alpha = (client.bonus_alpha - 0.1).max(0.0);
+    }
+
+    /// Water, slime and lava on the player: splash sounds going in and
+    /// out, gasps, drowning once a second after the air runs out (the
+    /// rebreather and envirosuit give air), and burning. C ref:
+    /// `P_WorldEffects` (player/view.c).
+    pub fn world_effects(&mut self, key: EntityKey) {
+        use crate::ai::world_damage;
+        use crate::player::weapon::PlayerNoise;
+        let (time, framenum) = (self.level.time, self.level.framenum);
+        let Some(ent) = self.entities.get(key) else {
+            return;
+        };
+        let (origin, waterlevel, watertype) =
+            (ent.state.origin, ent.game.waterlevel, ent.game.watertype);
+        let noclip = ent.game.movetype == crate::constants::MoveType::Noclip;
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        if noclip {
+            client.air_finished = time + 12.0; // don't need air
+            return;
+        }
+        let old_waterlevel = std::mem::replace(&mut client.old_waterlevel, waterlevel);
+        let breather = client.breather_framenum > framenum;
+        let envirosuit = client.enviro_framenum > framenum;
+        let breather_left = client.breather_framenum - framenum;
+        let air_finished = client.air_finished;
+        let number = self.number_of(key);
+        let sound = |world: &GameWorld, channel, name: &str| {
+            let index = world.gi.sound_index(name);
+            world.gi.sound(number, channel, index, 1.0, ATTN_NORM, 0.0);
+        };
+
+        // Just entered a water volume.
+        if old_waterlevel == 0 && waterlevel != 0 {
+            self.player_noise(key, origin, PlayerNoise::SelfNoise);
+            if watertype & CONTENTS_LAVA != 0 {
+                sound(self, CHAN_BODY, "player/lava_in.wav");
+            } else if watertype & (CONTENTS_SLIME | CONTENTS_WATER) != 0 {
+                sound(self, CHAN_BODY, "player/watr_in.wav");
+            }
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.flags |= EntityFlags::INWATER;
+                // So the pain sound plays at once.
+                ent.game.damage_debounce_time = time - 1.0;
+            }
+        }
+        // Just completely left a water volume.
+        if old_waterlevel != 0 && waterlevel == 0 {
+            self.player_noise(key, origin, PlayerNoise::SelfNoise);
+            sound(self, CHAN_BODY, "player/watr_out.wav");
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.flags.remove(EntityFlags::INWATER);
+            }
+        }
+        // Head just going under, or just coming out.
+        if old_waterlevel != 3 && waterlevel == 3 {
+            sound(self, CHAN_BODY, "player/watr_un.wav");
+        }
+        if old_waterlevel == 3 && waterlevel != 3 {
+            if air_finished < time {
+                sound(self, CHAN_VOICE, "player/gasp1.wav");
+                self.player_noise(key, origin, PlayerNoise::SelfNoise);
+            } else if air_finished < time + 11.0 {
+                sound(self, CHAN_VOICE, "player/gasp2.wav");
+            }
+        }
+
+        if waterlevel == 3 {
+            if breather || envirosuit {
+                if let Some(client) = self.client_mut(key) {
+                    client.air_finished = time + 10.0;
+                }
+                if breather_left % 25 == 0 {
+                    let second = self.client(key).is_some_and(|c| c.breather_sound);
+                    let name = if second {
+                        "player/u_breath2.wav"
+                    } else {
+                        "player/u_breath1.wav"
+                    };
+                    sound(self, CHAN_AUTO, name);
+                    if let Some(client) = self.client_mut(key) {
+                        client.breather_sound = !second;
+                    }
+                    self.player_noise(key, origin, PlayerNoise::SelfNoise);
+                }
+            }
+            let drowning = self
+                .client(key)
+                .is_some_and(|c| c.air_finished < time && c.next_drown_time < time);
+            let health = self.entities.get(key).map_or(0, |e| e.game.health);
+            if drowning && health > 0 {
+                if let Some(client) = self.client_mut(key) {
+                    client.next_drown_time = time + 1.0;
+                }
+                // Take more damage the longer under water.
+                let Some(ent) = self.entities.get_mut(key) else {
+                    return;
+                };
+                ent.game.dmg = (ent.game.dmg + 2).min(15);
+                let dmg = ent.game.dmg;
+                ent.game.pain_debounce_time = time;
+                // A gurp instead of the normal pain sound.
+                let gurp = if health <= dmg {
+                    "player/drown1.wav"
+                } else if self.random_u32() & 1 != 0 {
+                    "*gurp1.wav"
+                } else {
+                    "*gurp2.wav"
+                };
+                sound(self, CHAN_VOICE, gurp);
+                world_damage(self, key, dmg, DamageFlags::NO_ARMOR, MeansOfDeath::Water);
+            }
+        } else {
+            if let Some(client) = self.client_mut(key) {
+                client.air_finished = time + 12.0;
+            }
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.dmg = 2;
+            }
+        }
+
+        // Sizzle damage.
+        if waterlevel != 0 && watertype & CONTENTS_LAVA != 0 {
+            let invincible = self
+                .client(key)
+                .is_some_and(|c| c.invincible_framenum >= framenum);
+            let Some(ent) = self.entities.get(key) else {
+                return;
+            };
+            let burns = ent.game.health > 0
+                && ent.game.pain_debounce_time <= time
+                && !invincible
+                && !ent.game.flags.contains(EntityFlags::GODMODE);
+            if burns {
+                let name = if self.random_u32() & 1 != 0 {
+                    "player/burn1.wav"
+                } else {
+                    "player/burn2.wav"
+                };
+                sound(self, CHAN_VOICE, name);
+                if let Some(ent) = self.entities.get_mut(key) {
+                    ent.game.pain_debounce_time = time + 1.0;
+                }
+            }
+            // A third of the damage with the envirosuit.
+            let per_level = if envirosuit { 1 } else { 3 };
+            world_damage(
+                self,
+                key,
+                per_level * waterlevel,
+                DamageFlags::empty(),
+                MeansOfDeath::Lava,
+            );
+        }
+        if waterlevel != 0 && watertype & CONTENTS_SLIME != 0 && !envirosuit {
+            world_damage(
+                self,
+                key,
+                waterlevel,
+                DamageFlags::empty(),
+                MeansOfDeath::Slime,
+            );
+        }
     }
 
     /// The player's glows: power armor while it absorbs, quad and
@@ -432,6 +598,197 @@ mod tests {
             0.0,
             "not below zero"
         );
+    }
+
+    // ---- P_WorldEffects ----
+
+    fn swimmer() -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        // The world (edict 0) is what hurts the player, as in C.
+        world.entities.spawn_numbered(0).unwrap();
+        let key = player_in(&mut world);
+        world.level.time = 20.0;
+        world.client_mut(key).unwrap().air_finished = 32.0;
+        (world, key, gi)
+    }
+
+    fn wade(world: &mut GameWorld, key: EntityKey, level: i32, watertype: i32) {
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.waterlevel = level;
+        ent.game.watertype = watertype;
+    }
+
+    fn heard(world: &GameWorld, gi: &crate::world::MockGameImport, sound: &str) -> bool {
+        let index = world.gi.sound_index(sound);
+        gi.sound_calls.borrow().iter().any(|c| c.2 == index)
+    }
+
+    fn health(world: &GameWorld, key: EntityKey) -> i32 {
+        world.entities.get(key).unwrap().game.health
+    }
+
+    #[test]
+    fn stepping_into_and_out_of_water_splashes_and_flags_the_player() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 1, CONTENTS_WATER);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/watr_in.wav"));
+        let ent = world.entities.get(key).unwrap();
+        assert!(ent
+            .game
+            .flags
+            .contains(crate::constants::EntityFlags::INWATER));
+        assert_eq!(ent.game.damage_debounce_time, 19.0);
+
+        wade(&mut world, key, 0, 0);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/watr_out.wav"));
+        assert!(!world
+            .entities
+            .get(key)
+            .unwrap()
+            .game
+            .flags
+            .contains(crate::constants::EntityFlags::INWATER));
+    }
+
+    #[test]
+    fn stepping_into_lava_sounds_like_lava() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 1, CONTENTS_LAVA);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/lava_in.wav"));
+    }
+
+    #[test]
+    fn going_under_and_surfacing_gasp_by_how_long_the_air_lasted() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/watr_un.wav"));
+        // Surfacing within a second of going under: just breaks surface.
+        world.client_mut(key).unwrap().air_finished = 30.5;
+        wade(&mut world, key, 2, CONTENTS_WATER);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/gasp2.wav"));
+
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key);
+        world.client_mut(key).unwrap().air_finished = 19.0;
+        wade(&mut world, key, 1, CONTENTS_WATER);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/gasp1.wav"), "out of air");
+    }
+
+    #[test]
+    fn out_of_air_the_player_drowns_harder_each_second_up_to_15() {
+        let (mut world, key, gi) = swimmer();
+        world.world_effects(key); // a breath on land: dmg 2
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key); // under: air keeps its 32 s
+        world.client_mut(key).unwrap().air_finished = 19.0;
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 96, "2 + 2");
+        assert_eq!(world.means_of_death, crate::constants::MeansOfDeath::Water);
+        assert!(heard(&world, &gi, "*gurp1.wav") || heard(&world, &gi, "*gurp2.wav"));
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 96, "once a second");
+        // Past next_drown_time (strictly later, as in C) each step.
+        for _ in 0..8 {
+            world.level.time += 1.5;
+            world.world_effects(key);
+        }
+        assert_eq!(world.entities.get(key).unwrap().game.dmg, 15);
+
+        world.entities.get_mut(key).unwrap().game.health = 10;
+        world.level.time += 1.5;
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/drown1.wav"), "the last gurp");
+    }
+
+    #[test]
+    fn breathing_air_resets_the_air_and_the_drowning_damage() {
+        let (mut world, key, _) = swimmer();
+        world.entities.get_mut(key).unwrap().game.dmg = 9;
+        world.world_effects(key);
+        assert_eq!(world.client(key).unwrap().air_finished, 32.0);
+        assert_eq!(world.entities.get(key).unwrap().game.dmg, 2);
+    }
+
+    #[test]
+    fn a_rebreather_gives_air_and_breathes_every_25_frames() {
+        let (mut world, key, gi) = swimmer();
+        world.client_mut(key).unwrap().breather_framenum = 150;
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key);
+        assert_eq!(world.client(key).unwrap().air_finished, 30.0);
+        assert!(heard(&world, &gi, "player/u_breath1.wav"));
+        world.level.framenum = 101;
+        world.world_effects(key);
+        assert!(!heard(&world, &gi, "player/u_breath2.wav"));
+        world.level.framenum = 125;
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/u_breath2.wav"), "alternates");
+        assert_eq!(health(&world, key), 100);
+    }
+
+    #[test]
+    fn lava_burns_three_per_level_and_a_third_with_the_envirosuit() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 2, CONTENTS_LAVA);
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 94);
+        assert!(heard(&world, &gi, "player/burn1.wav") || heard(&world, &gi, "player/burn2.wav"));
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            21.0
+        );
+
+        let (mut world, key, _) = swimmer();
+        world.client_mut(key).unwrap().enviro_framenum = 200;
+        wade(&mut world, key, 2, CONTENTS_LAVA);
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 98);
+        assert_eq!(world.means_of_death, crate::constants::MeansOfDeath::Lava);
+    }
+
+    #[test]
+    fn slime_hurts_one_per_level_unless_the_envirosuit_is_on() {
+        let (mut world, key, _) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_SLIME);
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 97);
+        assert_eq!(world.means_of_death, crate::constants::MeansOfDeath::Slime);
+
+        let (mut world, key, _) = swimmer();
+        world.client_mut(key).unwrap().enviro_framenum = 200;
+        wade(&mut world, key, 3, CONTENTS_SLIME);
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 100);
+    }
+
+    #[test]
+    fn a_player_spawns_with_twelve_seconds_of_air() {
+        let mut world = test_world();
+        world.level.time = 7.0;
+        let key = player_in(&mut world);
+        assert_eq!(world.client(key).unwrap().air_finished, 19.0);
+    }
+
+    #[test]
+    fn noclip_needs_no_air() {
+        let (mut world, key, gi) = swimmer();
+        world.entities.get_mut(key).unwrap().game.movetype = crate::constants::MoveType::Noclip;
+        wade(&mut world, key, 3, CONTENTS_SLIME);
+        world.world_effects(key);
+        assert_eq!(world.client(key).unwrap().air_finished, 32.0);
+        assert_eq!(health(&world, key), 100);
+        assert!(gi.sound_calls.borrow().is_empty());
     }
 
     #[test]

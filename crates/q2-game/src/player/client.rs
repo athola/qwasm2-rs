@@ -149,6 +149,7 @@ impl GameWorld {
                     ..Default::default()
                 };
                 client.v_angle = ent.state.angles;
+                client.air_finished = self.level.time + 12.0;
                 for i in 0..3 {
                     client.ps.pmove.origin[i] = (spawn_origin[i] * 8.0) as i32 as i16;
                     client.ps.pmove.delta_angles[i] =
@@ -710,6 +711,7 @@ impl GameWorld {
             .collect();
 
         for key in keys {
+            self.world_effects(key);
             self.update_player_view(key);
             // After the view offset, so eye contents are right.
             self.calc_blend(key);

@@ -105,6 +105,11 @@ All notable changes to qwasm2-rs are documented here.
   armor switches off when cells run out), and the view tints for
   liquids, powerups and pickups with C's warning sounds three seconds
   before a powerup ends (`SV_CalcBlend`), drawn under the HUD
+- Water, slime and lava act on the player (C `P_WorldEffects`): splash,
+  submerge and gasp sounds, drowning once the air runs out (harder each
+  second up to 15), the rebreather and envirosuit giving air, lava
+  burning three a level (one with the envirosuit) and slime one a level
+  (none with it)
 - Muzzle flashes (C `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`): the
   player's and monsters' gunfire is heard (C plays those sounds on the
   client, so they were silent) and lights the scene; the server hands

@@ -1319,7 +1319,7 @@ pub fn m_catagorize_position(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Damage from the world itself (C `T_Damage(ent, world, world, ...)`).
-fn world_damage(
+pub(crate) fn world_damage(
     world: &mut GameWorld,
     key: EntityKey,
     damage: i32,

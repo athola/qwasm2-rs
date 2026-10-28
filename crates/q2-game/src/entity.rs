@@ -277,6 +277,15 @@ pub struct ClientData {
     pub weapon_sound: i32,
     /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).
     pub bonus_alpha: f32,
+    /// When the air runs out under water (C the player edict's
+    /// `air_finished`).
+    pub air_finished: f32,
+    /// Last frame's `waterlevel`, next drowning hit and which breath the
+    /// rebreather plays next (C `old_waterlevel`, `next_drown_time`,
+    /// `breather_sound`).
+    pub old_waterlevel: i32,
+    pub next_drown_time: f32,
+    pub breather_sound: bool,
     /// Fading damage kick on the view (C `v_dmg_pitch`, `v_dmg_roll`,
     /// `v_dmg_time`).
     pub v_dmg_pitch: f32,
