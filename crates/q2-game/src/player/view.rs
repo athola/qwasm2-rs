@@ -30,8 +30,20 @@ impl GameWorld {
         // Apply view offset to player state: eye height comes from the
         // entity's viewheight (C SV_CalcViewOffset), which pmove lowers when
         // ducking.
+        // The last shot's kick (C: base angles are `kick_angles`, cleared
+        // for the dead; the origin kick adds to the eye, clamped).
         if let Some((ent, client)) = self.entity_and_client_mut(key) {
-            client.ps.viewoffset = Vec3f::new(0.0, 0.0, ent.game.viewheight + bob);
+            client.ps.kick_angles = if ent.game.deadflag != crate::constants::DeadFlag::No {
+                Vec3f::ZERO
+            } else {
+                client.kick_angles
+            };
+            let v = Vec3f::new(0.0, 0.0, ent.game.viewheight + bob) + client.kick_origin;
+            client.ps.viewoffset = Vec3f::new(
+                v.x.clamp(-14.0, 14.0),
+                v.y.clamp(-14.0, 14.0),
+                v.z.clamp(-22.0, 30.0),
+            );
         }
     }
 }
@@ -40,6 +52,54 @@ impl GameWorld {
 mod tests {
     use crate::world::test_world;
     use q2_shared::types::Vec3f;
+
+    #[test]
+    fn a_shot_kicks_the_view_for_one_frame_like_c() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        let client = world.client_mut(key).unwrap();
+        client.kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
+        client.kick_origin = Vec3f::new(-2.0, 0.0, 0.0);
+
+        world.client_end_server_frames();
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.kick_angles, Vec3f::new(-1.0, 0.0, 0.0));
+        assert_eq!(client.ps.viewoffset.x, -2.0);
+        assert_eq!(
+            client.kick_angles,
+            Vec3f::ZERO,
+            "ClientEndServerFrame clears it"
+        );
+        assert_eq!(client.kick_origin, Vec3f::ZERO);
+
+        world.client_end_server_frames();
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.kick_angles, Vec3f::ZERO);
+        assert_eq!(client.ps.viewoffset.x, 0.0);
+    }
+
+    #[test]
+    fn the_kick_offset_is_clamped_like_sv_calcviewoffset() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.client_mut(key).unwrap().kick_origin = Vec3f::new(-30.0, 30.0, 40.0);
+        world.update_player_view(key);
+        let offset = world.client(key).unwrap().ps.viewoffset;
+        assert_eq!((offset.x, offset.y, offset.z), (-14.0, 14.0, 30.0));
+    }
+
+    #[test]
+    fn a_dead_player_gets_no_kick_angles() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.deadflag = crate::constants::DeadFlag::Dead;
+        world.client_mut(key).unwrap().kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
+        world.update_player_view(key);
+        assert_eq!(world.client(key).unwrap().ps.kick_angles, Vec3f::ZERO);
+    }
 
     #[test]
     fn view_offset_default_height() {

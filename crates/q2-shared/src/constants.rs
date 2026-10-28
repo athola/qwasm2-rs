@@ -97,6 +97,27 @@ pub const EF_TELEPORTER: u32 = 0x0002_0000;
 pub const EV_PLAYER_TELEPORT: i32 = 6;
 pub const EV_OTHER_TELEPORT: i32 = 7;
 
+// usercmd_t buttons (shared.h BUTTON_*).
+pub const BUTTON_ATTACK: u8 = 1;
+pub const BUTTON_USE: u8 = 2;
+pub const BUTTON_ANY: u8 = 128;
+
+// Player muzzle flashes (shared.h MZ_*): the flash number in svc_muzzleflash.
+pub const MZ_BLASTER: i32 = 0;
+pub const MZ_MACHINEGUN: i32 = 1;
+pub const MZ_SHOTGUN: i32 = 2;
+pub const MZ_CHAINGUN1: i32 = 3;
+pub const MZ_CHAINGUN2: i32 = 4;
+pub const MZ_CHAINGUN3: i32 = 5;
+pub const MZ_RAILGUN: i32 = 6;
+pub const MZ_ROCKET: i32 = 7;
+pub const MZ_GRENADE: i32 = 8;
+pub const MZ_BFG: i32 = 12;
+pub const MZ_SSHOTGUN: i32 = 13;
+pub const MZ_HYPERBLASTER: i32 = 14;
+/// Bit ORed onto a flash number for a silenced shot.
+pub const MZ_SILENCED: i32 = 128;
+
 // Monster muzzle flashes (shared.h MZ2_*): the flash number in svc_muzzleflash2,
 // which also indexes monster_flash_offset.
 pub const MZ2_TANK_BLASTER_1: i32 = 1;

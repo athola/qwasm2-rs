@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use q2_common::pmove::Pmove;
-use q2_shared::constants::{MASK_DEADSOLID, MASK_PLAYERSOLID};
+use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID};
 use q2_shared::types::*;
 
 use crate::constants::*;
@@ -148,6 +148,7 @@ impl GameWorld {
                     viewangles: ent.state.angles,
                     ..Default::default()
                 };
+                client.v_angle = ent.state.angles;
                 for i in 0..3 {
                     client.ps.pmove.origin[i] = (spawn_origin[i] * 8.0) as i32 as i16;
                     client.ps.pmove.delta_angles[i] =
@@ -157,6 +158,12 @@ impl GameWorld {
         }
 
         self.link_entity(key);
+
+        // Force the current weapon up.
+        if let Some(client) = self.client_mut(key) {
+            client.newweapon = client.pers.weapon;
+        }
+        self.change_weapon(key);
     }
 
     /// Starting persistent data: the Blaster, 100 health and the default
@@ -602,6 +609,7 @@ impl GameWorld {
                 client.ps.viewangles.x = -15.0;
                 client.ps.viewangles.z = 40.0;
             } else {
+                client.v_angle = pm.viewangles;
                 client.ps.viewangles = pm.viewangles;
             }
         }
@@ -626,20 +634,42 @@ impl GameWorld {
             }
         }
 
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        client.oldbuttons = client.buttons;
+        client.buttons = cmd.buttons;
+        client.latched_buttons |= client.buttons & !client.oldbuttons;
         // Save the light level the player is standing on for monster
         // sighting AI.
-        if let Some(ent) = self.entities.get_mut(key) {
-            ent.game.light_level = i32::from(cmd.lightlevel);
+        ent.game.light_level = i32::from(cmd.lightlevel);
+
+        // Fire from the final position. A spectator's press (chase cam)
+        // waits on spectator support.
+        let fire = client.latched_buttons & BUTTON_ATTACK != 0
+            && !client.resp.spectator
+            && !client.weapon_thunk;
+        if fire {
+            client.weapon_thunk = true;
+            self.think_weapon(key);
         }
     }
 
-    /// Per-frame setup for a client at the start of the server frame.
-    /// C ref: `ClientBeginServerFrame` (player/client.c).
-    /// Only the player-trail part is ported; weapon think and respawn
-    /// wait on #16.
+    /// Per-frame setup for a client at the start of the server frame:
+    /// run the weapon unless a command already did, then the player
+    /// trail. C ref: `ClientBeginServerFrame` (player/client.c); the
+    /// deathmatch spectator switch and respawn on a dead player's press
+    /// are not ported yet.
     pub fn client_begin_server_frame(&mut self, key: EntityKey) {
         if self.level.intermission_time != 0.0 {
             return;
+        }
+        if let Some(client) = self.client_mut(key) {
+            if !client.weapon_thunk && !client.resp.spectator {
+                self.think_weapon(key);
+            } else {
+                client.weapon_thunk = false;
+            }
         }
         let dead = self
             .entities
@@ -649,6 +679,9 @@ impl GameWorld {
             return;
         }
         self.player_trail_follow(key);
+        if let Some(client) = self.client_mut(key) {
+            client.latched_buttons = 0;
+        }
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
@@ -664,6 +697,10 @@ impl GameWorld {
         for key in keys {
             self.update_player_view(key);
             self.update_player_stats(key);
+            if let Some(client) = self.client_mut(key) {
+                client.kick_origin = Vec3f::ZERO;
+                client.kick_angles = Vec3f::ZERO;
+            }
         }
         self.level.gibs_this_frame = 0;
         self.level.debris_this_frame = 0;
@@ -1111,6 +1148,72 @@ mod tests {
         assert_eq!(world.select_spawn_point(first), Some(start));
         // C counts near spots from 0 and takes the one matching the slot.
         assert_eq!(world.select_spawn_point(second), Some(near));
+    }
+
+    fn attack(buttons: u8) -> UserCmd {
+        UserCmd {
+            msec: 10,
+            buttons,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn think_client_latches_a_new_press_and_not_a_held_button() {
+        use q2_shared::constants::BUTTON_ATTACK;
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.client_mut(key).unwrap().pers.weapon = None;
+
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        let client = world.client(key).unwrap();
+        assert_eq!(client.buttons, BUTTON_ATTACK);
+        assert_eq!(client.latched_buttons & BUTTON_ATTACK, BUTTON_ATTACK);
+
+        world.client_mut(key).unwrap().latched_buttons = 0;
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        let client = world.client(key).unwrap();
+        assert_eq!(client.oldbuttons, BUTTON_ATTACK);
+        assert_eq!(client.latched_buttons, 0, "held, not pressed again");
+
+        world.think_client(key, &attack(0));
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        assert_eq!(world.client(key).unwrap().latched_buttons, BUTTON_ATTACK);
+    }
+
+    #[test]
+    fn an_attack_press_thinks_the_weapon_once_for_the_frame_like_c() {
+        use q2_shared::constants::BUTTON_ATTACK;
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        assert!(world.client(key).unwrap().weapon_thunk);
+        // ClientBeginServerFrame skips the think the command already ran
+        // and clears the flag and the latched buttons for the next frame.
+        world.client_begin_server_frame(key);
+        let client = world.client(key).unwrap();
+        assert!(!client.weapon_thunk);
+        assert_eq!(client.latched_buttons, 0);
+    }
+
+    #[test]
+    fn think_client_keeps_the_view_angles_for_aiming_like_c_v_angle() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let mut cmd = attack(0);
+        cmd.angles = [angle2short(10.0), angle2short(90.0), 0];
+        world.think_client(key, &cmd);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.v_angle, client.ps.viewangles);
+        assert!(
+            (client.v_angle.y - 90.0).abs() < 0.1,
+            "{:?}",
+            client.v_angle
+        );
     }
 
     #[test]

@@ -143,6 +143,9 @@ pub type UseItemFn = fn(&mut GameWorld, EntityKey, usize);
 /// Drop callback: (world, player_entity, item_index).
 pub type DropItemFn = fn(&mut GameWorld, EntityKey, usize);
 
+/// Weapon think callback: (world, player_entity).
+pub type WeaponThinkFn = fn(&mut GameWorld, EntityKey);
+
 /// A single item definition. Replaces `gitem_t` from C.
 ///
 /// Items are stored in a global list on `GameWorld`. Each item is identified
@@ -175,6 +178,11 @@ pub struct ItemDef {
     pub use_fn: Option<UseItemFn>,
     /// Drop handler.
     pub drop_fn: Option<DropItemFn>,
+    /// First-person gun model, for weapons (C `view_model`).
+    pub view_model: &'static str,
+    /// Runs the gun every frame while it is the current weapon (C
+    /// `weaponthink`).
+    pub weaponthink: Option<WeaponThinkFn>,
 }
 
 impl std::fmt::Debug for ItemDef {
@@ -238,6 +246,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
         pickup: None,
         use_fn: None,
         drop_fn: None,
+        view_model: "",
+        weaponthink: None,
     };
 
     vec![
@@ -258,6 +268,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_armor),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [2] Combat Armor
         ItemDef {
@@ -274,6 +286,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_armor),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [3] Jacket Armor
         ItemDef {
@@ -290,6 +304,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_armor),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [4] Armor Shard
         ItemDef {
@@ -306,6 +322,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_armor),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [5] Power Screen
         ItemDef {
@@ -322,6 +340,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: None,
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [6] Power Shield
         ItemDef {
@@ -338,6 +358,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: None,
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [7] Blaster
         ItemDef {
@@ -354,6 +376,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_blast/tris.md2",
+            weaponthink: Some(crate::player::weapon::weapon_blaster),
         },
         // [8] Shotgun
         ItemDef {
@@ -370,6 +394,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_shotg/tris.md2",
+            weaponthink: None,
         },
         // [9] Super Shotgun
         ItemDef {
@@ -386,6 +412,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_shotg2/tris.md2",
+            weaponthink: None,
         },
         // [10] Machinegun
         ItemDef {
@@ -402,6 +430,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_machn/tris.md2",
+            weaponthink: None,
         },
         // [11] Chaingun
         ItemDef {
@@ -418,6 +448,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_chain/tris.md2",
+            weaponthink: None,
         },
         // [12] Grenades (ammo + weapon combo)
         ItemDef {
@@ -434,6 +466,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_handgr/tris.md2",
+            weaponthink: None,
         },
         // [13] Grenade Launcher
         ItemDef {
@@ -450,6 +484,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_launch/tris.md2",
+            weaponthink: None,
         },
         // [14] Rocket Launcher
         ItemDef {
@@ -466,6 +502,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_rocket/tris.md2",
+            weaponthink: None,
         },
         // [15] HyperBlaster
         ItemDef {
@@ -482,6 +520,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_hyperb/tris.md2",
+            weaponthink: None,
         },
         // [16] Railgun
         ItemDef {
@@ -498,6 +538,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_rail/tris.md2",
+            weaponthink: None,
         },
         // [17] BFG10K
         ItemDef {
@@ -514,6 +556,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_weapon),
             use_fn: None,
             drop_fn: None,
+            view_model: "models/weapons/v_bfg/tris.md2",
+            weaponthink: None,
         },
         // [18] Shells
         ItemDef {
@@ -530,6 +574,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [19] Bullets
         ItemDef {
@@ -546,6 +592,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [20] Cells
         ItemDef {
@@ -562,6 +610,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [21] Rockets
         ItemDef {
@@ -578,6 +628,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [22] Slugs
         ItemDef {
@@ -594,6 +646,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ammo),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [23] Quad Damage
         ItemDef {
@@ -610,6 +664,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [24] Invulnerability
         ItemDef {
@@ -626,6 +682,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [25] Silencer
         ItemDef {
@@ -642,6 +700,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [26] Rebreather
         ItemDef {
@@ -658,6 +718,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [27] Environment Suit
         ItemDef {
@@ -674,6 +736,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [28] Ancient Head
         ItemDef {
@@ -690,6 +754,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_ancient_head),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [29] Adrenaline
         ItemDef {
@@ -706,6 +772,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_adrenaline),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [30] Bandolier
         ItemDef {
@@ -722,6 +790,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_bandolier),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [31] Ammo Pack
         ItemDef {
@@ -738,6 +808,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_pack),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [32-40] Keys — 9 key items
         ItemDef {
@@ -754,6 +826,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_power_cube",
@@ -769,6 +843,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_pyramid",
@@ -784,6 +860,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_data_spinner",
@@ -799,6 +877,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_pass",
@@ -814,6 +894,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_blue_key",
@@ -829,6 +911,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_red_key",
@@ -844,6 +928,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_commander_head",
@@ -859,6 +945,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         ItemDef {
             classname: "key_airstrike_target",
@@ -874,6 +962,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_powerup),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
         // [41] Health (generic — not spawned directly, used for health pickups)
         ItemDef {
@@ -890,6 +980,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             pickup: Some(pickup_health),
             use_fn: None,
             drop_fn: None,
+            view_model: "",
+            weaponthink: None,
         },
     ]
 }

@@ -240,6 +240,39 @@ pub struct ClientData {
     pub anim_priority: i32,
     /// Frame the playing animation stops on (C `anim_end`).
     pub anim_end: i32,
+    /// This and last command's buttons, and the presses since the last
+    /// server frame (C `buttons`, `oldbuttons`, `latched_buttons`).
+    pub buttons: u8,
+    pub oldbuttons: u8,
+    pub latched_buttons: u8,
+    /// The weapon already thought this frame from a command (C
+    /// `weapon_thunk`).
+    pub weapon_thunk: bool,
+    /// Aim direction (C `v_angle`); weapons fire along it.
+    pub v_angle: Vec3f,
+    /// Item index to switch to once the current weapon is down (C
+    /// `newweapon`).
+    pub newweapon: Option<usize>,
+    pub weaponstate: WeaponState,
+    /// Inventory index of the current weapon's ammo, 0 for none (C
+    /// `ammo_index`).
+    pub ammo_index: usize,
+    /// View kick from the last shot, cleared each server frame (C
+    /// `kick_origin`, `kick_angles`).
+    pub kick_origin: Vec3f,
+    pub kick_angles: Vec3f,
+    /// Level frame until which quad damage lasts (C `quad_framenum`).
+    pub quad_framenum: i32,
+}
+
+/// Where the gun is in its cycle (C `weaponstate_t`, same order).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WeaponState {
+    #[default]
+    Ready,
+    Activating,
+    Dropping,
+    Firing,
 }
 
 // ---------------------------------------------------------------------------

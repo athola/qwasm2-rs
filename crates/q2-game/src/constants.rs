@@ -303,6 +303,7 @@ pub const SFL_CROSS_TRIGGER_MASK: i32 = 0x0000_00ff;
 pub const CHAN_AUTO: i32 = 0;
 pub const CHAN_WEAPON: i32 = 1;
 pub const CHAN_VOICE: i32 = 2;
+pub const CHAN_ITEM: i32 = 3;
 pub const CHAN_BODY: i32 = 4;
 pub const CHAN_NO_PHS_ADD: i32 = 8;
 
@@ -334,8 +335,16 @@ pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
 /// Used as 22 in maps (shared.h: "DON'T RENUMBER").
 pub const TE_BOSSTPORT: i32 = 22;
 
+/// C `ANIM_*` (local.h): player animation classes, lowest first.
+pub const ANIM_BASIC: i32 = 0;
+pub const ANIM_WAVE: i32 = 1;
+pub const ANIM_JUMP: i32 = 2;
+pub const ANIM_PAIN: i32 = 3;
+pub const ANIM_ATTACK: i32 = 4;
 /// C `ANIM_DEATH` (local.h): the death animation holds its last frame.
 pub const ANIM_DEATH: i32 = 5;
+/// Plays backwards from `s.frame` down to `anim_end`.
+pub const ANIM_REVERSE: i32 = 6;
 /// Most gibs thrown in one frame (C `MAX_GIBS`, local.h).
 pub const MAX_GIBS: i32 = 20;
 /// Most debris chunks thrown in one frame (C `MAX_DEBRIS`, local.h).

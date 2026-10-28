@@ -67,6 +67,11 @@ All notable changes to qwasm2-rs are documented here.
   `gib_health` are shared (`STUB_STAND_FRAMES` removed)
 
 ### Added
+- The player fires the blaster: `ClientThink` latches the attack button
+  and the weapon runs C's `Think_Weapon`/`Weapon_Generic` cycle (raise,
+  fire, idle with random pauses, lower and `ChangeWeapon`), with muzzle
+  flash, view kick and the no-ammo click and auto-switch; `ItemDef` gains
+  `view_model` and `weaponthink` (#16, first slice)
 - Gamma is tunable: `?gamma=1.2` sets `vid_gamma` at load and F7/F8 step
   it by 0.1 in game, within C's brightness slider range 0.1..2.0; the
   shaders read it as C's `gamma` uniform (`1/vid_gamma`) through the new
