@@ -25,7 +25,7 @@ bitflags! {
         const SERVERINFO = 1 << 2;
         /// Cannot be changed by the user.
         const NOSET      = 1 << 3;
-        /// Value change is deferred until `apply_latched()`.
+        /// While a server runs, a change waits for `apply_latched()`.
         const LATCH      = 1 << 4;
     }
 }
@@ -47,6 +47,9 @@ pub struct CVarSystem {
     vars: Vec<CVar>,
     name_to_index: HashMap<String, usize>,
     userinfo_modified: bool,
+    /// C `Com_ServerState()` as seen by `Cvar_Set2`: LATCH cvars only defer
+    /// while a server is running.
+    server_active: bool,
 }
 
 impl CVarSystem {
@@ -56,15 +59,37 @@ impl CVarSystem {
             vars: Vec::new(),
             name_to_index: HashMap::new(),
             userinfo_modified: false,
+            server_active: false,
         }
     }
 
-    /// Get or create a cvar. If it already exists, `flags` are OR-ed in but
-    /// the value is left unchanged.
-    pub fn get(&mut self, name: &str, default_value: &str, flags: CVarFlags) -> CVarHandle {
+    /// Tell LATCH handling whether a server is running (C `Com_ServerState`).
+    /// The server sets this when a map starts and clears it on shutdown.
+    pub fn set_server_active(&mut self, active: bool) {
+        self.server_active = active;
+    }
+
+    /// Get or create a cvar (C `Cvar_Get`). If it already exists, `flags`
+    /// are OR-ed in and `default_value` replaces its default, but the value
+    /// is left unchanged. `None` when a USERINFO/SERVERINFO cvar's name, or
+    /// a new one's value, contains `\`, `"` or `;`.
+    pub fn get(&mut self, name: &str, default_value: &str, flags: CVarFlags) -> Option<CVarHandle> {
+        let info = flags.intersects(CVarFlags::USERINFO | CVarFlags::SERVERINFO);
+        if info && !info_validate(name) {
+            tracing::warn!("invalid info cvar name {name:?}");
+            return None;
+        }
+
         if let Some(&index) = self.name_to_index.get(name) {
-            self.vars[index].flags |= flags;
-            return CVarHandle::from_raw(index);
+            let cvar = &mut self.vars[index];
+            cvar.flags |= flags;
+            cvar.default_value = default_value.to_owned();
+            return Some(CVarHandle::from_raw(index));
+        }
+
+        if info && !info_validate(default_value) {
+            tracing::warn!("invalid info cvar value for {name}");
+            return None;
         }
 
         let index = self.vars.len();
@@ -80,71 +105,79 @@ impl CVarSystem {
             modified: true,
         });
         self.name_to_index.insert(name.to_owned(), index);
-        CVarHandle::from_raw(index)
+        Some(CVarHandle::from_raw(index))
     }
 
     /// Set a cvar by name. Respects `NOSET` and `LATCH` flags.
     /// If the cvar does not exist it is created with empty flags.
     pub fn set(&mut self, name: &str, value: &str) {
-        let index = match self.name_to_index.get(name) {
-            Some(&i) => i,
-            None => {
-                // Create with empty flags, then set.
-                let handle = self.get(name, value, CVarFlags::empty());
-                // Already has the right value from `get`.
-                self.vars[handle.raw()].modified = true;
-                return;
-            }
-        };
-
-        let cvar = &mut self.vars[index];
-
-        if !Self::info_value_allowed(cvar, value) {
-            tracing::warn!("invalid info cvar value for {}", cvar.name);
-            return;
-        }
-
-        if cvar.flags.contains(CVarFlags::NOSET) {
-            return;
-        }
-
-        if cvar.flags.contains(CVarFlags::LATCH) {
-            cvar.latched_string = Some(value.to_owned());
-            return;
-        }
-
-        Self::apply_value(cvar, value);
-
-        if cvar.flags.contains(CVarFlags::USERINFO) {
-            self.userinfo_modified = true;
-        }
+        self.set2(name, value, false);
     }
 
     /// Force-set a cvar, ignoring `NOSET` and `LATCH` flags.
     /// If the cvar does not exist it is created with empty flags.
     pub fn force_set(&mut self, name: &str, value: &str) {
-        let index = match self.name_to_index.get(name) {
-            Some(&i) => i,
-            None => {
-                let handle = self.get(name, value, CVarFlags::empty());
-                self.vars[handle.raw()].modified = true;
-                return;
-            }
-        };
+        self.set2(name, value, true);
+    }
 
+    /// C `Cvar_Set2`, in the same order: info check, NOSET, LATCH (equal
+    /// values ignored; deferred only while a server runs), then an unchanged
+    /// string returns before anything is marked modified.
+    fn set2(&mut self, name: &str, value: &str, force: bool) {
+        let Some(&index) = self.name_to_index.get(name) else {
+            // C Cvar_Get with no flags, which marks the new cvar modified.
+            self.get(name, value, CVarFlags::empty());
+            return;
+        };
+        let server_active = self.server_active;
         let cvar = &mut self.vars[index];
 
-        if !Self::info_value_allowed(cvar, value) {
+        if cvar
+            .flags
+            .intersects(CVarFlags::USERINFO | CVarFlags::SERVERINFO)
+            && !info_validate(value)
+        {
             tracing::warn!("invalid info cvar value for {}", cvar.name);
             return;
         }
 
-        cvar.latched_string = None;
-        Self::apply_value(cvar, value);
+        if force {
+            cvar.latched_string = None;
+        } else {
+            if cvar.flags.contains(CVarFlags::NOSET) {
+                tracing::info!("{name} is write protected.");
+                return;
+            }
+            if cvar.flags.contains(CVarFlags::LATCH) {
+                match cvar.latched_string.take() {
+                    Some(latched) if latched == value => {
+                        cvar.latched_string = Some(latched);
+                        return;
+                    }
+                    Some(_) => {}
+                    None if cvar.string == value => return,
+                    None => {}
+                }
+                if server_active {
+                    tracing::info!("{name} will be changed for next game.");
+                    cvar.latched_string = Some(value.to_owned());
+                } else {
+                    cvar.string = value.to_owned();
+                    cvar.value = parse_value(value);
+                }
+                return;
+            }
+        }
 
+        if cvar.string == value {
+            return;
+        }
+        cvar.modified = true;
         if cvar.flags.contains(CVarFlags::USERINFO) {
             self.userinfo_modified = true;
         }
+        cvar.string = value.to_owned();
+        cvar.value = parse_value(value);
     }
 
     /// Get the float value of a cvar.
@@ -191,11 +224,13 @@ impl CVarSystem {
         }
     }
 
-    /// Apply all latched values (called at an appropriate point, e.g. map change).
+    /// Apply all latched values (C `Cvar_GetLatchedVars`, called when a new
+    /// game starts). Like C, this does not mark the cvars modified.
     pub fn apply_latched(&mut self) {
         for cvar in &mut self.vars {
             if let Some(latched) = cvar.latched_string.take() {
-                Self::apply_value(cvar, &latched);
+                cvar.value = parse_value(&latched);
+                cvar.string = latched;
             }
         }
     }
@@ -210,22 +245,27 @@ impl CVarSystem {
         self.userinfo_modified = false;
     }
 
-    /// Write all `ARCHIVE` cvars as `set name "value"` lines.
+    /// Write all `ARCHIVE` cvars as `set name "value"` lines, sorted by name
+    /// like C's cvar list.
     pub fn write_archive(&self) -> String {
+        let mut archived: Vec<&CVar> = self
+            .vars
+            .iter()
+            .filter(|cvar| cvar.flags.contains(CVarFlags::ARCHIVE))
+            .collect();
+        archived.sort_by(|a, b| a.name.cmp(&b.name));
         let mut output = String::new();
-        for cvar in &self.vars {
-            if cvar.flags.contains(CVarFlags::ARCHIVE) {
-                // The command tokenizer has no escape syntax (like C
-                // COM_Parse), so a quote or newline in the value would end
-                // the quoted token and let the rest run as commands when the
-                // config is exec'd. C writes the value raw; we drop them.
-                let value: String = cvar
-                    .string
-                    .chars()
-                    .filter(|c| !matches!(c, '"' | '\n' | '\r'))
-                    .collect();
-                output.push_str(&format!("set {} \"{}\"\n", cvar.name, value));
-            }
+        for cvar in archived {
+            // The command tokenizer has no escape syntax (like C
+            // COM_Parse), so a quote or newline in the value would end
+            // the quoted token and let the rest run as commands when the
+            // config is exec'd. C writes the value raw; we drop them.
+            let value: String = cvar
+                .string
+                .chars()
+                .filter(|c| !matches!(c, '"' | '\n' | '\r'))
+                .collect();
+            output.push_str(&format!("set {} \"{}\"\n", cvar.name, value));
         }
         output
     }
@@ -264,22 +304,6 @@ impl CVarSystem {
 
     // ---- private helpers ----
 
-    /// Update the string and parsed float value on a cvar.
-    fn apply_value(cvar: &mut CVar, value: &str) {
-        cvar.string = value.to_owned();
-        cvar.value = parse_value(value);
-        cvar.modified = true;
-    }
-
-    /// C `Cvar_InfoValidate`, applied only to USERINFO/SERVERINFO cvars:
-    /// these characters would forge keys or break the info string.
-    fn info_value_allowed(cvar: &CVar, value: &str) -> bool {
-        !cvar
-            .flags
-            .intersects(CVarFlags::USERINFO | CVarFlags::SERVERINFO)
-            || !value.contains(['\\', '"', ';'])
-    }
-
     /// Build a backslash-delimited info string from cvars that have the given
     /// flag, applying each pair the way C `Info_SetValueForKey` does.
     fn build_info_string(vars: &[CVar], flag: CVarFlags) -> String {
@@ -312,6 +336,12 @@ impl CVarSystem {
         }
         info
     }
+}
+
+/// C `Cvar_InfoValidate`, applied only to USERINFO/SERVERINFO cvars: these
+/// characters would forge keys or break the info string.
+fn info_validate(text: &str) -> bool {
+    !text.contains(['\\', '"', ';'])
 }
 
 /// Parse a cvar's float value like C `(float)strtod(s, NULL)`: leading
@@ -372,7 +402,7 @@ mod tests {
     #[test]
     fn get_creates_cvar() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("test_var", "42", CVarFlags::empty());
+        let handle = cvars.get("test_var", "42", CVarFlags::empty()).unwrap();
         assert_eq!(cvars.string(handle), "42");
         assert_eq!(cvars.value(handle), 42.0);
     }
@@ -380,8 +410,8 @@ mod tests {
     #[test]
     fn get_existing_returns_same_handle() {
         let mut cvars = CVarSystem::new();
-        let h1 = cvars.get("test", "1", CVarFlags::empty());
-        let h2 = cvars.get("test", "2", CVarFlags::empty());
+        let h1 = cvars.get("test", "1", CVarFlags::empty()).unwrap();
+        let h2 = cvars.get("test", "2", CVarFlags::empty()).unwrap();
         assert_eq!(h1, h2);
         assert_eq!(cvars.string(h1), "1"); // value not changed on re-get
     }
@@ -400,7 +430,7 @@ mod tests {
     #[test]
     fn set_changes_value() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("test_var", "1", CVarFlags::empty());
+        let handle = cvars.get("test_var", "1", CVarFlags::empty()).unwrap();
         cvars.set("test_var", "2");
         assert_eq!(cvars.value(handle), 2.0);
         assert_eq!(cvars.string(handle), "2");
@@ -409,7 +439,7 @@ mod tests {
     #[test]
     fn noset_prevents_change() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("locked", "1", CVarFlags::NOSET);
+        let handle = cvars.get("locked", "1", CVarFlags::NOSET).unwrap();
         cvars.set("locked", "2");
         assert_eq!(cvars.value(handle), 1.0); // unchanged
     }
@@ -417,15 +447,16 @@ mod tests {
     #[test]
     fn force_set_overrides_noset() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("locked", "1", CVarFlags::NOSET);
+        let handle = cvars.get("locked", "1", CVarFlags::NOSET).unwrap();
         cvars.force_set("locked", "2");
         assert_eq!(cvars.value(handle), 2.0);
     }
 
     #[test]
-    fn latch_defers_change() {
+    fn latch_defers_change_while_a_server_runs() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("latched", "1", CVarFlags::LATCH);
+        cvars.set_server_active(true);
+        let handle = cvars.get("latched", "1", CVarFlags::LATCH).unwrap();
         cvars.set("latched", "2");
         assert_eq!(cvars.value(handle), 1.0); // still old
         cvars.apply_latched();
@@ -475,7 +506,7 @@ mod tests {
     #[test]
     fn value_parses_non_numeric_as_zero() {
         let mut cvars = CVarSystem::new();
-        let handle = cvars.get("text", "hello", CVarFlags::empty());
+        let handle = cvars.get("text", "hello", CVarFlags::empty()).unwrap();
         assert_eq!(cvars.value(handle), 0.0);
     }
 
@@ -484,18 +515,18 @@ mod tests {
         // C Cvar_InfoValidate: `\`, `"` and `;` would forge extra keys or
         // break the info string, so the old value is kept.
         let mut cvars = CVarSystem::new();
-        let h = cvars.get("name", "player", CVarFlags::USERINFO);
+        let h = cvars.get("name", "player", CVarFlags::USERINFO).unwrap();
         for bad in ["x\\ip\\1.2.3.4", "a\"b", "a;b"] {
             cvars.set("name", bad);
             assert_eq!(cvars.string(h), "player", "accepted {bad:?}");
             cvars.force_set("name", bad);
             assert_eq!(cvars.string(h), "player", "force accepted {bad:?}");
         }
-        let s = cvars.get("hostname", "srv", CVarFlags::SERVERINFO);
+        let s = cvars.get("hostname", "srv", CVarFlags::SERVERINFO).unwrap();
         cvars.set("hostname", "a\\b");
         assert_eq!(cvars.string(s), "srv");
         // Non-info cvars may hold any text.
-        let plain = cvars.get("plain", "", CVarFlags::empty());
+        let plain = cvars.get("plain", "", CVarFlags::empty()).unwrap();
         cvars.set("plain", "a;b");
         assert_eq!(cvars.string(plain), "a;b");
     }
@@ -559,7 +590,9 @@ mod tests {
             ("1e40", 0.0),
         ];
         for (i, (text, expected)) in cases.iter().enumerate() {
-            let h = cvars.get(&format!("v{i}"), text, CVarFlags::empty());
+            let h = cvars
+                .get(&format!("v{i}"), text, CVarFlags::empty())
+                .unwrap();
             assert_eq!(cvars.value(h), *expected, "default {text:?}");
             cvars.set(&format!("v{i}"), text);
             assert_eq!(cvars.value(h), *expected, "set {text:?}");
@@ -569,7 +602,7 @@ mod tests {
     #[test]
     fn modified_flag_tracks_changes_until_cleared() {
         let mut cvars = CVarSystem::new();
-        let h = cvars.get("gl_mode", "3", CVarFlags::empty());
+        let h = cvars.get("gl_mode", "3", CVarFlags::empty()).unwrap();
         // C Cvar_Get marks a new cvar modified.
         assert!(cvars.modified(h));
         cvars.clear_modified(h);
@@ -591,7 +624,8 @@ mod tests {
     #[test]
     fn force_set_discards_pending_latch() {
         let mut cvars = CVarSystem::new();
-        let h = cvars.get("maxclients", "1", CVarFlags::LATCH);
+        cvars.set_server_active(true);
+        let h = cvars.get("maxclients", "1", CVarFlags::LATCH).unwrap();
         cvars.set("maxclients", "8");
         cvars.force_set("maxclients", "4");
         cvars.apply_latched();
@@ -613,6 +647,109 @@ mod tests {
         cvars.get("gl_a", "1", CVarFlags::empty());
         assert_eq!(cvars.complete("gl_").as_deref(), Some("gl_a"));
         assert_eq!(cvars.complete("zz"), None);
+    }
+
+    #[test]
+    fn set_to_the_current_value_leaves_modified_flags_clear() {
+        // C Cvar_Set2 returns before `modified = true` when the string is
+        // unchanged, so pollers (vid_restart, userinfo resend) stay quiet.
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("name", "p", CVarFlags::USERINFO).unwrap();
+        cvars.clear_modified(h);
+        cvars.set("name", "p");
+        cvars.force_set("name", "p");
+        assert!(!cvars.modified(h));
+        assert!(!cvars.userinfo_modified());
+        cvars.set("name", "q");
+        assert!(cvars.modified(h));
+        assert!(cvars.userinfo_modified());
+    }
+
+    #[test]
+    fn latch_applies_immediately_without_a_running_server() {
+        // C Cvar_Set2: `if (Com_ServerState())` latches, else it stores the
+        // value at once without setting `modified`.
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("maxclients", "1", CVarFlags::LATCH).unwrap();
+        cvars.clear_modified(h);
+        cvars.set("maxclients", "8");
+        assert_eq!(cvars.value(h), 8.0);
+        assert!(!cvars.modified(h));
+        cvars.set_server_active(true);
+        cvars.set("maxclients", "4");
+        assert_eq!(cvars.value(h), 8.0);
+        cvars.set_server_active(false);
+        cvars.apply_latched();
+        assert_eq!(cvars.value(h), 4.0);
+    }
+
+    #[test]
+    fn latch_ignores_a_value_equal_to_the_current_or_latched_one() {
+        let mut cvars = CVarSystem::new();
+        cvars.set_server_active(true);
+        let h = cvars.get("deathmatch", "0", CVarFlags::LATCH).unwrap();
+        cvars.set("deathmatch", "1");
+        // Equal to the latched value: kept latched.
+        cvars.set("deathmatch", "1");
+        // A different value replaces the latch, even one equal to current.
+        cvars.set("deathmatch", "0");
+        cvars.apply_latched();
+        assert_eq!(cvars.string(h), "0");
+        // Equal to current with nothing latched: nothing to apply.
+        cvars.set("deathmatch", "0");
+        cvars.force_set("deathmatch", "2");
+        cvars.apply_latched();
+        assert_eq!(cvars.string(h), "2");
+    }
+
+    #[test]
+    fn apply_latched_does_not_mark_modified_like_cvar_getlatchedvars() {
+        let mut cvars = CVarSystem::new();
+        cvars.set_server_active(true);
+        let h = cvars.get("maxclients", "1", CVarFlags::LATCH).unwrap();
+        cvars.clear_modified(h);
+        cvars.set("maxclients", "8");
+        cvars.apply_latched();
+        assert_eq!(cvars.value(h), 8.0);
+        assert!(!cvars.modified(h));
+    }
+
+    #[test]
+    fn get_existing_replaces_the_default_value_like_cvar_get() {
+        let mut cvars = CVarSystem::new();
+        let h = cvars.get("fov", "90", CVarFlags::empty()).unwrap();
+        cvars.set("fov", "110");
+        cvars.get("fov", "100", CVarFlags::ARCHIVE);
+        assert_eq!(cvars.default_value(h), "100");
+        assert_eq!(cvars.string(h), "110");
+    }
+
+    #[test]
+    fn get_rejects_invalid_info_names_and_values() {
+        let mut cvars = CVarSystem::new();
+        assert_eq!(cvars.get("na;me", "p", CVarFlags::USERINFO), None);
+        assert_eq!(cvars.get("name", "a\\b", CVarFlags::USERINFO), None);
+        assert_eq!(cvars.get("host", "a\"b", CVarFlags::SERVERINFO), None);
+        assert_eq!(cvars.find("name"), None);
+        // Non-info cvars may hold any text.
+        assert!(cvars.get("plain;", "a;b", CVarFlags::empty()).is_some());
+        // An existing cvar gaining USERINFO is still name-checked.
+        cvars.get("bad;", "x", CVarFlags::empty()).unwrap();
+        assert_eq!(cvars.get("bad;", "x", CVarFlags::USERINFO), None);
+    }
+
+    #[test]
+    fn write_archive_lists_cvars_sorted_by_name_like_the_c_list() {
+        let mut cvars = CVarSystem::new();
+        for name in ["vid_mode", "fov", "name", "gl_mode"] {
+            cvars.get(name, "1", CVarFlags::ARCHIVE);
+        }
+        let names: Vec<String> = cvars
+            .write_archive()
+            .lines()
+            .map(|line| line.split(' ').nth(1).unwrap().to_owned())
+            .collect();
+        assert_eq!(names, ["fov", "gl_mode", "name", "vid_mode"]);
     }
 
     #[test]

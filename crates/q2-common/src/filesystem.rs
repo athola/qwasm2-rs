@@ -9,7 +9,7 @@
 //! # Backend design
 //!
 //! `PakReader` abstracts the source of raw bytes.  Native builds use
-//! `DiskPakReader` (file per-read).  The WASM build uses `JsPakReader`
+//! `DiskPakReader` (one open file handle per pack).  The WASM build uses `JsPakReader`
 //! (defined in `q2-platform`) which holds the full PAK as a JS-heap
 //! `Uint8Array` and slices individual assets into WASM memory on demand —
 //! avoiding an upfront 100 MB copy.
@@ -58,17 +58,29 @@ pub trait PakReader {
 // Bundled backend: disk (native)
 // ---------------------------------------------------------------------------
 
+/// A pak on disk, opened once (like C's `FILE *` in `fsPack_t`).
 struct DiskPakReader {
     path: PathBuf,
+    file: std::fs::File,
+}
+
+impl DiskPakReader {
+    fn open(path: &Path) -> Q2Result<Self> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| Q2Error::Drop(format!("open {}: {}", path.display(), e)))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+        })
+    }
 }
 
 impl PakReader for DiskPakReader {
     fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
-        let file = std::fs::File::open(&self.path)
-            .map_err(|e| Q2Error::Drop(format!("open {}: {}", self.path.display(), e)))?;
         // Bound the request by the real file size before allocating: `len`
         // comes from untrusted PAK header/directory fields.
-        let file_len = file
+        let file_len = self
+            .file
             .metadata()
             .map_err(|e| Q2Error::Drop(format!("stat {}: {}", self.path.display(), e)))?
             .len();
@@ -78,13 +90,12 @@ impl PakReader for DiskPakReader {
                 self.path.display()
             )));
         }
-        let mut reader = io::BufReader::new(file);
-        reader
-            .seek(SeekFrom::Start(offset as u64))
+        // `Read` and `Seek` are implemented for `&File`, so `&self` suffices.
+        let mut file = &self.file;
+        file.seek(SeekFrom::Start(u64::from(offset)))
             .map_err(|e| Q2Error::Drop(format!("seek in {}: {}", self.path.display(), e)))?;
         let mut buf = vec![0u8; len as usize];
-        reader
-            .read_exact(&mut buf)
+        file.read_exact(&mut buf)
             .map_err(|e| Q2Error::Drop(format!("read from {}: {}", self.path.display(), e)))?;
         Ok(buf)
     }
@@ -188,10 +199,10 @@ impl Pack {
         if num_files == 0 {
             return Err(Q2Error::Drop(format!("{name}: PAK directory is empty")));
         }
+        // C only warns: the index is a HashMap with no fixed capacity, and
+        // every PakReader bounds a read by the source size before allocating.
         if num_files > MAX_FILES_IN_PACK {
-            return Err(Q2Error::Drop(format!(
-                "{name}: too many files ({num_files} > {MAX_FILES_IN_PACK})"
-            )));
+            tracing::warn!("{name}: has {num_files} > {MAX_FILES_IN_PACK} files");
         }
 
         // Parse directory
@@ -209,12 +220,7 @@ impl Pack {
     /// Load a PAK file from disk.
     pub fn load(path: &Path) -> Q2Result<Self> {
         let display = path.display().to_string();
-        Pack::open(
-            &display,
-            Box::new(DiskPakReader {
-                path: path.to_path_buf(),
-            }),
-        )
+        Pack::open(&display, Box::new(DiskPakReader::open(path)?))
     }
 
     /// Load a PAK from an in-memory byte buffer.
@@ -396,10 +402,13 @@ impl FileSystem {
                                 .strip_prefix(dir)
                                 .unwrap_or(&path)
                                 .to_string_lossy()
-                                .to_string();
+                                .replace('\\', "/");
+                            // Dedup case-insensitively, but return the name
+                            // as stored so load_file finds it on a
+                            // case-sensitive disk.
                             let normalized = normalize_path(&rel);
-                            if normalized.ends_with(&ext) && seen.insert(normalized.clone()) {
-                                result.push(normalized);
+                            if normalized.ends_with(&ext) && seen.insert(normalized) {
+                                result.push(rel);
                             }
                         }
                     }
@@ -443,11 +452,6 @@ fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<St
     }
 
     let num_files = dir_bytes.len() / PAK_DIR_ENTRY_SIZE as usize;
-    if num_files > MAX_FILES_IN_PACK {
-        return Err(Q2Error::Drop(format!(
-            "{pak_name}: too many files ({num_files} > {MAX_FILES_IN_PACK})"
-        )));
-    }
 
     let mut cursor = Cursor::new(dir_bytes);
     let mut files = HashMap::with_capacity(num_files);
@@ -837,6 +841,23 @@ mod tests {
         assert_eq!(fs.load_file("Maps/Foo.bsp").unwrap(), b"FOO");
     }
 
+    #[test]
+    fn list_files_names_loose_files_as_stored_so_load_file_finds_them() {
+        // On a case-sensitive disk a lowercased "maps/foo.bsp" would miss
+        // "Maps/Foo.bsp"; C FS_ListFiles also returns the on-disk name.
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("baseq2");
+        std::fs::create_dir_all(game_dir.join("Maps")).unwrap();
+        std::fs::write(game_dir.join("Maps/Foo.BSP"), b"FOO").unwrap();
+
+        let mut fs = FileSystem::new("baseq2");
+        fs.add_game_directory(&game_dir).unwrap();
+
+        let listed = fs.list_files("bsp");
+        assert_eq!(listed, ["Maps/Foo.BSP"]);
+        assert_eq!(fs.load_file(&listed[0]).unwrap(), b"FOO");
+    }
+
     #[cfg(unix)]
     #[test]
     fn list_files_does_not_follow_symlink_loops() {
@@ -902,28 +923,44 @@ mod tests {
     }
 
     #[test]
-    fn pack_open_rejects_oversized_dir_len_without_reading_it() {
+    fn pack_open_rejects_oversized_dir_len_in_the_bounds_checked_reader() {
+        // Without C's file-count cap the directory read is requested, and
+        // the reader's bounds check (every PakReader has one) rejects it
+        // before allocating; the only successful read is the header.
         let max_len = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let reader = CountingReader {
             data: pak_header(12, 0xFFFF_FFC0),
             max_len: max_len.clone(),
         };
-        assert!(Pack::open("huge.pak", Box::new(reader)).is_err());
-        let read = max_len.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(read <= 12, "read {read} bytes");
+        let err = Pack::open("huge.pak", Box::new(reader)).unwrap_err();
+        assert!(err.to_string().contains("out of bounds"), "{err}");
+        assert_eq!(
+            max_len.load(std::sync::atomic::Ordering::Relaxed),
+            0xFFFF_FFC0
+        );
     }
 
     #[test]
-    fn pack_open_rejects_too_many_files_before_reading_directory() {
-        let max_len = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    fn pack_with_more_than_max_files_in_pack_loads_every_entry_like_c() {
+        // C FS_LoadPAK only prints a warning past MAX_FILES_IN_PACK.
+        let names: Vec<String> = (0..=MAX_FILES_IN_PACK)
+            .map(|i| format!("f/{i}.txt"))
+            .collect();
+        let entries: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"X"[..])).collect();
+        let pack = Pack::load_from_bytes("big.pak", &create_test_pak(&entries)).unwrap();
+        assert_eq!(pack.file_count(), MAX_FILES_IN_PACK + 1);
+        let mut fs = FileSystem::new("baseq2");
+        fs.add_pack(pack);
+        assert_eq!(
+            fs.load_file(&format!("f/{MAX_FILES_IN_PACK}.txt")).unwrap(),
+            b"X"
+        );
+    }
+
+    #[test]
+    fn pack_directory_past_the_end_of_the_source_is_an_error() {
         let dir_len = (MAX_FILES_IN_PACK as u32 + 1) * PAK_DIR_ENTRY_SIZE;
-        let reader = CountingReader {
-            data: pak_header(12, dir_len),
-            max_len: max_len.clone(),
-        };
-        assert!(Pack::open("many.pak", Box::new(reader)).is_err());
-        let read = max_len.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(read <= 12, "read {read} bytes");
+        assert!(Pack::load_from_bytes("many.pak", &pak_header(12, dir_len)).is_err());
     }
 
     #[test]
@@ -957,12 +994,25 @@ mod tests {
         assert!(pack.read_file(entry).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn disk_pack_keeps_its_file_open_between_reads() {
+        // The reader holds one handle instead of reopening the path per read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pak0.pak");
+        std::fs::write(&path, create_test_pak(&[("a.txt", b"AAAA")])).unwrap();
+        let pack = Pack::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let entry = pack.files.get("a.txt").unwrap();
+        assert_eq!(pack.read_file(entry).unwrap(), b"AAAA");
+    }
+
     #[test]
     fn disk_pak_read_past_eof_is_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("small.pak");
         std::fs::write(&path, [0u8; 16]).unwrap();
-        let reader = DiskPakReader { path };
+        let reader = DiskPakReader::open(&path).unwrap();
         assert!(reader.read_slice(8, u32::MAX).is_err());
         assert!(reader.read_slice(u32::MAX, 1).is_err());
         assert_eq!(reader.read_slice(8, 8).unwrap(), vec![0u8; 8]);
@@ -1069,8 +1119,8 @@ mod tests {
 
     #[test]
     fn custom_pak_reader_composes_with_filesystem() {
-        // Verify the trait boundary: a custom PakReader plugs in without changes
-        // to FileSystem or Pack.
+        // Verify the trait boundary: a custom PakReader plugs in through
+        // FileSystem::add_pack without changes to FileSystem or Pack.
         let content = b"CUSTOM_BACKEND_DATA";
         let pak_data = create_test_pak(&[("data/config.cfg", content)]);
 
@@ -1078,16 +1128,21 @@ mod tests {
         impl PakReader for VecReader {
             fn read_slice(&self, offset: u32, len: u32) -> Q2Result<Vec<u8>> {
                 let s = offset as usize;
-                let e = s + len as usize;
-                if e > self.0.len() {
-                    return Err(Q2Error::Drop("out of bounds".into()));
-                }
+                let e = s
+                    .checked_add(len as usize)
+                    .filter(|&e| e <= self.0.len())
+                    .ok_or_else(|| Q2Error::Drop("out of bounds".into()))?;
                 Ok(self.0[s..e].to_vec())
             }
         }
 
         let pack = Pack::open("custom.pak", Box::new(VecReader(pak_data))).unwrap();
-        let entry = pack.files.get("data/config.cfg").unwrap();
-        assert_eq!(pack.read_file(entry).unwrap(), content);
+        let mut fs = FileSystem::new("baseq2");
+        fs.add_pack(pack);
+        assert!(fs.file_exists("data/config.cfg"));
+        assert!(fs.file_exists("DATA/Config.cfg"));
+        assert_eq!(fs.load_file("data/config.cfg").unwrap(), content);
+        assert!(fs.load_file("data/missing.cfg").is_err());
+        assert_eq!(fs.list_files("cfg"), ["data/config.cfg"]);
     }
 }

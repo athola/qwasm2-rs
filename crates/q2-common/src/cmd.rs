@@ -1,8 +1,18 @@
 //! Command buffer and parser system.
 //!
-//! Replaces C's `cmdparser.c` + `cbuf.c` with a safe, `HashMap`-based command
-//! registry and a string-based command buffer. Commands are registered with
-//! handlers, buffered text is tokenized and dispatched line-by-line.
+//! The command-buffer and dispatch core of C `cmdparser.c`: a `HashMap`
+//! command registry and a string-based command buffer. Buffered text is
+//! split into commands, tokenized and dispatched line by line.
+//!
+//! Not ported yet: `$cvar` macro expansion, `alias`, `exec`, `wait`,
+//! `Cmd_Args`, and the cvar / forward-to-server fallback with "Unknown
+//! command" for names no handler claims. Handlers receive only their
+//! arguments (no `CmdSystem` or cvar access), so those built-ins cannot be
+//! written as handlers, and text a handler would insert cannot run in the
+//! same `cbuf_execute` call as C allows.
+//!
+//! Limits are counted in chars: strings from `NetMsg::read_string` hold one
+//! char per wire byte, which is what C's byte limits count.
 
 use std::collections::HashMap;
 
@@ -77,30 +87,41 @@ impl CmdSystem {
     /// Text that would fill the buffer is dropped whole (C `Cbuf_AddText`),
     /// so remote stufftext cannot grow it without bound.
     pub fn cbuf_add_text(&mut self, text: &str) {
-        if self.buffer.len() + text.len() >= CBUF_MAX_SIZE {
-            tracing::warn!("Cbuf_AddText: overflow");
+        if self.would_overflow(text) {
             return;
         }
         self.buffer.push_str(text);
     }
 
-    /// Insert text at the beginning of the command buffer.
+    /// Insert text at the beginning of the command buffer. Shares the
+    /// `cbuf_add_text` cap, as C `Cbuf_InsertText` goes through
+    /// `Cbuf_AddText`.
     pub fn cbuf_insert_text(&mut self, text: &str) {
+        if self.would_overflow(text) {
+            return;
+        }
         self.buffer.insert_str(0, text);
+    }
+
+    fn would_overflow(&self, text: &str) -> bool {
+        let full = self.buffer.chars().count() + text.chars().count() >= CBUF_MAX_SIZE;
+        if full {
+            tracing::warn!("Cbuf_AddText: overflow");
+        }
+        full
     }
 
     /// Execute all commands in the buffer.
     /// Pulls `\n`-terminated lines and runs them through `execute_string`.
     pub fn cbuf_execute(&mut self) {
-        // Take ownership of the buffer so handlers that add text via
-        // references work cleanly. In practice the C engine does this
-        // line-by-line too.
+        // Handlers cannot reach the buffer (see the module doc), so the
+        // whole text is taken up front.
         let text = std::mem::take(&mut self.buffer);
         for line in split_commands(&text) {
-            let mut end = line.len().min(MAX_LINE_CHARS);
-            while !line.is_char_boundary(end) {
-                end -= 1;
-            }
+            let end = line
+                .char_indices()
+                .nth(MAX_LINE_CHARS)
+                .map_or(line.len(), |(at, _)| at);
             let trimmed = line[..end].trim();
             if trimmed.is_empty() {
                 continue;
@@ -133,7 +154,8 @@ impl CmdSystem {
         if let Some(handler) = self.commands.get(name.as_str()) {
             handler(&arg_strings);
         }
-        // If not found, do nothing (forward to cvar/server comes later).
+        // Not found: C would try cvars, then forward to the server, then
+        // print "Unknown command"; none of that is ported (module doc).
     }
 }
 
@@ -157,27 +179,27 @@ pub fn tokenize(text: &str) -> Vec<String> {
     let mut chars = text.chars().peekable();
 
     loop {
-        // Skip whitespace
+        // Skip whitespace up to a newline, which ends the command (C
+        // Cmd_TokenizeString); the rest belongs to the caller.
         while let Some(&c) = chars.peek() {
-            if is_separator(c) {
+            if is_separator(c) && c != '\n' {
                 chars.next();
             } else {
                 break;
             }
         }
 
-        if chars.peek().is_none() {
+        if matches!(chars.peek(), None | Some('\n')) {
             break;
         }
 
         // `//` at the start of a token comments out the rest of the line.
+        // C COM_Parse then skips all whitespace, newlines included, and
+        // returns the next token.
         let mut lookahead = chars.clone();
         if lookahead.next() == Some('/') && lookahead.next() == Some('/') {
-            for c in chars.by_ref() {
-                if c == '\n' {
-                    break;
-                }
-            }
+            while chars.next_if(|&c| c != '\n').is_some() {}
+            while chars.next_if(|&c| is_separator(c)).is_some() {}
             continue;
         }
 
@@ -202,7 +224,7 @@ pub fn tokenize(text: &str) -> Vec<String> {
             }
         }
 
-        if token.len() >= MAX_TOKEN_CHARS {
+        if token.chars().count() >= MAX_TOKEN_CHARS {
             token.clear();
         }
         if tokens.len() < MAX_STRING_TOKENS {
@@ -459,7 +481,11 @@ mod tests {
 
     #[test]
     fn tokenize_splits_on_control_bytes_but_not_unicode_spaces() {
-        // C COM_Parse treats every byte <= ' ' as whitespace and nothing else.
+        // C COM_Parse treats `c <= ' '` as whitespace with `c` read from a
+        // `char *`. With unsigned char only bytes 0..=32 qualify; where char
+        // is signed (x86, Apple arm64) bytes >= 0x80 are negative and would
+        // count too. The port follows the unsigned reading so high-bit
+        // (Latin-1) text stays inside its token.
         assert_eq!(tokenize("a\u{1}b"), vec!["a", "b"]);
         assert_eq!(tokenize("a\u{a0}b"), vec!["a\u{a0}b"]);
     }
@@ -518,6 +544,58 @@ mod tests {
         cmd.cbuf_insert_from_defer();
         cmd.cbuf_execute();
         assert_eq!(*log.borrow(), vec!["log b"]);
+    }
+
+    #[test]
+    fn tokenize_stops_at_the_first_newline_like_cmd_tokenizestring() {
+        assert_eq!(tokenize("a\nb"), vec!["a"]);
+        assert_eq!(tokenize("say hi  \n quit"), vec!["say", "hi"]);
+        assert!(tokenize("\nquit").is_empty());
+        // A `//` comment is skipped by COM_Parse, which then crosses the
+        // newline to the next token, as in C.
+        assert_eq!(tokenize("echo // c\nnext"), vec!["echo", "next"]);
+    }
+
+    #[test]
+    fn execute_string_runs_only_the_first_line() {
+        let mut cmd = CmdSystem::new();
+        let echo = logging_command(&mut cmd, "echo");
+        cmd.execute_string("echo a\nquit now");
+        assert_eq!(*echo.borrow(), vec!["echo a"]);
+    }
+
+    #[test]
+    fn limits_count_wire_bytes_not_utf8_bytes() {
+        // NetMsg::read_string maps each wire byte to one char (U+0000..=U+00FF);
+        // C's byte limits must count those chars, not their UTF-8 length.
+        let long = "\u{e9}".repeat(600);
+        assert_eq!(tokenize(&format!("echo {long}"))[1], long);
+        assert_eq!(
+            tokenize(&format!("echo {}", "\u{e9}".repeat(MAX_TOKEN_CHARS)))[1],
+            ""
+        );
+
+        let mut cmd = CmdSystem::new();
+        let echo = logging_command(&mut cmd, "echo");
+        cmd.cbuf_add_text(&format!("echo {}\n", "\u{e9}".repeat(2000)));
+        cmd.cbuf_execute();
+        assert_eq!(echo.borrow()[0].chars().count(), MAX_LINE_CHARS);
+
+        let mut cmd = CmdSystem::new();
+        cmd.cbuf_add_text(&"\u{e9}".repeat(CBUF_MAX_SIZE / 2 + 1));
+        assert_eq!(cmd.buffer.chars().count(), CBUF_MAX_SIZE / 2 + 1);
+    }
+
+    #[test]
+    fn cbuf_insert_text_shares_the_add_text_cap() {
+        // C Cbuf_InsertText goes through Cbuf_AddText.
+        let mut cmd = CmdSystem::new();
+        cmd.cbuf_add_text(&"a".repeat(CBUF_MAX_SIZE - 2));
+        cmd.cbuf_insert_text("bb");
+        assert!(!cmd.buffer.contains('b'));
+        cmd.cbuf_insert_text("b");
+        assert!(cmd.buffer.starts_with('b'));
+        assert_eq!(cmd.buffer.len(), CBUF_MAX_SIZE - 1);
     }
 
     #[test]

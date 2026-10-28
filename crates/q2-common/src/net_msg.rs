@@ -121,8 +121,8 @@ const CM_UP: u8 = 1 << 5;
 const CM_BUTTONS: u8 = 1 << 6;
 const CM_IMPULSE: u8 = 1 << 7;
 
-/// `RF_BEAM` from shared.h: beams always carry their end point in old_origin.
-const RF_BEAM: i32 = 128;
+/// Beams always carry their end point in old_origin.
+use q2_shared::constants::RF_BEAM;
 
 // ---------------------------------------------------------------------------
 // NetMsg — the network message buffer
@@ -135,7 +135,12 @@ pub struct NetMsg {
     read_pos: usize,
     /// Write limit, like `sizebuf_t.maxsize`. `usize::MAX` means unbounded.
     max_size: usize,
+    /// A write passed `max_size` (C `sizebuf_t.overflowed`); kept until
+    /// `clear`.
     overflowed: bool,
+    /// A read passed the end (C `readcount > cursize`); reset by
+    /// `begin_reading`.
+    read_overflowed: bool,
 }
 
 impl Default for NetMsg {
@@ -154,6 +159,7 @@ impl NetMsg {
             read_pos: 0,
             max_size: usize::MAX,
             overflowed: false,
+            read_overflowed: false,
         }
     }
 
@@ -164,19 +170,24 @@ impl NetMsg {
             read_pos: 0,
             max_size: usize::MAX,
             overflowed: false,
+            read_overflowed: false,
         }
     }
 
     /// Create a write buffer limited to `max_size` bytes (C `SZ_Init` with
     /// `allowoverflow` set). A write that would exceed the limit clears the
     /// buffer and sets [`is_overflowed`](Self::is_overflowed), so the owner can
-    /// detect the loss instead of sending a truncated message.
+    /// detect the loss instead of sending a truncated message. C raises
+    /// ERR_FATAL instead when `allowoverflow` is off or a single write is
+    /// larger than the whole buffer; every buffer here behaves as
+    /// `allowoverflow`, and its owner discards it.
     pub fn with_max_size(max_size: usize) -> Self {
         Self {
             data: Vec::new(),
             read_pos: 0,
             max_size,
             overflowed: false,
+            read_overflowed: false,
         }
     }
 
@@ -187,6 +198,7 @@ impl NetMsg {
             read_pos: 0,
             max_size: usize::MAX,
             overflowed: false,
+            read_overflowed: false,
         }
     }
 
@@ -195,6 +207,7 @@ impl NetMsg {
         self.data.clear();
         self.read_pos = 0;
         self.overflowed = false;
+        self.read_overflowed = false;
     }
 
     /// Number of bytes currently in the buffer.
@@ -212,7 +225,8 @@ impl NetMsg {
         &self.data
     }
 
-    /// Current read cursor offset in bytes.
+    /// Current read cursor offset in bytes (C `readcount`). Like C, a read
+    /// past the end still advances it, so it can pass `len()`.
     pub fn read_cursor(&self) -> usize {
         self.read_pos
     }
@@ -220,7 +234,7 @@ impl NetMsg {
     /// Whether a read went past the end of the buffer, or a write went past
     /// the maximum size.
     pub fn is_overflowed(&self) -> bool {
-        self.overflowed
+        self.overflowed || self.read_overflowed
     }
 
     /// Return a slice of all data from the current read position to the end.
@@ -344,10 +358,26 @@ impl NetMsg {
 
     // ----- Read operations (advance read cursor) -----
 
-    /// Reset read position to the beginning.
+    /// Reset read position to the beginning. A write overflow stays set.
     pub fn begin_reading(&mut self) {
         self.read_pos = 0;
-        self.overflowed = false;
+        self.read_overflowed = false;
+    }
+
+    /// Consume `N` bytes. Past the end, the cursor still advances by `N` (C
+    /// always bumps `readcount`), the read overflow is set, and `None` is
+    /// returned so the caller yields C's -1.
+    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let start = self.read_pos;
+        self.read_pos = start.saturating_add(N);
+        let bytes = self
+            .data
+            .get(start..self.read_pos)
+            .and_then(|bytes| <[u8; N]>::try_from(bytes).ok());
+        if bytes.is_none() {
+            self.read_overflowed = true;
+        }
+        bytes
     }
 
     /// Read a signed byte (1 byte, sign-extended to `i32`). Returns -1 on read past end.
@@ -355,67 +385,30 @@ impl NetMsg {
     /// Counterpart to [`write_char`](Self::write_char). For unsigned reads,
     /// use [`read_byte`](Self::read_byte).
     pub fn read_char(&mut self) -> i32 {
-        if self.read_pos >= self.data.len() {
-            self.overflowed = true;
-            return -1;
-        }
-        let val = self.data[self.read_pos] as i8;
-        self.read_pos += 1;
-        i32::from(val)
+        self.take::<1>()
+            .map_or(-1, |[b]| i32::from(i8::from_le_bytes([b])))
     }
 
     /// Read an unsigned byte (1 byte). Returns -1 on read past end.
     pub fn read_byte(&mut self) -> i32 {
-        if self.read_pos >= self.data.len() {
-            self.overflowed = true;
-            return -1;
-        }
-        let val = self.data[self.read_pos];
-        self.read_pos += 1;
-        i32::from(val)
+        self.take::<1>().map_or(-1, |[b]| i32::from(b))
     }
 
     /// Read a 16-bit signed integer, little-endian. Returns -1 on read past end.
     pub fn read_short(&mut self) -> i32 {
-        if self.read_pos + 2 > self.data.len() {
-            self.overflowed = true;
-            return -1;
-        }
-        let bytes: [u8; 2] = [self.data[self.read_pos], self.data[self.read_pos + 1]];
-        self.read_pos += 2;
-        i32::from(i16::from_le_bytes(bytes))
+        self.take()
+            .map_or(-1, |bytes| i32::from(i16::from_le_bytes(bytes)))
     }
 
     /// Read a 32-bit integer, little-endian. Returns -1 on read past end.
     pub fn read_long(&mut self) -> i32 {
-        if self.read_pos + 4 > self.data.len() {
-            self.overflowed = true;
-            return -1;
-        }
-        let bytes: [u8; 4] = [
-            self.data[self.read_pos],
-            self.data[self.read_pos + 1],
-            self.data[self.read_pos + 2],
-            self.data[self.read_pos + 3],
-        ];
-        self.read_pos += 4;
-        i32::from_le_bytes(bytes)
+        self.take().map_or(-1, i32::from_le_bytes)
     }
 
-    /// Read a 32-bit float, little-endian. Returns 0.0 on read past end.
+    /// Read a 32-bit float, little-endian. Returns -1.0 on read past end, as
+    /// C `MSG_ReadFloat` does.
     pub fn read_float(&mut self) -> f32 {
-        if self.read_pos + 4 > self.data.len() {
-            self.overflowed = true;
-            return 0.0;
-        }
-        let bytes: [u8; 4] = [
-            self.data[self.read_pos],
-            self.data[self.read_pos + 1],
-            self.data[self.read_pos + 2],
-            self.data[self.read_pos + 3],
-        ];
-        self.read_pos += 4;
-        f32::from_le_bytes(bytes)
+        self.take().map_or(-1.0, f32::from_le_bytes)
     }
 
     /// Read a null-terminated string.
@@ -459,16 +452,11 @@ impl NetMsg {
         self.read_short() as f32 * (360.0 / 65536.0)
     }
 
-    /// Read raw bytes into a buffer.
+    /// Read raw bytes into a buffer, one `read_byte` each like C
+    /// `MSG_ReadData`: bytes past the end come out as 0xFF ((byte)-1).
     pub fn read_data(&mut self, buf: &mut [u8]) {
         for byte in buf.iter_mut() {
-            if self.read_pos >= self.data.len() {
-                self.overflowed = true;
-                *byte = 0;
-            } else {
-                *byte = self.data[self.read_pos];
-                self.read_pos += 1;
-            }
+            *byte = self.read_byte() as u8;
         }
     }
 
@@ -994,9 +982,8 @@ impl NetMsg {
     // Packet entity list encoding
     // -------------------------------------------------------------------------
 
-    /// Write a delta-compressed entity list followed by the `svc_packetentities`
-    /// opcode and terminated by entity number 0. Mirrors C
-    /// `SV_EmitPacketEntities`.
+    /// Write the `svc_packetentities` opcode, then a delta-compressed entity
+    /// list terminated by entity number 0. Mirrors C `SV_EmitPacketEntities`.
     ///
     /// Both `old_entities` and `new_entities` **must** be sorted by entity number
     /// (ascending). Entities in `old_entities` but absent from `new_entities` are
@@ -1596,8 +1583,21 @@ mod tests {
         buf.write_packet_entities_list(&[], &ents, &[], 0)
             .expect("valid entities");
         let max_msglen = q2_shared::constants::MAX_MSGLEN;
-        assert!(buf.len() <= max_msglen - 150 + 32, "len {}", buf.len());
         assert_eq!(&buf.data()[buf.len() - 2..], &[0, 0]);
+        // Every record here has the same size (numbers stay below 256).
+        let mut one = NetMsg::new();
+        one.write_packet_entities_list(&[], &ents[..1], &[], 0)
+            .expect("valid entities");
+        let record = one.len() - 3;
+        // `while len <= MAX_MSGLEN - 150`: the last record started at or
+        // below the limit and ended past it.
+        let before_terminator = buf.len() - 2;
+        assert!(before_terminator > max_msglen - 150, "len {}", buf.len());
+        assert!(
+            before_terminator - record <= max_msglen - 150,
+            "len {}",
+            buf.len()
+        );
     }
 
     // C: Com_Error(ERR_FATAL) for "Unset entity number" and
@@ -1827,6 +1827,88 @@ mod tests {
         let mut buf = NetMsg::new();
         buf.write_player_state(&PlayerState::default(), &new);
         assert_eq!(&buf.data()[4..], &[0x02, 0, 0, 0, 0xFD, 0xFF]);
+    }
+
+    // C SV_WritePlayerstateToClient with every PS_* bit set: field order,
+    // widths and the *4 / *255 / ANGLE2SHORT truncations.
+    #[test]
+    fn write_player_state_every_field_bytes_match_c() {
+        let mut new = PlayerState::default();
+        new.pmove.pm_type = q2_shared::PmType::Dead;
+        new.pmove.origin = [8, -16, 1000];
+        new.pmove.velocity = [-1, 2, 300];
+        new.pmove.pm_time = 5;
+        new.pmove.pm_flags = 4;
+        new.pmove.gravity = 800;
+        new.pmove.delta_angles = [1, -2, 0x4000];
+        new.viewoffset = Vec3f::new(0.0, 0.0, 22.0);
+        new.viewangles = Vec3f::new(90.0, -45.0, 0.0);
+        new.kick_angles = Vec3f::new(-0.5, 1.25, 0.0);
+        new.gunindex = 3;
+        new.gunframe = 7;
+        new.gunoffset = Vec3f::new(0.25, 0.0, 0.0);
+        new.gunangles = Vec3f::new(0.0, 0.0, -1.0);
+        new.blend = [1.0, 0.5, 0.0, 0.2];
+        new.fov = 90.0;
+        new.rdflags = 2;
+        let mut buf = NetMsg::new();
+        buf.write_player_state(&PlayerState::default(), &new);
+        #[rustfmt::skip]
+        let expected = [
+            17, 0xFF, 0x7F,                 // svc_playerinfo, pflags
+            2,                              // pm_type
+            0x08, 0, 0xF0, 0xFF, 0xE8, 0x03, // origin
+            0xFF, 0xFF, 0x02, 0, 0x2C, 0x01, // velocity
+            5, 4,                           // pm_time, pm_flags
+            0x20, 0x03,                     // gravity
+            1, 0, 0xFE, 0xFF, 0, 0x40,      // delta_angles
+            0, 0, 88,                       // viewoffset * 4
+            0, 0x40, 0, 0xE0, 0, 0,         // viewangles, ANGLE2SHORT
+            0xFE, 5, 0,                     // kick_angles * 4
+            3,                              // gunindex
+            7, 1, 0, 0, 0, 0, 0xFC,         // gunframe, gunoffset, gunangles
+            255, 127, 0, 51,                // blend * 255
+            90, 2,                          // fov, rdflags
+            0, 0, 0, 0,                     // statbits
+        ];
+        assert_eq!(buf.data(), &expected);
+    }
+
+    #[test]
+    fn failed_read_still_advances_the_cursor_like_c_readcount() {
+        // C MSG_Read*: `if (readcount + n > cursize) c = -1; ... readcount += n`.
+        let mut buf = NetMsg::from_bytes(&[1, 2]);
+        assert_eq!(buf.read_long(), -1);
+        assert_eq!(buf.read_cursor(), 4);
+        assert_eq!(buf.read_byte(), -1, "the two bytes stay consumed");
+        assert_eq!(buf.read_cursor(), 5);
+
+        let mut tail = NetMsg::from_bytes(&[9]);
+        assert_eq!(tail.read_short(), -1);
+        assert_eq!(tail.read_char(), -1, "1-byte tail not reparsed");
+        assert_eq!(tail.remaining_data(), &[] as &[u8]);
+    }
+
+    #[test]
+    fn read_float_and_read_data_past_end_return_c_minus_one_values() {
+        let mut buf = NetMsg::from_bytes(&[1]);
+        assert_eq!(buf.read_float(), -1.0);
+        assert!(buf.is_overflowed());
+        let mut buf = NetMsg::from_bytes(&[7]);
+        let mut out = [0u8; 3];
+        buf.read_data(&mut out);
+        assert_eq!(out, [7, 0xFF, 0xFF]);
+        assert_eq!(buf.read_cursor(), 3);
+    }
+
+    #[test]
+    fn begin_reading_keeps_a_write_overflow_visible() {
+        let mut buf = NetMsg::with_max_size(1);
+        buf.write_short(1);
+        buf.begin_reading();
+        assert!(buf.is_overflowed(), "write overflow survives begin_reading");
+        buf.clear();
+        assert!(!buf.is_overflowed());
     }
 
     #[test]

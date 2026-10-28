@@ -63,9 +63,8 @@ pub struct NetChan {
     /// Used to decide if a retransmit is needed.
     pub last_reliable_sequence: u32,
     /// Reliable message buffer (data waiting to be sent / retransmitted).
+    /// Non-empty while a reliable awaits acknowledgment (C `reliable_length`).
     pub reliable_buf: NetMsg,
-    /// `true` while we have reliable data in `reliable_buf` awaiting acknowledgment.
-    pub reliable_pending: bool,
     // --- Incoming reliable tracking ---
     /// Toggles each time a reliable message is received from the remote side.
     pub incoming_reliable_sequence: u32,
@@ -102,7 +101,6 @@ impl NetChan {
             reliable_sequence: 0,
             last_reliable_sequence: 0,
             reliable_buf: NetMsg::with_max_size(MAX_RELIABLE_LEN),
-            reliable_pending: false,
             incoming_reliable_sequence: 0,
             incoming_reliable_acknowledged: 0,
             message_buf: NetMsg::with_max_size(MAX_RELIABLE_LEN),
@@ -114,10 +112,9 @@ impl NetChan {
     /// Returns `true` if a new reliable message can be queued.
     ///
     /// A reliable message can only be queued when the previous one has been
-    /// acknowledged (i.e. `reliable_pending` is `false` and `reliable_buf`
-    /// is empty).
+    /// acknowledged, i.e. `reliable_buf` is empty (C `Netchan_CanReliable`).
     pub fn can_reliable(&self) -> bool {
-        !self.reliable_pending && self.reliable_buf.is_empty()
+        self.reliable_buf.is_empty()
     }
 
     /// Queue a reliable message for the next transmit.
@@ -178,7 +175,6 @@ impl NetChan {
             self.message_buf.clear();
             // Toggle the reliable sequence bit.
             self.reliable_sequence ^= 1;
-            self.reliable_pending = true;
         }
 
         // Build packet header.
@@ -216,6 +212,8 @@ impl NetChan {
         // MAX_RELIABLE_LEN reliable bytes always leaves send.len() < MAX_MSGLEN.
         if send.len() + data.len() <= MAX_MSGLEN {
             send.write_data(data);
+        } else {
+            tracing::debug!("Netchan_Transmit: dumped unreliable");
         }
 
         send.data().to_vec()
@@ -269,7 +267,6 @@ impl NetChan {
         // clear the reliable buffer.
         if reliable_ack == self.reliable_sequence {
             self.reliable_buf.clear();
-            self.reliable_pending = false;
         }
 
         // Update incoming state.
@@ -356,14 +353,13 @@ mod tests {
         assert!(payload.ends_with(b"unreliable"));
 
         // A is still waiting for acknowledgment.
-        assert!(a.reliable_pending);
+        assert!(!a.can_reliable());
 
         // Now B sends an ack back to A (transmit from B, process at A).
         let packet_b_to_a = b.transmit(b"");
         a.process(&packet_b_to_a);
 
         // A should have cleared the reliable state.
-        assert!(!a.reliable_pending);
         assert!(a.reliable_buf.is_empty());
         assert!(a.can_reliable());
     }
@@ -520,8 +516,8 @@ mod tests {
         let mut chan = NetChan::new(NetSrc::Client, 100);
         chan.queue_reliable(b"stuff");
         // Data is staged in message_buf but not yet promoted to reliable_buf.
-        // can_reliable checks reliable_pending and reliable_buf, both clear,
-        // so it returns true — matching the C code which allows writing more
+        // can_reliable checks only reliable_buf, which is clear, so it
+        // returns true — matching the C code which allows writing more
         // into &chan->message at any time.
         assert!(chan.can_reliable(), "can still add more to staging buffer");
     }
@@ -586,6 +582,28 @@ mod tests {
         assert!(pkt.len() <= MAX_MSGLEN, "packet {} bytes", pkt.len());
         // Header (10) + full reliable; the unreliable part does not fit.
         assert_eq!(pkt.len(), 10 + MAX_MSGLEN - 16);
+    }
+
+    #[test]
+    fn second_reliable_after_ack_toggles_the_reliable_bit_back_and_arrives() {
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
+
+        a.queue_reliable(b"first");
+        assert_eq!(send(&mut a, &mut b, b"").unwrap(), b"first");
+        assert_eq!((a.reliable_sequence, b.incoming_reliable_sequence), (1, 1));
+        a.process(&b.transmit(b"")).unwrap();
+        assert!(a.can_reliable());
+
+        a.queue_reliable(b"second");
+        assert_eq!(send(&mut a, &mut b, b"u").unwrap(), b"secondu");
+        assert_eq!((a.reliable_sequence, b.incoming_reliable_sequence), (0, 0));
+        a.process(&b.transmit(b"")).unwrap();
+        assert!(a.can_reliable());
+        // Nothing staged: the next packet carries no reliable flag or data.
+        let pkt = a.transmit(b"");
+        assert_eq!(pkt.len(), 10);
+        assert_eq!(pkt[3] & 0x80, 0);
     }
 
     #[test]
