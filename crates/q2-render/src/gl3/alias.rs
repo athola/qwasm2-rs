@@ -12,8 +12,7 @@ use q2_shared::constants::{RF_FULLBRIGHT, RF_GLOW, RF_TRANSLUCENT};
 
 use crate::files::md2::{Md2Frame, Md2Model, VERTEX_NORMALS};
 
-/// C `RF_MINLIGHT`; not yet in `q2_shared::constants`.
-pub const RF_MINLIGHT: i32 = 1;
+pub use q2_shared::constants::RF_MINLIGHT;
 /// C `MAX_MD2SKINS`.
 pub const MAX_SKINS: usize = 32;
 /// Floats per vertex: position(3), skin uv(2), colour(4).

@@ -179,6 +179,8 @@ pub struct EntityScene<'a> {
     /// View frustum for culling MD2 models (C `frustum`).
     pub frustum: [FrustumPlane; 4],
     pub view_proj: [f32; 16],
+    /// `view_proj` with the gun's fov, for `RF_WEAPONMODEL`.
+    pub gun_view_proj: [f32; 16],
 }
 
 fn vec3(v: q2_shared::types::Vec3f) -> [f32; 3] {
@@ -263,7 +265,17 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
             .and_then(|image| image.texture)
             .unwrap_or(scene.extra.notexture);
         let matrix = alias_matrix(origin, vec3(entity.angles));
-        let mvp = mat4_mul(&scene.view_proj, &matrix);
+        let view_proj = if weapon {
+            &scene.gun_view_proj
+        } else {
+            &scene.view_proj
+        };
+        let mvp = mat4_mul(view_proj, &matrix);
+        let (near, far) = super::alias_depth_range(entity.flags);
+        if (near, far) != (0.0, 1.0) {
+            // SAFETY: state-only call on the live context.
+            unsafe { scene.gl.depth_range_f32(near, far) };
+        }
         draw_mesh(
             scene.gl,
             &scene.extra.alias_uniforms,
@@ -277,6 +289,10 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
                 blend: translucent,
             },
         );
+        if (near, far) != (0.0, 1.0) {
+            // SAFETY: state-only call on the live context.
+            unsafe { scene.gl.depth_range_f32(0.0, 1.0) };
+        }
     }
     if alias_program_bound {
         // SAFETY: the world program was linked on `scene.gl` by `init`.

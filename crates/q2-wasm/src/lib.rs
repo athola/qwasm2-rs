@@ -387,7 +387,9 @@ impl Engine {
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
-        let entities = render_entities(&views, &self.models);
+        let mut entities = render_entities(&views, &self.models);
+        let gun = self.frames.view_weapon(vieworg, viewangles, lerpfrac);
+        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
         self.renderer.begin_frame(self.view.width, self.view.height);
         self.renderer.render_frame(&fd, &entities, &[], &[]);
         self.draw_hud(&stats);
@@ -574,6 +576,28 @@ fn render_entities(
             })
         })
         .collect()
+}
+
+/// The first-person gun as a render entity (C `CL_AddViewWeapon`'s
+/// `V_AddEntity`), if its model is registered.
+#[cfg(any(target_arch = "wasm32", test))]
+fn gun_entity(
+    gun: &q2_client::frame::ViewWeapon,
+    models: &ModelTable,
+) -> Option<q2_render_api::RenderEntity> {
+    use q2_shared::constants::{RF_DEPTHHACK, RF_MINLIGHT, RF_WEAPONMODEL};
+    let model = models.handle(gun.modelindex);
+    (model != q2_render_api::ModelHandle::NONE).then(|| q2_render_api::RenderEntity {
+        model,
+        frame: gun.frame,
+        oldframe: gun.oldframe,
+        backlerp: gun.backlerp,
+        origin: gun.origin,
+        oldorigin: gun.origin,
+        angles: gun.angles,
+        flags: RF_MINLIGHT | RF_DEPTHHACK | RF_WEAPONMODEL,
+        ..Default::default()
+    })
 }
 
 /// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
@@ -1442,6 +1466,44 @@ mod tests {
             down[k as usize] = true;
         }
         down
+    }
+
+    #[test]
+    fn the_view_weapon_is_drawn_as_a_depth_hacked_weapon_model() {
+        use q2_shared::constants::{CS_MODELS, RF_DEPTHHACK, RF_MINLIGHT, RF_WEAPONMODEL};
+        use q2_shared::types::Vec3f;
+        let mut table = ModelTable::default();
+        table.sync(
+            |i| {
+                if i == CS_MODELS + 4 {
+                    "models/weapons/v_blast/tris.md2"
+                } else {
+                    ""
+                }
+            },
+            |_| q2_render_api::ModelHandle::new(9),
+        );
+        let gun = q2_client::frame::ViewWeapon {
+            modelindex: 4,
+            origin: Vec3f::new(1.0, 2.0, 3.0),
+            angles: Vec3f::new(0.0, 90.0, 0.0),
+            frame: 7,
+            oldframe: 6,
+            backlerp: 0.25,
+        };
+        let ent = gun_entity(&gun, &table).unwrap();
+        assert_eq!(ent.model, q2_render_api::ModelHandle::new(9));
+        assert_eq!(ent.flags, RF_MINLIGHT | RF_DEPTHHACK | RF_WEAPONMODEL);
+        assert_eq!((ent.frame, ent.oldframe, ent.backlerp), (7, 6, 0.25));
+        assert_eq!(ent.origin, gun.origin);
+        assert_eq!(ent.oldorigin, gun.origin, "don't lerp at all");
+        assert_eq!(ent.angles, gun.angles);
+
+        let unknown = q2_client::frame::ViewWeapon {
+            modelindex: 5,
+            ..gun
+        };
+        assert!(gun_entity(&unknown, &table).is_none());
     }
 
     #[test]

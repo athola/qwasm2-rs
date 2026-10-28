@@ -84,6 +84,11 @@ All notable changes to qwasm2-rs are documented here.
   them like Q2's `default.cfg` (1-0 weapons, `[` `]` `'` Enter);
   `LocalGame::client_command` runs one, and `ServerGameImport` answers
   `argv`/`args` like `Cmd_TokenizeString`
+- The first-person gun is drawn (C `CL_AddViewWeapon`): `ps.gunindex` at
+  the eye with lerped `gunoffset`/`gunangles` and frames, in C GL3's own
+  80 degree gun projection and the front 30% of the depth range
+  (`RF_DEPTHHACK`) so it never pokes into walls; `RF_MINLIGHT` and
+  `RF_DEPTHHACK` join `q2_shared::constants`
 - Grenades: blasts record C's means of death by kind (launcher, hand,
   held) in `GameWorld::means_of_death`, set by every `t_damage` like C
   `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two

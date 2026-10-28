@@ -488,6 +488,7 @@ impl Renderer for Gl3Renderer {
                 fd.fov_x,
                 fd.fov_y,
             ),
+            gun_view_proj: gun_view_projection(fd),
             view_proj,
         });
 
@@ -655,6 +656,30 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let proj = perspective_matrix(fd);
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
+}
+
+/// C `r_gunfov`: the gun's own vertical fov, so a wide view does not
+/// stretch it.
+const R_GUNFOV: f32 = 80.0;
+
+/// The view-projection the gun is drawn with: the view's, but with
+/// `R_GUNFOV` as the vertical fov. C ref: `GL3_DrawAliasModel`'s
+/// `RF_WEAPONMODEL` projection (right-handed only).
+pub(crate) fn gun_view_projection(fd: &RefDef) -> [f32; 16] {
+    build_view_projection(&RefDef {
+        fov_y: R_GUNFOV,
+        ..fd.clone()
+    })
+}
+
+/// Depth range for an alias draw: `RF_DEPTHHACK` keeps the gun in the
+/// front 30% so it never pokes into walls (C `GL3_DrawAliasModel`).
+pub(crate) fn alias_depth_range(flags: i32) -> (f32, f32) {
+    if flags & q2_shared::constants::RF_DEPTHHACK != 0 {
+        (0.0, 0.3)
+    } else {
+        (0.0, 1.0)
+    }
 }
 
 /// Standard perspective projection matrix.
@@ -948,6 +973,35 @@ mod tests {
             [0.0, 0.0, -100.0],
             "world forward",
         );
+    }
+
+    #[test]
+    fn the_gun_is_projected_with_r_gunfov_80_whatever_the_view_fov() {
+        let fd = |fov_y: f32| RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            gun_view_projection(&fd(73.74)),
+            build_view_projection(&fd(80.0))
+        );
+        assert_eq!(
+            gun_view_projection(&fd(100.0)),
+            gun_view_projection(&fd(60.0))
+        );
+    }
+
+    #[test]
+    fn depth_hack_squeezes_the_gun_into_the_front_of_the_depth_range() {
+        use q2_shared::constants::{RF_DEPTHHACK, RF_WEAPONMODEL};
+        assert_eq!(alias_depth_range(RF_DEPTHHACK | RF_WEAPONMODEL), (0.0, 0.3));
+        assert_eq!(alias_depth_range(RF_WEAPONMODEL), (0.0, 1.0));
+        assert_eq!(alias_depth_range(0), (0.0, 1.0));
     }
 
     #[test]

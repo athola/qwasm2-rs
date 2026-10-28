@@ -69,9 +69,11 @@ pub const AREA_TRIGGERS: i32 = 2;
 /// Bonus items spin.
 pub const EF_ROTATE: u32 = 0x0000_0001;
 /// Drawn only through a mirror or third-person camera: the viewer's own body.
+pub const RF_MINLIGHT: i32 = 1;
 pub const RF_VIEWERMODEL: i32 = 2;
 pub const RF_WEAPONMODEL: i32 = 4;
 pub const RF_FULLBRIGHT: i32 = 8;
+pub const RF_DEPTHHACK: i32 = 16;
 pub const RF_TRANSLUCENT: i32 = 32;
 /// Pulse lighting for bonus items.
 pub const RF_GLOW: i32 = 512;
