@@ -20,3 +20,10 @@ docs/specification.md
 docs/pak-web-specification.md
 docs/pak-web-implementation-plan.md
 reviews/
+
+# Local agent tooling state
+.attune/
+.claude/logs/
+.claude/state/
+.claude/worktrees/
+**/.claude/context-archive/
