@@ -12,7 +12,7 @@ path = "src/main.rs"
 axum = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { workspace = true }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

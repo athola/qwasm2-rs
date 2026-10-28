@@ -3,6 +3,13 @@
 //! This crate is the `cdylib` target built by `wasm-pack build --target web`.
 //! It bootstraps the engine: creates the WebGL2 context, fetches game data,
 //! loads the BSP map, and runs the game loop via requestAnimationFrame.
+//!
+//! # Unsafe Audit Status
+//! - Total unsafe blocks: 0
+//! - c2rust mechanical: 0
+//! - FFI boundary: 0
+//! - Performance: 0
+//! - Inherent: 0
 
 use wasm_bindgen::prelude::*;
 use web_sys::console;
@@ -37,62 +44,199 @@ fn q2err_to_js(err: q2_common::Q2Error) -> JsValue {
 
 #[cfg(target_arch = "wasm32")]
 struct Engine {
-    renderer: Gl3Renderer,
+    renderer: Box<dyn Renderer>,
     local: q2_server::local::LocalGame,
+    /// The pak filesystem the renderer also reads, for the next map's BSP.
+    fs: Rc<q2_common::filesystem::FileSystem>,
     /// Client-side input and view angles (C `cl.viewangles`).
     input: q2_client::input::InputState,
     canvas: web_sys::HtmlCanvasElement,
     view: ViewSize,
     last_time: f64,
     models: ModelTable,
-    /// Entity states of the last two game frames, to interpolate between.
-    previous: Vec<q2_shared::types::EntityState>,
-    current: Vec<q2_shared::types::EntityState>,
-    /// The game frame `current` came from, and when it arrived.
-    game_frame: i32,
-    game_frame_time: f64,
+    /// The last two server frames and the client clock (C `cl.frame`,
+    /// `cl.time`).
+    frames: q2_client::frame::FrameHistory,
+    /// Channel and loop choices (C sound.c), and the WebAudio output; no
+    /// output means no sound, as when C's `S_Init` fails.
+    sound: q2_client::sound::SoundSystem,
+    audio: Option<q2_platform::wasm::audio::WebAudio>,
 }
 
 #[cfg(target_arch = "wasm32")]
 impl Engine {
     fn new(
-        renderer: Gl3Renderer,
+        renderer: Box<dyn Renderer>,
         local: q2_server::local::LocalGame,
+        fs: Rc<q2_common::filesystem::FileSystem>,
+        models: ModelTable,
         canvas: web_sys::HtmlCanvasElement,
         view: ViewSize,
     ) -> Self {
-        Self {
+        let mut engine = Self {
             renderer,
             local,
+            fs,
             input: q2_client::input::InputState::default(),
             canvas,
             view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
-            models: ModelTable::default(),
-            previous: Vec::new(),
-            current: Vec::new(),
-            game_frame: -1,
-            game_frame_time: 0.0,
-        }
+            models,
+            frames: q2_client::frame::FrameHistory::default(),
+            sound: q2_client::sound::SoundSystem::new(q2_server::local::LOCAL_PLAYER as i32),
+            audio: None,
+        };
+        engine.register_sounds();
+        engine
     }
 
-    /// Take the game's entities when a new 10 Hz frame has run (C
-    /// CL_ParseFrame keeps the previous one for interpolation), and keep
-    /// the renderer's models in step with the model configstrings.
-    fn sync_frame(&mut self, timestamp: f64) {
-        let framenum = self.local.game().level.framenum;
-        if framenum == self.game_frame {
+    /// C `CL_RegisterSounds`, from the server's `CS_SOUNDS` names.
+    fn register_sounds(&mut self) {
+        let (local, fs) = (&self.local, &self.fs);
+        self.sound
+            .register_sounds(|i| local.configstring(i), |path| fs.load_file(path).ok());
+    }
+
+    /// Start the sounds the server sent this frame and hand the mixer this
+    /// frame's channels and loops, heard from the view (C `S_StartSound`
+    /// per `svc_sound`, then `S_Update`). While the browser keeps audio
+    /// suspended the sounds are dropped, as C drops them while inactive.
+    fn mix_sounds(
+        &mut self,
+        sounds: &[q2_server::game_iface::SoundEvent],
+        vieworg: q2_shared::types::Vec3f,
+        viewangles: q2_shared::types::Vec3f,
+        lerpfrac: f32,
+    ) {
+        use q2_client::sound::{entity_origin, Listener, MixCommand, StartSound};
+        use q2_platform::wasm::audio::Pcm;
+        let Some(audio) = self.audio.as_mut().filter(|a| a.running()) else {
+            return;
+        };
+        let (local, fs) = (&self.local, &self.fs);
+        for ev in sounds {
+            let start = StartSound {
+                entnum: ev.ent as i32,
+                entchannel: ev.channel,
+                sound_index: ev.sound_index,
+                volume: ev.volume,
+                attenuation: ev.attenuation,
+                timeofs: ev.time_ofs,
+                origin: ev.origin,
+            };
+            self.sound.start_sound(
+                &start,
+                |i| local.configstring(i),
+                |path| fs.load_file(path).ok(),
+            );
+        }
+        let frames = &self.frames;
+        let mix = self.sound.update(
+            audio.now_ms(),
+            &Listener::from_view(vieworg, viewangles),
+            |n| entity_origin(&frames.current, &frames.previous, lerpfrac, n),
+            &frames.current,
+        );
+        let sound = &self.sound;
+        let pcm = |sfx| {
+            sound.sound(sfx).map(|s| Pcm {
+                samples: &s.samples,
+                rate: s.rate,
+                loop_start: s.loop_start,
+            })
+        };
+        for command in mix.commands {
+            match command {
+                MixCommand::Play {
+                    channel,
+                    sfx,
+                    left,
+                    right,
+                    delay,
+                } => {
+                    if let Some(pcm) = pcm(sfx) {
+                        audio.play(channel, sfx, pcm, left, right, delay);
+                    }
+                }
+                MixCommand::Gain {
+                    channel,
+                    left,
+                    right,
+                } => audio.set_gain(channel, left, right),
+                MixCommand::Stop { channel } => audio.stop(channel),
+            }
+        }
+        let loops: Vec<_> = mix
+            .loops
+            .iter()
+            .filter_map(|l| Some((l.sfx, pcm(l.sfx)?, l.left, l.right)))
+            .collect();
+        audio.set_loops(&loops);
+    }
+
+    /// Take the server's entities and player state when a new 10 Hz frame
+    /// has run (C CL_ParseFrame keeps the previous one for interpolation),
+    /// and keep the renderer's models in step with the model configstrings.
+    fn sync_frame(&mut self) {
+        let framenum = self.local.framenum();
+        if self.frames.serverframe() == Some(framenum) {
             return;
         }
-        self.game_frame = framenum;
-        self.game_frame_time = timestamp;
-        self.previous = std::mem::replace(&mut self.current, self.local.entity_states());
+        let Some((_, ps)) = self.local.player() else {
+            return;
+        };
+        self.frames
+            .receive(framenum, self.local.entity_states(), ps);
         let local = &self.local;
         let renderer = &mut self.renderer;
         self.models.sync(
             |i| local.configstring(i),
             |name| renderer.register_model(name),
         );
+    }
+
+    /// Follow a level exit (C `gamemap`): the server loads the next map
+    /// into the same game, then the client preps the renderer for it (C
+    /// `CL_PrepRefresh`) and starts from a clear state (C `CL_ClearState`
+    /// on the reconnect), so nothing interpolates from the old map.
+    fn change_map(&mut self, level: &str) -> q2_common::error::Q2Result<()> {
+        use q2_server::init::{LevelKind, MapRequest};
+        let request = MapRequest::parse(level);
+        log(&format!("Level exit to {level}"));
+        // demo2 exits to victory.pcx: a picture level with no map or
+        // player, which `tick` draws (C SCR_PlayCinematic). There is no
+        // cinematic or demo playback; the current map keeps running.
+        match request.kind {
+            LevelKind::Game => {}
+            LevelKind::Pic => {
+                self.local.change_map(&request, &[])?;
+                self.frames = q2_client::frame::FrameHistory::default();
+                log(&format!("Picture: pics/{} shown", request.map));
+                return Ok(());
+            }
+            LevelKind::Cinematic | LevelKind::Demo => {
+                log(&format!(
+                    "{}: only game maps and pictures can be loaded",
+                    request.map
+                ));
+                return Ok(());
+            }
+        }
+        let bsp = self.fs.load_file(&format!("maps/{}.bsp", request.map))?;
+        self.local.change_map(&request, &bsp)?;
+        let local = &self.local;
+        prep_refresh(
+            self.renderer.as_mut(),
+            |i| local.configstring(i),
+            &mut self.models,
+        )?;
+        // C CL_ClearState -> S_StopAllSounds, then CL_RegisterSounds.
+        self.sound.stop_all();
+        self.register_sounds();
+        self.frames = q2_client::frame::FrameHistory::default();
+        self.input.view_angles = q2_shared::types::Vec3f::ZERO;
+        log(&format!("Map: maps/{}.bsp loaded", request.map));
+        Ok(())
     }
 
     /// Draw the status bar program over the 3D view (C SCR_DrawStats).
@@ -107,7 +251,7 @@ impl Engine {
                 height: self.view.height,
                 stats,
                 configstrings: &configstring,
-                serverframe: self.game_frame,
+                serverframe: self.frames.serverframe().unwrap_or(0),
             },
         );
         for draw in draws {
@@ -120,14 +264,11 @@ impl Engine {
 
     /// Run one frame: build a user command from the browser input, apply it
     /// to the local player (C ClientThink), advance the server (game frames
-    /// at 10 Hz), and render from the player's eye.
-    fn tick(&mut self, timestamp: f64, input: &mut q2_platform::wasm::input::WasmInputState) {
+    /// at 10 Hz) and the client clock, and render from the player's eye.
+    fn tick(&mut self, timestamp: f64, input: &q2_platform::wasm::input::WasmInputState) {
+        let elapsed_us = elapsed_microseconds(timestamp, self.last_time);
         let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
-
-        let (mouse_dx, mouse_dy) = (input.mouse_dx, input.mouse_dy);
-        input.mouse_dx = 0.0;
-        input.mouse_dy = 0.0;
 
         // C CL_ClampPitch works against the server's delta_angles.
         let delta_pitch = self
@@ -138,17 +279,28 @@ impl Engine {
         turn_view(
             &mut self.input,
             &input.keys,
-            mouse_dx,
-            mouse_dy,
+            input.mouse_dx,
+            input.mouse_dy,
             dt,
             delta_pitch,
         );
         apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
-        let cmd = self.input.build_cmd(cmd_msec(dt));
+        let mut cmd = self.input.build_cmd(cmd_msec(dt));
+        // From the last rendered frame, as C reads `r_lightlevel`.
+        cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
 
         self.local.think(&cmd);
-        self.local.frame((dt * 1_000_000.0) as u32);
-        self.sync_frame(timestamp);
+        // The server and the client clock run on the real elapsed time; only
+        // the movement command is capped.
+        self.local.frame(elapsed_us);
+        let sounds = self.local.take_sounds();
+        if let Some(level) = self.local.take_map_change() {
+            if let Err(e) = self.change_map(&level) {
+                console::error_1(&q2err_to_js(e));
+            }
+        }
+        self.frames.advance(elapsed_us);
+        self.sync_frame();
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -162,9 +314,26 @@ impl Engine {
             }
         }
 
+        // A key press would send C's `nextserver`, which SV_Nextserver
+        // ignores for a picture outside coop: the picture stays.
+        if let Some(name) = self.local.picture() {
+            picture_frame(
+                self.renderer.as_mut(),
+                self.view.width,
+                self.view.height,
+                name,
+            );
+            return;
+        }
+
+        let lerpfrac = self.frames.lerpfrac();
+        let cl_time = self.frames.time();
         let Some((origin, ps)) = self.local.player() else {
             return;
         };
+        let (vieworg, viewangles) = self.frames.view(origin, ps, lerpfrac);
+        let stats = ps.stats;
+        self.mix_sounds(&sounds, vieworg, viewangles, lerpfrac);
         let fd = RefDef {
             x: 0,
             y: 0,
@@ -172,34 +341,54 @@ impl Engine {
             height: self.view.height,
             fov_x: FOV_X,
             fov_y: self.view.fov_y,
-            vieworg: origin + ps.viewoffset,
-            viewangles: ps.viewangles + ps.kick_angles,
-            time: (timestamp / 1000.0) as f32,
+            vieworg,
+            viewangles,
+            // C cl.refdef.time = cl.time * 0.001; light styles step on cl.time.
+            time: cl_time as f32 * 0.001,
+            lightstyles: q2_client::lightstyles::style_values(
+                |i| self.local.configstring(q2_shared::constants::CS_LIGHTS + i),
+                u32::try_from(cl_time).unwrap_or(0),
+            ),
+            // C cl.refdef.areabits = cl.frame.areabits: shut area portals
+            // hide the world behind them.
+            areabits: self.local.area_bits(),
             ..Default::default()
         };
 
-        let lerpfrac = lerp_fraction(timestamp - self.game_frame_time);
         let views = q2_client::entities::entity_views(
-            &self.current,
-            &self.previous,
+            &self.frames.current,
+            &self.frames.previous,
             lerpfrac,
-            timestamp as f32,
+            cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
         let entities = render_entities(&views, &self.models);
+        self.renderer.begin_frame(self.view.width, self.view.height);
         self.renderer.render_frame(&fd, &entities, &[], &[]);
-        self.draw_hud(&ps.stats);
+        self.draw_hud(&stats);
         self.renderer.end_frame();
     }
 }
 
-/// Seconds since the last frame for the movement tick, clamped to
-/// `0.0..=0.05`. Negative deltas (the first RAF timestamp can precede the
+/// Microseconds since the last frame for the server and client clocks (C
+/// measures the frame in whole microseconds), rounded so float error in the
+/// millisecond timestamps does not drop a microsecond every frame.
+/// Negative deltas count as 0.
+#[cfg(any(target_arch = "wasm32", test))]
+fn elapsed_microseconds(timestamp_ms: f64, last_ms: f64) -> u32 {
+    ((timestamp_ms - last_ms) * 1000.0)
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+/// Seconds since the last frame for the movement tick and view turning,
+/// clamped to `0.0..=0.5` like C `cls.nframetime` ("don't extrapolate too
+/// far ahead"). Negative deltas (the first RAF timestamp can precede the
 /// `performance.now()` taken at engine creation) would run movement and
-/// gravity backwards for a frame; long stalls are capped.
+/// gravity backwards for a frame.
 #[cfg(any(target_arch = "wasm32", test))]
 fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
-    ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.05) as f32
+    ((timestamp_ms - last_ms) / 1000.0).clamp(0.0, 0.5) as f32
 }
 
 /// The renderer's handle for each `CS_MODELS` index (C `cl.model_draw`),
@@ -245,6 +434,95 @@ impl ModelTable {
     }
 }
 
+/// Load the server's map into the renderer and register what its
+/// configstrings name (C `CL_PrepRefresh`): `begin_registration` with the
+/// world from `CS_MODELS + 1`, every model (into a fresh `models`, so a
+/// model the old map also used is registered again and survives the
+/// sweep), the images up to the first empty one, the sky, then
+/// `end_registration` to free what the new map does not use. With no world
+/// model configstring there is nothing to load yet, as in C.
+#[cfg(any(target_arch = "wasm32", test))]
+fn prep_refresh<'a>(
+    renderer: &mut dyn q2_render_api::Renderer,
+    configstring: impl Fn(usize) -> &'a str,
+    models: &mut ModelTable,
+) -> q2_common::error::Q2Result<()> {
+    use q2_shared::constants::{
+        CS_IMAGES, CS_MODELS, CS_SKY, CS_SKYAXIS, CS_SKYROTATE, MAX_IMAGES,
+    };
+    let world = configstring(CS_MODELS + 1);
+    if world.is_empty() {
+        return Ok(());
+    }
+    // C skips "maps/" and cuts ".bsp".
+    let map = world.strip_prefix("maps/").unwrap_or(world);
+    renderer.begin_registration(map.strip_suffix(".bsp").unwrap_or(map))?;
+    *models = ModelTable::default();
+    models.sync(&configstring, |name| renderer.register_model(name));
+    // C keeps these in `cl.image_precache`, which nothing draws from: the
+    // status bar draws pics by name.
+    for i in 1..MAX_IMAGES {
+        let name = configstring(CS_IMAGES + i);
+        if name.is_empty() {
+            break;
+        }
+        renderer.register_image(name, q2_render_api::ImageType::Pic);
+    }
+    let rotate = q2_common::cvar::parse_value(configstring(CS_SKYROTATE));
+    renderer.set_sky(
+        configstring(CS_SKY),
+        rotate,
+        sky_axis(configstring(CS_SKYAXIS)),
+    );
+    renderer.end_registration();
+    Ok(())
+}
+
+/// One frame of a picture level (C `SCR_UpdateScreen` with a cinematic
+/// up): `begin_frame` sets 2D up for the canvas, which may have been
+/// resized, since no `render_frame` runs to do it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn picture_frame(renderer: &mut dyn q2_render_api::Renderer, width: i32, height: i32, name: &str) {
+    renderer.begin_frame(width, height);
+    draw_picture(renderer, width, height, name);
+    renderer.end_frame();
+}
+
+/// Draw a picture level's `pics/<name>` in place of the view and status
+/// bar (C `SCR_DrawCinematic` with its default `cin_force43 1`): stretched
+/// to the largest centred 4:3 rectangle, width a multiple of 4, with
+/// palette colour 0 filling the rest. C draws the decoded PCX with its own
+/// palette (`Draw_StretchRaw`); `victory.pcx` differs from the colormap
+/// only in indices 48-51 and 255, none of which it uses, so the renderer's
+/// colormap pic draws it the same.
+#[cfg(any(target_arch = "wasm32", test))]
+fn draw_picture(renderer: &mut dyn q2_render_api::Renderer, width: i32, height: i32, name: &str) {
+    let w = ((height * 4 / 3).min(width)) & !3;
+    let h = w * 3 / 4;
+    let (x, y) = ((width - w) / 2, (height - h) / 2);
+    if x > 0 {
+        renderer.draw_fill(0, 0, x, height, 0);
+    }
+    if x + w < width {
+        renderer.draw_fill(x + w, 0, width - (x + w), height, 0);
+    }
+    if y > 0 {
+        renderer.draw_fill(x, 0, w, y, 0);
+    }
+    if y + h < height {
+        renderer.draw_fill(x, y + h, w, height - (y + h), 0);
+    }
+    renderer.draw_stretch_pic(x, y, w, h, &format!("pics/{name}"));
+}
+
+/// `CS_SKYAXIS` as C's `sscanf("%f %f %f")`; missing components read as 0.
+#[cfg(any(target_arch = "wasm32", test))]
+fn sky_axis(text: &str) -> q2_shared::types::Vec3f {
+    let mut axis = text.split_whitespace().map(q2_common::cvar::parse_value);
+    let mut next = || axis.next().unwrap_or(0.0);
+    q2_shared::types::Vec3f::new(next(), next(), next())
+}
+
 /// The renderer's entity list for `views`; models it could not register
 /// are left out.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -262,7 +540,7 @@ fn render_entities(
                 oldframe: v.oldframe,
                 backlerp: v.backlerp,
                 origin: v.origin,
-                oldorigin: v.origin,
+                oldorigin: v.oldorigin,
                 angles: v.angles,
                 alpha: v.alpha,
                 flags: v.flags,
@@ -273,14 +551,9 @@ fn render_entities(
         .collect()
 }
 
-/// How far the view is between the last two 10 Hz game frames (C
-/// `cl.lerpfrac`), from the milliseconds since the newest one arrived.
-#[cfg(any(target_arch = "wasm32", test))]
-fn lerp_fraction(ms_since_frame: f64) -> f32 {
-    (ms_since_frame / 100.0).clamp(0.0, 1.0) as f32
-}
-
-/// Mouse sensitivity (degrees per pixel of mouse movement).
+/// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
+/// this port, not C's default (`sensitivity 3` times `m_yaw 0.022` is
+/// 0.066 deg/px); there is no sensitivity cvar yet.
 #[cfg(any(target_arch = "wasm32", test))]
 const MOUSE_SENSITIVITY: f32 = 0.15;
 
@@ -289,6 +562,9 @@ const MOUSE_SENSITIVITY: f32 = 0.15;
 const CL_YAWSPEED: f32 = 140.0;
 #[cfg(any(target_arch = "wasm32", test))]
 const CL_PITCHSPEED: f32 = 150.0;
+/// C `cl_anglespeedkey` default: the turn speed factor while +speed is held.
+#[cfg(any(target_arch = "wasm32", test))]
+const CL_ANGLESPEEDKEY: f32 = 1.5;
 
 /// Move time for a user command (C CL_FinishMove): the frame time in whole
 /// milliseconds, or 100 when it is over 250 ("time was unreasonable").
@@ -300,6 +576,14 @@ fn cmd_msec(dt_seconds: f32) -> u8 {
     } else {
         ms.max(0) as u8
     }
+}
+
+/// The light level a user command carries (C CL_FinishMove's
+/// `(byte)cl_lightlevel->value`): truncated, keeping the low 8 bits as the
+/// C conversion does on wasm and x86.
+#[cfg(any(target_arch = "wasm32", test))]
+fn cmd_lightlevel(r_lightlevel: f32) -> u8 {
+    r_lightlevel as i32 as u8
 }
 
 /// Browser key and mouse-button state into movement and button input, with
@@ -343,19 +627,25 @@ fn turn_view(
     let angles = &mut input.view_angles;
     angles.y -= mouse_dx * MOUSE_SENSITIVITY;
     angles.x += mouse_dy * MOUSE_SENSITIVITY;
+    // +speed (shift) turns faster too.
+    let speed = if down(K_SHIFT) {
+        dt * CL_ANGLESPEEDKEY
+    } else {
+        dt
+    };
     if !down(K_ALT) {
         if down(K_LEFTARROW) {
-            angles.y += CL_YAWSPEED * dt;
+            angles.y += CL_YAWSPEED * speed;
         }
         if down(K_RIGHTARROW) {
-            angles.y -= CL_YAWSPEED * dt;
+            angles.y -= CL_YAWSPEED * speed;
         }
     }
     if down(K_PGDN) {
-        angles.x -= CL_PITCHSPEED * dt; // +lookup
+        angles.x -= CL_PITCHSPEED * speed; // +lookup
     }
     if down(K_DEL) {
-        angles.x += CL_PITCHSPEED * dt; // +lookdown
+        angles.x += CL_PITCHSPEED * speed; // +lookdown
     }
 
     if angles.x + delta_pitch < -360.0 {
@@ -513,6 +803,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     log("Creating WebGL2 context...");
     let (gl, canvas) =
         q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id).map_err(q2err_to_js)?;
+    log("WebGL2 context created");
 
     let view = ViewSize::for_canvas(canvas.width(), canvas.height())
         .map_err(q2err_to_js)?
@@ -520,13 +811,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     let (width, height) = (view.width, view.height);
     log(&format!("Canvas: {}x{}", width, height));
 
-    // 2. Initialize renderer
-    let mut renderer = Gl3Renderer::new();
-    renderer.set_gl_context(gl);
-    renderer.init(width, height).map_err(q2err_to_js)?;
-    log("GL3 renderer initialized");
-
-    // 3. Fetch pak0.pak — keep bytes in JS heap; don't copy to Rust yet.
+    // 2. Fetch pak0.pak — keep bytes in JS heap; don't copy to Rust yet.
     log(&format!("Fetching {}...", pak_url));
     let pak_array = fetch_array_buffer(&pak_url).await?;
     log(&format!(
@@ -574,38 +859,24 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     let bsp_data = fs.load_file(map_name).map_err(q2err_to_js)?;
     log(&format!("BSP loaded: {} bytes", bsp_data.len()));
 
-    // 7. Parse BSP
-    let bsp = q2_render::bsp::BspData::load(&bsp_data).map_err(q2err_to_js)?;
-    log(&format!(
-        "BSP parsed: {} verts, {} faces, {} texinfos, {} models",
-        bsp.vertices.len(),
-        bsp.faces.len(),
-        bsp.texinfo.len(),
-        bsp.models.len()
-    ));
-
-    // 7b. Upload BSP geometry to GPU
-    // The renderer reads textures, sky and palette through the same filesystem.
-    let loader_fs = Rc::new(fs);
-    renderer.set_file_loader(Box::new(move |path| loader_fs.load_file(path).ok()));
-    renderer.load_bsp(&bsp);
-    log("BSP geometry uploaded to GPU");
-
-    // 8. Input
-    let input_state =
-        q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
-    log("Input listeners attached (click canvas for pointer lock)");
-
-    // 9. Server and game: load collision, spawn the map's entities, and put
-    //    the local player in at the player start.
+    // 7. Renderer (C R_Init): it reads the world, textures, sky and palette
+    //    through the same filesystem.
     let short_name = map_name
         .trim_start_matches("maps/")
         .trim_end_matches(".bsp");
-    let local = q2_server::local::LocalGame::start(short_name, &bsp_data).map_err(q2err_to_js)?;
-    log(&format!(
-        "Game: {} entities spawned",
-        local.game().entities.count()
+    let fs = Rc::new(fs);
+    let loader_fs = fs.clone();
+    let mut renderer: Box<dyn Renderer> = Box::new(Gl3Renderer::new(
+        gl,
+        Box::new(move |path| loader_fs.load_file(path).ok()),
     ));
+    renderer.init(width, height).map_err(q2err_to_js)?;
+    log("GL3 renderer initialized");
+
+    // 8. Server and game: load collision, spawn the map's entities, and put
+    //    the local player in at the player start.
+    let local = q2_server::local::LocalGame::start(short_name, &bsp_data).map_err(q2err_to_js)?;
+    log(&format!("Game: {} entities spawned", local.num_edicts()));
     if let Some((origin, ps)) = local.player() {
         log(&format!(
             "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
@@ -613,38 +884,55 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         ));
     }
 
-    // C CL_PrepRefresh: the sky comes from the server's configstrings.
-    {
-        use q2_shared::constants::{CS_SKY, CS_SKYAXIS, CS_SKYROTATE};
-        let rotate = q2_common::cvar::parse_value(local.configstring(CS_SKYROTATE));
-        let axis: Vec<f32> = local
-            .configstring(CS_SKYAXIS)
-            .split_whitespace()
-            .map(q2_common::cvar::parse_value)
-            .collect();
-        let axis = q2_shared::types::Vec3f::new(
-            axis.first().copied().unwrap_or(0.0),
-            axis.get(1).copied().unwrap_or(0.0),
-            axis.get(2).copied().unwrap_or(0.0),
-        );
-        renderer.set_sky(local.configstring(CS_SKY), rotate, axis);
+    // C CL_PrepRefresh once the server's configstrings are in.
+    let mut models = ModelTable::default();
+    prep_refresh(renderer.as_mut(), |i| local.configstring(i), &mut models).map_err(q2err_to_js)?;
+    log("World uploaded to GPU");
+
+    let mut engine = Engine::new(renderer, local, fs, models, canvas.clone(), view);
+
+    // 9. Input, last of the fallible steps before the loop: the listeners
+    //    are leaked for the page's lifetime, so a failed start that is
+    //    retried must not have attached them already.
+    let input_state =
+        q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
+    log("Input listeners attached (click canvas for pointer lock)");
+
+    // Sound plays once the browser lets the context run (a click).
+    match q2_platform::wasm::audio::WebAudio::new(
+        &canvas,
+        Box::new(|state| log(&format!("Audio: context {state}"))),
+    ) {
+        Ok(audio) => engine.audio = Some(audio),
+        Err(e) => console::warn_1(&q2err_to_js(e)),
     }
 
-    let engine = Engine::new(renderer, local, canvas.clone(), view);
-
-    // 11. Start game loop
+    // 10. Start game loop
     log("Starting game loop...");
     log(&format!("Map: {} — engine running", map_name));
 
     let engine = Rc::new(RefCell::new(engine));
     // No catch_unwind: wasm32-unknown-unknown aborts on panic, so a frame
-    // panic traps the module; the panic hook (wasm_main) logs it.
+    // panic traps the module; the panic hook (wasm_main) logs it. The input
+    // state is copied out under a short borrow so a trap in `tick` does not
+    // leave it borrowed for the listeners, which would then panic on every
+    // event and bury the first panic.
     let frame_callback = Box::new(move |timestamp: f64| {
-        let mut input = input_state.borrow_mut();
-        engine.borrow_mut().tick(timestamp, &mut input);
+        let input = {
+            let mut shared = input_state.borrow_mut();
+            let input = shared.clone();
+            shared.mouse_dx = 0.0;
+            shared.mouse_dy = 0.0;
+            input
+        };
+        engine.borrow_mut().tick(timestamp, &input);
     }) as Box<dyn FnMut(f64)>;
 
-    q2_platform::wasm::game_loop::start_game_loop(frame_callback).map_err(q2err_to_js)?;
+    q2_platform::wasm::game_loop::start_game_loop(
+        frame_callback,
+        Box::new(|msg| log(&format!("Game loop stopped: {msg}"))),
+    )
+    .map_err(q2err_to_js)?;
 
     Ok(())
 }
@@ -679,20 +967,21 @@ async fn fetch_array_buffer(url: &str) -> Result<js_sys::Uint8Array, JsValue> {
 #[cfg(target_arch = "wasm32")]
 fn log(msg: &str) {
     console::log_1(&format!("[qwasm2-rs] {}", msg).into());
-    if let Some(window) = web_sys::window() {
-        if let Some(document) = window.document() {
-            if let Some(el) = document.get_element_by_id("status") {
-                let current = el.inner_html();
-                let escaped = msg
-                    .replace('&', "&amp;")
-                    .replace('<', "&lt;")
-                    .replace('>', "&gt;");
-                el.set_inner_html(&format!(
-                    "{}<span class=\"info\">{}\n</span>",
-                    current, escaped
-                ));
-            }
-        }
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(status) = document.get_element_by_id("status") else {
+        return;
+    };
+    // Append a span rather than rewriting the element's HTML each call.
+    let line = match document.create_element("span") {
+        Ok(line) => line,
+        Err(e) => return console::error_1(&e),
+    };
+    line.set_class_name("info");
+    line.set_text_content(Some(&format!("{msg}\n")));
+    if let Err(e) = status.append_child(&line) {
+        console::error_1(&e);
     }
 }
 
@@ -706,6 +995,206 @@ fn console_error_panic_hook_setup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A renderer that records the registration calls `prep_refresh` makes.
+    #[derive(Default)]
+    struct Recorder {
+        calls: Vec<String>,
+        fail_map: bool,
+    }
+
+    impl q2_render_api::Renderer for Recorder {
+        fn init(&mut self, _: i32, _: i32) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn shutdown(&mut self) {}
+        fn begin_registration(&mut self, map: &str) -> q2_common::error::Q2Result<()> {
+            self.calls.push(format!("begin {map}"));
+            if self.fail_map {
+                return Err(q2_common::Q2Error::Drop(format!("{map}: missing")));
+            }
+            Ok(())
+        }
+        fn register_model(&mut self, name: &str) -> q2_render_api::ModelHandle {
+            self.calls.push(format!("model {name}"));
+            q2_render_api::ModelHandle::new(self.calls.len() as i32)
+        }
+        fn register_image(
+            &mut self,
+            name: &str,
+            kind: q2_render_api::ImageType,
+        ) -> q2_render_api::ImageHandle {
+            self.calls.push(format!("image {name} {kind:?}"));
+            q2_render_api::ImageHandle::NONE
+        }
+        fn end_registration(&mut self) {
+            self.calls.push("end".into());
+        }
+        fn render_frame(
+            &mut self,
+            _: &q2_render_api::RefDef,
+            _: &[q2_render_api::RenderEntity],
+            _: &[q2_render_api::DLight],
+            _: &[q2_render_api::Particle],
+        ) {
+        }
+        fn set_sky(&mut self, name: &str, rotate: f32, axis: q2_shared::types::Vec3f) {
+            self.calls.push(format!(
+                "sky {name} {rotate} {} {} {}",
+                axis.x, axis.y, axis.z
+            ));
+        }
+        fn draw_pic(&mut self, _: i32, _: i32, _: &str) {}
+        fn draw_get_pic_size(&mut self, _: &str) -> Option<(i32, i32)> {
+            None
+        }
+        fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str) {
+            self.calls.push(format!("stretch {x} {y} {w} {h} {name}"));
+        }
+        fn draw_char(&mut self, _: i32, _: i32, _: i32) {}
+        fn draw_fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: i32) {
+            self.calls.push(format!("fill {x} {y} {w} {h} {color}"));
+        }
+        fn clear_screen(&mut self) {}
+        fn begin_frame(&mut self, width: i32, height: i32) {
+            self.calls.push(format!("begin_frame {width} {height}"));
+        }
+        fn end_frame(&mut self) {
+            self.calls.push("end_frame".into());
+        }
+    }
+
+    fn demo2_strings(i: usize) -> &'static str {
+        use q2_shared::constants::*;
+        match i {
+            _ if i == CS_MODELS + 1 => "maps/demo2.bsp",
+            _ if i == CS_MODELS + 2 => "*1",
+            _ if i == CS_MODELS + 3 => "models/items/armor/jacket/tris.md2",
+            _ if i == CS_IMAGES + 1 => "i_health",
+            _ if i == CS_IMAGES + 2 => "a_blaster",
+            _ if i == CS_IMAGES + 4 => "after_a_gap",
+            _ if i == CS_SKY => "unit2_",
+            _ if i == CS_SKYROTATE => "2.5",
+            _ if i == CS_SKYAXIS => "0 0 1",
+            _ => "",
+        }
+    }
+
+    #[test]
+    fn prep_refresh_registers_the_new_map_in_cl_prep_refresh_order() {
+        let mut renderer = Recorder::default();
+        let mut models = ModelTable::default();
+        prep_refresh(&mut renderer, demo2_strings, &mut models).unwrap();
+        assert_eq!(
+            renderer.calls,
+            [
+                "begin demo2",
+                "model *1",
+                "model models/items/armor/jacket/tris.md2",
+                // C stops at the first empty image configstring.
+                "image i_health Pic",
+                "image a_blaster Pic",
+                "sky unit2_ 2.5 0 0 1",
+                "end",
+            ]
+        );
+        assert_ne!(models.handle(3), q2_render_api::ModelHandle::NONE);
+    }
+
+    #[test]
+    fn prep_refresh_re_registers_models_whose_names_did_not_change() {
+        // The renderer frees models not registered since begin_registration,
+        // so a name the old map also used must be registered again.
+        let mut renderer = Recorder::default();
+        let mut models = ModelTable::default();
+        prep_refresh(&mut renderer, demo2_strings, &mut models).unwrap();
+        renderer.calls.clear();
+        prep_refresh(&mut renderer, demo2_strings, &mut models).unwrap();
+        assert!(renderer
+            .calls
+            .contains(&"model models/items/armor/jacket/tris.md2".to_string()));
+    }
+
+    #[test]
+    fn prep_refresh_without_a_world_model_does_nothing() {
+        let mut renderer = Recorder::default();
+        prep_refresh(&mut renderer, |_| "", &mut ModelTable::default()).unwrap();
+        assert!(renderer.calls.is_empty());
+    }
+
+    #[test]
+    fn prep_refresh_stops_when_the_renderer_cannot_load_the_map() {
+        let mut renderer = Recorder {
+            fail_map: true,
+            ..Recorder::default()
+        };
+        assert!(prep_refresh(&mut renderer, demo2_strings, &mut ModelTable::default()).is_err());
+        assert_eq!(renderer.calls, ["begin demo2"]);
+    }
+
+    #[test]
+    fn a_picture_frame_sets_up_2d_for_the_current_canvas_before_drawing() {
+        let mut renderer = Recorder::default();
+        picture_frame(&mut renderer, 640, 480, "victory.pcx");
+        picture_frame(&mut renderer, 1280, 960, "victory.pcx");
+        assert_eq!(
+            renderer.calls,
+            [
+                "begin_frame 640 480",
+                "stretch 0 0 640 480 pics/victory.pcx",
+                "end_frame",
+                "begin_frame 1280 960",
+                "stretch 0 0 1280 960 pics/victory.pcx",
+                "end_frame",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_picture_on_a_4_3_canvas_is_stretched_over_the_whole_view() {
+        let mut renderer = Recorder::default();
+        draw_picture(&mut renderer, 640, 480, "victory.pcx");
+        assert_eq!(renderer.calls, ["stretch 0 0 640 480 pics/victory.pcx"]);
+    }
+
+    #[test]
+    fn a_picture_on_a_wide_canvas_is_pillarboxed_to_4_3_like_c_cin_force43() {
+        let mut renderer = Recorder::default();
+        draw_picture(&mut renderer, 1280, 720, "victory.pcx");
+        assert_eq!(
+            renderer.calls,
+            [
+                "fill 0 0 160 720 0",
+                "fill 1120 0 160 720 0",
+                "stretch 160 0 960 720 pics/victory.pcx",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_picture_on_a_tall_canvas_is_letterboxed_with_a_width_rounded_down_to_4() {
+        let mut renderer = Recorder::default();
+        // w = 642 & !3 = 640, h = 480, x = 1, y = (1000 - 480) / 2.
+        draw_picture(&mut renderer, 642, 1000, "victory.pcx");
+        assert_eq!(
+            renderer.calls,
+            [
+                "fill 0 0 1 1000 0",
+                "fill 641 0 1 1000 0",
+                "fill 1 0 640 260 0",
+                "fill 1 740 640 260 0",
+                "stretch 1 260 640 480 pics/victory.pcx",
+            ]
+        );
+    }
+
+    #[test]
+    fn sky_axis_reads_three_floats_and_missing_ones_as_zero() {
+        use q2_shared::types::Vec3f;
+        assert_eq!(sky_axis("0.5 1 -2"), Vec3f::new(0.5, 1.0, -2.0));
+        assert_eq!(sky_axis("1"), Vec3f::new(1.0, 0.0, 0.0));
+        assert_eq!(sky_axis(""), Vec3f::ZERO);
+    }
 
     #[test]
     fn model_table_registers_changed_names_once_and_skips_the_world() {
@@ -750,6 +1239,7 @@ mod tests {
             oldframe: 2,
             backlerp: 0.5,
             origin: q2_shared::types::Vec3f::ONE,
+            oldorigin: q2_shared::types::Vec3f::ONE,
             angles: q2_shared::types::Vec3f::ZERO,
             skinnum: 1,
             flags: 0,
@@ -765,10 +1255,19 @@ mod tests {
     }
 
     #[test]
-    fn lerp_fraction_covers_one_game_frame() {
-        assert_eq!(lerp_fraction(-5.0), 0.0);
-        assert_eq!(lerp_fraction(50.0), 0.5);
-        assert_eq!(lerp_fraction(250.0), 1.0);
+    fn cmd_lightlevel_is_the_renderers_light_level_cast_to_a_byte_like_c() {
+        assert_eq!(cmd_lightlevel(150.0), 150);
+        assert_eq!(cmd_lightlevel(5.9), 5, "truncated toward zero");
+        assert_eq!(cmd_lightlevel(0.0), 0);
+        // C `(byte)cl_lightlevel->value` keeps the low 8 bits.
+        assert_eq!(cmd_lightlevel(300.0), 44);
+    }
+
+    #[test]
+    fn renderer_without_light_data_reports_the_player_lit() {
+        use q2_render_api::Renderer;
+        let renderer = Recorder::default();
+        assert_eq!(cmd_lightlevel(renderer.light_level()), 150);
     }
 
     #[test]
@@ -874,8 +1373,36 @@ mod tests {
     }
 
     #[test]
-    fn frame_dt_is_capped_at_50ms() {
-        assert_eq!(frame_dt_seconds(5000.0, 1000.0), 0.05);
+    fn frame_dt_is_capped_at_half_a_second_like_c_nframetime() {
+        assert_eq!(frame_dt_seconds(5000.0, 1000.0), 0.5);
+        assert!((frame_dt_seconds(1300.0, 1000.0) - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
+        assert_eq!(cmd_msec(frame_dt_seconds(1300.0, 1000.0)), 100);
+    }
+
+    #[test]
+    fn elapsed_microseconds_is_uncapped_and_never_negative() {
+        assert_eq!(elapsed_microseconds(1006.944, 1000.0), 6944);
+        assert_eq!(elapsed_microseconds(3000.0, 1000.0), 2_000_000);
+        assert_eq!(elapsed_microseconds(1000.0, 1010.0), 0);
+    }
+
+    #[test]
+    fn turn_view_speed_key_turns_at_cl_anglespeedkey_times_the_speed() {
+        use q2_platform::keymap::{K_LEFTARROW, K_SHIFT};
+        let mut input = q2_client::input::InputState::default();
+        let mut keys = [false; 256];
+        keys[K_LEFTARROW as usize] = true;
+        keys[K_SHIFT as usize] = true;
+        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
+        assert!(
+            (input.view_angles.y - 105.0).abs() < 1e-4,
+            "140 deg/s * 1.5 for 0.5 s, got {}",
+            input.view_angles.y
+        );
     }
 
     #[test]

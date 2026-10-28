@@ -32,9 +32,13 @@ struct AppState {
     gamedata_dir: PathBuf,
 }
 
-/// Repository root, so the server works from any current directory.
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+/// Repository root: `Q2_ROOT` when set, else the checkout this binary was
+/// built from, so `cargo run` works from any current directory (a copied
+/// binary needs `Q2_ROOT`).
+fn repo_root(q2_root: Option<std::ffi::OsString>) -> PathBuf {
+    q2_root
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 #[tokio::main]
@@ -46,7 +50,7 @@ async fn main() {
         std::process::exit(2);
     });
 
-    let root = repo_root();
+    let root = repo_root(std::env::var_os("Q2_ROOT"));
     let app = build_app(&root);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -87,7 +91,10 @@ async fn main() {
             .spawn();
     }
 
-    axum::serve(listener, app).await.unwrap();
+    if let Err(e) = axum::serve(listener, app).await {
+        eprintln!("server error: {e}");
+        std::process::exit(1);
+    }
 }
 
 /// `PORT` from the environment; unset means 8080, anything unparsable is an
@@ -130,7 +137,8 @@ async fn serve_web_pak(State(state): State<AppState>, req: Request) -> Response<
     };
     let Ok(resp) = file.oneshot(req).await;
     let mut resp = resp.into_response();
-    resp.headers_mut().insert(
+    // Appended, not inserted, so a `Vary` from the inner service survives.
+    resp.headers_mut().append(
         header::VARY,
         HeaderValue::from_static(header::ACCEPT_ENCODING.as_str()),
     );

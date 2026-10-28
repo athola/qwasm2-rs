@@ -4,7 +4,8 @@
 //!   wasm-pack build --target web --release crates/q2-wasm
 //!   cargo run -p q2-bundler
 //!
-//! Output: dist/qwasm2.html (single file, works when opened or served)
+//! Output: dist/qwasm2.html (single file; serve it with q2-devserver, since the
+//! page fetches `/gamedata/baseq2/pak0-web.pak` from the same origin)
 
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -70,7 +71,7 @@ fn main() -> Result<()> {
         output_path.display(),
         html_size as f64 / 1024.0
     );
-    println!("Done! Open dist/qwasm2.html in a browser.");
+    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
 
     Ok(())
 }
@@ -138,6 +139,13 @@ function __q2_decode_wasm() {{
     if let Some(line) = patched.lines().find(|l| l.starts_with("export ")) {
         anyhow::bail!("unhandled export in wasm-bindgen glue: {line}");
     }
+    // The glue goes verbatim into an inline <script>, where `</script` ends
+    // the element and `<!--` can switch the parser into escaped text.
+    let lower = patched.to_ascii_lowercase();
+    ensure!(
+        !lower.contains("</script") && !lower.contains("<!--"),
+        "wasm-bindgen glue contains `</script` or `<!--`, which an inline <script> cannot hold"
+    );
 
     Ok(format!("{}{}", decoder, patched))
 }
@@ -227,6 +235,7 @@ fn generate_html(inlined_js: &str) -> String {
     transform: translate(-50%, -50%);
     font-size: 18px; color: #e94560;
     z-index: 20; text-align: center;
+    pointer-events: none;
   }}
   #click-prompt.hidden {{ display: none; }}
 </style>
@@ -386,10 +395,36 @@ mod tests {
     }
 
     #[test]
+    fn patch_fails_when_glue_would_end_or_escape_the_inline_script() {
+        for snippet in [
+            "const s = '</script>';",
+            "const s = '</SCRIPT ';",
+            "// <!--",
+        ] {
+            let glue = format!("{GLUE}\n{snippet}\n");
+            let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+            assert!(err.contains("inline <script>"), "{snippet}: {err}");
+        }
+    }
+
+    #[test]
     fn patch_fails_on_module_imports() {
         let glue = format!("import {{ helper }} from './snippets/x.js';\n{GLUE}");
         let err = patch_js_glue(&glue, "").unwrap_err().to_string();
         assert!(err.contains("import"), "{err}");
+    }
+
+    #[test]
+    fn click_prompt_lets_clicks_through_to_the_canvas() {
+        // The prompt sits over the canvas centre; clicks on its text must
+        // still reach the canvas to lock the pointer and start audio.
+        let html = generate_html("");
+        let rule = html
+            .split("#click-prompt {")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("click-prompt rule");
+        assert!(rule.contains("pointer-events: none"), "{rule}");
     }
 
     #[test]

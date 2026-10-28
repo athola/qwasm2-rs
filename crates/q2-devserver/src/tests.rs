@@ -137,3 +137,60 @@ fn port_rejects_invalid_value() {
     assert!(parse_port(Some("80a".into())).is_err());
     assert!(parse_port(Some("70000".into())).is_err());
 }
+
+#[tokio::test]
+async fn paths_escaping_dist_or_gamedata_are_never_served() {
+    let root = fixture_root(None);
+    std::fs::write(root.path().join("secret.txt"), b"SECRET").unwrap();
+    for uri in [
+        "/../secret.txt",
+        "/%2e%2e/secret.txt",
+        "/gamedata/../secret.txt",
+        "/gamedata/%2e%2e/secret.txt",
+        "/gamedata/..%2fsecret.txt",
+        "/gamedata/baseq2/../../secret.txt",
+        "//secret.txt",
+    ] {
+        let resp = get(root.path(), uri, &[]).await;
+        assert_ne!(resp.status(), StatusCode::OK, "{uri}");
+        assert!(!body_bytes(resp).await.starts_with(b"SECRET"), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn missing_files_are_404() {
+    let root = fixture_root(None);
+    for uri in ["/nope.html", "/gamedata/baseq2/nope.pak"] {
+        assert_eq!(
+            get(root.path(), uri, &[]).await.status(),
+            StatusCode::NOT_FOUND,
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn head_returns_headers_without_a_body() {
+    let root = fixture_root(None);
+    let resp = build_app(root.path())
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/qwasm2.html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_bytes(resp).await.is_empty());
+}
+
+#[test]
+fn root_comes_from_q2_root_when_set() {
+    assert_eq!(
+        repo_root(Some("/srv/q2".into())),
+        std::path::PathBuf::from("/srv/q2")
+    );
+    assert!(repo_root(None).join("crates/q2-devserver").is_dir());
+}

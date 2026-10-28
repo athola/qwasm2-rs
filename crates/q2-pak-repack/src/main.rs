@@ -20,7 +20,8 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     out: PathBuf,
 
-    /// Comma-separated lowercase extensions to keep (e.g. "bsp,cfg").
+    /// Comma-separated extensions to keep (e.g. "bsp,cfg"; any case, a
+    /// leading "." or "*." is ignored). Matching no file is an error.
     /// Without this flag every file is kept.
     #[arg(long)]
     allow: Option<String>,
@@ -39,14 +40,18 @@ const HEADER_LEN: usize = 12;
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let allowlist: Option<HashSet<String>> = args
-        .allow
-        .as_deref()
-        .map(|s| s.split(',').map(|e| e.trim().to_lowercase()).collect());
+    let allowlist = args.allow.as_deref().map(parse_allowlist).transpose()?;
 
     let src = fs::read(&args.r#in).with_context(|| format!("reading {}", args.r#in.display()))?;
 
     let out = repack(&src, allowlist.as_ref())?;
+    if allowlist.is_some() && entry_count(&out) == 0 && entry_count(&src) > 0 {
+        bail!(
+            "--allow {:?} matched no file in {}",
+            args.allow.unwrap_or_default(),
+            args.r#in.display()
+        );
+    }
 
     write_outputs(&args.out, &out, args.brotli)?;
 
@@ -94,6 +99,24 @@ fn main() -> Result<()> {
 }
 
 /// `<out>.br`, the name the devserver looks for next to the web pak.
+/// `--allow` list: extensions with an optional leading `.` or `*.`, any case.
+fn parse_allowlist(raw: &str) -> Result<HashSet<String>> {
+    let extensions: HashSet<String> = raw
+        .split(',')
+        .map(|e| {
+            e.trim()
+                .trim_start_matches('*')
+                .trim_start_matches('.')
+                .to_lowercase()
+        })
+        .filter(|e| !e.is_empty())
+        .collect();
+    if extensions.is_empty() {
+        bail!("--allow {raw:?} names no extension");
+    }
+    Ok(extensions)
+}
+
 fn br_path(out: &Path) -> PathBuf {
     let mut name = OsString::from(out.as_os_str());
     name.push(".br");
@@ -640,6 +663,21 @@ mod tests {
         let out = dir.path().join("pak0-web.pak");
         write_outputs(&out, &make_pak(&[]), false).unwrap();
         assert!(out.exists());
+    }
+
+    #[test]
+    fn allowlist_accepts_dotted_and_glob_spellings() {
+        assert_eq!(
+            parse_allowlist("bsp, .CFG,*.pcx").unwrap(),
+            allow(&["bsp", "cfg", "pcx"])
+        );
+    }
+
+    #[test]
+    fn allowlist_without_any_extension_is_an_error() {
+        for raw in ["", " , ", ".", "*."] {
+            assert!(parse_allowlist(raw).is_err(), "{raw:?}");
+        }
     }
 
     #[test]
