@@ -21,6 +21,7 @@ layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec2 a_lightmap_uv;
 layout(location = 3) in vec4 a_styles;
+layout(location = 4) in vec3 a_normal;
 uniform mat4 u_view_proj;
 uniform int u_mode;
 uniform float u_scroll;
@@ -29,6 +30,8 @@ uniform vec4 u_styles[64];
 out vec2 v_uv;
 out vec2 v_lightmap_uv;
 out vec4 v_style_scales;
+out vec3 v_world_pos;
+out vec3 v_normal;
 float style_scale(float style) {
     // -1 marks an unused layer; its texels are zero, so any scale works.
     if (style < 0.0) {
@@ -46,6 +49,8 @@ void main() {
         v_uv.x += u_scroll;
     }
     v_lightmap_uv = a_lightmap_uv;
+    v_world_pos = a_position;
+    v_normal = a_normal;
     gl_Position = u_view_proj * vec4(a_position, 1.0);
 }
 "#;
@@ -67,7 +72,13 @@ uniform float u_turb_light;
 in vec2 v_uv;
 in vec2 v_lightmap_uv;
 in vec4 v_style_scales;
+in vec3 v_world_pos;
+in vec3 v_normal;
 out vec4 o_color;
+// Dynamic lights (C uniLights): xyz origin; rgb colour, a intensity.
+uniform vec4 u_dlight_origin[32];
+uniform vec4 u_dlight_color[32];
+uniform int u_num_dlights;
 
 uniform float u_gamma;
 const float INTENSITY = 1.5;
@@ -91,6 +102,18 @@ void main() {
                    + texture(u_lightmap1, v_lightmap_uv).rgb * v_style_scales.y
                    + texture(u_lightmap2, v_lightmap_uv).rgb * v_style_scales.z
                    + texture(u_lightmap3, v_lightmap_uv).rgb * v_style_scales.w;
+        // gl3_shaders.c fragmentSrc3Dlm. C's lightFlags pass only lights
+        // in front of the surface (R_MarkLights' plane side check).
+        for (int i = 0; i < u_num_dlights; ++i) {
+            vec3 to_light = u_dlight_origin[i].xyz - v_world_pos;
+            if (dot(v_normal, to_light) < 0.0) {
+                continue;
+            }
+            float fact = max(0.0, u_dlight_color[i].a - length(to_light) - 52.0);
+            to_light += v_normal * 32.0;
+            fact *= max(0.0, dot(v_normal, normalize(to_light)));
+            light += u_dlight_color[i].rgb * fact * (1.0 / 256.0);
+        }
         light *= OVERBRIGHT;
         o_color = vec4(pow(light * texel.rgb, vec3(u_gamma)), 1.0);
     } else if (u_mode == 3) {
@@ -113,6 +136,9 @@ pub struct WorldUniforms {
     pub scroll: Option<glow::UniformLocation>,
     pub turb_light: Option<glow::UniformLocation>,
     pub styles: Option<glow::UniformLocation>,
+    pub dlight_origin: Option<glow::UniformLocation>,
+    pub dlight_color: Option<glow::UniformLocation>,
+    pub num_dlights: Option<glow::UniformLocation>,
 }
 
 /// Compile and link one program from vertex and fragment source. Shader
@@ -239,6 +265,9 @@ pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, World
             scroll: gl.get_uniform_location(program, "u_scroll"),
             turb_light: gl.get_uniform_location(program, "u_turb_light"),
             styles: gl.get_uniform_location(program, "u_styles"),
+            dlight_origin: gl.get_uniform_location(program, "u_dlight_origin"),
+            dlight_color: gl.get_uniform_location(program, "u_dlight_color"),
+            num_dlights: gl.get_uniform_location(program, "u_num_dlights"),
         }
     };
     Ok((program, uniforms))
@@ -353,6 +382,27 @@ mod tests {
             assert!(source.contains("vec3(u_gamma)"));
             assert!(!source.contains("GAMMA"));
         }
+    }
+
+    #[test]
+    fn lit_world_faces_add_c_gl3_dynamic_lights_on_their_front_side() {
+        for line in [
+            "uniform vec4 u_dlight_origin[32];",
+            "uniform vec4 u_dlight_color[32];",
+            "uniform int u_num_dlights;",
+            "if (dot(v_normal, to_light) < 0.0)",
+            "float fact = max(0.0, u_dlight_color[i].a - length(to_light) - 52.0);",
+            "to_light += v_normal * 32.0;",
+            "fact *= max(0.0, dot(v_normal, normalize(to_light)));",
+            "light += u_dlight_color[i].rgb * fact * (1.0 / 256.0);",
+        ] {
+            assert!(FRAGMENT_SRC.contains(line), "{line}");
+        }
+        assert!(VERTEX_SRC.contains("layout(location = 4) in vec3 a_normal;"));
+        // Added before overbrightbits scales the lightmap, as in C.
+        let lights = FRAGMENT_SRC.find("light += u_dlight_color").unwrap();
+        let overbright = FRAGMENT_SRC.find("light *= OVERBRIGHT").unwrap();
+        assert!(lights < overbright);
     }
 
     #[test]

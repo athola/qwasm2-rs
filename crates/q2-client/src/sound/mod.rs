@@ -383,6 +383,34 @@ impl SoundSystem {
         });
     }
 
+    /// C `S_RegisterSound(name)` then `S_StartSound`: a sound the client
+    /// starts itself (muzzle flashes), following entity `entnum`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_named_sound(
+        &mut self,
+        entnum: i32,
+        entchannel: i32,
+        name: &str,
+        volume: f32,
+        attenuation: f32,
+        timeofs: f32,
+        mut load: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) {
+        let id = self.find_or_add(name);
+        if !self.load(id, &mut load) {
+            return;
+        }
+        self.pending.push(PlaySound {
+            sfx: id,
+            entnum,
+            entchannel,
+            origin: None,
+            volume,
+            attenuation,
+            timeofs,
+        });
+    }
+
     /// C `S_StopAllSounds`: silence every channel and drop pending sounds.
     pub fn stop_all(&mut self) {
         for (i, ch) in self.channels.iter_mut().enumerate() {

@@ -89,6 +89,12 @@ All notable changes to qwasm2-rs are documented here.
   80 degree gun projection and the front 30% of the depth range
   (`RF_DEPTHHACK`) so it never pokes into walls; `RF_MINLIGHT` and
   `RF_DEPTHHACK` join `q2_shared::constants`
+- Muzzle flashes (C `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`): the
+  player's and monsters' gunfire is heard (C plays those sounds on the
+  client, so they were silent) and lights the scene; the server hands
+  multicast messages to `LocalGame::take_messages`, the client keeps C's
+  dlight list (`q2_client::effects`), and lit world faces take C GL3's
+  dynamic lights; `monster_flash_offset` moves to `q2_shared::flash`
 - Grenades: blasts record C's means of death by kind (launcher, hand,
   held) in `GameWorld::means_of_death`, set by every `t_damage` like C
   `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two

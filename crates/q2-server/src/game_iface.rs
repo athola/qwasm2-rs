@@ -67,6 +67,9 @@ struct GiInner {
     /// and `cmd_args`), for the game's `argv`/`args`.
     command_argv: Vec<String>,
     command_args: String,
+    /// Messages the game multicast since the last `take_messages`
+    /// (muzzle flashes, temp entities), whole.
+    messages: Vec<Vec<u8>>,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -112,6 +115,7 @@ impl GiInner {
             sounds: Vec::new(),
             command_argv: Vec::new(),
             command_args: String::new(),
+            messages: Vec::new(),
         }
     }
 
@@ -252,6 +256,11 @@ impl ServerGameImport {
     /// The console text queued by `add_command_string` since the last call.
     pub fn take_commands(&self) -> String {
         std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// The messages the game multicast since the last call, in order.
+    pub fn take_messages(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.inner.borrow_mut().messages)
     }
 
     /// The sounds the game started since the last call, in order.
@@ -798,8 +807,15 @@ impl GameImport for ServerGameImport {
 
     // -- multicast / unicast (flush message buffer) -------------------------
 
+    /// C SV_Multicast. The one local client gets every message; the
+    /// PVS/PHS choice and reliable routing only pick network clients.
     fn multicast(&self, _origin: Vec3f, _to: Multicast) {
-        self.inner.borrow_mut().msg_buf.clear();
+        let mut inner = self.inner.borrow_mut();
+        if !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     fn unicast(&self, _ent_idx: usize, _reliable: bool) {
@@ -859,6 +875,27 @@ mod tests {
             time_ofs: 0.1,
             origin,
         }
+    }
+
+    #[test]
+    fn a_multicast_message_is_queued_for_the_local_client() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(1);
+        gi.write_short(5);
+        gi.write_byte(7);
+        gi.multicast(Vec3f::ZERO, Multicast::PVS);
+        gi.write_byte(3);
+        gi.multicast(Vec3f::ZERO, Multicast::PHS);
+        assert_eq!(gi.take_messages(), vec![vec![1, 5, 0, 7], vec![3]]);
+        assert!(gi.take_messages().is_empty(), "taken once");
+        assert_eq!(gi.inner.borrow().msg_buf.len(), 0, "the buffer starts over");
+    }
+
+    #[test]
+    fn an_empty_multicast_queues_nothing() {
+        let gi = ServerGameImport::new();
+        gi.multicast(Vec3f::ZERO, Multicast::All);
+        assert!(gi.take_messages().is_empty());
     }
 
     #[test]

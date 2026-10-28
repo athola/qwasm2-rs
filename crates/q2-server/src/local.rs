@@ -125,6 +125,12 @@ impl LocalGame {
         self.gi.take_sounds()
     }
 
+    /// The messages the game multicast since the last call (C
+    /// `svc_muzzleflash`, `svc_temp_entity`, ...), each whole, in order.
+    pub fn take_messages(&self) -> Vec<Vec<u8>> {
+        self.gi.take_messages()
+    }
+
     /// Load `level`'s map from `bsp` into the same game and put the local
     /// client back in at the level's spawnpoint (C `SV_GameMap_f` ->
     /// `SV_Map` -> `SV_SpawnServer`, then the client's `begin`). The

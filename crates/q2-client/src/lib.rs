@@ -13,6 +13,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+pub mod effects;
 pub mod entities;
 pub mod frame;
 pub mod input;

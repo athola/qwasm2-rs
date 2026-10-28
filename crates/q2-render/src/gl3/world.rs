@@ -3,7 +3,8 @@
 //! + the texture chains of `gl3_surf.c`). GL-free so it can be unit tested.
 //!
 //! Vertex layout, [`VERTEX_FLOATS`] floats: position(3), texture uv(2),
-//! lightmap uv(2), light style per lightmap layer(4, -1 when unused).
+//! lightmap uv(2), light style per lightmap layer(4, -1 when unused), face
+//! normal(3, for dynamic lights; flipped for back-side faces).
 //! Triangles are fan-triangulated from the face's edge loop.
 
 use super::lightmap::{
@@ -22,7 +23,7 @@ pub const SURF_FLOWING: i32 = 0x40;
 pub const SURF_NODRAW: i32 = 0x80;
 
 /// Floats per world vertex.
-pub const VERTEX_FLOATS: usize = 11;
+pub const VERTEX_FLOATS: usize = 14;
 
 /// Fragment path a batch uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -309,6 +310,15 @@ fn build_model_batches(
             }
             None => [-1.0; MAX_LIGHTMAPS_PER_SURFACE],
         };
+        // C GL3_LM_BuildPolygonFromSurface: the plane normal, negated for
+        // SURF_PLANEBACK faces.
+        let normal = bsp
+            .planes
+            .get(usize::from(face.plane_idx))
+            .map_or([0.0; 3], |plane| {
+                let sign = if face.side != 0 { -1.0 } else { 1.0 };
+                (plane.normal * sign).to_array()
+            });
         let mut corners = Vec::with_capacity(positions.len() * VERTEX_FLOATS);
         for &position in &positions {
             let texel = texel_coords(texinfo, position);
@@ -325,6 +335,7 @@ fn build_model_batches(
             corners.extend_from_slice(&uv);
             corners.extend_from_slice(&lm_uv);
             corners.extend_from_slice(&styles);
+            corners.extend_from_slice(&normal);
         }
 
         let mut triangles = Vec::with_capacity((positions.len() - 2) * 3 * VERTEX_FLOATS);
@@ -493,6 +504,35 @@ mod tests {
         // Second corner: y=48 -> s=52; third: z=40 -> t=-40.
         assert_eq!(&vertex(&mesh, 1)[3..5], &[52.0 / 64.0, -8.0 / 32.0]);
         assert_eq!(&vertex(&mesh, 2)[3..5], &[20.0 / 64.0, -40.0 / 32.0]);
+    }
+
+    #[test]
+    fn every_vertex_carries_its_faces_plane_normal_flipped_for_back_faces() {
+        use crate::bsp::BspPlane;
+        let mut bsp = empty_bsp();
+        bsp.planes.push(BspPlane {
+            normal: Vec3f::new(0.0, 0.0, 1.0),
+            dist: 0.0,
+            plane_type: 2,
+        });
+        bsp.texinfo
+            .push(texinfo(0, [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]));
+        add_face(&mut bsp, &TRI, 0, -1);
+        add_face(&mut bsp, &TRI, 0, -1);
+        bsp.faces[1].side = 1;
+        let mesh = build_world_mesh(&bsp, &images(&[(64, 64)], vec![1]));
+        assert_eq!(&vertex(&mesh, 0)[11..14], &[0.0, 0.0, 1.0]);
+        assert_eq!(&vertex(&mesh, 3)[11..14], &[0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn a_face_on_a_missing_plane_gets_a_zero_normal() {
+        let mut bsp = empty_bsp();
+        bsp.texinfo
+            .push(texinfo(0, [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]));
+        add_face(&mut bsp, &TRI, 0, -1);
+        let mesh = build_world_mesh(&bsp, &images(&[(64, 64)], vec![1]));
+        assert_eq!(&vertex(&mesh, 0)[11..14], &[0.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -459,3 +459,20 @@ fn entity_origin_lerps_between_frames_and_is_none_for_absent_entities() {
     assert_eq!(at(3), Some(Vec3f::new(0.0, 8.0, 0.0)), "new: no lerp");
     assert_eq!(at(4), None);
 }
+
+#[test]
+fn a_sound_started_by_name_registers_it_like_s_registersound() {
+    let mut sys = system();
+    let files = files();
+    sys.start_named_sound(2, 1, "b.wav", 1.0, 1.0, 0.0, |p| files.get(p).cloned());
+    let mix = update(&mut sys, 0.0);
+    assert_eq!(plays(&mix).len(), 1);
+    assert_eq!(sys.name(plays(&mix)[0].1), "b.wav");
+}
+
+#[test]
+fn a_named_sound_that_does_not_load_is_dropped() {
+    let mut sys = system();
+    sys.start_named_sound(2, 1, "missing.wav", 1.0, 1.0, 0.0, |_| None);
+    assert!(plays(&update(&mut sys, 0.0)).is_empty());
+}

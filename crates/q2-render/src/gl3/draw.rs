@@ -34,8 +34,9 @@ pub struct SkyGpu {
     faces: Vec<glow::Texture>,
 }
 
-/// World vertex attributes: position, texture uv, lightmap uv, styles.
-const WORLD_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7)];
+/// World vertex attributes: position, texture uv, lightmap uv, styles,
+/// normal.
+const WORLD_ATTRIBUTES: [Attribute; 5] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7), (4, 3, 11)];
 /// Sky vertices stop after the lightmap uv the sky never reads.
 const SKY_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 2, 5)];
 

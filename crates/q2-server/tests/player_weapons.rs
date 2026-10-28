@@ -116,3 +116,15 @@ fn a_use_command_switches_back_to_the_blaster() {
     run(&mut game, 20, 0);
     assert_eq!(gun(&game), "models/weapons/v_shotg/tris.md2");
 }
+
+#[test]
+fn firing_sends_the_blaster_muzzle_flash_to_the_local_client() {
+    use q2_shared::constants::MZ_BLASTER;
+    use q2_shared::protocol::SvcOp;
+    let mut game = started();
+    run(&mut game, 10, 0); // the blaster comes up
+    game.take_messages();
+    run(&mut game, 1, BUTTON_ATTACK);
+    let flash = vec![SvcOp::MuzzleFlash as u8, 1, 0, MZ_BLASTER as u8];
+    assert!(game.take_messages().contains(&flash));
+}

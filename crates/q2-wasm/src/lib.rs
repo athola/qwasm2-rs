@@ -65,6 +65,10 @@ struct Engine {
     vid_gamma: f32,
     /// Last frame's keys, so a held F7/F8 steps gamma once.
     last_keys: [bool; 256],
+    /// Muzzle flash lights (C `cl_dlights`).
+    effects: q2_client::effects::Effects,
+    /// The client's random numbers (C `randk`) for flash sizes and sounds.
+    rng: u32,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -91,6 +95,8 @@ impl Engine {
             audio: None,
             vid_gamma: 1.0,
             last_keys: [false; 256],
+            effects: q2_client::effects::Effects::default(),
+            rng: 0x1234_5678,
         };
         engine.register_sounds();
         engine
@@ -110,6 +116,26 @@ impl Engine {
         }
     }
 
+    /// Run this frame's multicast messages for muzzle flashes, then age
+    /// the lights (C `CL_RunDLights`). Returns the flash sounds.
+    fn run_effects(
+        &mut self,
+        messages: &[Vec<u8>],
+        dt: f32,
+    ) -> Vec<q2_client::effects::FlashSound> {
+        let time = self.frames.time() as f32;
+        let current = &self.frames.current;
+        let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
+        let rng = &mut self.rng;
+        let mut randk = || xorshift(rng);
+        let sounds = messages
+            .iter()
+            .flat_map(|m| self.effects.message(m, entity, time, &mut randk))
+            .collect();
+        self.effects.run_dlights(time, dt);
+        sounds
+    }
+
     /// C `CL_RegisterSounds`, from the server's `CS_SOUNDS` names.
     fn register_sounds(&mut self) {
         let (local, fs) = (&self.local, &self.fs);
@@ -124,6 +150,7 @@ impl Engine {
     fn mix_sounds(
         &mut self,
         sounds: &[q2_server::game_iface::SoundEvent],
+        flash_sounds: &[q2_client::effects::FlashSound],
         vieworg: q2_shared::types::Vec3f,
         viewangles: q2_shared::types::Vec3f,
         lerpfrac: f32,
@@ -147,6 +174,17 @@ impl Engine {
             self.sound.start_sound(
                 &start,
                 |i| local.configstring(i),
+                |path| fs.load_file(path).ok(),
+            );
+        }
+        for flash in flash_sounds {
+            self.sound.start_named_sound(
+                flash.entnum,
+                flash.channel,
+                &flash.name,
+                flash.volume,
+                flash.attenuation,
+                flash.timeofs,
                 |path| fs.load_file(path).ok(),
             );
         }
@@ -231,6 +269,7 @@ impl Engine {
             LevelKind::Pic => {
                 self.local.change_map(&request, &[])?;
                 self.frames = q2_client::frame::FrameHistory::default();
+                self.effects.clear();
                 log(&format!("Picture: pics/{} shown", request.map));
                 return Ok(());
             }
@@ -254,6 +293,7 @@ impl Engine {
         self.sound.stop_all();
         self.register_sounds();
         self.frames = q2_client::frame::FrameHistory::default();
+        self.effects.clear();
         self.input.view_angles = q2_shared::types::Vec3f::ZERO;
         log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
@@ -319,6 +359,7 @@ impl Engine {
         // the movement command is capped.
         self.local.frame(elapsed_us);
         let sounds = self.local.take_sounds();
+        let messages = self.local.take_messages();
         if let Some(level) = self.local.take_map_change() {
             if let Err(e) = self.change_map(&level) {
                 console::error_1(&q2err_to_js(e));
@@ -326,6 +367,7 @@ impl Engine {
         }
         self.frames.advance(elapsed_us);
         self.sync_frame();
+        let flash_sounds = self.run_effects(&messages, dt);
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -358,7 +400,7 @@ impl Engine {
         };
         let (vieworg, viewangles) = self.frames.view(origin, ps, lerpfrac);
         let stats = ps.stats;
-        self.mix_sounds(&sounds, vieworg, viewangles, lerpfrac);
+        self.mix_sounds(&sounds, &flash_sounds, vieworg, viewangles, lerpfrac);
         let fd = RefDef {
             x: 0,
             y: 0,
@@ -391,7 +433,8 @@ impl Engine {
         let gun = self.frames.view_weapon(vieworg, viewangles, lerpfrac);
         entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
         self.renderer.begin_frame(self.view.width, self.view.height);
-        self.renderer.render_frame(&fd, &entities, &[], &[]);
+        let dlights = render_dlights(&self.effects);
+        self.renderer.render_frame(&fd, &entities, &dlights, &[]);
         self.draw_hud(&stats);
         self.renderer.end_frame();
     }
@@ -576,6 +619,32 @@ fn render_entities(
             })
         })
         .collect()
+}
+
+/// The lit dynamic lights for the renderer (C `V_AddLight`: the radius
+/// is the intensity).
+#[cfg(any(target_arch = "wasm32", test))]
+fn render_dlights(effects: &q2_client::effects::Effects) -> Vec<q2_render_api::DLight> {
+    effects
+        .dlights()
+        .map(|light| q2_render_api::DLight {
+            origin: light.origin,
+            color: q2_shared::types::Vec3f::from_array(light.color),
+            intensity: light.radius,
+        })
+        .collect()
+}
+
+/// A xorshift32 step: the client's `randk`. C's generator differs, but
+/// only flash sizes and which shot sound plays depend on it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn xorshift(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    x
 }
 
 /// The first-person gun as a render entity (C `CL_AddViewWeapon`'s
@@ -1504,6 +1573,31 @@ mod tests {
             ..gun
         };
         assert!(gun_entity(&unknown, &table).is_none());
+    }
+
+    #[test]
+    fn lit_flash_lights_reach_the_renderer_with_radius_as_intensity() {
+        use q2_shared::types::{EntityState, Vec3f};
+        let mut effects = q2_client::effects::Effects::default();
+        assert!(render_dlights(&effects).is_empty());
+        let player = EntityState {
+            number: 1,
+            ..Default::default()
+        };
+        effects.muzzle_flash(&player, q2_shared::constants::MZ_RAILGUN, 0.0, &mut || 3);
+        let lights = render_dlights(&effects);
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].intensity, 203.0);
+        assert_eq!(lights[0].color, Vec3f::new(0.5, 0.5, 1.0));
+        assert_eq!(lights[0].origin, Vec3f::new(18.0, -16.0, 0.0));
+    }
+
+    #[test]
+    fn xorshift_never_sticks_and_varies() {
+        let mut state = 1;
+        let draws: Vec<u32> = (0..4).map(|_| xorshift(&mut state)).collect();
+        assert!(draws.iter().all(|&d| d != 0));
+        assert_ne!(draws[0], draws[1]);
     }
 
     #[test]

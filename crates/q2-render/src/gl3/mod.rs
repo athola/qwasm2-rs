@@ -449,6 +449,14 @@ impl Renderer for Gl3Renderer {
         // SAFETY: `uniforms.styles` belongs to the program bound above and
         // `lightstyles` holds exactly the 64 vec4s the shader declares.
         unsafe { gl.uniform_4_f32_slice(uniforms.styles.as_ref(), &fd.lightstyles) };
+        let (origins, colors, count) = dlight_uniforms(dlights);
+        // SAFETY: the dlight uniforms belong to the program bound above;
+        // each slice holds the 32 vec4s the shader declares.
+        unsafe {
+            gl.uniform_4_f32_slice(uniforms.dlight_origin.as_ref(), &origins);
+            gl.uniform_4_f32_slice(uniforms.dlight_color.as_ref(), &colors);
+            gl.uniform_1_i32(uniforms.num_dlights.as_ref(), count);
+        }
 
         if let Some(sky) = &self.sky {
             draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
@@ -656,6 +664,24 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let proj = perspective_matrix(fd);
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
+}
+
+/// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
+const MAX_DLIGHTS: usize = 32;
+
+/// The world shader's dynamic light uniforms (C `GL3_UpdateUBOLights`):
+/// origins as xyz0 and colours as rgb + intensity, 32 vec4s each, and
+/// how many are used. Lights past 32 are dropped.
+fn dlight_uniforms(dlights: &[DLight]) -> (Vec<f32>, Vec<f32>, i32) {
+    let mut origins = vec![0.0; MAX_DLIGHTS * 4];
+    let mut colors = vec![0.0; MAX_DLIGHTS * 4];
+    let used = dlights.iter().take(MAX_DLIGHTS);
+    for (i, light) in used.clone().enumerate() {
+        origins[i * 4..i * 4 + 3].copy_from_slice(&light.origin.to_array());
+        colors[i * 4..i * 4 + 3].copy_from_slice(&light.color.to_array());
+        colors[i * 4 + 3] = light.intensity;
+    }
+    (origins, colors, used.count() as i32)
 }
 
 /// C `r_gunfov`: the gun's own vertical fov, so a wide view does not
@@ -994,6 +1020,23 @@ mod tests {
             gun_view_projection(&fd(100.0)),
             gun_view_projection(&fd(60.0))
         );
+    }
+
+    #[test]
+    fn dlights_pack_into_origin_and_color_intensity_uniforms_up_to_32() {
+        use q2_render_api::DLight;
+        let light = |x: f32| DLight {
+            origin: Vec3f::new(x, 2.0, 3.0),
+            color: Vec3f::new(1.0, 0.5, 0.0),
+            intensity: 200.0,
+        };
+        let (origins, colors, count) = dlight_uniforms(&[light(1.0), light(9.0)]);
+        assert_eq!(count, 2);
+        assert_eq!(&origins[..8], &[1.0, 2.0, 3.0, 0.0, 9.0, 2.0, 3.0, 0.0]);
+        assert_eq!(&colors[..4], &[1.0, 0.5, 0.0, 200.0]);
+        assert_eq!((origins.len(), colors.len()), (128, 128));
+        let many: Vec<DLight> = (0..40).map(|i| light(i as f32)).collect();
+        assert_eq!(dlight_uniforms(&many).2, 32);
     }
 
     #[test]
