@@ -79,3 +79,20 @@ fn without_attack_the_soldier_lives() {
         last.frame
     );
 }
+
+#[test]
+fn walking_over_a_shotgun_picks_it_up_and_raises_it() {
+    let shotgun = "{\n\"classname\" \"weapon_shotgun\"\n\"origin\" \"0 0 16\"\n}\n";
+    let map = common::floor_wall_bsp_with(&format!("{}{shotgun}", common::ENTSTRING));
+    let mut game = LocalGame::start("floor_wall", &map).expect("map loads");
+    let gun = |game: &LocalGame| {
+        let (_, ps) = game.player().unwrap();
+        game.configstring(CS_MODELS + ps.gunindex as usize)
+            .to_string()
+    };
+    // Configstrings reach the server after the first game frame.
+    run(&mut game, 2, 0);
+    assert_eq!(gun(&game), "models/weapons/v_blast/tris.md2");
+    run(&mut game, 20, 0);
+    assert_eq!(gun(&game), "models/weapons/v_shotg/tris.md2");
+}

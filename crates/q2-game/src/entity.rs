@@ -263,6 +263,19 @@ pub struct ClientData {
     pub kick_angles: Vec3f,
     /// Level frame until which quad damage lasts (C `quad_framenum`).
     pub quad_framenum: i32,
+    /// Machinegun climb, 0..9 shots (C `machinegun_shots`).
+    pub machinegun_shots: i32,
+    /// When a cooked hand grenade goes off, 0 when none (C
+    /// `grenade_time`), and whether it already went off in the hand.
+    pub grenade_time: f32,
+    pub grenade_blew_up: bool,
+    /// Looping sound of the current weapon (C `weapon_sound`).
+    pub weapon_sound: i32,
+    /// Fading damage kick on the view (C `v_dmg_pitch`, `v_dmg_roll`,
+    /// `v_dmg_time`).
+    pub v_dmg_pitch: f32,
+    pub v_dmg_roll: f32,
+    pub v_dmg_time: f32,
 }
 
 /// Where the gun is in its cycle (C `weaponstate_t`, same order).

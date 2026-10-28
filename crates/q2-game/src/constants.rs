@@ -322,6 +322,14 @@ pub const DEFAULT_BULLET_VSPREAD: i32 = 500;
 pub const DEFAULT_SHOTGUN_HSPREAD: i32 = 1000;
 pub const DEFAULT_SHOTGUN_VSPREAD: i32 = 500;
 pub const DEFAULT_SHOTGUN_COUNT: i32 = 12;
+pub const DEFAULT_DEATHMATCH_SHOTGUN_COUNT: i32 = 12;
+pub const DEFAULT_SSHOTGUN_COUNT: i32 = 20;
+
+/// Seconds a damage kick takes to fade from the view (C `DAMAGE_TIME`).
+pub const DAMAGE_TIME: f32 = 0.5;
+
+/// `dmflags` bit: firing uses no ammo (C `DF_INFINITE_AMMO`).
+pub const DF_INFINITE_AMMO: i32 = 0x0000_2000;
 
 pub const POWER_ARMOR_NONE: i32 = 0;
 pub const POWER_ARMOR_SCREEN: i32 = 1;

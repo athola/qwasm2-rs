@@ -684,6 +684,21 @@ impl GameWorld {
         }
     }
 
+    /// The player's looping sound: frying in lava or slime, else the
+    /// weapon's hum. C ref: `G_SetClientSound` (player/view.c), without
+    /// the help-computer beep.
+    fn set_client_sound(&mut self, key: EntityKey) {
+        let fry = self.gi.sound_index("player/fry.wav");
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        let burning = ent.game.waterlevel != 0
+            && ent.game.watertype
+                & (q2_shared::constants::CONTENTS_LAVA | q2_shared::constants::CONTENTS_SLIME)
+                != 0;
+        ent.state.sound = if burning { fry } else { client.weapon_sound };
+    }
+
     /// Per-frame cleanup for all clients at the end of the server frame.
     /// C ref: `ClientEndServerFrames` (player/client.c).
     pub fn client_end_server_frames(&mut self) {
@@ -697,6 +712,7 @@ impl GameWorld {
         for key in keys {
             self.update_player_view(key);
             self.update_player_stats(key);
+            self.set_client_sound(key);
             if let Some(client) = self.client_mut(key) {
                 client.kick_origin = Vec3f::ZERO;
                 client.kick_angles = Vec3f::ZERO;
@@ -1214,6 +1230,30 @@ mod tests {
             "{:?}",
             client.v_angle
         );
+    }
+
+    #[test]
+    fn the_weapon_hum_plays_on_the_player_and_lava_drowns_it_out() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let hum = world.gi.sound_index("weapons/hyprbl1a.wav");
+        world.client_mut(key).unwrap().weapon_sound = hum;
+        world.client_end_server_frames();
+        assert_eq!(world.entities.get(key).unwrap().state.sound, hum);
+
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.waterlevel = 1;
+        ent.game.watertype = q2_shared::constants::CONTENTS_LAVA;
+        world.client_end_server_frames();
+        let fry = world.gi.sound_index("player/fry.wav");
+        assert_eq!(world.entities.get(key).unwrap().state.sound, fry);
+
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.waterlevel = 0;
+        world.client_mut(key).unwrap().weapon_sound = 0;
+        world.client_end_server_frames();
+        assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
     }
 
     #[test]

@@ -576,6 +576,63 @@ impl GameWorld {
         self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
+    /// A hand grenade: tossed up and to a random side, set to go off after
+    /// `timer`, or at once when `timer` has run out (held too long).
+    /// `spawnflags` 1 marks a hand grenade, 3 one that went off in the
+    /// hand. C ref: `fire_grenade2` (g_weapon.c).
+    #[allow(clippy::too_many_arguments)]
+    pub fn fire_grenade2(
+        &mut self,
+        owner: EntityKey,
+        start: Vec3f,
+        aimdir: Vec3f,
+        damage: i32,
+        speed: i32,
+        timer: f32,
+        damage_radius: f32,
+        held: bool,
+    ) {
+        let (_, right, up) = angle_vectors(vectoangles(aimdir));
+        let lift = 200.0 + self.crandom() * 10.0;
+        let side = self.crandom() * 10.0;
+        let Some(key) = self.spawn() else {
+            return;
+        };
+        let model = self.gi.model_index("models/objects/grenade2/tris.md2");
+        let tick = self.gi.sound_index("weapons/hgrenc1b.wav");
+        let nextthink = self.level.time + timer;
+        if let Some(gren) = self.entities.get_mut(key) {
+            gren.state.origin = start;
+            gren.velocity = aimdir * speed as f32 + up * lift + right * side;
+            gren.avelocity = Vec3f::new(300.0, 300.0, 300.0);
+            gren.game.movetype = MoveType::Bounce;
+            gren.clipmask = MASK_SHOT;
+            gren.solid = Solid::Bbox;
+            gren.state.effects |= EF_GRENADE;
+            gren.mins = Vec3f::ZERO;
+            gren.maxs = Vec3f::ZERO;
+            gren.state.modelindex = model;
+            gren.owner = Some(owner);
+            gren.touch = Some(grenade_touch);
+            gren.game.nextthink = nextthink;
+            gren.think = Some(grenade_think);
+            gren.game.dmg = damage;
+            gren.game.dmg_radius = damage_radius;
+            gren.game.classname = "hgrenade".into();
+            gren.game.spawnflags = if held { 3 } else { 1 };
+            gren.state.sound = tick;
+        }
+        if timer <= 0.0 {
+            grenade_explode(self, key);
+        } else {
+            let number = self.number_of(owner);
+            let throw = self.gi.sound_index("weapons/hgrent1a.wav");
+            self.gi
+                .sound(number, CHAN_WEAPON, throw, 1.0, ATTN_NORM, 0.0);
+            self.link_entity(key);
+        }
+    }
+
     /// Fire a railgun shot. Instant hitscan that pierces monsters, clients
     /// and other bbox entities. C ref: `fire_rail` (g_weapon.c:870-946),
     /// without the slime/lava pass and the trail effect.

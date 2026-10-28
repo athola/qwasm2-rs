@@ -3,7 +3,9 @@
 
 use q2_common::pmove::PMF_DUCKED;
 use q2_shared::constants::{
-    BUTTON_ATTACK, EF_BLASTER, MZ_BLASTER, MZ_HYPERBLASTER, MZ_SILENCED, SVF_NOCLIENT,
+    BUTTON_ATTACK, EF_BLASTER, EF_HYPERBLASTER, MZ_BFG, MZ_BLASTER, MZ_CHAINGUN1, MZ_GRENADE,
+    MZ_HYPERBLASTER, MZ_MACHINEGUN, MZ_RAILGUN, MZ_ROCKET, MZ_SHOTGUN, MZ_SILENCED, MZ_SSHOTGUN,
+    SVF_NOCLIENT,
 };
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::{Multicast, Vec3f};
@@ -17,7 +19,10 @@ const FRAME_ATTACK1: i32 = 46;
 const FRAME_ATTACK8: i32 = 53;
 const FRAME_PAIN301: i32 = 62;
 const FRAME_PAIN304: i32 = 65;
+const FRAME_WAVE01: i32 = 112;
+const FRAME_WAVE08: i32 = 119;
 const FRAME_CRATTAK1: i32 = 160;
+const FRAME_CRATTAK3: i32 = 162;
 const FRAME_CRATTAK9: i32 = 168;
 const FRAME_CRPAIN1: i32 = 169;
 const FRAME_CRPAIN4: i32 = 172;
@@ -140,9 +145,21 @@ impl GameWorld {
 
     /// Make `newweapon` current once the old one is down: its view model,
     /// its ammo, and the player's raise animation. With no weapon (dead)
-    /// the gun model goes. C ref: `ChangeWeapon` (player/weapon.c); the
-    /// held-grenade throw waits on the hand grenade.
+    /// the gun model goes. C ref: `ChangeWeapon` (player/weapon.c).
     pub fn change_weapon(&mut self, key: EntityKey) {
+        let now = self.level.time;
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        // Switching away from a cooked grenade throws it.
+        if client.grenade_time != 0.0 {
+            client.grenade_time = now;
+            client.weapon_sound = 0;
+            weapon_grenade_fire(self, key, false);
+            if let Some(client) = self.client_mut(key) {
+                client.grenade_time = 0.0;
+            }
+        }
         let Some(client) = self.client_mut(key) else {
             return;
         };
@@ -472,6 +489,701 @@ pub fn weapon_blaster(world: &mut GameWorld, key: EntityKey) {
     );
 }
 
+/// Spend `count` of the current weapon's ammo, unless `dmflags` has
+/// infinite ammo.
+fn use_ammo(world: &mut GameWorld, key: EntityKey, count: i32) {
+    if world.game.dmflags & DF_INFINITE_AMMO != 0 {
+        return;
+    }
+    if let Some(client) = world.client_mut(key) {
+        let index = client.ammo_index;
+        client.pers.inventory[index] -= count;
+    }
+}
+
+/// The current weapon's ammo count.
+fn ammo_left(world: &GameWorld, key: EntityKey) -> i32 {
+    world
+        .client(key)
+        .map_or(0, |c| c.pers.inventory[c.ammo_index])
+}
+
+/// The "click" of an empty gun, at most once a second, then the best
+/// loaded weapon. C: the `weapons/noammo.wav` block repeated in each
+/// weapon.
+fn click_and_switch(world: &mut GameWorld, key: EntityKey) {
+    let now = world.level.time;
+    let click = world.entities.get_mut(key).is_some_and(|ent| {
+        let due = now >= ent.game.pain_debounce_time;
+        if due {
+            ent.game.pain_debounce_time = now + 1.0;
+        }
+        due
+    });
+    if click {
+        let number = world.number_of(key);
+        let noammo = world.gi.sound_index("weapons/noammo.wav");
+        world
+            .gi
+            .sound(number, CHAN_VOICE, noammo, 1.0, ATTN_NORM, 0.0);
+    }
+    world.no_ammo_weapon_change(key);
+}
+
+/// Start the attack animation `back` frames before its first frame.
+fn attack_animation(world: &mut GameWorld, key: EntityKey, back: i32) {
+    let Some((ent, client)) = world.entity_and_client_mut(key) else {
+        return;
+    };
+    client.anim_priority = ANIM_ATTACK;
+    if client.ps.pmove.pm_flags & PMF_DUCKED != 0 {
+        ent.state.frame = FRAME_CRATTAK1 - back;
+        client.anim_end = FRAME_CRATTAK9;
+    } else {
+        ent.state.frame = FRAME_ATTACK1 - back;
+        client.anim_end = FRAME_ATTACK8;
+    }
+}
+
+fn step_gunframe(world: &mut GameWorld, key: EntityKey) {
+    if let Some(client) = world.client_mut(key) {
+        client.ps.gunframe += 1;
+    }
+}
+
+fn viewheight(world: &GameWorld, key: EntityKey) -> f32 {
+    world.entities.get(key).map_or(0.0, |e| e.game.viewheight)
+}
+
+/// Kick the view straight back by `back` and up by `pitch`.
+fn kick(world: &mut GameWorld, key: EntityKey, forward: Vec3f, back: f32, pitch: f32) {
+    if let Some(client) = world.client_mut(key) {
+        client.kick_origin = forward * -back;
+        client.kick_angles.x = pitch;
+    }
+}
+
+/// C ref: `weapon_shotgun_fire` (player/weapon.c).
+pub fn weapon_shotgun_fire(world: &mut GameWorld, key: EntityKey) {
+    if world.client(key).is_some_and(|c| c.ps.gunframe == 9) {
+        step_gunframe(world, key);
+        return;
+    }
+    let (quad, silenced) = world.shot_modifiers(key);
+    let (damage, kick_power) = if quad { (16, 32) } else { (4, 8) };
+    let (start, forward, _) = world.shot_source(key, [0.0, 8.0, viewheight(world, key) - 8.0]);
+    kick(world, key, forward, 2.0, -2.0);
+    let count = if world.game.deathmatch {
+        DEFAULT_DEATHMATCH_SHOTGUN_COUNT
+    } else {
+        DEFAULT_SHOTGUN_COUNT
+    };
+    world.fire_shotgun(
+        key,
+        start,
+        forward,
+        damage,
+        kick_power,
+        500,
+        500,
+        count,
+        MeansOfDeath::Shotgun,
+    );
+    world.player_muzzle_flash(key, MZ_SHOTGUN | silenced);
+    step_gunframe(world, key);
+    use_ammo(world, key, 1);
+}
+
+/// C ref: `Weapon_Shotgun` (player/weapon.c).
+pub fn weapon_shotgun(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        7,
+        18,
+        36,
+        39,
+        &[22, 28, 34],
+        &[8, 9],
+        weapon_shotgun_fire,
+    );
+}
+
+/// Two half loads 5 degrees either side of the aim. C ref:
+/// `weapon_supershotgun_fire` (player/weapon.c).
+pub fn weapon_supershotgun_fire(world: &mut GameWorld, key: EntityKey) {
+    let (quad, silenced) = world.shot_modifiers(key);
+    let (damage, kick_power) = if quad { (24, 48) } else { (6, 12) };
+    let (start, forward, _) = world.shot_source(key, [0.0, 8.0, viewheight(world, key) - 8.0]);
+    kick(world, key, forward, 2.0, -2.0);
+    let v_angle = world.client(key).map_or(Vec3f::ZERO, |c| c.v_angle);
+    for yaw in [-5.0, 5.0] {
+        let (forward, _, _) =
+            crate::physics::angle_vectors(Vec3f::new(v_angle.x, v_angle.y + yaw, v_angle.z));
+        world.fire_shotgun(
+            key,
+            start,
+            forward,
+            damage,
+            kick_power,
+            DEFAULT_SHOTGUN_HSPREAD,
+            DEFAULT_SHOTGUN_VSPREAD,
+            DEFAULT_SSHOTGUN_COUNT / 2,
+            MeansOfDeath::SShotgun,
+        );
+    }
+    world.player_muzzle_flash(key, MZ_SSHOTGUN | silenced);
+    step_gunframe(world, key);
+    use_ammo(world, key, 2);
+}
+
+/// C ref: `Weapon_SuperShotgun` (player/weapon.c).
+pub fn weapon_supershotgun(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        6,
+        17,
+        57,
+        61,
+        &[29, 42, 57],
+        &[7],
+        weapon_supershotgun_fire,
+    );
+}
+
+/// One bullet a frame while held, the aim climbing with each shot
+/// (single player). C ref: `Machinegun_Fire` (player/weapon.c), with
+/// `g_machinegun_norecoil` 0.
+pub fn machinegun_fire(world: &mut GameWorld, key: EntityKey) {
+    let Some(client) = world.client_mut(key) else {
+        return;
+    };
+    if client.buttons & BUTTON_ATTACK == 0 {
+        client.machinegun_shots = 0;
+        client.ps.gunframe += 1;
+        return;
+    }
+    client.ps.gunframe = if client.ps.gunframe == 5 { 4 } else { 5 };
+    if ammo_left(world, key) < 1 {
+        if let Some(client) = world.client_mut(key) {
+            client.ps.gunframe = 6;
+        }
+        click_and_switch(world, key);
+        return;
+    }
+    let (quad, silenced) = world.shot_modifiers(key);
+    let (damage, kick_power) = if quad { (32, 8) } else { (8, 2) };
+    let jitter: [f32; 5] = std::array::from_fn(|_| world.crandom());
+    let deathmatch = world.game.deathmatch;
+    let Some(client) = world.client_mut(key) else {
+        return;
+    };
+    for i in 1..3 {
+        client.kick_origin[i] = jitter[2 * i - 2] * 0.35;
+        client.kick_angles[i] = jitter[2 * i - 1] * 0.7;
+    }
+    client.kick_origin.x = jitter[4] * 0.35;
+    client.kick_angles.x = client.machinegun_shots as f32 * -1.5;
+    // Raise the gun as it is firing.
+    if !deathmatch {
+        client.machinegun_shots = (client.machinegun_shots + 1).min(9);
+    }
+    let angles = client.v_angle + client.kick_angles;
+    let (forward, right, _) = crate::physics::angle_vectors(angles);
+    let origin = world
+        .entities
+        .get(key)
+        .map_or(Vec3f::ZERO, |e| e.state.origin);
+    let offset = [0.0, 8.0, viewheight(world, key) - 8.0];
+    let start = crate::monster::flash::project_source(origin, offset, forward, right);
+    world.fire_bullet(
+        key,
+        start,
+        forward,
+        damage,
+        kick_power,
+        DEFAULT_BULLET_HSPREAD,
+        DEFAULT_BULLET_VSPREAD,
+        MeansOfDeath::Machinegun,
+    );
+    world.player_muzzle_flash(key, MZ_MACHINEGUN | silenced);
+    use_ammo(world, key, 1);
+    let back = (world.random() + 0.25) as i32;
+    attack_animation(world, key, back);
+}
+
+/// C ref: `Weapon_Machinegun` (player/weapon.c).
+pub fn weapon_machinegun(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        3,
+        5,
+        45,
+        49,
+        &[23, 45],
+        &[4, 5],
+        machinegun_fire,
+    );
+}
+
+/// Spins up from one to three bullets a frame while held and winds down
+/// on release. C ref: `Chaingun_Fire` (player/weapon.c).
+pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
+    let damage = if world.game.deathmatch { 6 } else { 8 };
+    let number = world.number_of(key);
+    let ammo = ammo_left(world, key);
+    let Some(client) = world.client(key) else {
+        return;
+    };
+    let held = client.buttons & BUTTON_ATTACK != 0;
+    if client.ps.gunframe == 5 {
+        let spin_up = world.gi.sound_index("weapons/chngnu1a.wav");
+        world
+            .gi
+            .sound(number, CHAN_AUTO, spin_up, 1.0, ATTN_IDLE, 0.0);
+    }
+    let Some(client) = world.client_mut(key) else {
+        return;
+    };
+    if client.ps.gunframe == 14 && !held {
+        client.ps.gunframe = 32;
+        client.weapon_sound = 0;
+        return;
+    } else if client.ps.gunframe == 21 && held && ammo > 0 {
+        client.ps.gunframe = 15;
+    } else {
+        client.ps.gunframe += 1;
+    }
+    let gunframe = client.ps.gunframe;
+    if gunframe == 22 {
+        client.weapon_sound = 0;
+        let spin_down = world.gi.sound_index("weapons/chngnd1a.wav");
+        world
+            .gi
+            .sound(number, CHAN_AUTO, spin_down, 1.0, ATTN_IDLE, 0.0);
+    } else {
+        let spin = world.gi.sound_index("weapons/chngnl1a.wav");
+        if let Some(client) = world.client_mut(key) {
+            client.weapon_sound = spin;
+        }
+    }
+    attack_animation(world, key, gunframe & 1);
+
+    let shots = match gunframe {
+        ..=9 => 1,
+        10..=14 if held => 2,
+        10..=14 => 1,
+        _ => 3,
+    }
+    .min(ammo);
+    if shots == 0 {
+        click_and_switch(world, key);
+        return;
+    }
+    let (quad, silenced) = world.shot_modifiers(key);
+    let (damage, kick_power) = if quad { (damage * 4, 8) } else { (damage, 2) };
+    let jitter: [f32; 6] = std::array::from_fn(|_| world.crandom());
+    if let Some(client) = world.client_mut(key) {
+        for i in 0..3 {
+            client.kick_origin[i] = jitter[2 * i] * 0.35;
+            client.kick_angles[i] = jitter[2 * i + 1] * 0.7;
+        }
+    }
+    let viewheight = viewheight(world, key);
+    for _ in 0..shots {
+        let r = 7.0 + world.crandom() * 4.0;
+        let u = world.crandom() * 4.0;
+        let (start, forward, _) = world.shot_source(key, [0.0, r, u + viewheight - 8.0]);
+        world.fire_bullet(
+            key,
+            start,
+            forward,
+            damage,
+            kick_power,
+            DEFAULT_BULLET_HSPREAD,
+            DEFAULT_BULLET_VSPREAD,
+            MeansOfDeath::Chaingun,
+        );
+    }
+    world.player_muzzle_flash(key, (MZ_CHAINGUN1 + shots - 1) | silenced);
+    use_ammo(world, key, shots);
+}
+
+/// C ref: `Weapon_Chaingun` (player/weapon.c).
+pub fn weapon_chaingun(world: &mut GameWorld, key: EntityKey) {
+    let fire_frames: [i32; 17] = std::array::from_fn(|i| 5 + i as i32);
+    weapon_generic(
+        world,
+        key,
+        4,
+        31,
+        61,
+        64,
+        &[38, 43, 51, 61],
+        &fire_frames,
+        chaingun_fire,
+    );
+}
+
+/// A bolt a frame from a barrel turning through six positions, looping
+/// while held and loaded. C ref: `Weapon_HyperBlaster_Fire`.
+pub fn weapon_hyperblaster_fire(world: &mut GameWorld, key: EntityKey) {
+    let hum = world.gi.sound_index("weapons/hyprbl1a.wav");
+    let ammo = ammo_left(world, key);
+    let Some(client) = world.client_mut(key) else {
+        return;
+    };
+    client.weapon_sound = hum;
+    if client.buttons & BUTTON_ATTACK == 0 {
+        client.ps.gunframe += 1;
+    } else {
+        let gunframe = client.ps.gunframe;
+        if ammo == 0 {
+            click_and_switch(world, key);
+        } else {
+            let rotation = (gunframe - 5) as f32 * 2.0 * std::f32::consts::PI / 6.0;
+            let offset = Vec3f::new(-4.0 * rotation.sin(), 0.0, 4.0 * rotation.cos());
+            let effect = if gunframe == 6 || gunframe == 9 {
+                EF_HYPERBLASTER
+            } else {
+                0
+            };
+            let damage = if world.game.deathmatch { 15 } else { 20 };
+            blaster_fire(world, key, offset, damage, true, effect);
+            use_ammo(world, key, 1);
+            attack_animation(world, key, 1);
+        }
+        let ammo = ammo_left(world, key);
+        if let Some(client) = world.client_mut(key) {
+            client.ps.gunframe += 1;
+            if client.ps.gunframe == 12 && ammo > 0 {
+                client.ps.gunframe = 6;
+            }
+        }
+    }
+    if world.client(key).is_some_and(|c| c.ps.gunframe == 12) {
+        let number = world.number_of(key);
+        let wind_down = world.gi.sound_index("weapons/hyprbd1a.wav");
+        world
+            .gi
+            .sound(number, CHAN_AUTO, wind_down, 1.0, ATTN_NORM, 0.0);
+        if let Some(client) = world.client_mut(key) {
+            client.weapon_sound = 0;
+        }
+    }
+}
+
+/// C ref: `Weapon_HyperBlaster` (player/weapon.c).
+pub fn weapon_hyperblaster(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        5,
+        20,
+        49,
+        53,
+        &[],
+        &[6, 7, 8, 9, 10, 11],
+        weapon_hyperblaster_fire,
+    );
+}
+
+/// C ref: `Weapon_RocketLauncher_Fire` (player/weapon.c).
+pub fn weapon_rocketlauncher_fire(world: &mut GameWorld, key: EntityKey) {
+    let (quad, silenced) = world.shot_modifiers(key);
+    let mut damage = 100 + (world.random() * 20.0) as i32;
+    let mut radius_damage = 120;
+    if quad {
+        damage *= 4;
+        radius_damage *= 4;
+    }
+    let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
+    kick(world, key, forward, 2.0, -1.0);
+    world.fire_rocket(key, start, forward, damage, 650, 120.0, radius_damage);
+    world.player_muzzle_flash(key, MZ_ROCKET | silenced);
+    step_gunframe(world, key);
+    use_ammo(world, key, 1);
+}
+
+/// C ref: `Weapon_RocketLauncher` (player/weapon.c).
+pub fn weapon_rocketlauncher(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        4,
+        12,
+        50,
+        54,
+        &[25, 33, 42, 50],
+        &[5],
+        weapon_rocketlauncher_fire,
+    );
+}
+
+/// C ref: `weapon_grenadelauncher_fire` (player/weapon.c).
+pub fn weapon_grenadelauncher_fire(world: &mut GameWorld, key: EntityKey) {
+    let (quad, silenced) = world.shot_modifiers(key);
+    let damage = if quad { 480 } else { 120 };
+    let radius = 120.0 + 40.0; // from the unquadded damage
+    let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
+    kick(world, key, forward, 2.0, -1.0);
+    world.fire_grenade(key, start, forward, damage, 600, 2.5, radius);
+    world.player_muzzle_flash(key, MZ_GRENADE | silenced);
+    step_gunframe(world, key);
+    use_ammo(world, key, 1);
+}
+
+/// C ref: `Weapon_GrenadeLauncher` (player/weapon.c).
+pub fn weapon_grenadelauncher(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        5,
+        16,
+        59,
+        64,
+        &[34, 51, 59],
+        &[6],
+        weapon_grenadelauncher_fire,
+    );
+}
+
+/// C ref: `weapon_railgun_fire` (player/weapon.c).
+pub fn weapon_railgun_fire(world: &mut GameWorld, key: EntityKey) {
+    let (quad, silenced) = world.shot_modifiers(key);
+    let (mut damage, mut kick_power) = if world.game.deathmatch {
+        (100, 200)
+    } else {
+        (150, 250)
+    };
+    if quad {
+        damage *= 4;
+        kick_power *= 4;
+    }
+    let (start, forward, _) = world.shot_source(key, [0.0, 7.0, viewheight(world, key) - 8.0]);
+    kick(world, key, forward, 3.0, -3.0);
+    world.fire_rail(key, start, forward, damage, kick_power);
+    world.player_muzzle_flash(key, MZ_RAILGUN | silenced);
+    step_gunframe(world, key);
+    use_ammo(world, key, 1);
+}
+
+/// C ref: `Weapon_Railgun` (player/weapon.c).
+pub fn weapon_railgun(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(world, key, 3, 18, 56, 61, &[56], &[4], weapon_railgun_fire);
+}
+
+/// Frame 9 flashes, frame 17 launches the blast if 50 cells are still
+/// there, with a big pitch kick. C ref: `weapon_bfg_fire`.
+pub fn weapon_bfg_fire(world: &mut GameWorld, key: EntityKey) {
+    let (quad, silenced) = world.shot_modifiers(key);
+    if world.client(key).is_some_and(|c| c.ps.gunframe == 9) {
+        world.player_muzzle_flash(key, MZ_BFG | silenced);
+        step_gunframe(world, key);
+        return;
+    }
+    // Cells can go down during the windup (power armor hits).
+    if ammo_left(world, key) < 50 {
+        step_gunframe(world, key);
+        return;
+    }
+    let mut damage = if world.game.deathmatch { 200 } else { 500 };
+    if quad {
+        damage *= 4;
+    }
+    let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
+    let roll = world.crandom() * 8.0;
+    let now = world.level.time;
+    if let Some(client) = world.client_mut(key) {
+        client.kick_origin = forward * -2.0;
+        // A big pitch kick with an inverse fall.
+        client.v_dmg_pitch = -40.0;
+        client.v_dmg_roll = roll;
+        client.v_dmg_time = now + DAMAGE_TIME;
+    }
+    world.fire_bfg(key, start, forward, damage, 400, 1000.0);
+    step_gunframe(world, key);
+    use_ammo(world, key, 50);
+}
+
+/// C ref: `Weapon_BFG` (player/weapon.c).
+pub fn weapon_bfg(world: &mut GameWorld, key: EntityKey) {
+    weapon_generic(
+        world,
+        key,
+        8,
+        32,
+        55,
+        58,
+        &[39, 45, 50, 55],
+        &[9, 17],
+        weapon_bfg_fire,
+    );
+}
+
+const GRENADE_TIMER: f32 = 3.0;
+const GRENADE_MINSPEED: f32 = 400.0;
+const GRENADE_MAXSPEED: f32 = 800.0;
+
+/// Throw (or, `held`, drop where the player stands) the cooked grenade:
+/// the longer it was held, the faster it flies and the sooner it goes
+/// off. C ref: `weapon_grenade_fire` (player/weapon.c).
+pub fn weapon_grenade_fire(world: &mut GameWorld, key: EntityKey, held: bool) {
+    let (quad, _) = world.shot_modifiers(key);
+    let mut damage = 125;
+    let radius = (damage + 40) as f32;
+    if quad {
+        damage *= 4;
+        let number = world.number_of(key);
+        let damage3 = world.gi.sound_index("items/damage3.wav");
+        world
+            .gi
+            .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
+    }
+    let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
+    let grenade_time = world.client(key).map_or(0.0, |c| c.grenade_time);
+    let timer = grenade_time - world.level.time;
+    let speed = GRENADE_MINSPEED
+        + (GRENADE_TIMER - timer) * ((GRENADE_MAXSPEED - GRENADE_MINSPEED) / GRENADE_TIMER);
+    world.fire_grenade2(
+        key,
+        start,
+        forward,
+        damage,
+        speed as i32,
+        timer,
+        radius,
+        held,
+    );
+    use_ammo(world, key, 1);
+    let now = world.level.time;
+    if let Some(client) = world.client_mut(key) {
+        client.grenade_time = now + 1.0;
+    }
+
+    // VWep animations screw up corpses.
+    let Some((ent, client)) = world.entity_and_client_mut(key) else {
+        return;
+    };
+    if ent.game.deadflag != DeadFlag::No || ent.state.modelindex != 255 || ent.game.health <= 0 {
+        return;
+    }
+    if client.ps.pmove.pm_flags & PMF_DUCKED != 0 {
+        client.anim_priority = ANIM_ATTACK;
+        ent.state.frame = FRAME_CRATTAK1 - 1;
+        client.anim_end = FRAME_CRATTAK3;
+    } else {
+        client.anim_priority = ANIM_REVERSE;
+        ent.state.frame = FRAME_WAVE08;
+        client.anim_end = FRAME_WAVE01;
+    }
+}
+
+/// The hand grenade's own cycle: pull the pin (frames 1-10), wait at 11
+/// while held (it goes off in the hand after `GRENADE_TIMER`), throw at
+/// 12, recover by 16. C ref: `Weapon_Grenade` (player/weapon.c).
+pub fn weapon_grenade(world: &mut GameWorld, key: EntityKey) {
+    let ammo = ammo_left(world, key);
+    let now = world.level.time;
+    let Some(client) = world.client_mut(key) else {
+        return;
+    };
+    if client.newweapon.is_some() && client.weaponstate == WeaponState::Ready {
+        world.change_weapon(key);
+        return;
+    }
+    match client.weaponstate {
+        WeaponState::Activating => {
+            client.weaponstate = WeaponState::Ready;
+            client.ps.gunframe = 16;
+        }
+        WeaponState::Ready => {
+            if (client.latched_buttons | client.buttons) & BUTTON_ATTACK != 0 {
+                client.latched_buttons &= !BUTTON_ATTACK;
+                if ammo > 0 {
+                    client.ps.gunframe = 1;
+                    client.weaponstate = WeaponState::Firing;
+                    client.grenade_time = 0.0;
+                } else {
+                    click_and_switch(world, key);
+                }
+                return;
+            }
+            if [29, 34, 39, 48].contains(&client.ps.gunframe) && world.random_u32() & 15 != 0 {
+                return;
+            }
+            if let Some(client) = world.client_mut(key) {
+                client.ps.gunframe += 1;
+                if client.ps.gunframe > 48 {
+                    client.ps.gunframe = 16;
+                }
+            }
+        }
+        WeaponState::Firing => {
+            let gunframe = client.ps.gunframe;
+            let number = world.number_of(key);
+            if gunframe == 5 {
+                let pin = world.gi.sound_index("weapons/hgrena1b.wav");
+                world
+                    .gi
+                    .sound(number, CHAN_WEAPON, pin, 1.0, ATTN_NORM, 0.0);
+            }
+            if world.client(key).is_some_and(|c| c.ps.gunframe == 11) {
+                let tick = world.gi.sound_index("weapons/hgrenc1b.wav");
+                let Some(client) = world.client_mut(key) else {
+                    return;
+                };
+                if client.grenade_time == 0.0 {
+                    client.grenade_time = now + GRENADE_TIMER + 0.2;
+                    client.weapon_sound = tick;
+                }
+                // They waited too long: it goes off in their hand.
+                if !client.grenade_blew_up && now >= client.grenade_time {
+                    client.weapon_sound = 0;
+                    weapon_grenade_fire(world, key, true);
+                    if let Some(client) = world.client_mut(key) {
+                        client.grenade_blew_up = true;
+                    }
+                }
+                let Some(client) = world.client_mut(key) else {
+                    return;
+                };
+                if client.buttons & BUTTON_ATTACK != 0 {
+                    return;
+                }
+                if client.grenade_blew_up {
+                    if now >= client.grenade_time {
+                        client.ps.gunframe = 15;
+                        client.grenade_blew_up = false;
+                    } else {
+                        return;
+                    }
+                }
+            }
+            if world.client(key).is_some_and(|c| c.ps.gunframe == 12) {
+                if let Some(client) = world.client_mut(key) {
+                    client.weapon_sound = 0;
+                }
+                weapon_grenade_fire(world, key, false);
+            }
+            let Some(client) = world.client_mut(key) else {
+                return;
+            };
+            if client.ps.gunframe == 15 && now < client.grenade_time {
+                return;
+            }
+            client.ps.gunframe += 1;
+            if client.ps.gunframe == 16 {
+                client.grenade_time = 0.0;
+                client.weaponstate = WeaponState::Ready;
+            }
+        }
+        WeaponState::Dropping => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +1411,7 @@ mod tests {
     use crate::entity::WeaponState;
     use crate::world::{test_world_recording, MockGameImport};
     use q2_common::pmove::PMF_DUCKED;
+    use q2_shared::constants::EF_HYPERBLASTER;
     use q2_shared::constants::{BUTTON_ATTACK, MZ_BLASTER};
     use q2_shared::protocol::SvcOp;
     use q2_shared::types::Multicast;
@@ -994,5 +1707,393 @@ mod tests {
         world.think_weapon(key);
         assert_eq!(world.entities.get(key).unwrap().state.frame, 159);
         assert_eq!(world.client(key).unwrap().anim_end, 168);
+    }
+
+    // ---- The other weapons (C Weapon_* / *_Fire) ----
+
+    use q2_shared::constants::{
+        MZ_BFG, MZ_CHAINGUN2, MZ_CHAINGUN3, MZ_GRENADE, MZ_MACHINEGUN, MZ_RAILGUN, MZ_ROCKET,
+        MZ_SHOTGUN, MZ_SSHOTGUN,
+    };
+
+    /// Give `weapon` and `count` of `ammo`, switch to it and wait until it
+    /// is up (READY on its first idle frame).
+    fn equip(world: &mut GameWorld, key: EntityKey, weapon: &str, ammo: &str, count: i32) {
+        let weapon = world.find_item_by_name(weapon).unwrap();
+        let ammo = world.find_item_by_name(ammo).unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.inventory[weapon] = 1;
+        client.pers.inventory[ammo] = count;
+        client.newweapon = Some(weapon);
+        for _ in 0..200 {
+            world.think_weapon(key);
+            let client = world.client(key).unwrap();
+            if client.pers.weapon == Some(weapon) && client.weaponstate == WeaponState::Ready {
+                return;
+            }
+        }
+        panic!("weapon never came up");
+    }
+
+    fn inventory(world: &GameWorld, key: EntityKey, name: &str) -> i32 {
+        let index = world.find_item_by_name(name).unwrap();
+        world.client(key).unwrap().pers.inventory[index]
+    }
+
+    fn press(world: &mut GameWorld, key: EntityKey) {
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        world.think_weapon(key);
+    }
+
+    fn hold(world: &mut GameWorld, key: EntityKey, held: bool) {
+        world.client_mut(key).unwrap().buttons = if held { BUTTON_ATTACK } else { 0 };
+    }
+
+    fn last_flash(mock: &MockGameImport) -> Option<i32> {
+        mock.writes.borrow().last().copied()
+    }
+
+    fn spawned<'a>(world: &'a GameWorld, classname: &str) -> Vec<&'a crate::entity::Entity> {
+        world
+            .entities
+            .iter()
+            .filter(|(_, e)| e.in_use && e.game.classname == classname)
+            .map(|(_, e)| e)
+            .collect()
+    }
+
+    #[test]
+    fn the_shotgun_fires_once_on_frame_8_for_one_shell() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Shotgun", "Shells", 10);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_SHOTGUN));
+        assert_eq!(inventory(&world, key, "Shells"), 9);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.gunframe, 9);
+        assert_eq!(client.kick_angles.x, -2.0);
+        let writes = mock.writes.borrow().len();
+        world.think_weapon(key); // frame 9 is a fire frame that only steps
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 10);
+        assert_eq!(mock.writes.borrow().len(), writes);
+        assert_eq!(inventory(&world, key, "Shells"), 9);
+    }
+
+    #[test]
+    fn the_super_shotgun_needs_and_uses_two_shells() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Super Shotgun", "Shells", 2);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_SSHOTGUN));
+        assert_eq!(inventory(&world, key, "Shells"), 0);
+
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Super Shotgun", "Shells", 1);
+        press(&mut world, key);
+        assert_eq!(inventory(&world, key, "Shells"), 1, "no shot");
+        assert_eq!(
+            world.client(key).unwrap().newweapon,
+            world.find_item_by_name("Blaster")
+        );
+    }
+
+    #[test]
+    fn the_machinegun_fires_every_frame_held_and_climbs() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Machinegun", "Bullets", 50);
+        hold(&mut world, key, true);
+        for _ in 0..3 {
+            world.think_weapon(key);
+        }
+        assert_eq!(inventory(&world, key, "Bullets"), 47);
+        assert_eq!(last_flash(&mock), Some(MZ_MACHINEGUN));
+        let client = world.client(key).unwrap();
+        assert_eq!(client.machinegun_shots, 3);
+        assert_eq!(
+            client.kick_angles.x, -3.0,
+            "two shots climbed before this one"
+        );
+
+        hold(&mut world, key, false);
+        world.think_weapon(key);
+        assert_eq!(world.client(key).unwrap().machinegun_shots, 0);
+        assert_eq!(inventory(&world, key, "Bullets"), 47);
+    }
+
+    #[test]
+    fn the_machinegun_climb_stops_at_nine_and_not_in_deathmatch() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Machinegun", "Bullets", 50);
+        hold(&mut world, key, true);
+        for _ in 0..15 {
+            world.think_weapon(key);
+        }
+        assert_eq!(world.client(key).unwrap().machinegun_shots, 9);
+
+        let (mut world, key, _) = ready();
+        world.game.deathmatch = true;
+        equip(&mut world, key, "Machinegun", "Bullets", 50);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 3);
+        assert_eq!(world.client(key).unwrap().machinegun_shots, 0);
+    }
+
+    #[test]
+    fn an_empty_machinegun_clicks_and_switches() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Machinegun", "Bullets", 1);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 2);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.gunframe, 6);
+        assert_eq!(client.newweapon, world.find_item_by_name("Blaster"));
+    }
+
+    #[test]
+    fn the_chaingun_spins_up_from_one_to_three_shots_a_frame() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Chaingun", "Bullets", 200);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 4); // frames 6..9: one each
+        assert_eq!(inventory(&world, key, "Bullets"), 196);
+        think_n(&mut world, key, 5); // frames 10..14: two each
+        assert_eq!(inventory(&world, key, "Bullets"), 186);
+        assert_eq!(last_flash(&mock), Some(MZ_CHAINGUN2));
+        world.think_weapon(key); // frame 15: three
+        assert_eq!(inventory(&world, key, "Bullets"), 183);
+        assert_eq!(last_flash(&mock), Some(MZ_CHAINGUN3));
+        let loop_sound = world.gi.sound_index("weapons/chngnl1a.wav");
+        assert_eq!(world.client(key).unwrap().weapon_sound, loop_sound);
+        think_n(&mut world, key, 6); // 16..21
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 21);
+        world.think_weapon(key); // 21 loops back to 15 while held
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 15);
+    }
+
+    #[test]
+    fn letting_go_of_the_chaingun_at_frame_14_winds_it_down() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Chaingun", "Bullets", 200);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 9);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 14);
+        hold(&mut world, key, false);
+        world.think_weapon(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.gunframe, 32);
+        assert_eq!(client.weapon_sound, 0);
+    }
+
+    #[test]
+    fn the_hyperblaster_streams_bolts_and_loops_while_held() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "HyperBlaster", "Cells", 50);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 6); // frames 6..11
+        assert_eq!(inventory(&world, key, "Cells"), 44);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 6, "12 loops to 6");
+        let bolts = spawned(&world, "bolt");
+        assert_eq!(bolts.len(), 6);
+        assert!(bolts.iter().all(|b| b.game.dmg == 20));
+        assert_eq!(
+            bolts
+                .iter()
+                .filter(|b| b.state.effects & EF_HYPERBLASTER != 0)
+                .count(),
+            2,
+            "frames 6 and 9 glow"
+        );
+        let hum = world.gi.sound_index("weapons/hyprbl1a.wav");
+        assert_eq!(world.client(key).unwrap().weapon_sound, hum);
+
+        hold(&mut world, key, false);
+        think_n(&mut world, key, 6);
+        assert_eq!(
+            world.client(key).unwrap().weapon_sound,
+            0,
+            "wound down at 12"
+        );
+    }
+
+    #[test]
+    fn the_rocket_launcher_fires_one_rocket() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Rocket Launcher", "Rockets", 5);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_ROCKET));
+        assert_eq!(inventory(&world, key, "Rockets"), 4);
+        let rockets = spawned(&world, "rocket");
+        assert_eq!(rockets.len(), 1);
+        assert!(
+            (100..120).contains(&rockets[0].game.dmg),
+            "{}",
+            rockets[0].game.dmg
+        );
+    }
+
+    #[test]
+    fn the_grenade_launcher_lobs_a_grenade() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Grenade Launcher", "Grenades", 5);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_GRENADE));
+        assert_eq!(inventory(&world, key, "Grenades"), 4);
+        let grenades = spawned(&world, "grenade");
+        assert_eq!(grenades.len(), 1);
+        assert_eq!(
+            (grenades[0].game.dmg, grenades[0].game.dmg_radius),
+            (120, 160.0)
+        );
+    }
+
+    #[test]
+    fn the_railgun_fires_one_slug_with_a_big_kick() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Railgun", "Slugs", 3);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_RAILGUN));
+        assert_eq!(inventory(&world, key, "Slugs"), 2);
+        assert_eq!(world.client(key).unwrap().kick_angles.x, -3.0);
+    }
+
+    #[test]
+    fn the_bfg_flashes_on_frame_9_and_fires_on_17_for_50_cells() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "BFG10K", "Cells", 60);
+        press(&mut world, key);
+        assert_eq!(last_flash(&mock), Some(MZ_BFG));
+        assert!(spawned(&world, "bfg blast").is_empty());
+        think_n(&mut world, key, 7); // 10..16
+        assert!(spawned(&world, "bfg blast").is_empty());
+        world.think_weapon(key); // 17
+        assert_eq!(spawned(&world, "bfg blast").len(), 1);
+        assert_eq!(inventory(&world, key, "Cells"), 10);
+        assert_eq!(world.client(key).unwrap().v_dmg_pitch, -40.0);
+    }
+
+    #[test]
+    fn the_bfg_holds_fire_when_cells_drop_during_the_windup() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "BFG10K", "Cells", 50);
+        press(&mut world, key);
+        let cells = world.find_item_by_name("Cells").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[cells] = 49;
+        think_n(&mut world, key, 8);
+        assert!(spawned(&world, "bfg blast").is_empty());
+        assert_eq!(inventory(&world, key, "Cells"), 49);
+    }
+
+    #[test]
+    fn infinite_ammo_dmflag_keeps_the_ammo() {
+        let (mut world, key, _) = ready();
+        world.game.dmflags = DF_INFINITE_AMMO;
+        equip(&mut world, key, "Railgun", "Slugs", 3);
+        press(&mut world, key);
+        assert_eq!(inventory(&world, key, "Slugs"), 3);
+    }
+
+    #[test]
+    fn a_hand_grenade_cooks_while_held_and_flies_on_release() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 16);
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 1);
+        think_n(&mut world, key, 12); // up to 11, where it waits
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.gunframe, 11);
+        assert_eq!(client.grenade_time, world.level.time + 3.2);
+        assert!(spawned(&world, "hgrenade").is_empty());
+
+        hold(&mut world, key, false);
+        think_n(&mut world, key, 2);
+        let thrown = spawned(&world, "hgrenade");
+        assert_eq!(thrown.len(), 1);
+        assert_eq!(thrown[0].game.spawnflags, 1);
+        assert_eq!(inventory(&world, key, "Grenades"), 4);
+        // Frame 15 waits out the second before the next throw.
+        think_n(&mut world, key, 5);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 15);
+        world.level.time += 1.0;
+        world.think_weapon(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.weaponstate, WeaponState::Ready);
+        assert_eq!(client.grenade_time, 0.0);
+    }
+
+    #[test]
+    fn a_hand_grenade_held_too_long_goes_off_in_the_hand() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        think_n(&mut world, key, 12);
+        world.level.time += 3.2;
+        world.think_weapon(key);
+        let client = world.client(key).unwrap();
+        assert!(client.grenade_blew_up);
+        assert_eq!(inventory(&world, key, "Grenades"), 4);
+        // A zero timer explodes at once: nothing left flying.
+        assert!(spawned(&world, "hgrenade").is_empty());
+    }
+
+    #[test]
+    fn switching_away_with_a_cooked_grenade_sets_it_off() {
+        // C ChangeWeapon fires it with grenade_time = now: a zero timer.
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        think_n(&mut world, key, 12);
+        world.client_mut(key).unwrap().newweapon = world.find_item_by_name("Blaster");
+        world.change_weapon(key);
+        assert_eq!(inventory(&world, key, "Grenades"), 4);
+        assert!(spawned(&world, "hgrenade").is_empty(), "exploded at once");
+        let client = world.client(key).unwrap();
+        assert_eq!(client.grenade_time, 0.0);
+        assert_eq!(client.pers.weapon, world.find_item_by_name("Blaster"));
+    }
+
+    #[test]
+    fn a_ready_hand_grenade_switches_straight_away() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        let blaster = world.find_item_by_name("Blaster");
+        world.client_mut(key).unwrap().newweapon = blaster;
+        world.think_weapon(key);
+        assert_eq!(world.client(key).unwrap().pers.weapon, blaster);
+    }
+
+    #[test]
+    fn without_grenades_a_press_clicks_and_switches() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 1);
+        let grenades = world.find_item_by_name("Grenades").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[grenades] = 0;
+        press(&mut world, key);
+        assert_eq!(
+            world.client(key).unwrap().newweapon,
+            world.find_item_by_name("Blaster")
+        );
+    }
+
+    #[test]
+    fn no_ammo_change_prefers_the_strongest_loaded_weapon() {
+        let (mut world, key, _) = ready();
+        for (item, count) in [
+            ("Shotgun", 1),
+            ("Shells", 5),
+            ("Machinegun", 1),
+            ("Bullets", 5),
+        ] {
+            let index = world.find_item_by_name(item).unwrap();
+            world.client_mut(key).unwrap().pers.inventory[index] = count;
+        }
+        world.no_ammo_weapon_change(key);
+        assert_eq!(
+            world.client(key).unwrap().newweapon,
+            world.find_item_by_name("Machinegun")
+        );
     }
 }

@@ -395,7 +395,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_shotg/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_shotgun),
         },
         // [9] Super Shotgun
         ItemDef {
@@ -413,7 +413,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_shotg2/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_supershotgun),
         },
         // [10] Machinegun
         ItemDef {
@@ -431,7 +431,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_machn/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_machinegun),
         },
         // [11] Chaingun
         ItemDef {
@@ -449,7 +449,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_chain/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_chaingun),
         },
         // [12] Grenades (ammo + weapon combo)
         ItemDef {
@@ -467,7 +467,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_handgr/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_grenade),
         },
         // [13] Grenade Launcher
         ItemDef {
@@ -485,7 +485,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_launch/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_grenadelauncher),
         },
         // [14] Rocket Launcher
         ItemDef {
@@ -503,7 +503,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_rocket/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_rocketlauncher),
         },
         // [15] HyperBlaster
         ItemDef {
@@ -521,7 +521,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_hyperb/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_hyperblaster),
         },
         // [16] Railgun
         ItemDef {
@@ -539,7 +539,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_rail/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_railgun),
         },
         // [17] BFG10K
         ItemDef {
@@ -557,7 +557,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             use_fn: None,
             drop_fn: None,
             view_model: "models/weapons/v_bfg/tris.md2",
-            weaponthink: None,
+            weaponthink: Some(crate::player::weapon::weapon_bfg),
         },
         // [18] Shells
         ItemDef {
@@ -1151,6 +1151,18 @@ fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
                     }
                 }
             }
+        }
+    }
+
+    // Switch to a newly owned weapon; deathmatch only from the blaster.
+    let blaster = world.find_item_by_name("Blaster");
+    let deathmatch = world.game.deathmatch;
+    if let Some(client) = world.client_mut(player) {
+        if client.pers.weapon != Some(item_idx)
+            && client.pers.inventory[item_idx] == 1
+            && (!deathmatch || client.pers.weapon == blaster)
+        {
+            client.newweapon = Some(item_idx);
         }
     }
 
@@ -2144,6 +2156,69 @@ mod tests {
 
         let inv = world.client(player).unwrap().pers.inventory;
         assert_eq!(inv[8], 1); // shotgun in inventory
+    }
+
+    fn pick_up_shotgun(world: &mut GameWorld, player: EntityKey) {
+        let item_ent = world.spawn().unwrap();
+        world.entities.get_mut(item_ent).unwrap().game.item = Some(8); // shotgun
+        assert!(pickup_weapon(world, item_ent, player));
+    }
+
+    fn holding_blaster(world: &mut GameWorld) -> EntityKey {
+        let player = world.spawn_test_client(crate::entity::ClientData::default());
+        let blaster = world.find_item_by_name("Blaster");
+        world.client_mut(player).unwrap().pers.weapon = blaster;
+        player
+    }
+
+    #[test]
+    fn picking_up_a_new_weapon_switches_to_it_like_c() {
+        let mut world = test_world();
+        world.init_items();
+        let player = holding_blaster(&mut world);
+        pick_up_shotgun(&mut world, player);
+        assert_eq!(world.client(player).unwrap().newweapon, Some(8));
+    }
+
+    #[test]
+    fn a_second_copy_or_the_held_weapon_does_not_switch() {
+        let mut world = test_world();
+        world.init_items();
+        let player = holding_blaster(&mut world);
+        pick_up_shotgun(&mut world, player);
+        world.client_mut(player).unwrap().newweapon = None;
+        pick_up_shotgun(&mut world, player);
+        assert_eq!(world.client(player).unwrap().newweapon, None, "second copy");
+
+        let mut world = test_world();
+        world.init_items();
+        let player = holding_blaster(&mut world);
+        world.client_mut(player).unwrap().pers.weapon = Some(8);
+        pick_up_shotgun(&mut world, player);
+        assert_eq!(
+            world.client(player).unwrap().newweapon,
+            None,
+            "already held"
+        );
+    }
+
+    #[test]
+    fn deathmatch_switches_on_pickup_only_from_the_blaster() {
+        let mut world = test_world();
+        world.init_items();
+        world.game.deathmatch = true;
+        let player = holding_blaster(&mut world);
+        let railgun = world.find_item_by_name("Railgun");
+        world.client_mut(player).unwrap().pers.weapon = railgun;
+        pick_up_shotgun(&mut world, player);
+        assert_eq!(world.client(player).unwrap().newweapon, None);
+
+        let mut world = test_world();
+        world.init_items();
+        world.game.deathmatch = true;
+        let player = holding_blaster(&mut world);
+        pick_up_shotgun(&mut world, player);
+        assert_eq!(world.client(player).unwrap().newweapon, Some(8));
     }
 
     #[test]
