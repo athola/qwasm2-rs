@@ -14,9 +14,9 @@ impl GameWorld {
         let Some(ent) = self.entities.get(key) else {
             return;
         };
-        let Some(ref _client) = ent.client else {
+        if ent.client.is_none() {
             return;
-        };
+        }
 
         // View bob based on movement speed.
         let speed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
@@ -30,11 +30,8 @@ impl GameWorld {
         // Apply view offset to player state: eye height comes from the
         // entity's viewheight (C SV_CalcViewOffset), which pmove lowers when
         // ducking.
-        if let Some(ent) = self.entities.get_mut(key) {
-            let height = ent.game.viewheight;
-            if let Some(ref mut client) = ent.client {
-                client.ps.viewoffset = Vec3f::new(0.0, 0.0, height + bob);
-            }
+        if let Some((ent, client)) = self.entity_and_client_mut(key) {
+            client.ps.viewoffset = Vec3f::new(0.0, 0.0, ent.game.viewheight + bob);
         }
     }
 }
@@ -53,15 +50,7 @@ mod tests {
 
         world.update_player_view(key);
 
-        let offset = world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .viewoffset;
+        let offset = world.client(key).unwrap().ps.viewoffset;
         assert!((offset.z - 22.0).abs() < 1.0);
     }
 
@@ -74,29 +63,25 @@ mod tests {
 
         world.update_player_view(key);
 
-        let ent = world.entities.get(key).unwrap();
-        assert_eq!(ent.client.as_ref().unwrap().ps.viewoffset.z, -2.0);
+        assert_eq!(world.client(key).unwrap().ps.viewoffset.z, -2.0);
     }
 
     #[test]
     fn view_bob_increases_with_speed() {
-        let mut world = test_world();
-        world.level.time = 1.0;
-        let key = world.connect_client(1, "\\name\\P").unwrap();
-        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(300.0, 0.0, 0.0);
-
-        world.update_player_view(key);
-
-        let offset = world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .viewoffset;
-        // Should have some bob added to base 22.0.
-        assert!(offset.z != 22.0);
+        let bob_at = |speed: f32| {
+            let mut world = test_world();
+            world.level.time = 1.0;
+            let key = world.connect_client(1, "\\name\\P").unwrap();
+            world.begin_client(key);
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.velocity = Vec3f::new(speed, 0.0, 0.0);
+            ent.game.ground_entity = Some(key);
+            world.update_player_view(key);
+            let ent = world.entities.get(key).unwrap();
+            world.client(key).unwrap().ps.viewoffset.z - ent.game.viewheight
+        };
+        let (still, running) = (bob_at(0.0), bob_at(300.0));
+        assert_eq!(still, 0.0);
+        assert_ne!(running, still);
     }
 }

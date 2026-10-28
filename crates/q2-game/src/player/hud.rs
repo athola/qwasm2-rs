@@ -11,8 +11,8 @@ use q2_shared::constants::{
 
 impl GameWorld {
     /// The armor item the player wears, if any (C `ArmorIndex`).
-    fn armor_index(&self, key: EntityKey) -> Option<usize> {
-        let inventory = &self.entities.get(key)?.client.as_ref()?.pers.inventory;
+    pub(crate) fn armor_index(&self, key: EntityKey) -> Option<usize> {
+        let inventory = &self.client(key)?.pers.inventory;
         ["item_armor_jacket", "item_armor_combat", "item_armor_body"]
             .iter()
             .filter_map(|c| self.find_item(c))
@@ -27,11 +27,7 @@ impl GameWorld {
             let icon = self.items[i].icon;
             (self.gi.image_index(icon), i)
         });
-        let selected = self
-            .entities
-            .get(key)
-            .and_then(|e| e.client.as_ref())
-            .map_or(-1, |c| c.pers.selected_item);
+        let selected = self.client(key).map_or(-1, |c| c.pers.selected_item);
         let selected_icon = usize::try_from(selected)
             .ok()
             .filter(|&i| i > 0)
@@ -39,13 +35,10 @@ impl GameWorld {
             .map_or(0, |it| self.gi.image_index(it.icon));
         let (time, pic_health) = (self.level.time, self.level.pic_health);
 
-        let Some(ent) = self.entities.get_mut(key) else {
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
             return;
         };
         let health = ent.game.health;
-        let Some(client) = ent.client.as_mut() else {
-            return;
-        };
         let stats = &mut client.ps.stats;
         stats[STAT_HEALTH_ICON] = pic_health as i16;
         stats[STAT_HEALTH] = health.max(-99) as i16;
@@ -78,15 +71,7 @@ mod tests {
     use q2_shared::constants::{CS_ITEMS, STAT_PICKUP_ICON, STAT_PICKUP_STRING};
 
     fn stats(world: &GameWorld, key: EntityKey) -> [i16; 32] {
-        world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .stats
+        world.client(key).unwrap().ps.stats
     }
 
     #[test]
@@ -109,15 +94,7 @@ mod tests {
         world.init_game();
         let jacket = world.find_item("item_armor_jacket").unwrap();
         let key = world.connect_client(1, "\\name\\P").unwrap();
-        world
-            .entities
-            .get_mut(key)
-            .unwrap()
-            .client
-            .as_mut()
-            .unwrap()
-            .pers
-            .inventory[jacket] = 25;
+        world.client_mut(key).unwrap().pers.inventory[jacket] = 25;
         world.update_player_stats(key);
         let s = stats(&world, key);
         assert_eq!(s[STAT_ARMOR], 25);
@@ -165,15 +142,7 @@ mod tests {
 
         world.update_player_stats(key);
 
-        let stats = world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .stats;
+        let stats = world.client(key).unwrap().ps.stats;
         assert_eq!(stats[STAT_HEALTH], 75);
     }
 
@@ -183,21 +152,11 @@ mod tests {
         world.init_items();
         let body = world.find_item("item_armor_body").unwrap();
         let key = world.connect_client(1, "\\name\\P").unwrap();
-        if let Some(ref mut client) = world.entities.get_mut(key).unwrap().client {
-            client.pers.inventory[body] = 50;
-        }
+        world.client_mut(key).unwrap().pers.inventory[body] = 50;
 
         world.update_player_stats(key);
 
-        let stats = world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .stats;
+        let stats = world.client(key).unwrap().ps.stats;
         assert_eq!(stats[STAT_ARMOR], 50);
     }
 }

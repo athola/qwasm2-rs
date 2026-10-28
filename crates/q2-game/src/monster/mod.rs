@@ -1,14 +1,17 @@
-//! Monster implementations — 20 enemy types.
+//! Monster spawn functions for the 20 C monster types.
 //!
-//! Each monster defines animation frame tables, AI state callbacks,
-//! and spawn functions. The soldier is implemented as the template;
-//! remaining monsters follow the same pattern.
+//! Each file ports one C monster (or monster family): its frame tables,
+//! callbacks and `SP_*` spawn function. `fire` and `flash` hold the shared
+//! C `monster_fire_*` and `monster_flash_offset`, `movement` the C `m_move.c`
+//! steps, and `test_support` the fixtures the monster tests share.
 
 pub mod berserker;
 pub mod boss2;
 pub mod boss3;
 pub mod brain;
 pub mod chick;
+pub mod fire;
+pub mod flash;
 pub mod flipper;
 pub mod floater;
 pub mod flyer;
@@ -18,144 +21,193 @@ pub mod hover;
 pub mod infantry;
 pub mod insane;
 pub mod medic;
+pub mod movement;
 pub mod mutant;
 pub mod parasite;
 pub mod soldier;
 pub mod supertank;
 pub mod tank;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod turret;
-
-use crate::world::GameWorld;
-
-impl GameWorld {
-    /// Register all monster spawn functions.
-    pub fn register_monster_spawns(&mut self) {
-        // Soldier (3 variants).
-        self.spawn_table.insert(
-            "monster_soldier_light".to_string(),
-            soldier::sp_monster_soldier_light,
-        );
-        self.spawn_table
-            .insert("monster_soldier".to_string(), soldier::sp_monster_soldier);
-        self.spawn_table.insert(
-            "monster_soldier_ss".to_string(),
-            soldier::sp_monster_soldier_ss,
-        );
-
-        // Infantry.
-        self.spawn_table.insert(
-            "monster_infantry".to_string(),
-            infantry::sp_monster_infantry,
-        );
-
-        // Gunner.
-        self.spawn_table
-            .insert("monster_gunner".to_string(), gunner::sp_monster_gunner);
-
-        // Gladiator.
-        self.spawn_table.insert(
-            "monster_gladiator".to_string(),
-            gladiator::sp_monster_gladiator,
-        );
-
-        // Berserker.
-        self.spawn_table.insert(
-            "monster_berserker".to_string(),
-            berserker::sp_monster_berserker,
-        );
-
-        // Brain.
-        self.spawn_table
-            .insert("monster_brain".to_string(), brain::sp_monster_brain);
-
-        // Chick (Iron Maiden).
-        self.spawn_table
-            .insert("monster_chick".to_string(), chick::sp_monster_chick);
-
-        // Flipper (Barracuda Shark).
-        self.spawn_table
-            .insert("monster_flipper".to_string(), flipper::sp_monster_flipper);
-
-        // Floater.
-        self.spawn_table
-            .insert("monster_floater".to_string(), floater::sp_monster_floater);
-
-        // Flyer.
-        self.spawn_table
-            .insert("monster_flyer".to_string(), flyer::sp_monster_flyer);
-
-        // Hover (Icarus).
-        self.spawn_table
-            .insert("monster_hover".to_string(), hover::sp_monster_hover);
-
-        // Medic.
-        self.spawn_table
-            .insert("monster_medic".to_string(), medic::sp_monster_medic);
-
-        // Mutant.
-        self.spawn_table
-            .insert("monster_mutant".to_string(), mutant::sp_monster_mutant);
-
-        // Parasite.
-        self.spawn_table.insert(
-            "monster_parasite".to_string(),
-            parasite::sp_monster_parasite,
-        );
-
-        // Insane.
-        self.spawn_table
-            .insert("monster_insane".to_string(), insane::sp_monster_insane);
-
-        // Tank (2 variants).
-        self.spawn_table
-            .insert("monster_tank".to_string(), tank::sp_monster_tank);
-        self.spawn_table.insert(
-            "monster_tank_commander".to_string(),
-            tank::sp_monster_tank_commander,
-        );
-
-        // Supertank.
-        self.spawn_table.insert(
-            "monster_supertank".to_string(),
-            supertank::sp_monster_supertank,
-        );
-
-        // Boss2 (Hornet).
-        self.spawn_table
-            .insert("monster_boss2".to_string(), boss2::sp_monster_boss2);
-
-        // Boss3 — Jorg and Makron.
-        self.spawn_table.insert(
-            "monster_boss3_stand".to_string(),
-            boss3::sp_monster_boss3_stand,
-        );
-        self.spawn_table
-            .insert("monster_makron".to_string(), boss3::sp_monster_makron);
-        self.spawn_table
-            .insert("monster_jorg".to_string(), boss3::sp_monster_jorg);
-
-        // Turrets.
-        self.spawn_table
-            .insert("turret_breach".to_string(), turret::sp_turret_breach);
-        self.spawn_table
-            .insert("turret_base".to_string(), turret::sp_turret_base);
-        self.spawn_table
-            .insert("turret_driver".to_string(), turret::sp_turret_driver);
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use crate::world::test_world;
+    use q2_shared::types::Vec3f;
 
     #[test]
     fn register_monster_spawns() {
-        let mut world = test_world();
-        world.register_monster_spawns();
+        let world = test_world();
         assert!(world.spawn_table.get("monster_soldier").is_some());
         assert!(world.spawn_table.get("monster_soldier_light").is_some());
         assert!(world.spawn_table.get("monster_infantry").is_some());
         assert!(world.spawn_table.get("monster_tank").is_some());
         assert!(world.spawn_table.get("monster_boss2").is_some());
+    }
+
+    /// Classname, health, mins, maxs, mass.
+    type MonsterStats = (&'static str, i32, [f32; 3], [f32; 3], i32);
+
+    /// Health, box and mass from each C `SP_monster_*`.
+    #[test]
+    fn monsters_spawn_with_the_c_health_box_and_mass() {
+        #[rustfmt::skip]
+        let table: &[MonsterStats] = &[
+            ("monster_berserk", 240, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 250),
+            ("monster_boss2", 2000, [-56.0, -56.0, 0.0], [56.0, 56.0, 80.0], 1000),
+            ("monster_jorg", 3000, [-80.0, -80.0, 0.0], [80.0, 80.0, 140.0], 1000),
+            ("monster_makron", 3000, [-30.0, -30.0, 0.0], [30.0, 30.0, 90.0], 500),
+            ("monster_brain", 300, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 400),
+            ("monster_chick", 175, [-16.0, -16.0, 0.0], [16.0, 16.0, 56.0], 200),
+            ("monster_flipper", 50, [-16.0, -16.0, 0.0], [16.0, 16.0, 32.0], 100),
+            ("monster_floater", 200, [-24.0, -24.0, -24.0], [24.0, 24.0, 32.0], 300),
+            ("monster_flyer", 50, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 50),
+            ("monster_gladiator", 400, [-32.0, -32.0, -24.0], [32.0, 32.0, 64.0], 400),
+            ("monster_gunner", 175, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 200),
+            ("monster_hover", 240, [-24.0, -24.0, -24.0], [24.0, 24.0, 32.0], 150),
+            ("monster_infantry", 100, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 200),
+            ("misc_insane", 100, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 300),
+            ("monster_medic", 300, [-24.0, -24.0, -24.0], [24.0, 24.0, 32.0], 400),
+            ("monster_mutant", 300, [-32.0, -32.0, -24.0], [32.0, 32.0, 48.0], 300),
+            ("monster_parasite", 175, [-16.0, -16.0, -24.0], [16.0, 16.0, 24.0], 250),
+            ("monster_soldier_light", 20, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 100),
+            ("monster_soldier", 30, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 100),
+            ("monster_soldier_ss", 40, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 100),
+            ("monster_supertank", 1500, [-64.0, -64.0, 0.0], [64.0, 64.0, 112.0], 800),
+            ("monster_tank", 750, [-32.0, -32.0, -16.0], [32.0, 32.0, 72.0], 500),
+            ("monster_tank_commander", 1000, [-32.0, -32.0, -16.0], [32.0, 32.0, 72.0], 500),
+            ("turret_driver", 100, [-16.0, -16.0, -24.0], [16.0, 16.0, 32.0], 200),
+        ];
+        let mut world = test_world();
+        for &(class, health, mins, maxs, mass) in table {
+            let spawn = *world
+                .spawn_table
+                .get(class)
+                .unwrap_or_else(|| panic!("{class}"));
+            let key = world.spawn().unwrap();
+            spawn(&mut world.entities, key, &std::collections::HashMap::new());
+            let ent = world.entities.get(key).unwrap();
+            assert_eq!(ent.game.health, health, "{class}");
+            assert_eq!(ent.mins, Vec3f::from(mins), "{class}");
+            assert_eq!(ent.maxs, Vec3f::from(maxs), "{class}");
+            assert_eq!(ent.game.mass, mass, "{class}");
+        }
+    }
+
+    /// `gib_health` from each C `SP_*` (0 for the flyer, which C leaves
+    /// unset, and the turret driver, which C sets to 0).
+    #[test]
+    fn monsters_spawn_with_the_c_gib_health() {
+        let table: &[(&str, i32)] = &[
+            ("monster_berserk", -60),
+            ("monster_boss2", -200),
+            ("monster_jorg", -2000),
+            ("monster_makron", -2000),
+            ("monster_brain", -150),
+            ("monster_chick", -70),
+            ("monster_flipper", -30),
+            ("monster_floater", -80),
+            ("monster_flyer", 0),
+            ("monster_gladiator", -175),
+            ("monster_gunner", -70),
+            ("monster_hover", -100),
+            ("monster_infantry", -40),
+            ("misc_insane", -50),
+            ("monster_medic", -130),
+            ("monster_mutant", -120),
+            ("monster_parasite", -50),
+            ("monster_soldier_light", -30),
+            ("monster_soldier", -30),
+            ("monster_soldier_ss", -30),
+            ("monster_supertank", -500),
+            ("monster_tank", -200),
+            ("monster_tank_commander", -225),
+            ("turret_driver", 0),
+        ];
+        let mut world = test_world();
+        for &(class, gib_health) in table {
+            let spawn = *world.spawn_table.get(class).unwrap();
+            let key = world.spawn().unwrap();
+            let fields =
+                std::collections::HashMap::from([("classname".to_string(), class.to_string())]);
+            spawn(&mut world.entities, key, &fields);
+            let ent = world.entities.get(key).unwrap();
+            assert_eq!(ent.game.gib_health, gib_health, "{class}");
+        }
+    }
+
+    /// Each die gibs (C `misc/udeath.wav`) by the entity's own
+    /// `gib_health`, as C `self->health <= self->gib_health` does.
+    #[test]
+    fn monster_die_gibs_at_the_entitys_own_gib_health() {
+        let classes = [
+            "monster_berserk",
+            "monster_makron",
+            "monster_brain",
+            "monster_chick",
+            "monster_flipper",
+            "monster_gladiator",
+            "monster_gunner",
+            "monster_hover",
+            "monster_infantry",
+            "misc_insane",
+            "monster_medic",
+            "monster_mutant",
+            "monster_parasite",
+            "monster_soldier",
+            "monster_tank",
+        ];
+        for class in classes {
+            let (mut world, gi) = crate::world::test_world_recording();
+            world.entities.spawn_numbered(0).unwrap();
+            let spawn = *world.spawn_table.get(class).unwrap();
+            let key = world.spawn().unwrap();
+            let fields =
+                std::collections::HashMap::from([("classname".to_string(), class.to_string())]);
+            spawn(&mut world.entities, key, &fields);
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.gib_health = 10;
+            ent.game.health = 5;
+            let die = ent.die.unwrap();
+            die(&mut world, key, key, key, 20, Vec3f::ZERO);
+            let udeath = gi.sounds.borrow().iter().any(|s| s == "misc/udeath.wav");
+            assert!(udeath, "{class}");
+        }
+    }
+
+    #[test]
+    fn brush_turrets_and_the_jorg_rider_are_not_monsters() {
+        let mut world = test_world();
+        let mut breach = None;
+        for class in ["turret_breach", "turret_base", "monster_boss3_stand"] {
+            let spawn = *world.spawn_table.get(class).unwrap();
+            let key = world.spawn().unwrap();
+            spawn(&mut world.entities, key, &std::collections::HashMap::new());
+            assert!(
+                world.entities.get(key).unwrap().monsterinfo.is_none(),
+                "{class}"
+            );
+            breach = breach.or(Some(key));
+        }
+        let ent = world.entities.get(breach.unwrap()).unwrap();
+        assert_eq!(ent.solid, q2_shared::types::Solid::Bsp);
+        assert_eq!(ent.game.movetype, crate::constants::MoveType::Push);
+    }
+
+    #[test]
+    fn map_classnames_berserk_and_misc_insane_spawn_monsters() {
+        let mut world = test_world();
+        for class in ["monster_berserk", "misc_insane"] {
+            let spawn = *world.spawn_table.get(class).unwrap();
+            let key = world.spawn().unwrap();
+            spawn(&mut world.entities, key, &std::collections::HashMap::new());
+            assert!(
+                world.entities.get(key).unwrap().monsterinfo.is_some(),
+                "{class}"
+            );
+        }
+        assert!(world.spawn_table.get("monster_berserker").is_none());
+        assert!(world.spawn_table.get("monster_insane").is_none());
     }
 }

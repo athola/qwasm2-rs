@@ -5,10 +5,17 @@
 
 use q2_shared::types::*;
 
-use crate::entity::{EntityKey, EntityStorage};
+use crate::constants::{
+    SPAWNFLAG_NOT_COOP, SPAWNFLAG_NOT_DEATHMATCH, SPAWNFLAG_NOT_EASY, SPAWNFLAG_NOT_HARD,
+    SPAWNFLAG_NOT_MEDIUM,
+};
+use crate::entity::{ClientData, Entity, EntityKey, EntityStorage};
 use crate::items::ItemDef;
 use crate::spawn::SpawnTable;
-use crate::traits::{EntityLink, GameImport, ModelInfo};
+#[cfg(test)]
+use crate::traits::ModelInfo;
+use crate::traits::{EntityLink, GameImport};
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -26,10 +33,23 @@ pub struct LevelLocals {
     pub level_name: String,
     pub mapname: String,
     pub nextmap: String,
+    /// Map the pending exit goes to (C `level.changemap`).
+    pub changemap: String,
     pub intermission_time: f32,
     pub exitintermission: bool,
     pub sight_client_key: Option<EntityKey>,
+    /// A monster that just saw a player, which other monsters notice
+    /// (C `level.sight_entity`, set by `FoundTarget`).
+    pub sight_entity: Option<EntityKey>,
     pub sight_entity_framenum: i32,
+    /// The latest player noise, heard by monsters (C `level.sound_entity`,
+    /// set by `PlayerNoise`).
+    pub sound_entity: Option<EntityKey>,
+    pub sound_entity_framenum: i32,
+    /// The latest impact noise, heard only by monsters without an enemy
+    /// (C `level.sound2_entity`).
+    pub sound2_entity: Option<EntityKey>,
+    pub sound2_entity_framenum: i32,
     pub total_secrets: i32,
     pub found_secrets: i32,
     pub total_goals: i32,
@@ -39,6 +59,15 @@ pub struct LevelLocals {
     pub current_entity: Option<EntityKey>,
     /// Image index of `i_health` (C `level.pic_health`).
     pub pic_health: i32,
+    /// State of `GameWorld::random_u32`.
+    pub rand_state: u32,
+    /// Gibs and debris thrown this frame, capped at `MAX_GIBS` and
+    /// `MAX_DEBRIS` so a big explosion cannot exhaust the edicts (C
+    /// `gibsthisframe`/`debristhisframe`, g_misc.c).
+    pub gibs_this_frame: i32,
+    pub debris_this_frame: i32,
+    /// Body queue slot the next corpse goes in (C `level.body_que`).
+    pub body_que: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,8 +84,15 @@ pub struct GameLocals {
     pub maxclients: i32,
     pub maxentities: i32,
     pub serverflags: i32,
+    /// C `dmflags` cvar (`DF_*` bits); read by deathmatch spawn selection.
+    pub dmflags: i32,
     pub num_items: i32,
-    pub autosaved: bool,
+    /// C `skill` cvar, clamped to 0..=3 (easy, medium, hard, hard+).
+    pub skill: i32,
+    /// C `deathmatch` and `coop` cvars (default 0): the browser plays
+    /// single player, so both stay false there.
+    pub deathmatch: bool,
+    pub coop: bool,
 }
 
 impl Default for GameLocals {
@@ -66,8 +102,11 @@ impl Default for GameLocals {
             maxclients: 1,
             maxentities: 1024,
             serverflags: 0,
+            dmflags: 0,
             num_items: 0,
-            autosaved: false,
+            skill: 1, // C cvar default
+            deathmatch: false,
+            coop: false,
         }
     }
 }
@@ -85,8 +124,17 @@ pub struct GameWorld {
     pub entities: EntityStorage,
     pub level: LevelLocals,
     pub game: GameLocals,
+    /// C `game.clients`, by slot (entity number - 1), for the whole game:
+    /// a client entity's `Entity::client` names its slot, and the record
+    /// outlives the edicts `spawn_entities` rebuilds.
+    pub clients: Vec<ClientData>,
     pub items: Vec<ItemDef>,
     pub spawn_table: SpawnTable,
+    /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
+    pub trail: crate::player::trail::PlayerTrail,
+    /// What `ai_checkattack` learned about the enemy this frame (C g_ai.c
+    /// statics `enemy_vis`, `enemy_infront`, `enemy_range`, `enemy_yaw`).
+    pub enemy_check: crate::ai::EnemyCheck,
     /// Engine callbacks. `Rc` so a pmove trace closure can hold its own
     /// handle while game code borrows `self` mutably.
     pub gi: Rc<dyn GameImport>,
@@ -100,18 +148,47 @@ impl GameWorld {
             ..GameLocals::default()
         };
         let mut entities = EntityStorage::new(maxentities);
-        entities.set_max_clients(game.maxclients.max(0) as usize);
+        let maxclients = game.maxclients.max(0) as usize;
+        entities.set_max_clients(maxclients);
         Self {
             entities,
             level: LevelLocals::default(),
             game,
+            clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
             spawn_table: SpawnTable::new(),
+            trail: Default::default(),
+            enemy_check: Default::default(),
             gi,
         }
     }
 
     // -- Entity management ---------------------------------------------------
+
+    /// The client record `key` points at (C `ent->client`).
+    pub fn client(&self, key: EntityKey) -> Option<&ClientData> {
+        self.clients.get(self.entities.get(key)?.client?)
+    }
+
+    /// Mutable form of [`Self::client`].
+    pub fn client_mut(&mut self, key: EntityKey) -> Option<&mut ClientData> {
+        let slot = self.entities.get(key)?.client?;
+        self.clients.get_mut(slot)
+    }
+
+    /// An entity and its client record at once, for code that reads one
+    /// while writing the other as C does through `ent` and `ent->client`.
+    pub fn entity_and_client_mut(
+        &mut self,
+        key: EntityKey,
+    ) -> Option<(&mut Entity, &mut ClientData)> {
+        let Self {
+            entities, clients, ..
+        } = self;
+        let ent = entities.get_mut(key)?;
+        let client = clients.get_mut(ent.client?)?;
+        Some((ent, client))
+    }
 
     /// Spawn a new entity. Returns `None` if storage is full.
     /// C ref: G_Spawn (g_utils.c)
@@ -129,7 +206,18 @@ impl GameWorld {
         if let Ok(n) = usize::try_from(number) {
             self.gi.unlink_entity(n);
         }
-        if number <= self.game.maxclients {
+        // C G_FreeEdict: client edicts, and in coop or deathmatch the body
+        // queue after them, are never freed. C always has `bodyque` edicts
+        // there in those modes; checking the classname keeps entities
+        // spawned without a worldspawn (unit tests) freeable.
+        let body_queue_end = self.game.maxclients + crate::constants::BODY_QUEUE_SIZE as i32;
+        let body_queue = (self.game.deathmatch || self.game.coop)
+            && number <= body_queue_end
+            && self
+                .entities
+                .get(key)
+                .is_some_and(|e| e.game.classname == "bodyque");
+        if number <= self.game.maxclients || body_queue {
             return;
         }
         self.entities.set_level_time(self.level.time);
@@ -199,6 +287,11 @@ impl GameWorld {
             .and_then(|k| self.entities.get(k))
             .and_then(|o| usize::try_from(o.state.number).ok());
         self.gi.link_entity(&EntityLink { owner, ..link });
+        let (areanum, areanum2) = self.gi.entity_areas(link.number);
+        if let Some(ent) = self.entities.get_mut(key) {
+            ent.areanum = areanum;
+            ent.areanum2 = areanum2;
+        }
     }
 
     /// C `gi.setmodel`: modelindex from the server, and for an inline model
@@ -262,125 +355,290 @@ impl GameWorld {
 
     // -- Search utilities ----------------------------------------------------
 
+    /// Next in-use entity after `start_after` (in entity-number order) whose
+    /// `field` matches `value` case-insensitively. An empty field never
+    /// matches (C skips NULL strings).
+    /// C ref: G_Find (g_utils.c)
+    fn find_by(
+        &self,
+        start_after: Option<EntityKey>,
+        value: &str,
+        field: fn(&crate::entity::Entity) -> &str,
+    ) -> Option<EntityKey> {
+        let first = match start_after {
+            Some(key) => self.number_of(key)? + 1,
+            None => 0,
+        };
+        self.entities.keys_from(first).find(|&key| {
+            self.entities.get(key).is_some_and(|ent| {
+                let s = field(ent);
+                ent.in_use && !s.is_empty() && s.eq_ignore_ascii_case(value)
+            })
+        })
+    }
+
     /// Find the next entity with a matching classname.
-    /// C ref: G_Find (g_utils.c) — simplified to classname search only.
+    /// C ref: G_Find with FOFS(classname).
     pub fn find_by_classname(
         &self,
         start_after: Option<EntityKey>,
         classname: &str,
     ) -> Option<EntityKey> {
-        let mut past_start = start_after.is_none();
-
-        for (key, ent) in self.entities.iter() {
-            if !past_start {
-                if Some(key) == start_after {
-                    past_start = true;
-                }
-                continue;
-            }
-            if ent.in_use && ent.game.classname == classname {
-                return Some(key);
-            }
-        }
-        None
+        self.find_by(start_after, classname, |e| &e.game.classname)
     }
 
     /// Find the next entity with a matching targetname.
+    /// C ref: G_Find with FOFS(targetname).
     pub fn find_by_targetname(
         &self,
         start_after: Option<EntityKey>,
         targetname: &str,
     ) -> Option<EntityKey> {
-        let mut past_start = start_after.is_none();
-
-        for (key, ent) in self.entities.iter() {
-            if !past_start {
-                if Some(key) == start_after {
-                    past_start = true;
-                }
-                continue;
-            }
-            if ent.in_use && ent.game.targetname == targetname {
-                return Some(key);
-            }
-        }
-        None
+        self.find_by(start_after, targetname, |e| &e.game.targetname)
     }
 
-    /// Pick a random target entity matching `targetname`.
+    /// The next in-use, non-`SOLID_NOT` entity after `start_after` whose box
+    /// center is within `radius` of `origin`. C ref: `findradius`
+    /// (g_utils.c).
+    pub fn find_radius(
+        &self,
+        start_after: Option<EntityKey>,
+        origin: Vec3f,
+        radius: f32,
+    ) -> Option<EntityKey> {
+        let first = match start_after {
+            Some(key) => self.number_of(key)? + 1,
+            None => 0,
+        };
+        self.entities.keys_from(first).find(|&key| {
+            self.entities.get(key).is_some_and(|ent| {
+                ent.in_use
+                    && ent.solid != Solid::Not
+                    && (origin - (ent.state.origin + (ent.mins + ent.maxs) * 0.5)).length()
+                        <= radius
+            })
+        })
+    }
+
+    /// Next value of the game's pseudo-random sequence. A deterministic
+    /// stand-in for C `randk()`, advanced on every call.
+    pub fn random_u32(&mut self) -> u32 {
+        // Numerical Recipes LCG.
+        self.level.rand_state = self
+            .level
+            .rand_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
+        self.level.rand_state >> 8
+    }
+
+    /// C `random()`: uniform in [0, 1].
+    pub fn random(&mut self) -> f32 {
+        (self.random_u32() & 0x7fff) as f32 / 0x7fff as f32
+    }
+
+    /// C `crandom()`: uniform in [-1, 1].
+    pub fn crandom(&mut self) -> f32 {
+        let random = (self.random_u32() & 0x7fff) as f32 / 0x7fff as f32;
+        2.0 * (random - 0.5)
+    }
+
+    /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
+    /// one survived (C callers mostly ignore it).
+    /// C ref: `KillBox` (g_utils.c).
+    pub fn kill_box(&mut self, key: EntityKey) -> bool {
+        use crate::constants::{DamageFlags, MeansOfDeath};
+        loop {
+            let Some(ent) = self.entities.get(key) else {
+                return true;
+            };
+            let (origin, mins, maxs) = (ent.state.origin, ent.mins, ent.maxs);
+            let tr = self.gi.trace(
+                origin,
+                mins,
+                maxs,
+                origin,
+                None,
+                q2_shared::constants::MASK_PLAYERSOLID,
+            );
+            // The world (0) is never telefragged; C's trace.ent is NULL
+            // when nothing is hit.
+            let Some(victim) = tr
+                .ent_index
+                .filter(|&n| n != 0)
+                .and_then(|n| self.entities.key_for_number(n))
+                .filter(|&v| self.entities.is_live(v))
+            else {
+                return true;
+            };
+            // Nail it.
+            self.t_damage(
+                victim,
+                key,
+                key,
+                Vec3f::ZERO,
+                origin,
+                Vec3f::ZERO,
+                100_000,
+                0,
+                DamageFlags::NO_PROTECTION,
+                MeansOfDeath::Telefrag,
+            );
+            // If we didn't kill it, fail.
+            if self
+                .entities
+                .get(victim)
+                .is_some_and(|v| v.in_use && v.solid != Solid::Not)
+            {
+                return false;
+            }
+        }
+    }
+
+    /// Pick a random target entity among the first eight matching
+    /// `targetname`.
     /// C ref: G_PickTarget (g_utils.c)
-    pub fn pick_target(&self, targetname: &str) -> Option<EntityKey> {
+    pub fn pick_target(&mut self, targetname: &str) -> Option<EntityKey> {
+        const MAXCHOICES: usize = 8;
         if targetname.is_empty() {
             return None;
         }
 
-        // Collect all matching targets.
-        let mut choices = Vec::new();
+        let mut choices = Vec::with_capacity(MAXCHOICES);
         let mut search = None;
         while let Some(key) = self.find_by_targetname(search, targetname) {
             choices.push(key);
             search = Some(key);
+            if choices.len() == MAXCHOICES {
+                break;
+            }
         }
 
         if choices.is_empty() {
+            self.gi
+                .dprintf(&format!("G_PickTarget: target {targetname} not found\n"));
             return None;
         }
-
-        // Deterministic selection based on level time for reproducibility.
-        let idx = (self.level.time * 10.0) as usize % choices.len();
+        let idx = self.random_u32() as usize % choices.len();
         Some(choices[idx])
     }
 
-    /// Activate all entities targeted by `ent`'s `target` and free its
-    /// `killtarget` entities.
+    /// Fire `ent`'s targets: after `delay` via a DelayedUse entity,
+    /// otherwise centerprint its message to the activator, free its
+    /// `killtarget` entities and call the `use` of every `target` entity.
     /// C ref: G_UseTargets (g_utils.c)
     pub fn use_targets(&mut self, ent_key: EntityKey, activator_key: EntityKey) {
-        // Read target and killtarget strings from the entity first.
-        let (target, killtarget) = {
-            let Some(ent) = self.entities.get(ent_key) else {
+        let Some(ent) = self.entities.get(ent_key) else {
+            return;
+        };
+        let (delay, message, target, killtarget, noise_index, classname) = (
+            ent.game.delay,
+            ent.game.message.clone(),
+            ent.game.target.clone(),
+            ent.game.killtarget.clone(),
+            ent.game.noise_index,
+            ent.game.classname.clone(),
+        );
+
+        // Check for a delay: create a temp object to fire later.
+        if delay != 0.0 {
+            let Some(t) = self.spawn() else {
                 return;
             };
-            (ent.game.target.clone(), ent.game.killtarget.clone())
-        };
-
-        // Kill targets first.
-        if !killtarget.is_empty() {
-            let mut kill_keys = Vec::new();
-            let mut search = None;
-            while let Some(key) = self.find_by_targetname(search, &killtarget) {
-                kill_keys.push(key);
-                search = Some(key);
+            let time = self.level.time;
+            if let Some(t) = self.entities.get_mut(t) {
+                t.game.classname = "DelayedUse".to_string();
+                t.game.nextthink = time + delay;
+                t.think = Some(think_delay);
+                t.game.activator = Some(activator_key);
+                t.game.message = message;
+                t.game.target = target;
+                t.game.killtarget = killtarget;
             }
-            for key in kill_keys {
-                self.free_entity(key);
+            return;
+        }
+
+        // Print the message.
+        let activator = self
+            .entities
+            .get(activator_key)
+            .filter(|a| a.svflags & q2_shared::constants::SVF_MONSTER == 0)
+            .map(|a| a.state.number);
+        if let (Some(number), false) = (activator, message.is_empty()) {
+            let number = usize::try_from(number).ok();
+            self.gi.centerprintf(number, &message);
+            let sound = if noise_index != 0 {
+                noise_index
+            } else {
+                self.gi.sound_index("misc/talk1.wav")
+            };
+            // CHAN_AUTO, ATTN_NORM.
+            self.gi.sound(number, 0, sound, 1.0, 1.0, 0.0);
+        }
+
+        // Kill killtargets.
+        if !killtarget.is_empty() {
+            let mut search = None;
+            while let Some(t) = self.find_by_targetname(search, &killtarget) {
+                search = Some(t);
+                let t_class = self
+                    .entities
+                    .get(t)
+                    .map(|e| e.game.classname.clone())
+                    .unwrap_or_default();
+                if t_class.eq_ignore_ascii_case("target_secret") {
+                    self.level.total_secrets -= 1;
+                } else if t_class.eq_ignore_ascii_case("target_goal") {
+                    self.level.total_goals -= 1;
+                    if self.level.found_goals >= self.level.total_goals {
+                        self.gi
+                            .configstring(q2_shared::constants::CS_CDTRACK as i32, "0");
+                    }
+                }
+                self.free_entity(t);
+                if !self.entities.is_live(ent_key) {
+                    self.gi
+                        .dprintf("entity was removed while using killtargets\n");
+                    return;
+                }
             }
         }
 
-        // Activate targets.
+        // Fire targets.
         if !target.is_empty() {
-            let mut target_keys = Vec::new();
             let mut search = None;
-            while let Some(key) = self.find_by_targetname(search, &target) {
-                target_keys.push(key);
-                search = Some(key);
-            }
-            for key in target_keys {
-                // Call the target's use_fn callback.
-                if let Some(use_fn) = self.entities.get(key).and_then(|e| e.use_fn) {
-                    use_fn(self, key, ent_key, activator_key);
+            while let Some(t) = self.find_by_targetname(search, &target) {
+                search = Some(t);
+                let t_class = self.entities.get(t).map(|e| e.game.classname.as_str());
+                // Doors fire area portals in a specific way.
+                if t_class.is_some_and(|c| c.eq_ignore_ascii_case("func_areaportal"))
+                    && (classname.eq_ignore_ascii_case("func_door")
+                        || classname.eq_ignore_ascii_case("func_door_rotating"))
+                {
+                    continue;
+                }
+                if t == ent_key {
+                    self.gi.dprintf("WARNING: Entity used itself.\n");
+                } else if let Some(use_fn) = self.entities.get(t).and_then(|e| e.use_fn) {
+                    use_fn(self, t, ent_key, activator_key);
+                }
+                if !self.entities.is_live(ent_key) {
+                    self.gi.dprintf("entity was removed while using targets\n");
+                    return;
                 }
             }
         }
     }
 
     /// Compute the movement direction from `angles` field (for triggers/targets).
+    /// C G_SetMovedir also clears `angles`; callers do that themselves.
     /// C ref: G_SetMovedir (g_utils.c)
     pub fn set_movedir(angles: Vec3f) -> Vec3f {
-        // Special angle values from the map editor
-        if angles.y == -1.0 {
+        // Special angle vectors from the map editor (C VEC_UP / VEC_DOWN).
+        if angles == Vec3f::new(0.0, -1.0, 0.0) {
             return Vec3f::new(0.0, 0.0, 1.0); // up
         }
-        if angles.y == -2.0 {
+        if angles == Vec3f::new(0.0, -2.0, 0.0) {
             return Vec3f::new(0.0, 0.0, -1.0); // down
         }
 
@@ -392,6 +650,16 @@ impl GameWorld {
             -pitch.sin(),
         )
     }
+}
+
+/// C `Think_Delay`: fire the delayed targets, then remove the temp entity.
+fn think_delay(world: &mut GameWorld, key: EntityKey) {
+    let activator = world.entities.get(key).and_then(|e| e.game.activator);
+    match activator {
+        Some(activator) => world.use_targets(key, activator),
+        None => world.gi.dprintf("Think_Delay with no activator\n"),
+    }
+    world.free_entity(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +696,82 @@ fn light_use(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activato
     let style = ent.game.style;
     world.set_light_style(style, on);
 }
+
+/// Sounds C SP_worldspawn precaches before the sexed weapon models, in
+/// its order: lava and slime, pickups, gibs and the player's sexed sounds.
+const WORLDSPAWN_SOUNDS: [&str; 24] = [
+    "player/fry.wav",
+    "player/lava1.wav",
+    "player/lava2.wav",
+    "misc/pc_up.wav",
+    "misc/talk1.wav",
+    "misc/udeath.wav",
+    "items/respawn1.wav",
+    "*death1.wav",
+    "*death2.wav",
+    "*death3.wav",
+    "*death4.wav",
+    "*fall1.wav",
+    "*fall2.wav",
+    "*gurp1.wav",
+    "*gurp2.wav",
+    "*jump1.wav",
+    "*pain25_1.wav",
+    "*pain25_2.wav",
+    "*pain50_1.wav",
+    "*pain50_2.wav",
+    "*pain75_1.wav",
+    "*pain75_2.wav",
+    "*pain100_1.wav",
+    "*pain100_2.wav",
+];
+
+/// View weapons on other players (C SP_worldspawn; the order must match
+/// the client's sexed weapon model numbers).
+const SEXED_WEAPON_MODELS: [&str; 11] = [
+    "#w_blaster.md2",
+    "#w_shotgun.md2",
+    "#w_sshotgun.md2",
+    "#w_machinegun.md2",
+    "#w_chaingun.md2",
+    "#a_grenades.md2",
+    "#w_glauncher.md2",
+    "#w_rlauncher.md2",
+    "#w_hyperblaster.md2",
+    "#w_railgun.md2",
+    "#w_bfg.md2",
+];
+
+/// Sounds C SP_worldspawn precaches after the sexed weapon models.
+const WORLDSPAWN_LATE_SOUNDS: [&str; 15] = [
+    "player/gasp1.wav",
+    "player/gasp2.wav",
+    "player/watr_in.wav",
+    "player/watr_out.wav",
+    "player/watr_un.wav",
+    "player/u_breath1.wav",
+    "player/u_breath2.wav",
+    "items/pkup.wav",
+    "world/land.wav",
+    "misc/h2ohit1.wav",
+    "items/damage.wav",
+    "items/protect.wav",
+    "items/protect4.wav",
+    "weapons/noammo.wav",
+    "infantry/inflies1.wav",
+];
+
+/// Gib models C SP_worldspawn precaches, so throwing one never registers
+/// a model mid-game.
+const GIB_MODELS: [&str; 7] = [
+    "models/objects/gibs/sm_meat/tris.md2",
+    "models/objects/gibs/arm/tris.md2",
+    "models/objects/gibs/bone/tris.md2",
+    "models/objects/gibs/bone2/tris.md2",
+    "models/objects/gibs/chest/tris.md2",
+    "models/objects/gibs/skull/tris.md2",
+    "models/objects/gibs/head2/tris.md2",
+];
 
 /// The single-player status bar layout program (C g_spawn.c
 /// `single_statusbar`), run by the client's SCR_ExecuteLayoutString.
@@ -481,21 +825,102 @@ pub const SINGLE_STATUSBAR: &str = concat!(
     "endif ",
 );
 
-/// C `AREA_TRIGGERS` for `GameImport::box_edicts`.
-pub const AREA_TRIGGERS: i32 = 2;
+/// The deathmatch status bar layout program (C g_spawn.c `dm_statusbar`):
+/// the single-player bar plus frags, the spectator notice and the chase
+/// camera target.
+pub const DM_STATUSBAR: &str = concat!(
+    "yb\t-24 ",
+    // health
+    "xv\t0 ",
+    "hnum ",
+    "xv\t50 ",
+    "pic 0 ",
+    // ammo
+    "if 2 ",
+    "\txv\t100 ",
+    "\tanum ",
+    "\txv\t150 ",
+    "\tpic 2 ",
+    "endif ",
+    // armor
+    "if 4 ",
+    "\txv\t200 ",
+    "\trnum ",
+    "\txv\t250 ",
+    "\tpic 4 ",
+    "endif ",
+    // selected item
+    "if 6 ",
+    "\txv\t296 ",
+    "\tpic 6 ",
+    "endif ",
+    "yb\t-50 ",
+    // picked up item
+    "if 7 ",
+    "\txv\t0 ",
+    "\tpic 7 ",
+    "\txv\t26 ",
+    "\tyb\t-42 ",
+    "\tstat_string 8 ",
+    "\tyb\t-50 ",
+    "endif ",
+    // timer
+    "if 9 ",
+    "\txv\t246 ",
+    "\tnum\t2\t10 ",
+    "\txv\t296 ",
+    "\tpic\t9 ",
+    "endif ",
+    // help / weapon icon
+    "if 11 ",
+    "\txv\t148 ",
+    "\tpic\t11 ",
+    "endif ",
+    // frags
+    "xr\t-50 ",
+    "yt 2 ",
+    "num 3 14 ",
+    // spectator
+    "if 17 ",
+    "xv 0 ",
+    "yb -58 ",
+    "string2 \"SPECTATOR MODE\" ",
+    "endif ",
+    // chase camera
+    "if 16 ",
+    "xv 0 ",
+    "yb -68 ",
+    "string \"Chasing\" ",
+    "xv 64 ",
+    "stat_string 16 ",
+    "endif ",
+);
+
+use crate::traits::AREA_TRIGGERS;
 
 /// `GameImport` for testing game logic without a real server.
 ///
 /// Calls return safe defaults; links, unlinks and trace pass-entities are
 /// recorded so tests can check what the game told the server.
+/// A recorded `GameImport::sound` call, its arguments in order.
+#[cfg(test)]
+pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
+
+#[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
     pub links: RefCell<Vec<EntityLink>>,
     pub unlinks: RefCell<Vec<usize>>,
     pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
+    /// Content mask of every `trace` call, in order.
+    pub trace_masks: RefCell<Vec<i32>>,
     pub configstrings: RefCell<Vec<(i32, String)>>,
     /// Returned by the next `trace` call instead of an unobstructed trace.
     pub next_trace: RefCell<Option<Trace>>,
+    /// Returned by later `trace` calls, in order, once `next_trace` is used.
+    pub queued_traces: RefCell<std::collections::VecDeque<Trace>>,
+    /// Every `add_command_string` text, in order.
+    pub commands: RefCell<Vec<String>>,
     /// Inline-model bounds `set_model` reports, by name (`*n`).
     pub inline_bounds: RefCell<HashMap<String, (Vec3f, Vec3f)>>,
     /// Model names in registration order; index = position + 1.
@@ -504,19 +929,71 @@ pub struct MockGameImport {
     pub box_edicts: RefCell<Vec<usize>>,
     /// Image names in registration order; index = position + 1.
     pub images: RefCell<Vec<String>>,
+    /// Sound names in registration order; index = position + 1.
+    pub sounds: RefCell<Vec<String>>,
+    /// Every `dprintf` text, in order.
+    pub dprints: RefCell<Vec<String>>,
+    /// Every `positioned_sound` call as (origin, entity, channel, sound).
+    pub positioned_sounds: RefCell<Vec<(Vec3f, usize, i32, i32)>>,
+    /// Every `sound` call (entity, channel, index, volume, attenuation,
+    /// time offset), in order.
+    pub sound_calls: RefCell<Vec<SoundCall>>,
+    /// Every `centerprintf` call, in order.
+    pub centerprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// Every `set_area_portal_state` call, in order.
+    pub portal_states: RefCell<Vec<(i32, bool)>>,
+    /// Every `bprintf` call as (print level, text).
+    pub bprints: RefCell<Vec<(i32, String)>>,
+    /// Every `write_byte` and `write_short` value, in order.
+    pub writes: RefCell<Vec<i32>>,
+    /// Every `multicast` call.
+    pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
+    /// `entity_areas` by entity number; unlisted numbers are in no area.
+    pub areas: RefCell<HashMap<usize, (i32, i32)>>,
+    /// Area pairs `areas_connected` reports as cut off (either order).
+    pub disconnected_areas: RefCell<Vec<(i32, i32)>>,
 }
 
+#[cfg(test)]
 impl GameImport for MockGameImport {
-    fn bprintf(&self, _: i32, _: &str) {}
-    fn dprintf(&self, _: &str) {}
-    fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
-    fn centerprintf(&self, _: Option<usize>, _: &str) {}
-    fn sound(&self, _: Option<usize>, _: i32, _: i32, _: f32, _: f32, _: f32) {}
-    fn model_index(&self, _: &str) -> i32 {
-        0
+    fn bprintf(&self, level: i32, msg: &str) {
+        self.bprints.borrow_mut().push((level, msg.to_string()));
     }
-    fn sound_index(&self, _: &str) -> i32 {
-        0
+    fn dprintf(&self, msg: &str) {
+        self.dprints.borrow_mut().push(msg.to_string());
+    }
+    fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
+    fn centerprintf(&self, ent: Option<usize>, msg: &str) {
+        self.centerprints.borrow_mut().push((ent, msg.to_string()));
+    }
+    fn sound(&self, ent: Option<usize>, chan: i32, index: i32, vol: f32, attn: f32, ofs: f32) {
+        let call = (ent, chan, index, vol, attn, ofs);
+        self.sound_calls.borrow_mut().push(call);
+    }
+    fn set_area_portal_state(&self, portal_num: i32, open: bool) {
+        self.portal_states.borrow_mut().push((portal_num, open));
+    }
+    fn areas_connected(&self, a: i32, b: i32) -> bool {
+        let cut = self.disconnected_areas.borrow();
+        !cut.contains(&(a, b)) && !cut.contains(&(b, a))
+    }
+    fn entity_areas(&self, number: usize) -> (i32, i32) {
+        self.areas.borrow().get(&number).copied().unwrap_or((0, 0))
+    }
+    fn positioned_sound(&self, o: Vec3f, e: usize, c: i32, s: i32, _: f32, _: f32, _: f32) {
+        self.positioned_sounds.borrow_mut().push((o, e, c, s));
+    }
+    /// Agrees with `set_model`'s index for the same name.
+    fn model_index(&self, name: &str) -> i32 {
+        self.set_model(0, name).index
+    }
+    fn sound_index(&self, name: &str) -> i32 {
+        let mut sounds = self.sounds.borrow_mut();
+        let pos = sounds.iter().position(|s| s == name).unwrap_or_else(|| {
+            sounds.push(name.to_string());
+            sounds.len() - 1
+        });
+        pos as i32 + 1
     }
     fn image_index(&self, name: &str) -> i32 {
         let mut images = self.images.borrow_mut();
@@ -554,10 +1031,14 @@ impl GameImport for MockGameImport {
         _maxs: Vec3f,
         end: Vec3f,
         pass_ent: Option<usize>,
-        _content_mask: i32,
+        content_mask: i32,
     ) -> Trace {
         self.trace_pass_ents.borrow_mut().push(pass_ent);
+        self.trace_masks.borrow_mut().push(content_mask);
         if let Some(trace) = self.next_trace.borrow_mut().take() {
+            return trace;
+        }
+        if let Some(trace) = self.queued_traces.borrow_mut().pop_front() {
             return trace;
         }
         // Default trace: no collision, endpoint reached.
@@ -599,15 +1080,21 @@ impl GameImport for MockGameImport {
             .borrow_mut()
             .push((num, string.to_string()));
     }
-    fn write_byte(&self, _: i32) {}
-    fn write_short(&self, _: i32) {}
+    fn write_byte(&self, c: i32) {
+        self.writes.borrow_mut().push(c);
+    }
+    fn write_short(&self, c: i32) {
+        self.writes.borrow_mut().push(c);
+    }
     fn write_long(&self, _: i32) {}
     fn write_float(&self, _: f32) {}
     fn write_string(&self, _: &str) {}
     fn write_position(&self, _: Vec3f) {}
     fn write_dir(&self, _: Vec3f) {}
     fn write_angle(&self, _: f32) {}
-    fn multicast(&self, _: Vec3f, _: Multicast) {}
+    fn multicast(&self, origin: Vec3f, to: Multicast) {
+        self.multicasts.borrow_mut().push((origin, to));
+    }
     fn unicast(&self, _: usize, _: bool) {}
 
     fn argc(&self) -> i32 {
@@ -619,7 +1106,9 @@ impl GameImport for MockGameImport {
     fn args(&self) -> String {
         String::new()
     }
-    fn add_command_string(&self, _: &str) {}
+    fn add_command_string(&self, text: &str) {
+        self.commands.borrow_mut().push(text.to_string());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -628,23 +1117,24 @@ impl GameImport for MockGameImport {
 // ---------------------------------------------------------------------------
 
 impl GameWorld {
-    /// Initialize the game — register all spawn functions, set up items.
-    /// C ref: `InitGame` (g_main.c / savegame.c).
+    /// Initialize the game: set up items (spawn functions are the static
+    /// `spawn::SPAWNS`). C ref: `InitGame` (g_main.c / savegame.c).
     pub fn init_game(&mut self) {
         self.init_items();
-        self.register_trigger_spawns();
-        self.register_target_spawns();
-        self.register_func_spawns();
-        self.register_misc_spawns();
-        self.register_monster_spawns();
     }
 
-    /// The configstrings and images C SP_worldspawn publishes (single
-    /// player).
-    fn worldspawn_configstrings(&mut self, fields: &HashMap<String, String>) {
+    /// The body queue, configstrings, images, sounds and models C
+    /// SP_worldspawn sets up. `sv_gravity`, `snd_fry` and
+    /// `PrecacheItem(Blaster)` are not ported.
+    pub(crate) fn worldspawn_configstrings(
+        &mut self,
+        _key: EntityKey,
+        fields: &HashMap<String, String>,
+    ) {
         use q2_shared::constants::{
             CS_CDTRACK, CS_ITEMS, CS_NAME, CS_SKY, CS_SKYAXIS, CS_SKYROTATE, CS_STATUSBAR,
         };
+        self.init_body_que();
         // SetItemNames.
         for (i, item) in self.items.iter().enumerate() {
             self.gi
@@ -675,11 +1165,31 @@ impl GameWorld {
         );
         let sounds = fields.get("sounds").map_or(0, |v| crate::spawn::strtol(v));
         self.gi.configstring(CS_CDTRACK as i32, &sounds.to_string());
-        self.gi.configstring(CS_STATUSBAR as i32, SINGLE_STATUSBAR);
+        let statusbar = if self.game.deathmatch {
+            DM_STATUSBAR
+        } else {
+            SINGLE_STATUSBAR
+        };
+        self.gi.configstring(CS_STATUSBAR as i32, statusbar);
         self.gi.image_index("i_help");
         self.level.pic_health = self.gi.image_index("i_health");
         self.gi.image_index("help");
         self.gi.image_index("field_3");
+        for sound in WORLDSPAWN_SOUNDS {
+            self.gi.sound_index(sound);
+        }
+        // Only coop and deathmatch show other players' weapons.
+        if self.game.coop || self.game.deathmatch {
+            for model in SEXED_WEAPON_MODELS {
+                self.gi.model_index(model);
+            }
+        }
+        for sound in WORLDSPAWN_LATE_SOUNDS {
+            self.gi.sound_index(sound);
+        }
+        for model in GIB_MODELS {
+            self.gi.model_index(model);
+        }
 
         // Light styles: 0 normal, then C's animated presets; 63 is testing.
         for (style, pattern) in LIGHT_STYLES.iter().enumerate() {
@@ -692,7 +1202,7 @@ impl GameWorld {
 
     /// C SP_light: untargeted lights are freed; switchable styles (32 and
     /// up) start on or off and toggle when used.
-    fn spawn_light(&mut self, key: EntityKey) {
+    pub(crate) fn spawn_light(&mut self, key: EntityKey, _fields: &HashMap<String, String>) {
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
@@ -719,35 +1229,61 @@ impl GameWorld {
         self.level.framenum += 1;
         self.level.time = self.level.framenum as f32 * crate::constants::FRAMETIME;
         self.entities.set_level_time(self.level.time);
+        self.level.gibs_this_frame = 0;
+        self.level.debris_this_frame = 0;
 
         // Pick a player for monsters to target this frame.
         crate::ai::ai_set_sight_client(self);
 
-        // Check exit intermission.
         if self.level.exitintermission {
+            self.exit_level();
             return;
         }
 
-        // Collect all entity keys (avoids borrow issues during iteration).
-        let keys: Vec<crate::entity::EntityKey> = self.entities.iter().map(|(k, _)| k).collect();
+        // Walk entity numbers, re-reading the table each step so entities
+        // spawned during the frame run in it too (C loops to the growing
+        // `globals.num_edicts`).
+        let maxclients = self.game.maxclients.max(0) as usize;
+        for number in 0..self.game.maxentities.max(0) as usize {
+            let Some(key) = self.entities.key_for_number(number) else {
+                continue;
+            };
+            if !self.entities.is_live(key) {
+                continue;
+            }
+            // Move_Calc starts a move this frame only when called from the
+            // mover's own think.
+            self.level.current_entity = Some(key);
 
-        for key in keys {
             let Some(ent) = self.entities.get(key) else {
                 continue;
             };
-            if !ent.in_use {
+            let (ground, ground_linkcount) =
+                (ent.game.ground_entity, ent.game.groundentity_linkcount);
+            let ground_moved = ground.is_some_and(|g| {
+                self.entities.get(g).map(|g| g.linkcount) != Some(ground_linkcount)
+            });
+            let Some(ent) = self.entities.get_mut(key) else {
+                continue;
+            };
+            // Save old origin for lerp.
+            ent.state.old_origin = ent.state.origin;
+
+            // If the ground entity moved, make sure we are still on it.
+            if ground_moved {
+                ent.game.ground_entity = None;
+                let swims_or_flies = ent.game.flags.intersects(
+                    crate::constants::EntityFlags::SWIM | crate::constants::EntityFlags::FLY,
+                );
+                if !swims_or_flies && ent.svflags & q2_shared::constants::SVF_MONSTER != 0 {
+                    self.m_check_ground(key);
+                }
+            }
+
+            if (1..=maxclients).contains(&number) {
+                self.client_begin_server_frame(key);
                 continue;
             }
-
-            // Save old origin for lerp.
-            let origin = ent.state.origin;
-            if let Some(ent) = self.entities.get_mut(key) {
-                ent.state.old_origin = origin;
-            }
-
-            // Run entity physics + think. Move_Calc starts a move this
-            // frame only when called from the mover's own think.
-            self.level.current_entity = Some(key);
             self.run_entity(key);
         }
 
@@ -755,10 +1291,186 @@ impl GameWorld {
         self.client_end_server_frames();
     }
 
+    /// Run the spawn function for `classname` on the already-filled `key`.
+    /// C ref: `ED_CallSpawn` (g_spawn.c).
+    pub(crate) fn call_spawn(
+        &mut self,
+        key: EntityKey,
+        classname: &str,
+        fields: &HashMap<String, String>,
+    ) {
+        // Items first (health has its own spawns), then the spawn table.
+        let item = match crate::items::health_spawn(classname) {
+            Some(_) => self.find_item_by_name("Health"),
+            None => self.find_item(classname),
+        };
+        if let Some(item) = item {
+            if let (Some(ent), Some((model, count))) = (
+                self.entities.get_mut(key),
+                crate::items::health_spawn(classname),
+            ) {
+                ent.game.model = model.to_string();
+                ent.game.count = count;
+            }
+            self.spawn_item(key, item);
+            return;
+        }
+
+        let Some(&(_, sfn, model, finish)) = crate::spawn::find_spawn(classname) else {
+            self.gi
+                .dprintf(&format!("{classname} doesn't have a spawn function\n"));
+            return;
+        };
+
+        // Every C brush-entity SP_* calls gi.setmodel(ent, ent->model)
+        // before sizing itself, and every SP_* links; done once here
+        // because spawn functions only see EntityStorage.
+        if let Some(model) = fields.get("model").filter(|m| m.starts_with('*')) {
+            self.set_model(key, model);
+        }
+        sfn(&mut self.entities, key, fields);
+        if !self.entities.is_live(key) {
+            return; // The spawn function removed it (info_null, bad keys).
+        }
+        if let Some(finish) = finish {
+            finish(self, key, fields);
+            if !self.entities.is_live(key) {
+                return; // C SP_light frees untargeted lights.
+            }
+        }
+        if let Some(model) = model {
+            self.set_model(key, model);
+        }
+
+        let is_monster = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.monsterinfo.is_some());
+        if is_monster {
+            if !crate::ai::monster_start(self, key) {
+                return; // Deathmatch freed the monster.
+            }
+            self.monster_start_item(key, classname, fields);
+        }
+        // C monster_start / SP_* link the entity after setting it up.
+        self.link_entity(key);
+    }
+
+    /// The item a monster drops on death, from its `item` key. C ref:
+    /// `monster_start` (g_monster.c), which reads `st.item`.
+    fn monster_start_item(
+        &mut self,
+        key: EntityKey,
+        classname: &str,
+        fields: &HashMap<String, String>,
+    ) {
+        let Some(name) = fields.get("item") else {
+            return;
+        };
+        match self.find_item(name) {
+            Some(item) => {
+                if let Some(ent) = self.entities.get_mut(key) {
+                    ent.game.item = Some(item);
+                }
+            }
+            None => {
+                let origin = self
+                    .entities
+                    .get(key)
+                    .map_or(Vec3f::ZERO, |e| e.state.origin);
+                // C vtos: "(%i %i %i)".
+                self.gi.dprintf(&format!(
+                    "{classname} at ({} {} {}) has bad item: {name}\n",
+                    origin.x as i32, origin.y as i32, origin.z as i32
+                ));
+            }
+        }
+    }
+
+    /// Chain entities that share a `team` key: the first becomes the
+    /// teammaster, the others FL_TEAMSLAVE members linked by `teamchain`.
+    /// C ref: `G_FindTeams` (g_spawn.c).
+    fn find_teams(&mut self) {
+        let keys: Vec<EntityKey> = self.entities.keys_from(1).collect();
+        let (mut teams, mut members) = (0, 0);
+        for (i, &e) in keys.iter().enumerate() {
+            let Some(ent) = self.entities.get(e) else {
+                continue;
+            };
+            if !ent.in_use
+                || ent.game.team.is_empty()
+                || ent
+                    .game
+                    .flags
+                    .contains(crate::constants::EntityFlags::TEAMSLAVE)
+            {
+                continue;
+            }
+            let team = ent.game.team.clone();
+            let mut chain = e;
+            if let Some(ent) = self.entities.get_mut(e) {
+                ent.game.teammaster = Some(e);
+            }
+            teams += 1;
+            members += 1;
+            for &e2 in &keys[i + 1..] {
+                let Some(ent2) = self.entities.get_mut(e2) else {
+                    continue;
+                };
+                if !ent2.in_use
+                    || ent2
+                        .game
+                        .flags
+                        .contains(crate::constants::EntityFlags::TEAMSLAVE)
+                    || ent2.game.team != team
+                {
+                    continue;
+                }
+                members += 1;
+                ent2.game.teammaster = Some(e);
+                ent2.game.flags |= crate::constants::EntityFlags::TEAMSLAVE;
+                if let Some(c) = self.entities.get_mut(chain) {
+                    c.game.teamchain = Some(e2);
+                }
+                chain = e2;
+            }
+        }
+        self.gi
+            .dprintf(&format!("{teams} teams with {members} entities.\n"));
+    }
+
+    /// Ask the server to load `level.changemap` and resume normal frames.
+    /// C ref: `ExitLevel` (g_main.c).
+    fn exit_level(&mut self) {
+        let command = format!("gamemap \"{}\"\n", self.level.changemap);
+        self.gi.add_command_string(&command);
+        self.level.changemap.clear();
+        self.level.exitintermission = false;
+        self.level.intermission_time = 0.0;
+        self.client_end_server_frames();
+
+        // Clear some things before going to the next level.
+        for number in 1..=self.game.maxclients.max(0) as usize {
+            let Some(ent) = self
+                .entities
+                .key_for_number(number)
+                .and_then(|k| self.entities.get_mut(k))
+                .filter(|e| e.in_use)
+            else {
+                continue;
+            };
+            ent.game.health = ent.game.health.min(ent.game.max_health);
+        }
+    }
+
     /// Parse an entity string and spawn all entities.
     /// C ref: `SpawnEntities` (g_spawn.c).
     pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str) {
         self.game.spawnpoint = spawnpoint.to_string();
+        self.save_client_data();
+        // `self.clients` is untouched: C re-points `g_edicts[i + 1].client`
+        // at `game.clients + i` here, and ClientBegin does it for each new
+        // body.
         // C SpawnEntities: a new map starts from zeroed edicts and level.
         self.entities = EntityStorage::new(self.game.maxentities.max(0) as usize);
         self.entities
@@ -782,79 +1494,66 @@ impl GameWorld {
             }
         };
 
+        let mut inhibit = 0;
         for fields in &parsed {
             let classname = match fields.get("classname") {
                 Some(cn) => cn.clone(),
                 None => continue,
             };
 
-            // C ED_CallSpawn: items first (health has its own spawns), then
-            // the spawn table.
-            let item = match crate::items::health_spawn(&classname) {
-                Some(_) => self.find_item_by_name("Health"),
-                None => self.find_item(&classname),
+            // C SpawnEntities: the first entity (worldspawn) is g_edicts[0].
+            let slot = if classname == "worldspawn" {
+                self.entities.spawn_numbered(0)
+            } else {
+                self.entities.spawn()
             };
-            if let Some(item) = item {
-                let Some(key) = self.entities.spawn() else {
-                    break; // Storage full.
-                };
-                if let Some(ent) = self.entities.get_mut(key) {
-                    crate::spawn::apply_spawn_fields(ent, fields);
-                    if let Some((model, count)) = crate::items::health_spawn(&classname) {
-                        ent.game.model = model.to_string();
-                        ent.game.count = count;
-                    }
-                }
-                self.spawn_item(key, item);
+            let Some(key) = slot else {
+                break; // Storage full.
+            };
+            let Some(ent) = self.entities.get_mut(key) else {
                 continue;
+            };
+            crate::spawn::apply_spawn_fields(ent, fields);
+
+            // Yet another map hack.
+            if mapname.eq_ignore_ascii_case("command")
+                && classname.eq_ignore_ascii_case("trigger_once")
+                && ent.game.model.eq_ignore_ascii_case("*27")
+            {
+                ent.game.spawnflags &= !SPAWNFLAG_NOT_HARD;
             }
 
-            let spawn_fn = self.spawn_table.get(&classname).copied();
-
-            if let Some(sfn) = spawn_fn {
-                // C SpawnEntities: the first entity (worldspawn) is g_edicts[0].
-                let slot = if classname == "worldspawn" {
-                    self.entities.spawn_numbered(0)
+            // Remove things (except the world) from other skill levels or
+            // deathmatch. Coop filters like single player: C has its
+            // SPAWNFLAG_NOT_COOP test commented out.
+            if classname != "worldspawn" {
+                let skill_flag = match self.game.skill {
+                    0 => SPAWNFLAG_NOT_EASY,
+                    1 => SPAWNFLAG_NOT_MEDIUM,
+                    _ => SPAWNFLAG_NOT_HARD,
+                };
+                let removed = if self.game.deathmatch {
+                    SPAWNFLAG_NOT_DEATHMATCH
                 } else {
-                    self.entities.spawn()
+                    skill_flag
                 };
-                let Some(key) = slot else {
-                    break; // Storage full.
-                };
-
-                if let Some(ent) = self.entities.get_mut(key) {
-                    crate::spawn::apply_spawn_fields(ent, fields);
+                if ent.game.spawnflags & removed != 0 {
+                    self.free_entity(key);
+                    inhibit += 1;
+                    continue;
                 }
-
-                // Every C brush-entity SP_* calls gi.setmodel(ent, ent->model)
-                // before sizing itself, and every SP_* links; done once here
-                // because spawn functions only see EntityStorage.
-                if let Some(model) = fields.get("model").filter(|m| m.starts_with('*')) {
-                    self.set_model(key, model);
-                }
-                sfn(&mut self.entities, key, fields);
-                if classname == "worldspawn" {
-                    self.worldspawn_configstrings(fields);
-                } else if classname == "light" {
-                    self.spawn_light(key);
-                }
-                if let Some(model) = crate::spawn::classname_model(&classname) {
-                    self.set_model(key, model);
-                }
-                self.link_entity(key);
-
-                // Run monster_start for monster entities.
-                let is_monster = self
-                    .entities
-                    .get(key)
-                    .map(|e| e.monsterinfo.is_some())
-                    .unwrap_or(false);
-                if is_monster {
-                    crate::ai::monster_start(self, key);
-                }
+                ent.game.spawnflags &= !(SPAWNFLAG_NOT_EASY
+                    | SPAWNFLAG_NOT_MEDIUM
+                    | SPAWNFLAG_NOT_HARD
+                    | SPAWNFLAG_NOT_COOP
+                    | SPAWNFLAG_NOT_DEATHMATCH);
             }
-            // Unknown classnames are silently skipped (logged in full impl).
+
+            self.call_spawn(key, &classname, fields);
         }
+        self.gi.dprintf(&format!("{inhibit} entities inhibited.\n"));
+        self.find_teams();
+        self.trail.init();
 
         // Entities a spawn function created itself (a plat's trigger); C
         // links them inside the SP_* function.
@@ -871,14 +1570,40 @@ impl GameWorld {
 }
 
 /// Helper to create a `GameWorld` for testing.
+#[cfg(test)]
 pub fn test_world() -> GameWorld {
     test_world_recording().0
 }
 
 /// A test `GameWorld` plus a handle on its recording import.
+#[cfg(test)]
 pub fn test_world_recording() -> (GameWorld, Rc<MockGameImport>) {
     let gi = Rc::new(MockGameImport::default());
     (GameWorld::new(gi.clone(), 1024), gi)
+}
+
+#[cfg(test)]
+impl GameWorld {
+    /// Spawn a fake player in the first free client number, holding
+    /// `client` in that number's `game.clients` slot. Panics when every
+    /// client number is taken: C has no client record for other edicts.
+    /// The player stands in a lit room (`light_level` 128), so monsters'
+    /// dark check (`FindTarget`'s `light_level <= 5`) does not hide it.
+    pub(crate) fn spawn_test_client(&mut self, client: ClientData) -> EntityKey {
+        let number = (1..=self.clients.len())
+            .find(|&n| {
+                self.entities
+                    .key_for_number(n)
+                    .is_none_or(|k| !self.entities.is_live(k))
+            })
+            .expect("a free client number");
+        let key = self.entities.spawn_numbered(number).unwrap();
+        self.clients[number - 1] = client;
+        let ent = self.entities.get_mut(key).unwrap();
+        ent.client = Some(number - 1);
+        ent.game.light_level = 128;
+        key
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +1621,15 @@ mod tests {
         assert_eq!(world.level.framenum, 0);
         assert_eq!(world.level.time, 0.0);
         assert_eq!(world.game.maxentities, 1024);
+    }
+
+    #[test]
+    fn random_stays_within_zero_and_one() {
+        let mut world = test_world();
+        for _ in 0..10_000 {
+            let r = world.random();
+            assert!((0.0..=1.0).contains(&r), "{r}");
+        }
     }
 
     #[test]
@@ -924,6 +1658,22 @@ mod tests {
         world.free_entity(client);
         assert!(world.entities.get(client).unwrap().in_use);
         assert_eq!(*gi.unlinks.borrow(), [2]);
+    }
+
+    #[test]
+    fn link_entity_stores_the_areas_the_server_found_like_sv_linkedict() {
+        let (mut world, gi) = test_world_recording();
+        let key = world.spawn().unwrap();
+        let number = world.number_of(key).unwrap();
+        gi.areas.borrow_mut().insert(number, (2, 3));
+        world.link_entity(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!((ent.areanum, ent.areanum2), (2, 3));
+
+        gi.areas.borrow_mut().insert(number, (1, 0));
+        world.link_entity(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!((ent.areanum, ent.areanum2), (1, 0));
     }
 
     #[test]
@@ -1089,6 +1839,28 @@ mod tests {
         assert!(gi.links.borrow().iter().any(|l| l.number == number));
     }
 
+    #[test]
+    fn spawn_entities_links_monsters_with_the_box_monster_start_gives_them() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"monster_soldier\" }",
+            "",
+        );
+        let key = world.find_by_classname(None, "monster_soldier").unwrap();
+        let number = world.number_of(key).unwrap();
+        let last = gi
+            .links
+            .borrow()
+            .iter()
+            .rev()
+            .find(|l| l.number == number)
+            .cloned()
+            .expect("monster linked");
+        assert_eq!(last.solid, Solid::Bbox);
+    }
+
     fn touched(
         world: &mut GameWorld,
         trigger: EntityKey,
@@ -1102,9 +1874,8 @@ mod tests {
     /// A live client and a trigger `box_edicts` reports overlapping it.
     fn client_in_trigger() -> (GameWorld, EntityKey, EntityKey) {
         let (mut world, gi) = test_world_recording();
-        let player = world.spawn().unwrap();
+        let player = world.spawn_test_client(crate::entity::ClientData::default());
         let ent = world.entities.get_mut(player).unwrap();
-        ent.client = Some(crate::entity::ClientData::default());
         ent.game.health = 100;
         let trigger = world.spawn().unwrap();
         world.entities.get_mut(trigger).unwrap().touch = Some(touched);
@@ -1201,6 +1972,115 @@ mod tests {
             configstring(&gi, CS_ITEMS + shotgun).as_deref(),
             Some("Shotgun")
         );
+    }
+
+    fn world_in_mode(
+        deathmatch: bool,
+        coop: bool,
+        entstring: &str,
+    ) -> (GameWorld, Rc<MockGameImport>) {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.set_max_clients(2);
+        world.game.deathmatch = deathmatch;
+        world.game.coop = coop;
+        world.spawn_entities("base1", entstring, "");
+        (world, gi)
+    }
+
+    #[test]
+    fn deathmatch_worldspawn_sends_the_deathmatch_status_bar() {
+        use q2_shared::constants::CS_STATUSBAR;
+        let (_, gi) = world_in_mode(true, false, "{ \"classname\" \"worldspawn\" }");
+        let bar = configstring(&gi, CS_STATUSBAR).unwrap();
+        assert_eq!(bar, DM_STATUSBAR);
+        assert!(bar.contains("num 3 14 ") && bar.contains("\"SPECTATOR MODE\""));
+        let (_, gi) = world_in_mode(false, true, "{ \"classname\" \"worldspawn\" }");
+        assert_eq!(configstring(&gi, CS_STATUSBAR).unwrap(), SINGLE_STATUSBAR);
+    }
+
+    #[test]
+    fn worldspawn_precaches_player_sounds_and_gib_models_like_c() {
+        let (_, gi) = world_in_mode(false, false, "{ \"classname\" \"worldspawn\" }");
+        let sounds = gi.sounds.borrow();
+        for sound in [
+            "player/fry.wav",
+            "player/lava1.wav",
+            "misc/udeath.wav",
+            "*death1.wav",
+            "*pain100_2.wav",
+            "player/u_breath2.wav",
+            "weapons/noammo.wav",
+            "infantry/inflies1.wav",
+        ] {
+            assert!(sounds.iter().any(|s| s == sound), "{sound}");
+        }
+        let models = gi.models.borrow();
+        for model in [
+            "models/objects/gibs/sm_meat/tris.md2",
+            "models/objects/gibs/arm/tris.md2",
+            "models/objects/gibs/head2/tris.md2",
+        ] {
+            assert!(models.iter().any(|m| m == model), "{model}");
+        }
+        // The sexed view weapons load only in coop and deathmatch.
+        assert!(!models.iter().any(|m| m.starts_with('#')));
+        drop((sounds, models));
+        for (deathmatch, coop) in [(true, false), (false, true)] {
+            let (_, gi) = world_in_mode(deathmatch, coop, "{ \"classname\" \"worldspawn\" }");
+            let models = gi.models.borrow();
+            let sexed: Vec<_> = models.iter().filter(|m| m.starts_with('#')).collect();
+            assert_eq!(sexed.len(), 11);
+            assert_eq!(
+                (sexed[0].as_str(), sexed[10].as_str()),
+                ("#w_blaster.md2", "#w_bfg.md2")
+            );
+        }
+    }
+
+    #[test]
+    fn coop_and_deathmatch_reserve_eight_body_queue_edicts_after_the_clients() {
+        // C InitBodyQue, called by SP_worldspawn before any other entity.
+        let map = "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_notnull\" }";
+        for (deathmatch, coop) in [(true, false), (false, true)] {
+            let (world, _) = world_in_mode(deathmatch, coop, map);
+            for number in 3..=10 {
+                let key = world.entities.key_for_number(number).unwrap();
+                assert_eq!(world.entities.get(key).unwrap().game.classname, "bodyque");
+            }
+            let key = world.entities.key_for_number(11).unwrap();
+            assert_eq!(
+                world.entities.get(key).unwrap().game.classname,
+                "info_notnull"
+            );
+            assert_eq!(world.level.body_que, 0);
+        }
+        let (world, _) = world_in_mode(false, false, map);
+        assert!(world.find_by_classname(None, "bodyque").is_none());
+    }
+
+    #[test]
+    fn body_queue_edicts_are_never_freed_in_coop_or_deathmatch() {
+        // C G_FreeEdict returns for numbers up to maxclients + BODY_QUEUE_SIZE.
+        let (mut world, _) = world_in_mode(true, false, "{ \"classname\" \"worldspawn\" }");
+        let last = world.entities.key_for_number(10).unwrap();
+        world.free_entity(last);
+        assert!(world.entities.get(last).unwrap().in_use);
+        let other = world.spawn().unwrap();
+        world.free_entity(other);
+        assert!(!world.entities.get(other).is_some_and(|e| e.in_use));
+    }
+
+    #[test]
+    fn info_player_coop_stays_only_in_coop() {
+        // C SP_info_player_coop frees itself when !coop.
+        let map = "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_player_coop\" }";
+        let (world, _) = world_in_mode(false, true, map);
+        assert!(world.find_by_classname(None, "info_player_coop").is_some());
+        for (deathmatch, coop) in [(false, false), (true, false)] {
+            let (world, _) = world_in_mode(deathmatch, coop, map);
+            assert!(world.find_by_classname(None, "info_player_coop").is_none());
+        }
     }
 
     #[test]
@@ -1336,7 +2216,7 @@ mod tests {
 
     #[test]
     fn pick_target_returns_none_for_empty() {
-        let world = test_world();
+        let mut world = test_world();
         assert!(world.pick_target("").is_none());
         assert!(world.pick_target("nonexistent").is_none());
     }
@@ -1374,19 +2254,14 @@ mod tests {
 
     #[test]
     fn use_targets_fires_use_fn() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static CALLED: AtomicBool = AtomicBool::new(false);
-
         fn test_use(
-            _world: &mut GameWorld,
-            _self_key: EntityKey,
+            world: &mut GameWorld,
+            key: EntityKey,
             _other: EntityKey,
             _activator: EntityKey,
         ) {
-            CALLED.store(true, Ordering::Relaxed);
+            world.entities.get_mut(key).unwrap().game.count += 1;
         }
-
-        CALLED.store(false, Ordering::Relaxed);
 
         let mut world = test_world();
 
@@ -1399,7 +2274,7 @@ mod tests {
 
         world.use_targets(activator, activator);
 
-        assert!(CALLED.load(Ordering::Relaxed));
+        assert!(world.entities.get(target).unwrap().game.count != 0);
     }
 
     #[test]
@@ -1512,7 +2387,9 @@ mod tests {
         let ent = world.entities.get(sol).unwrap();
         assert_eq!(ent.game.health, 30);
         assert!(ent.monsterinfo.is_some());
-        assert!(ent.think.is_some()); // monster_think was set by monster_start
+        // monster_start sets walkmonster_start_go, whose first think sets
+        // monster_think.
+        assert!(ent.think.is_some());
     }
 
     /// **CP-2 Checkpoint**: Spawn player + monster_soldier, soldier enters
@@ -1581,6 +2458,7 @@ mod tests {
             ent.game.health = 200;
             ent.game.takedamage = crate::constants::TakeDamage::Yes;
             ent.state.origin = Vec3f::new(120.0, 0.0, 0.0);
+            ent.solid = Solid::Bbox; // findradius skips SOLID_NOT
         }
 
         // Simulate rocket impact on soldier.
@@ -1618,14 +2496,9 @@ mod tests {
     /// Trigger chain: trigger_relay → target_secret → counter increments.
     #[test]
     fn integration_trigger_chain() {
-        use std::sync::atomic::{AtomicI32, Ordering};
-        static ACTIVATIONS: AtomicI32 = AtomicI32::new(0);
-
-        fn count_use(_w: &mut GameWorld, _s: EntityKey, _o: EntityKey, _a: EntityKey) {
-            ACTIVATIONS.fetch_add(1, Ordering::Relaxed);
+        fn count_use(world: &mut GameWorld, key: EntityKey, _o: EntityKey, _a: EntityKey) {
+            world.entities.get_mut(key).unwrap().game.count += 1;
         }
-
-        ACTIVATIONS.store(0, Ordering::Relaxed);
 
         let mut world = test_world();
 
@@ -1648,11 +2521,11 @@ mod tests {
         // Fire relay.
         world.use_targets(relay, relay);
 
-        assert_eq!(ACTIVATIONS.load(Ordering::Relaxed), 1);
+        assert_eq!(world.entities.get(counter).unwrap().game.count, 1);
 
         // Fire again.
         world.use_targets(relay, relay);
-        assert_eq!(ACTIVATIONS.load(Ordering::Relaxed), 2);
+        assert_eq!(world.entities.get(counter).unwrap().game.count, 2);
     }
 
     /// Player connects, picks up health, takes damage, verifies HUD stats.
@@ -1695,15 +2568,7 @@ mod tests {
         // Update HUD stats.
         world.update_player_stats(player);
 
-        let stats = world
-            .entities
-            .get(player)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .ps
-            .stats;
+        let stats = world.client(player).unwrap().ps.stats;
         assert_eq!(stats[1], 75); // STAT_HEALTH
     }
 
@@ -1838,5 +2703,452 @@ mod tests {
             world.entities.get(sol).unwrap().game.deadflag,
             crate::constants::DeadFlag::Dead
         );
+    }
+    // -- G_UseTargets / G_Find / G_RunFrame parity --
+
+    fn relay(world: &mut GameWorld, key: EntityKey, _other: EntityKey, activator: EntityKey) {
+        world.entities.get_mut(key).unwrap().game.count += 1;
+        world.use_targets(key, activator);
+    }
+
+    fn bump(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+        world.entities.get_mut(key).unwrap().game.count += 1;
+    }
+
+    fn free_user(world: &mut GameWorld, _key: EntityKey, other: EntityKey, _activator: EntityKey) {
+        world.free_entity(other);
+    }
+
+    #[test]
+    fn entity_targeting_its_own_targetname_does_not_use_itself() {
+        let mut world = test_world();
+        let ent = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(ent).unwrap();
+            e.game.target = "a".into();
+            e.game.targetname = "a".into();
+            e.use_fn = Some(relay);
+        }
+        relay(&mut world, ent, ent, ent);
+        assert_eq!(world.entities.get(ent).unwrap().game.count, 1);
+    }
+
+    #[test]
+    fn use_targets_stops_when_a_target_removes_the_user() {
+        let mut world = test_world();
+        let user = world.spawn().unwrap();
+        world.entities.get_mut(user).unwrap().game.target = "t".into();
+        let first = world.spawn().unwrap();
+        let second = world.spawn().unwrap();
+        for (k, f) in [(first, free_user as crate::entity::UseFn), (second, bump)] {
+            let e = world.entities.get_mut(k).unwrap();
+            e.game.targetname = "t".into();
+            e.use_fn = Some(f);
+        }
+        world.use_targets(user, user);
+        assert_eq!(world.entities.get(second).unwrap().game.count, 0);
+    }
+
+    #[test]
+    fn delayed_use_fires_the_targets_after_the_delay() {
+        let mut world = test_world();
+        let user = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(user).unwrap();
+            e.game.target = "t".into();
+            e.game.delay = 0.3;
+        }
+        let target = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(target).unwrap();
+            e.game.targetname = "t".into();
+            e.use_fn = Some(bump);
+        }
+        world.use_targets(user, user);
+        assert_eq!(world.entities.get(target).unwrap().game.count, 0);
+        for _ in 0..2 {
+            world.run_frame();
+        }
+        assert_eq!(world.entities.get(target).unwrap().game.count, 0);
+        world.run_frame();
+        assert_eq!(world.entities.get(target).unwrap().game.count, 1);
+        assert!(world.find_by_classname(None, "DelayedUse").is_none());
+    }
+
+    #[test]
+    fn use_targets_centerprints_the_message_to_the_activator() {
+        #[derive(Default)]
+        struct Printer {
+            inner: MockGameImport,
+            printed: RefCell<Vec<(Option<usize>, String)>>,
+        }
+        impl GameImport for Printer {
+            fn centerprintf(&self, ent: Option<usize>, msg: &str) {
+                self.printed.borrow_mut().push((ent, msg.to_string()));
+            }
+            fn sound(&self, _: Option<usize>, _: i32, _: i32, _: f32, _: f32, _: f32) {}
+            fn positioned_sound(&self, _: Vec3f, _: usize, _: i32, _: i32, _: f32, _: f32, _: f32) {
+            }
+            fn bprintf(&self, a: i32, b: &str) {
+                self.inner.bprintf(a, b)
+            }
+            fn dprintf(&self, a: &str) {
+                self.inner.dprintf(a)
+            }
+            fn cprintf(&self, a: Option<usize>, b: i32, c: &str) {
+                self.inner.cprintf(a, b, c)
+            }
+            fn model_index(&self, a: &str) -> i32 {
+                self.inner.model_index(a)
+            }
+            fn sound_index(&self, a: &str) -> i32 {
+                self.inner.sound_index(a)
+            }
+            fn image_index(&self, a: &str) -> i32 {
+                self.inner.image_index(a)
+            }
+            fn set_model(&self, a: usize, b: &str) -> ModelInfo {
+                self.inner.set_model(a, b)
+            }
+            fn trace(
+                &self,
+                a: Vec3f,
+                b: Vec3f,
+                c: Vec3f,
+                d: Vec3f,
+                e: Option<usize>,
+                f: i32,
+            ) -> Trace {
+                self.inner.trace(a, b, c, d, e, f)
+            }
+            fn point_contents(&self, a: Vec3f) -> i32 {
+                self.inner.point_contents(a)
+            }
+            fn in_pvs(&self, a: Vec3f, b: Vec3f) -> bool {
+                self.inner.in_pvs(a, b)
+            }
+            fn in_phs(&self, a: Vec3f, b: Vec3f) -> bool {
+                self.inner.in_phs(a, b)
+            }
+            fn link_entity(&self, a: &EntityLink) {
+                self.inner.link_entity(a)
+            }
+            fn unlink_entity(&self, a: usize) {
+                self.inner.unlink_entity(a)
+            }
+            fn box_edicts(&self, a: Vec3f, b: Vec3f, c: usize, d: i32) -> Vec<usize> {
+                self.inner.box_edicts(a, b, c, d)
+            }
+            fn configstring(&self, a: i32, b: &str) {
+                self.inner.configstring(a, b)
+            }
+            fn write_byte(&self, _: i32) {}
+            fn write_short(&self, _: i32) {}
+            fn write_long(&self, _: i32) {}
+            fn write_float(&self, _: f32) {}
+            fn write_string(&self, _: &str) {}
+            fn write_position(&self, _: Vec3f) {}
+            fn write_dir(&self, _: Vec3f) {}
+            fn write_angle(&self, _: f32) {}
+            fn multicast(&self, _: Vec3f, _: Multicast) {}
+            fn unicast(&self, _: usize, _: bool) {}
+            fn argc(&self) -> i32 {
+                0
+            }
+            fn argv(&self, _: i32) -> String {
+                String::new()
+            }
+            fn args(&self) -> String {
+                String::new()
+            }
+            fn add_command_string(&self, _: &str) {}
+        }
+        let gi = Rc::new(Printer::default());
+        let mut world = GameWorld::new(gi.clone(), 64);
+        let player = world.entities.spawn_numbered(1).unwrap();
+        let user = world.spawn().unwrap();
+        world.entities.get_mut(user).unwrap().game.message = "You need the red key".into();
+        world.use_targets(user, player);
+        assert_eq!(
+            *gi.printed.borrow(),
+            [(Some(1), "You need the red key".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_by_targetname_ignores_case_and_never_matches_empty_names() {
+        let mut world = test_world();
+        let blank = world.spawn().unwrap();
+        let named = world.spawn().unwrap();
+        world.entities.get_mut(named).unwrap().game.targetname = "Door1".into();
+        assert_eq!(world.find_by_targetname(None, "door1"), Some(named));
+        assert_eq!(world.find_by_targetname(None, ""), None);
+        let _ = blank;
+    }
+
+    #[test]
+    fn find_walks_entities_in_number_order_after_slot_reuse() {
+        let mut world = test_world();
+        let a = world.spawn().unwrap();
+        let b = world.spawn().unwrap();
+        world.free_entity(a);
+        world.level.time = 10.0;
+        world.entities.set_level_time(10.0);
+        let c = world.spawn().unwrap(); // reuses a's number, a later slot
+        assert!(world.number_of(c) < world.number_of(b));
+        for k in [b, c] {
+            world.entities.get_mut(k).unwrap().game.classname = "x".into();
+        }
+        assert_eq!(world.find_by_classname(None, "x"), Some(c));
+        assert_eq!(world.find_by_classname(Some(c), "x"), Some(b));
+    }
+
+    #[test]
+    fn pick_target_varies_between_calls_in_one_frame() {
+        let mut world = test_world();
+        for _ in 0..8 {
+            let k = world.spawn().unwrap();
+            world.entities.get_mut(k).unwrap().game.targetname = "t".into();
+        }
+        let picks: std::collections::HashSet<_> =
+            (0..32).filter_map(|_| world.pick_target("t")).collect();
+        assert!(picks.len() > 1);
+    }
+
+    #[test]
+    fn set_movedir_treats_only_the_exact_editor_vectors_as_up_and_down() {
+        let tilted = GameWorld::set_movedir(Vec3f::new(30.0, -1.0, 0.0));
+        assert!(tilted.z < 0.0, "pitch 30 points down: {tilted:?}");
+    }
+
+    #[test]
+    fn entity_spawned_during_the_frame_runs_in_the_same_frame() {
+        fn spawn_child(world: &mut GameWorld, _key: EntityKey) {
+            let child = world.spawn().unwrap();
+            let e = world.entities.get_mut(child).unwrap();
+            e.game.classname = "child".into();
+            e.game.movetype = crate::constants::MoveType::Noclip;
+            e.velocity = Vec3f::new(100.0, 0.0, 0.0);
+        }
+        let mut world = test_world();
+        let parent = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(parent).unwrap();
+            e.think = Some(spawn_child);
+            e.game.nextthink = 0.1;
+        }
+        world.run_frame();
+        let child = world.find_by_classname(None, "child").unwrap();
+        assert_eq!(world.entities.get(child).unwrap().state.origin.x, 10.0);
+    }
+
+    #[test]
+    fn monster_whose_ground_entity_moved_rechecks_the_ground() {
+        let mut world = test_world();
+        let plat = world.spawn().unwrap();
+        let monster = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(monster).unwrap();
+            e.svflags |= q2_shared::constants::SVF_MONSTER;
+            e.game.movetype = crate::constants::MoveType::Step;
+            e.game.ground_entity = Some(plat);
+            e.game.groundentity_linkcount = 0;
+        }
+        world.link_entity(plat); // linkcount 1: the plat moved.
+        world.run_frame();
+        // The mock world has no floor, so the monster starts falling.
+        let e = world.entities.get(monster).unwrap();
+        assert!(e.game.ground_entity.is_none());
+        assert!(e.velocity.z < 0.0);
+    }
+    #[test]
+    fn entities_flagged_not_for_the_current_skill_are_removed() {
+        let mut world = test_world();
+        world.init_game();
+        world.game.skill = 1;
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" }
+               { "classname" "info_notnull" "targetname" "medium_off" "spawnflags" "512" }
+               { "classname" "info_notnull" "targetname" "easy_off" "spawnflags" "257" }"#,
+            "",
+        );
+        assert!(world.find_by_targetname(None, "medium_off").is_none());
+        let kept = world.find_by_targetname(None, "easy_off").unwrap();
+        // The skill/deathmatch bits are cleared on what stays.
+        assert_eq!(world.entities.get(kept).unwrap().game.spawnflags, 1);
+    }
+
+    /// Spawn flags 0x800 (not in deathmatch), 0x1000 (not in coop) and
+    /// 0x400 (not on hard), each on its own info_notnull.
+    const MODE_FLAGGED: &str = r#"{ "classname" "worldspawn" }
+        { "classname" "info_notnull" "targetname" "not_dm" "spawnflags" "2048" }
+        { "classname" "info_notnull" "targetname" "not_coop" "spawnflags" "4096" }
+        { "classname" "info_notnull" "targetname" "not_hard" "spawnflags" "1024" }"#;
+
+    #[test]
+    fn deathmatch_removes_not_deathmatch_entities_and_ignores_skill_flags() {
+        let mut world = test_world();
+        world.init_game();
+        world.game.deathmatch = true;
+        world.game.skill = 2;
+        world.spawn_entities("q2dm1", MODE_FLAGGED, "");
+        assert!(world.find_by_targetname(None, "not_dm").is_none());
+        let kept = world.find_by_targetname(None, "not_hard").unwrap();
+        assert!(world.find_by_targetname(None, "not_coop").is_some());
+        assert_eq!(world.entities.get(kept).unwrap().game.spawnflags, 0);
+    }
+
+    #[test]
+    fn coop_filters_by_skill_and_keeps_not_coop_entities_like_c() {
+        // C G_SpawnEntities has the SPAWNFLAG_NOT_COOP test commented out.
+        let mut world = test_world();
+        world.init_game();
+        world.game.coop = true;
+        world.game.skill = 2;
+        world.spawn_entities("base1", MODE_FLAGGED, "");
+        assert!(world.find_by_targetname(None, "not_hard").is_none());
+        assert!(world.find_by_targetname(None, "not_coop").is_some());
+        assert!(world.find_by_targetname(None, "not_dm").is_some());
+    }
+
+    #[test]
+    fn unknown_classname_is_reported() {
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "monster_nonexistent" }"#,
+            "",
+        );
+        let ent = world.find_by_classname(None, "monster_nonexistent");
+        assert!(ent.is_some(), "C keeps the edict, without a spawn function");
+    }
+
+    #[test]
+    fn info_null_is_soft_freed_and_its_number_reused_at_level_start() {
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "info_null" }
+               { "classname" "info_notnull" "targetname" "after" }"#,
+            "",
+        );
+        let after = world.find_by_targetname(None, "after").unwrap();
+        // C G_Spawn reuses edicts freed before level time 2.
+        let first = world.game.maxclients as usize + 1;
+        assert_eq!(world.number_of(after), Some(first));
+    }
+
+    #[test]
+    fn exit_level_clamps_client_health_to_max_health_before_the_map_change() {
+        let mut world = test_world();
+        world.set_max_clients(2);
+        let over = world.entities.spawn_numbered(1).unwrap();
+        let under = world.entities.spawn_numbered(2).unwrap();
+        for (key, health) in [(over, 250), (under, 40)] {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.health = health;
+            ent.game.max_health = 100;
+        }
+        world.level.changemap = "base2".to_string();
+        world.level.exitintermission = true;
+        world.run_frame();
+        assert_eq!(world.entities.get(over).unwrap().game.health, 100);
+        assert_eq!(world.entities.get(under).unwrap().game.health, 40);
+    }
+
+    fn spawn_soldier_with_item(item: &str) -> (GameWorld, EntityKey) {
+        spawn_soldier_with_item_recording(item).0
+    }
+
+    fn spawn_soldier_with_item_recording(
+        item: &str,
+    ) -> ((GameWorld, EntityKey), Rc<MockGameImport>) {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "t",
+            &format!(
+                "{{ \"classname\" \"worldspawn\" }}\n\
+                 {{ \"classname\" \"monster_soldier\" \"item\" \"{item}\" }}"
+            ),
+            "",
+        );
+        let key = world.find_by_classname(None, "monster_soldier").unwrap();
+        ((world, key), gi)
+    }
+
+    #[test]
+    fn monster_spawned_with_an_item_key_carries_that_item() {
+        // C monster_start: self->item = FindItemByClassname(st.item).
+        let (world, key) = spawn_soldier_with_item("item_armor_shard");
+        let shard = world.find_item("item_armor_shard");
+        assert!(shard.is_some());
+        assert_eq!(world.entities.get(key).unwrap().game.item, shard);
+    }
+
+    #[test]
+    fn monster_with_a_bad_item_key_spawns_without_an_item() {
+        // C monster_start prints "has bad item" and leaves self->item NULL.
+        let ((world, key), gi) = spawn_soldier_with_item_recording("item_no_such_thing");
+        assert_eq!(world.entities.get(key).unwrap().game.item, None);
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "monster_soldier at (0 0 0) has bad item: item_no_such_thing\n"));
+    }
+
+    #[test]
+    fn deathmatch_monster_is_freed_without_reading_its_item_or_linking() {
+        // C monster_start frees the edict in deathmatch and returns before
+        // st.item and gi.linkentity.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.game.deathmatch = true;
+        let key = world.spawn().unwrap();
+        let fields = HashMap::from([("item".to_string(), "item_no_such_thing".to_string())]);
+        gi.links.borrow_mut().clear();
+        world.call_spawn(key, "monster_soldier", &fields);
+        assert!(!world.entities.get(key).is_some_and(|e| e.in_use));
+        assert!(gi.dprints.borrow().iter().all(|m| !m.contains("bad item")));
+        assert!(gi.links.borrow().is_empty());
+    }
+
+    fn radius_target(world: &mut GameWorld, origin: Vec3f, solid: Solid) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = origin;
+        ent.mins = Vec3f::new(-16.0, -16.0, 0.0);
+        ent.maxs = Vec3f::new(16.0, 16.0, 64.0);
+        ent.solid = solid;
+        key
+    }
+
+    #[test]
+    fn find_radius_measures_to_the_box_center_and_walks_in_number_order() {
+        // C findradius: distance from org to origin + (mins + maxs) / 2.
+        let mut world = test_world();
+        let near = radius_target(&mut world, Vec3f::new(100.0, 0.0, -32.0), Solid::Bbox);
+        let far = radius_target(&mut world, Vec3f::new(101.0, 0.0, -32.0), Solid::Bbox);
+        let next = radius_target(&mut world, Vec3f::new(0.0, 50.0, -32.0), Solid::Trigger);
+        assert_eq!(world.find_radius(None, Vec3f::ZERO, 100.0), Some(near));
+        assert_eq!(
+            world.find_radius(Some(near), Vec3f::ZERO, 100.0),
+            Some(next)
+        );
+        assert_eq!(world.find_radius(Some(next), Vec3f::ZERO, 100.0), None);
+        assert_eq!(world.find_radius(Some(near), Vec3f::ZERO, 101.0), Some(far));
+    }
+
+    #[test]
+    fn find_radius_skips_free_and_non_solid_entities() {
+        let mut world = test_world();
+        radius_target(&mut world, Vec3f::ZERO, Solid::Not);
+        let freed = radius_target(&mut world, Vec3f::ZERO, Solid::Bbox);
+        world.free_entity(freed);
+        assert_eq!(world.find_radius(None, Vec3f::ZERO, 1000.0), None);
     }
 }

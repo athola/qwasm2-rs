@@ -9,7 +9,7 @@ use q2_shared::constants::{MASK_DEADSOLID, MASK_PLAYERSOLID};
 use q2_shared::types::*;
 
 use crate::constants::*;
-use crate::entity::{ClientData, ClientPersistent, EntityKey};
+use crate::entity::{ClientData, ClientPersistent, ClientRespawn, EntityKey};
 use crate::world::GameWorld;
 
 /// C ANGLE2SHORT.
@@ -29,10 +29,16 @@ const PLAYER_MAX_HEALTH: i32 = 100;
 const PLAYER_MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const PLAYER_MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 
+/// C `MZ_LOGIN` (shared.h): the muzzle flash of a player entering the game.
+const MZ_LOGIN: i32 = 9;
+/// C `DF_SPAWN_FARTHEST` (shared.h) dmflags bit.
+const DF_SPAWN_FARTHEST: i32 = 0x0000_0200;
+
 impl GameWorld {
     /// Handle a new client connection. Allocates a player entity.
     /// C ref: `ClientConnect` (player/client.c).
     pub fn connect_client(&mut self, number: usize, userinfo: &str) -> Option<EntityKey> {
+        let slot = number.checked_sub(1).filter(|&i| i < self.clients.len())?;
         let key = self.entities.spawn_numbered(number)?;
 
         let ent = self.entities.get_mut(key)?;
@@ -45,18 +51,20 @@ impl GameWorld {
         ent.game.mass = 200;
         ent.game.takedamage = TakeDamage::Aim;
 
-        let client = ClientData {
-            pers: ClientPersistent {
-                connected: true,
-                health: PLAYER_MAX_HEALTH,
-                max_health: PLAYER_MAX_HEALTH,
-                netname: extract_info_value(userinfo, "name")
-                    .unwrap_or_else(|| "player".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        ent.client = Some(client);
+        // The slot is not in use (a fresh body), so C clears the respawn
+        // data and, with no autosave to keep, the persistent data.
+        let mut client = ClientData::default();
+        self.init_client_resp(&mut client);
+        self.init_client_persistant(&mut client.pers);
+        client_userinfo_changed(&mut client.pers, userinfo);
+        if self.game.maxclients > 1 {
+            self.gi
+                .dprintf(&format!("{} connected\n", client.pers.netname));
+        }
+        self.clients[slot] = client;
+        let ent = self.entities.get_mut(key)?;
+        ent.client = Some(slot);
+        ent.die = Some(player_die);
         ent.game.health = PLAYER_MAX_HEALTH;
         ent.game.max_health = PLAYER_MAX_HEALTH;
 
@@ -64,10 +72,13 @@ impl GameWorld {
     }
 
     /// Place a connected client into the game world at a spawn point.
-    /// C ref: `PutClientInServer` (player/client.c), single-player part.
+    /// C ref: `PutClientInServer` (player/client.c). The help-computer
+    /// counts coop carries across a respawn are not ported.
     pub fn begin_client(&mut self, key: EntityKey) {
+        // Before health is set back up, so farthest ranging does not count
+        // this client.
         let (spawn_origin, spawn_angles) = self
-            .select_spawn_point()
+            .select_spawn_point(key)
             .and_then(|k| self.entities.get(k))
             .map(|e| (e.state.origin + Vec3f::new(0.0, 0.0, 9.0), e.state.angles))
             .unwrap_or_else(|| {
@@ -75,9 +86,46 @@ impl GameWorld {
                 (Vec3f::ZERO, Vec3f::ZERO)
             });
 
+        // Clear everything but the persistent data, which starts over only
+        // for a client that died (or never had any). Deathmatch restarts it
+        // every spawn and coop goes back to what the level started with;
+        // both keep the respawn data (the score), single player clears it.
+        if let Some(slot) = self.entities.get(key).and_then(|e| e.client) {
+            let mut pers = std::mem::take(&mut self.clients[slot].pers);
+            let kept = std::mem::take(&mut self.clients[slot].resp);
+            let resp = if self.game.deathmatch {
+                let userinfo = pers.userinfo.clone();
+                self.init_client_persistant(&mut pers);
+                client_userinfo_changed(&mut pers, &userinfo);
+                kept
+            } else if self.game.coop {
+                let userinfo = std::mem::take(&mut pers.userinfo);
+                pers = kept.coop_respawn.clone();
+                client_userinfo_changed(&mut pers, &userinfo);
+                pers.score = pers.score.max(kept.score);
+                kept
+            } else {
+                ClientRespawn::default()
+            };
+            let userinfo = pers.userinfo.clone();
+            client_userinfo_changed(&mut pers, &userinfo);
+            if pers.health <= 0 {
+                self.init_client_persistant(&mut pers);
+            }
+            self.clients[slot] = ClientData {
+                pers,
+                resp,
+                ..Default::default()
+            };
+        }
+        self.fetch_client_ent_data(key);
+
         if let Some(ent) = self.entities.get_mut(key) {
             ent.in_use = true;
             ent.game.takedamage = TakeDamage::Aim;
+            ent.game.deadflag = DeadFlag::No;
+            ent.svflags &= !SvFlags::DEADMONSTER.bits();
+            ent.die = Some(player_die);
             ent.game.movetype = MoveType::Walk;
             ent.game.viewheight = 22.0;
             ent.game.classname = "player".to_string();
@@ -91,9 +139,10 @@ impl GameWorld {
             // ClientThink treat the player as gibs.
             ent.state.modelindex = 255;
             ent.state.origin = spawn_origin + Vec3f::new(0.0, 0.0, 1.0); // off the ground
+            ent.state.old_origin = ent.state.origin;
             ent.state.angles = Vec3f::new(0.0, spawn_angles.y, 0.0);
 
-            if let Some(ref mut client) = ent.client {
+            if let Some(client) = ent.client.and_then(|slot| self.clients.get_mut(slot)) {
                 client.ps = PlayerState {
                     fov: 90.0,
                     viewangles: ent.state.angles,
@@ -104,49 +153,355 @@ impl GameWorld {
                     client.ps.pmove.delta_angles[i] =
                         angle2short(spawn_angles[i] - client.resp.cmd_angles[i]);
                 }
-                // Give starting weapon (blaster).
-                client.pers.inventory[7] = 1; // blaster at item index 7
             }
         }
 
         self.link_entity(key);
     }
 
-    /// C SelectSpawnPoint, single-player part. With no `game.spawnpoint`
-    /// the first start without a targetname is used, else any start, else
-    /// (not C) a deathmatch start; with one, only the start whose targetname
-    /// matches (case-insensitively). C raises gi.error when nothing matches;
-    /// here the caller logs it.
-    fn select_spawn_point(&self) -> Option<EntityKey> {
-        let wanted = self.game.spawnpoint.as_str();
-        // By entity number, the order C's G_Find walks g_edicts.
-        let of_class = |class: &'static str| {
-            (0..self.game.maxentities.max(0) as usize)
-                .filter_map(|n| self.entities.key_for_number(n))
-                .filter_map(|k| self.entities.get(k).map(|e| (k, e)))
-                .filter(move |(_, e)| e.in_use && e.game.classname == class)
-        };
-        if !wanted.is_empty() {
-            return of_class("info_player_start")
-                .find(|(_, e)| e.game.targetname.eq_ignore_ascii_case(wanted))
-                .map(|(k, _)| k);
+    /// Starting persistent data: the Blaster, 100 health and the default
+    /// ammo caps. C ref: `InitClientPersistant` (player/client.c).
+    pub fn init_client_persistant(&self, pers: &mut ClientPersistent) {
+        *pers = ClientPersistent::default();
+        let blaster = self.find_item_by_name("Blaster");
+        if let Some(blaster) = blaster {
+            pers.selected_item = blaster as i32;
+            pers.inventory[blaster] = 1;
         }
-        of_class("info_player_start")
-            .find(|(_, e)| e.game.targetname.is_empty())
-            .or_else(|| of_class("info_player_start").next())
+        pers.weapon = blaster;
+        pers.health = PLAYER_MAX_HEALTH;
+        pers.max_health = PLAYER_MAX_HEALTH;
+        pers.ammo_max = crate::items::AMMO_MAX_DEFAULT;
+        pers.connected = true;
+    }
+
+    /// C ref: `InitClientResp` (player/client.c).
+    pub fn init_client_resp(&self, client: &mut ClientData) {
+        client.resp = ClientRespawn {
+            enter_frame: self.level.framenum,
+            coop_respawn: client.pers.clone(),
+            ..Default::default()
+        };
+    }
+
+    /// Copy what the next level keeps from each in-use client edict into its
+    /// persistent data; in coop that includes the score.
+    /// C ref: `SaveClientData` (player/client.c).
+    pub fn save_client_data(&mut self) {
+        let coop = self.game.coop;
+        for (i, client) in self.clients.iter_mut().enumerate() {
+            let Some(ent) = self
+                .entities
+                .key_for_number(i + 1)
+                .and_then(|k| self.entities.get(k))
+                .filter(|e| e.in_use)
+            else {
+                continue;
+            };
+            client.pers.health = ent.game.health;
+            client.pers.max_health = ent.game.max_health;
+            client.pers.saved_flags = ent.game.flags & SAVED_FLAGS;
+            if coop {
+                client.pers.score = client.resp.score;
+            }
+        }
+    }
+
+    /// The reverse of `save_client_data`, onto a client's new body.
+    /// C ref: `FetchClientEntData` (player/client.c).
+    fn fetch_client_ent_data(&mut self, key: EntityKey) {
+        let coop = self.game.coop;
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        ent.game.health = client.pers.health;
+        ent.game.max_health = client.pers.max_health;
+        ent.game.flags |= client.pers.saved_flags;
+        if coop {
+            client.resp.score = client.pers.score;
+        }
+    }
+
+    /// Every in-use entity of `class`, in the order C's G_Find walks them.
+    fn spots(&self, class: &str) -> Vec<EntityKey> {
+        std::iter::successors(self.find_by_classname(None, class), |&k| {
+            self.find_by_classname(Some(k), class)
+        })
+        .collect()
+    }
+
+    fn spot_origin(&self, key: EntityKey) -> Vec3f {
+        self.entities
+            .get(key)
+            .map_or(Vec3f::ZERO, |e| e.state.origin)
+    }
+
+    /// Spawn point for the client `key`: a deathmatch or coop start in those
+    /// modes, else the single-player start. With no `game.spawnpoint` the
+    /// first start without a targetname is used, else any start, else (not
+    /// C) a deathmatch start; with one, only the start whose targetname
+    /// matches (case-insensitively). C raises gi.error when nothing
+    /// matches; here the caller logs it.
+    /// C ref: `SelectSpawnPoint` (player/client.c).
+    fn select_spawn_point(&mut self, key: EntityKey) -> Option<EntityKey> {
+        let index = self.entities.get(key).and_then(|e| e.client);
+        let spot = if self.game.deathmatch {
+            self.select_deathmatch_spawn_point()
+        } else if self.game.coop {
+            index.and_then(|i| self.select_coop_spawn_point(i))
+        } else {
+            None
+        };
+        let mut spot = spot.or_else(|| self.select_player_start())?;
+
+        // Coop on a map whose coop starts don't match the spawnpoint (map
+        // bugs, or loaded from the console): take one within 550 units.
+        let index = index.unwrap_or(0);
+        if self.game.coop
+            && index != 0
+            && self
+                .entities
+                .get(spot)
+                .is_some_and(|e| e.game.classname.eq_ignore_ascii_case("info_player_start"))
+        {
+            let origin = self.spot_origin(spot);
+            let mut counter = 0;
+            for coopspot in self.spots("info_player_coop") {
+                if counter >= 3 {
+                    break;
+                }
+                if (self.spot_origin(coopspot) - origin).length() < 550.0 {
+                    if index == counter {
+                        spot = coopspot;
+                        break;
+                    }
+                    counter += 1;
+                }
+            }
+        }
+        Some(spot)
+    }
+
+    /// The single-player part of C SelectSpawnPoint.
+    fn select_player_start(&self) -> Option<EntityKey> {
+        let wanted = self.game.spawnpoint.as_str();
+        let starts = self.spots("info_player_start");
+        let start = |k: &EntityKey| self.entities.get(*k).map(|e| &e.game);
+        if !wanted.is_empty() {
+            return starts
+                .into_iter()
+                .find(|k| start(k).is_some_and(|g| g.targetname.eq_ignore_ascii_case(wanted)));
+        }
+        starts
+            .iter()
+            .copied()
+            .find(|k| start(k).is_some_and(|g| g.targetname.is_empty()))
+            .or_else(|| starts.first().copied())
             // Not C: single player has no deathmatch fallback, but the
             // browser runs deathmatch maps without a deathmatch mode.
-            .or_else(|| of_class("info_player_deathmatch").next())
-            .map(|(k, _)| k)
+            .or_else(|| self.spots("info_player_deathmatch").first().copied())
+    }
+
+    /// Distance from `spot` to the nearest live player.
+    /// C ref: `PlayersRangeFromSpot` (player/client.c).
+    fn players_range_from_spot(&self, spot: EntityKey) -> f32 {
+        let origin = self.spot_origin(spot);
+        (1..=self.game.maxclients.max(0) as usize)
+            .filter_map(|n| self.entities.key_for_number(n))
+            .filter_map(|k| self.entities.get(k))
+            .filter(|p| p.in_use && p.game.health > 0)
+            .map(|p| (origin - p.state.origin).length())
+            .fold(9_999_999.0, f32::min)
+    }
+
+    /// C ref: `SelectDeathmatchSpawnPoint` (player/client.c).
+    fn select_deathmatch_spawn_point(&mut self) -> Option<EntityKey> {
+        if self.game.dmflags & DF_SPAWN_FARTHEST != 0 {
+            self.select_farthest_deathmatch_spawn_point()
+        } else {
+            self.select_random_deathmatch_spawn_point()
+        }
+    }
+
+    /// A random deathmatch start, but not the two nearest other players.
+    /// C ref: `SelectRandomDeathmatchSpawnPoint` (player/client.c).
+    fn select_random_deathmatch_spawn_point(&mut self) -> Option<EntityKey> {
+        let spots = self.spots("info_player_deathmatch");
+        let (mut range1, mut range2) = (99_999.0, 99_999.0);
+        let (mut spot1, mut spot2) = (None, None);
+        for &spot in &spots {
+            let range = self.players_range_from_spot(spot);
+            if range < range1 {
+                range1 = range;
+                spot1 = Some(spot);
+            } else if range < range2 {
+                range2 = range;
+                spot2 = Some(spot);
+            }
+        }
+        if spots.is_empty() {
+            return None;
+        }
+        if spots.len() <= 2 {
+            (spot1, spot2) = (None, None);
+        }
+        let count = spots.len() - usize::from(spot1.is_some()) - usize::from(spot2.is_some());
+        let selection = self.random_u32() as usize % count;
+        spots
+            .into_iter()
+            .filter(|&s| Some(s) != spot1 && Some(s) != spot2)
+            .nth(selection)
+    }
+
+    /// The deathmatch start farthest from any live player.
+    /// C ref: `SelectFarthestDeathmatchSpawnPoint` (player/client.c).
+    fn select_farthest_deathmatch_spawn_point(&self) -> Option<EntityKey> {
+        let spots = self.spots("info_player_deathmatch");
+        let mut best = None;
+        let mut best_distance = 0.0;
+        for &spot in &spots {
+            let distance = self.players_range_from_spot(spot);
+            if distance > best_distance {
+                best = Some(spot);
+                best_distance = distance;
+            }
+        }
+        // A player on every start: one of them gets telefragged.
+        best.or_else(|| spots.first().copied())
+    }
+
+    /// The coop start for client slot `index` at `game.spawnpoint`; slot 0
+    /// uses the normal player start. C assumes four coop starts per spawn.
+    /// C ref: `SelectCoopSpawnPoint` (player/client.c).
+    fn select_coop_spawn_point(&self, index: usize) -> Option<EntityKey> {
+        if index == 0 {
+            return None;
+        }
+        self.spots("info_player_coop")
+            .into_iter()
+            .filter(|&k| {
+                self.entities.get(k).is_some_and(|e| {
+                    e.game
+                        .targetname
+                        .eq_ignore_ascii_case(&self.game.spawnpoint)
+                })
+            })
+            .nth(index - 1)
+    }
+
+    /// Reserve the body queue edicts right after the clients in coop and
+    /// deathmatch. C ref: `InitBodyQue` (player/client.c).
+    pub(crate) fn init_body_que(&mut self) {
+        if !(self.game.deathmatch || self.game.coop) {
+            return;
+        }
+        self.level.body_que = 0;
+        for _ in 0..BODY_QUEUE_SIZE {
+            if let Some(ent) = self.spawn().and_then(|k| self.entities.get_mut(k)) {
+                ent.game.classname = "bodyque".to_string();
+            }
+        }
+    }
+
+    /// Leave a copy of the player's corpse in the next body queue slot.
+    /// C ref: `CopyToBodyQue` (player/client.c).
+    fn copy_to_body_que(&mut self, key: EntityKey) {
+        let number = self.game.maxclients + self.level.body_que + 1;
+        self.level.body_que = (self.level.body_que + 1) % BODY_QUEUE_SIZE as i32;
+        let Some(body) = usize::try_from(number)
+            .ok()
+            .and_then(|n| self.entities.key_for_number(n))
+        else {
+            return;
+        };
+        let Some(ent) = self.entities.get(key).cloned() else {
+            return;
+        };
+        if let Some(n) = self.number_of(key) {
+            self.gi.unlink_entity(n);
+        }
+        self.gi.unlink_entity(number as usize);
+        let Some(b) = self.entities.get_mut(body) else {
+            return;
+        };
+        b.state = ent.state;
+        b.state.number = number;
+        b.svflags = ent.svflags;
+        b.mins = ent.mins;
+        b.maxs = ent.maxs;
+        b.absmin = ent.absmin;
+        b.absmax = ent.absmax;
+        b.size = ent.size;
+        b.solid = ent.solid;
+        b.clipmask = ent.clipmask;
+        b.owner = ent.owner;
+        b.game.movetype = ent.game.movetype;
+        b.die = Some(body_die);
+        b.game.takedamage = TakeDamage::Yes;
+        self.link_entity(body);
+    }
+
+    /// Put a dead player back in: deathmatch and coop leave the corpse in
+    /// the body queue and respawn at a start with a teleport effect; single
+    /// player asks for the load menu. Not called yet:
+    /// ClientBeginServerFrame's respawn waits on #16. `respawn_time` is not
+    /// ported. C ref: `respawn` (player/client.c).
+    pub fn respawn(&mut self, key: EntityKey) {
+        if !(self.game.deathmatch || self.game.coop) {
+            // Restart the entire server.
+            self.gi.add_command_string("menu_loadgame\n");
+            return;
+        }
+        // Spectators don't leave bodies.
+        let noclip = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.game.movetype == MoveType::Noclip);
+        if !noclip {
+            self.copy_to_body_que(key);
+        }
+        if let Some(ent) = self.entities.get_mut(key) {
+            ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
+        }
+        self.begin_client(key);
+        if let Some((ent, client)) = self.entity_and_client_mut(key) {
+            // Teleport effect, held in place briefly.
+            ent.state.event = q2_shared::constants::EV_PLAYER_TELEPORT;
+            client.ps.pmove.pm_flags = q2_common::pmove::PMF_TIME_TELEPORT;
+            client.ps.pmove.pm_time = 14;
+        }
+    }
+
+    /// The muzzle flash a player shows entering the game.
+    /// C ref: `ClientBeginDeathmatch` and `ClientBegin` (player/client.c).
+    pub(crate) fn send_login_effect(&self, key: EntityKey) {
+        let (Some(number), Some(ent)) = (self.number_of(key), self.entities.get(key)) else {
+            return;
+        };
+        self.gi
+            .write_byte(q2_shared::protocol::SvcOp::MuzzleFlash as i32);
+        self.gi.write_short(number as i32);
+        self.gi.write_byte(MZ_LOGIN);
+        self.gi.multicast(ent.state.origin, Multicast::PVS);
+    }
+
+    /// C ref: `ClientBeginDeathmatch` and `ClientBegin` (player/client.c).
+    pub(crate) fn print_entered_the_game(&self, key: EntityKey) {
+        if let Some(client) = self.client(key) {
+            self.gi.bprintf(
+                q2_shared::constants::PRINT_HIGH,
+                &format!("{} entered the game\n", client.pers.netname),
+            );
+        }
     }
 
     /// Handle client disconnection. Free the player entity.
     /// C ref: `ClientDisconnect` (player/client.c).
     pub fn disconnect_client(&mut self, key: EntityKey) {
+        if let Some(client) = self.client_mut(key) {
+            client.pers.connected = false;
+        }
         if let Some(ent) = self.entities.get_mut(key) {
-            if let Some(ref mut client) = ent.client {
-                client.pers.connected = false;
-            }
             ent.in_use = false;
             ent.solid = Solid::Not;
             ent.state.modelindex = 0;
@@ -164,10 +519,7 @@ impl GameWorld {
             return;
         };
         let (state, snap_initial, mask) = {
-            let Some(ent) = self.entities.get_mut(key) else {
-                return;
-            };
-            let Some(client) = ent.client.as_mut() else {
+            let Some((ent, client)) = self.entity_and_client_mut(key) else {
                 return;
             };
             client.ps.pmove.pm_type = if ent.game.movetype == MoveType::Noclip {
@@ -240,7 +592,7 @@ impl GameWorld {
         }
         let noclip = ent.game.movetype == MoveType::Noclip;
         let dead = ent.game.deadflag != DeadFlag::No;
-        if let Some(client) = ent.client.as_mut() {
+        if let Some(client) = ent.client.and_then(|slot| self.clients.get_mut(slot)) {
             client.ps.pmove = pm.s;
             client.old_pmove = pm.s;
             for i in 0..3 {
@@ -273,13 +625,30 @@ impl GameWorld {
                 touch(self, other, key, None, None);
             }
         }
+
+        // Save the light level the player is standing on for monster
+        // sighting AI.
+        if let Some(ent) = self.entities.get_mut(key) {
+            ent.game.light_level = i32::from(cmd.lightlevel);
+        }
     }
 
     /// Per-frame setup for a client at the start of the server frame.
     /// C ref: `ClientBeginServerFrame` (player/client.c).
-    pub fn client_begin_server_frame(&mut self, _key: EntityKey) {
-        // Reset per-frame state (damage counters, etc.).
-        // Simplified — full impl resets damage tracking and weapon state.
+    /// Only the player-trail part is ported; weapon think and respawn
+    /// wait on #16.
+    pub fn client_begin_server_frame(&mut self, key: EntityKey) {
+        if self.level.intermission_time != 0.0 {
+            return;
+        }
+        let dead = self
+            .entities
+            .get(key)
+            .is_none_or(|e| e.game.deadflag != crate::constants::DeadFlag::No);
+        if dead {
+            return;
+        }
+        self.player_trail_follow(key);
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
@@ -296,24 +665,120 @@ impl GameWorld {
             self.update_player_view(key);
             self.update_player_stats(key);
         }
+        self.level.gibs_this_frame = 0;
+        self.level.debris_this_frame = 0;
     }
 }
 
+/// A queued corpse shot below -40 health bursts into gibs and a head.
+/// C ref: `body_die` (player/client.c).
+pub fn body_die(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _inflictor: EntityKey,
+    _attacker: EntityKey,
+    damage: i32,
+    _point: Vec3f,
+) {
+    if world.entities.get(key).is_none_or(|e| e.game.health >= -40) {
+        return;
+    }
+    let number = world.number_of(key);
+    let sound = world.gi.sound_index("misc/udeath.wav");
+    world
+        .gi
+        .sound(number, CHAN_BODY, sound, 1.0, ATTN_NORM, 0.0);
+    for _ in 0..4 {
+        crate::misc::throw_gib(
+            world,
+            key,
+            "models/objects/gibs/sm_meat/tris.md2",
+            damage,
+            crate::misc::GibType::Organic,
+        );
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.state.origin.z -= 48.0;
+    }
+    crate::misc::throw_client_head(world, key, damage);
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.takedamage = TakeDamage::No;
+    }
+}
+
+/// Flags a client keeps across levels (C SaveClientData's mask).
+const SAVED_FLAGS: EntityFlags = EntityFlags::GODMODE
+    .union(EntityFlags::NOTARGET)
+    .union(EntityFlags::POWER_ARMOR);
+
+/// Keep the userinfo and take the player's name from it. The skin, hand
+/// and fov parts are not ported. C ref: `ClientUserinfoChanged`.
+fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
+    pers.netname = extract_info_value(userinfo, "name").unwrap_or_else(|| "player".to_string());
+    pers.userinfo = userinfo.to_string();
+}
+
 /// Extract a value from a Quake-style userinfo string ("\\key\\value\\key\\value").
+/// Keys compare case-sensitively and a value may be empty, as in C
+/// `Info_ValueForKey`.
 fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
-    let parts: Vec<&str> = userinfo.split('\\').filter(|s| !s.is_empty()).collect();
-    for chunk in parts.chunks(2) {
-        if chunk.len() == 2 && chunk[0] == key {
-            return Some(chunk[1].to_string());
+    let body = userinfo.strip_prefix('\\').unwrap_or(userinfo);
+    let mut parts = body.split('\\');
+    while let (Some(k), Some(value)) = (parts.next(), parts.next()) {
+        if k == key {
+            return Some(value.to_string());
         }
     }
     None
 }
 
+/// The player's die callback. C ref: `player_die` (player/client.c),
+/// without the obituary, weapon toss, gibs, death animation and sounds.
+/// Single player has no respawn: C reloads the last save on a button
+/// press, and there is no save/load yet (#15).
+pub fn player_die(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _inflictor: EntityKey,
+    _attacker: EntityKey,
+    _damage: i32,
+    _point: Vec3f,
+) {
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.avelocity = Vec3f::ZERO;
+    ent.game.takedamage = TakeDamage::Yes;
+    ent.game.movetype = MoveType::Toss;
+    ent.state.modelindex2 = 0; // remove linked weapon model
+    ent.state.angles.x = 0.0;
+    ent.state.angles.z = 0.0;
+    ent.state.sound = 0;
+    ent.maxs.z = -8.0;
+    ent.svflags |= SvFlags::DEADMONSTER.bits();
+    let first_death = ent.game.deadflag == DeadFlag::No;
+    if let Some(client) = ent
+        .client
+        .and_then(|slot| world.clients.get_mut(slot))
+        .filter(|_| first_death)
+    {
+        client.ps.pmove.pm_type = PmType::Dead;
+        client.pers.inventory.fill(0);
+    }
+    ent.game.flags.remove(EntityFlags::POWER_ARMOR);
+    if ent.game.health < -40 {
+        ent.game.takedamage = TakeDamage::No; // gibbed
+    }
+    ent.game.deadflag = DeadFlag::Dead;
+    world.link_entity(key);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::GameExport;
     use crate::world::test_world;
+    use q2_shared::constants::EF_GIB;
 
     #[test]
     fn client_connect_creates_player() {
@@ -324,8 +789,44 @@ mod tests {
         assert_eq!(ent.game.classname, "player");
         assert_eq!(ent.game.health, PLAYER_MAX_HEALTH);
         assert!(ent.client.is_some());
-        assert_eq!(ent.client.as_ref().unwrap().pers.netname, "TestPlayer");
-        assert!(ent.client.as_ref().unwrap().pers.connected);
+        assert_eq!(world.client(key).unwrap().pers.netname, "TestPlayer");
+        assert!(world.client(key).unwrap().pers.connected);
+    }
+
+    #[test]
+    fn client_entity_numbers_map_to_game_clients_slots() {
+        // C ClientConnect: ent->client = game.clients + (ent - g_edicts - 1).
+        let mut world = test_world();
+        world.set_max_clients(3);
+        for number in 1..=3 {
+            let key = world.connect_client(number, "").unwrap();
+            assert_eq!(world.entities.get(key).unwrap().client, Some(number - 1));
+            world.client_mut(key).unwrap().resp.score = number as i32 * 10;
+        }
+        let scores: Vec<i32> = world.clients.iter().map(|c| c.resp.score).collect();
+        assert_eq!(scores, [10, 20, 30]);
+    }
+
+    #[test]
+    fn client_record_outlives_its_entity_being_freed_and_respawned() {
+        // C G_FreeEdict never touches game.clients: a new body for the same
+        // number attaches the same record.
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let shells = world.find_item("ammo_shells").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[shells] = 25;
+
+        world.entities.free(key);
+        assert!(world.client(key).is_none());
+        assert_eq!(world.clients[0].pers.inventory[shells], 25);
+
+        crate::traits::GameExport::client_begin(&mut world, 1);
+        let body = world.entities.key_for_number(1).unwrap();
+        assert_ne!(body, key);
+        assert_eq!(world.client(body).unwrap().pers.inventory[shells], 25);
+        assert_eq!(world.client(body).unwrap().pers.netname, "P1");
     }
 
     #[test]
@@ -351,19 +852,22 @@ mod tests {
     #[test]
     fn client_begin_gives_blaster() {
         let mut world = test_world();
+        world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
         world.begin_client(key);
 
-        let inv = world
-            .entities
-            .get(key)
-            .unwrap()
-            .client
-            .as_ref()
-            .unwrap()
-            .pers
-            .inventory;
-        assert_eq!(inv[7], 1); // blaster
+        let inv = world.client(key).unwrap().pers.inventory;
+        assert_eq!(inv[world.find_item("weapon_blaster").unwrap()], 1);
+    }
+
+    #[test]
+    fn client_begin_starts_the_lerp_at_the_spawn_point() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.entities.get_mut(key).unwrap().state.old_origin = Vec3f::new(-500.0, 0.0, 0.0);
+        world.begin_client(key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.old_origin, ent.state.origin);
     }
 
     #[test]
@@ -427,6 +931,188 @@ mod tests {
         assert_eq!(ent.state.origin, Vec3f::new(64.0, 64.0, 26.0));
     }
 
+    /// A spot entity of `class` at `origin`.
+    fn spot(world: &mut GameWorld, class: &str, origin: Vec3f, targetname: &str) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.classname = class.to_string();
+        ent.game.targetname = targetname.to_string();
+        ent.state.origin = origin;
+        key
+    }
+
+    /// A live fake player standing at `origin`.
+    fn standing(world: &mut GameWorld, origin: Vec3f) -> EntityKey {
+        let key = world.spawn_test_client(ClientData::default());
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.health = 100;
+        ent.state.origin = origin;
+        key
+    }
+
+    #[test]
+    fn deathmatch_random_spawn_skips_the_two_spots_nearest_a_player() {
+        let mut world = test_world();
+        world.set_max_clients(2);
+        world.game.deathmatch = true;
+        let me = world.spawn_test_client(ClientData::default()); // health 0
+        standing(&mut world, Vec3f::ZERO);
+        spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(10.0, 0.0, 0.0),
+            "",
+        );
+        spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(20.0, 0.0, 0.0),
+            "",
+        );
+        let far = spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(900.0, 0.0, 0.0),
+            "",
+        );
+        // Three spots, two excluded: randk() % 1 always picks the third.
+        for _ in 0..4 {
+            assert_eq!(world.select_spawn_point(me), Some(far));
+        }
+    }
+
+    #[test]
+    fn deathmatch_random_spawn_excludes_nothing_with_two_spots_or_fewer() {
+        let mut world = test_world();
+        world.set_max_clients(2);
+        world.game.deathmatch = true;
+        let me = world.spawn_test_client(ClientData::default());
+        standing(&mut world, Vec3f::ZERO);
+        let only = spot(&mut world, "info_player_deathmatch", Vec3f::ZERO, "");
+        assert_eq!(world.select_spawn_point(me), Some(only));
+    }
+
+    #[test]
+    fn deathmatch_spawn_farthest_takes_the_spot_farthest_from_players() {
+        let mut world = test_world();
+        world.set_max_clients(2);
+        world.game.deathmatch = true;
+        world.game.dmflags = DF_SPAWN_FARTHEST;
+        let me = world.spawn_test_client(ClientData::default());
+        standing(&mut world, Vec3f::ZERO);
+        spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(10.0, 0.0, 0.0),
+            "",
+        );
+        let far = spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(900.0, 0.0, 0.0),
+            "",
+        );
+        spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(20.0, 0.0, 0.0),
+            "",
+        );
+        assert_eq!(world.select_spawn_point(me), Some(far));
+    }
+
+    #[test]
+    fn deathmatch_spawn_farthest_with_a_player_on_every_spot_uses_the_first() {
+        let mut world = test_world();
+        world.set_max_clients(3);
+        world.game.deathmatch = true;
+        world.game.dmflags = DF_SPAWN_FARTHEST;
+        let me = world.spawn_test_client(ClientData::default());
+        standing(&mut world, Vec3f::ZERO);
+        standing(&mut world, Vec3f::new(50.0, 0.0, 0.0));
+        let first = spot(&mut world, "info_player_deathmatch", Vec3f::ZERO, "");
+        spot(
+            &mut world,
+            "info_player_deathmatch",
+            Vec3f::new(50.0, 0.0, 0.0),
+            "",
+        );
+        assert_eq!(world.select_spawn_point(me), Some(first));
+    }
+
+    #[test]
+    fn deathmatch_without_deathmatch_spots_uses_a_player_start() {
+        let mut world = test_world();
+        world.game.deathmatch = true;
+        let me = world.spawn_test_client(ClientData::default());
+        let start = spot(&mut world, "info_player_start", Vec3f::ZERO, "");
+        assert_eq!(world.select_spawn_point(me), Some(start));
+    }
+
+    #[test]
+    fn coop_clients_after_the_first_take_the_coop_spots_for_the_spawnpoint() {
+        let mut world = test_world();
+        world.set_max_clients(3);
+        world.game.coop = true;
+        let first = world.spawn_test_client(ClientData::default());
+        let second = world.spawn_test_client(ClientData::default());
+        let third = world.spawn_test_client(ClientData::default());
+        let start = spot(&mut world, "info_player_start", Vec3f::ZERO, "");
+        spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(5.0, 0.0, 0.0),
+            "base2",
+        );
+        let a = spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(6.0, 0.0, 0.0),
+            "",
+        );
+        let b = spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(7.0, 0.0, 0.0),
+            "",
+        );
+        assert_eq!(world.select_spawn_point(first), Some(start), "slot 0");
+        assert_eq!(world.select_spawn_point(second), Some(a));
+        assert_eq!(world.select_spawn_point(third), Some(b));
+    }
+
+    #[test]
+    fn coop_without_matching_coop_spots_takes_one_within_550_of_the_start() {
+        let mut world = test_world();
+        world.set_max_clients(2);
+        world.game.coop = true;
+        world.game.spawnpoint = "base2".to_string();
+        let first = world.spawn_test_client(ClientData::default());
+        let second = world.spawn_test_client(ClientData::default());
+        let start = spot(&mut world, "info_player_start", Vec3f::ZERO, "BASE2");
+        spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(100.0, 0.0, 0.0),
+            "other",
+        );
+        spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(2000.0, 0.0, 0.0),
+            "other",
+        );
+        let near = spot(
+            &mut world,
+            "info_player_coop",
+            Vec3f::new(200.0, 0.0, 0.0),
+            "other",
+        );
+        assert_eq!(world.select_spawn_point(first), Some(start));
+        // C counts near spots from 0 and takes the one matching the slot.
+        assert_eq!(world.select_spawn_point(second), Some(near));
+    }
+
     #[test]
     fn think_client_runs_pmove_with_c_gravity_and_records_the_result() {
         // The mock's traces never hit, so the player is airborne: pmove must
@@ -442,7 +1128,7 @@ mod tests {
         world.think_client(key, &cmd);
 
         let ent = world.entities.get(key).unwrap();
-        let client = ent.client.as_ref().unwrap();
+        let client = world.client(key).unwrap();
         assert_eq!(client.ps.pmove.pm_type, PmType::Normal);
         assert_eq!(client.ps.pmove.gravity, 800);
         assert_eq!(client.old_pmove, client.ps.pmove);
@@ -454,11 +1140,25 @@ mod tests {
     }
 
     #[test]
+    fn think_client_keeps_the_light_level_the_player_stands_in_for_monsters() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let cmd = UserCmd {
+            msec: 100,
+            lightlevel: 77,
+            ..Default::default()
+        };
+        world.think_client(key, &cmd);
+        assert_eq!(world.entities.get(key).unwrap().game.light_level, 77);
+    }
+
+    #[test]
     fn think_client_treats_a_player_without_model_255_as_gibs_like_c() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
         world.think_client(key, &UserCmd::default());
-        let client = world.entities.get(key).unwrap().client.clone().unwrap();
+        let client = world.client(key).unwrap().clone();
         assert_eq!(client.ps.pmove.pm_type, PmType::Gib);
     }
 
@@ -473,5 +1173,135 @@ mod tests {
             Some("male/grunt".to_string())
         );
         assert_eq!(extract_info_value("\\name\\Player1", "missing"), None);
+    }
+
+    #[test]
+    fn extract_info_value_keeps_pairs_aligned_across_an_empty_value() {
+        let info = "\\name\\\\skin\\male/grunt";
+        assert_eq!(extract_info_value(info, "name"), Some(String::new()));
+        assert_eq!(
+            extract_info_value(info, "skin"),
+            Some("male/grunt".to_string())
+        );
+        assert_eq!(extract_info_value(info, "male/grunt"), None);
+    }
+
+    #[test]
+    fn player_dies_when_damage_takes_its_health_to_zero() {
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let attacker = world.spawn().unwrap();
+
+        world.t_damage(
+            key,
+            attacker,
+            attacker,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            150,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.deadflag, DeadFlag::Dead);
+        assert_eq!(ent.game.movetype, MoveType::Toss);
+        assert_eq!(ent.maxs.z, -8.0);
+        assert!(ent.svflags & SvFlags::DEADMONSTER.bits() != 0);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.pmove.pm_type, PmType::Dead);
+        assert!(client.pers.inventory.iter().all(|&n| n == 0));
+    }
+
+    /// A deathmatch world with one client in game, its body queue reserved.
+    fn deathmatch_world() -> (GameWorld, EntityKey) {
+        let mut world = test_world();
+        world.set_max_clients(1);
+        world.game.deathmatch = true;
+        world.init();
+        world.spawn_entities(
+            "q2dm1",
+            "{ \"classname\" \"worldspawn\" }\n\
+             { \"classname\" \"info_player_deathmatch\" \"origin\" \"64 0 24\" }",
+            "",
+        );
+        assert!(world.client_connect(1, r"\name\Tester"));
+        world.client_begin(1);
+        let player = world.entities.key_for_number(1).unwrap();
+        (world, player)
+    }
+
+    #[test]
+    fn deathmatch_respawn_leaves_the_corpse_in_the_next_body_queue_slot() {
+        // C CopyToBodyQue: body = g_edicts[maxclients + body_que + 1].
+        let (mut world, player) = deathmatch_world();
+        {
+            let ent = world.entities.get_mut(player).unwrap();
+            ent.state.origin = Vec3f::new(300.0, 20.0, 8.0);
+            ent.state.frame = 197;
+            ent.game.movetype = MoveType::Toss;
+        }
+        world.respawn(player);
+        let body = world.entities.key_for_number(2).unwrap();
+        let b = world.entities.get(body).unwrap();
+        assert_eq!(b.state.number, 2);
+        assert_eq!(b.state.origin, Vec3f::new(300.0, 20.0, 8.0));
+        assert_eq!(b.state.frame, 197);
+        assert_eq!(b.game.movetype, MoveType::Toss);
+        assert_eq!(b.maxs, PLAYER_MAXS);
+        assert_eq!(b.game.takedamage, TakeDamage::Yes);
+        assert!(b.die.is_some());
+        assert_eq!(b.game.classname, "bodyque");
+        assert_eq!(world.level.body_que, 1);
+        // The queue wraps after eight bodies.
+        for _ in 0..7 {
+            world.respawn(player);
+        }
+        assert_eq!(world.level.body_que, 0);
+    }
+
+    #[test]
+    fn spectator_respawn_leaves_no_body() {
+        let (mut world, player) = deathmatch_world();
+        world.entities.get_mut(player).unwrap().game.movetype = MoveType::Noclip;
+        world.respawn(player);
+        assert_eq!(world.level.body_que, 0);
+        let body = world.entities.key_for_number(2).unwrap();
+        assert!(world.entities.get(body).unwrap().die.is_none());
+    }
+
+    #[test]
+    fn body_die_gibs_a_corpse_only_below_minus_forty_health() {
+        let (mut world, player) = deathmatch_world();
+        world.respawn(player);
+        let body = world.entities.key_for_number(2).unwrap();
+        let gibs = |world: &GameWorld| {
+            world
+                .entities
+                .iter()
+                .filter(|(k, e)| e.in_use && *k != body && e.state.effects & EF_GIB != 0)
+                .count()
+        };
+        world.entities.get_mut(body).unwrap().game.health = -40;
+        body_die(&mut world, body, body, body, 50, Vec3f::ZERO);
+        assert_eq!(gibs(&world), 0);
+        assert_eq!(
+            world.entities.get(body).unwrap().game.takedamage,
+            TakeDamage::Yes
+        );
+
+        let z = world.entities.get(body).unwrap().state.origin.z;
+        world.entities.get_mut(body).unwrap().game.health = -41;
+        body_die(&mut world, body, body, body, 50, Vec3f::ZERO);
+        assert_eq!(gibs(&world), 4);
+        let b = world.entities.get(body).unwrap();
+        assert_eq!(b.game.takedamage, TakeDamage::No);
+        // Dropped 48, then ThrowClientHead raises the head 32.
+        assert_eq!(b.state.origin.z, z - 48.0 + 32.0);
+        assert_eq!(b.state.effects, EF_GIB);
     }
 }

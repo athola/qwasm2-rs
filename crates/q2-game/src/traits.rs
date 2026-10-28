@@ -32,6 +32,23 @@ pub struct EntityLink {
     pub svflags: u32,
 }
 
+/// What the server reads of one in-use edict when it builds a client's
+/// frame. C `SV_BuildClientFrame` reads `ent->s`, `svflags`, `owner` and
+/// the link state straight out of `ge->edicts`; here the game lends them
+/// by entity number.
+#[derive(Debug, Clone, Copy)]
+pub struct EdictView<'a> {
+    pub state: &'a EntityState,
+    pub svflags: u32,
+    /// Edict number of its owner (C `ent->owner`).
+    pub owner: Option<usize>,
+    /// Whether it has been linked since it was spawned. C `G_FreeEdict`
+    /// zeroes `num_clusters`, so an edict that is freed and spawned again
+    /// is in no PVS until it is linked; the server's cluster list for the
+    /// number still holds the previous occupant's clusters.
+    pub linked: bool,
+}
+
 /// What `GameImport::set_model` reports back.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ModelInfo {
@@ -40,6 +57,10 @@ pub struct ModelInfo {
     /// `(mins, maxs)` of an inline model; `None` for file models.
     pub bounds: Option<(Vec3f, Vec3f)>,
 }
+
+/// `GameImport::box_edicts` area types (C `AREA_SOLID`/`AREA_TRIGGERS`).
+/// Defined once in q2-shared so both sides of the boundary agree.
+pub use q2_shared::constants::{AREA_SOLID, AREA_TRIGGERS};
 
 // ---------------------------------------------------------------------------
 // GameImport — server callbacks available to the game module
@@ -97,6 +118,21 @@ pub trait GameImport {
         time_ofs: f32,
     );
 
+    /// Play a sound at a fixed `origin` on `ent_idx`'s channel (C
+    /// `gi.positioned_sound`, `SV_StartSound` with an origin): for
+    /// entities clients are not sent, and world splashes.
+    #[allow(clippy::too_many_arguments)]
+    fn positioned_sound(
+        &self,
+        origin: Vec3f,
+        ent_idx: usize,
+        channel: i32,
+        sound_index: i32,
+        volume: f32,
+        attenuation: f32,
+        time_ofs: f32,
+    );
+
     // -- asset indexing ----------------------------------------------------
 
     /// Precache a model and return its configstring index.
@@ -137,6 +173,28 @@ pub trait GameImport {
 
     /// Check if two points are in the same Potentially Hearable Set.
     fn in_phs(&self, p1: Vec3f, p2: Vec3f) -> bool;
+
+    // -- area portals ------------------------------------------------------
+
+    /// Open or close area portal `portal_num` (a func_areaportal's
+    /// `style`). C ref: `gi.SetAreaPortalState`. The default does nothing,
+    /// for test doubles without a map; the server implements it.
+    fn set_area_portal_state(&self, _portal_num: i32, _open: bool) {}
+
+    /// Whether two areas are joined through open portals. C ref:
+    /// `gi.AreasConnected`. The default, for test doubles without a map,
+    /// joins every area (C's `map_noareas`).
+    fn areas_connected(&self, _area1: i32, _area2: i32) -> bool {
+        true
+    }
+
+    /// The areas entity `number` touched at its last link, 0 for none: the
+    /// `areanum`/`areanum2` C SV_LinkEdict writes into the shared edict,
+    /// which the game reads back after linking. The default, for test
+    /// doubles without a map, puts everything in no area.
+    fn entity_areas(&self, _number: usize) -> (i32, i32) {
+        (0, 0)
+    }
 
     // -- entity linking ----------------------------------------------------
 
@@ -248,6 +306,21 @@ pub trait GameExport {
 
     /// Handle `sv <command>` on the server console.
     fn server_command(&mut self);
+
+    // The `ge->edicts` read surface: what C's server reads of the game's
+    // entities directly.
+
+    /// One past the highest entity number the game has used this map (C
+    /// `ge->num_edicts`, which freeing an edict never lowers).
+    fn num_edicts(&self) -> usize;
+
+    /// Edict `number` if it is in use. A freed edict reads as `None`: C
+    /// `G_FreeEdict` zeroes it, so the server sends nothing for it.
+    fn edict(&self, number: usize) -> Option<EdictView<'_>>;
+
+    /// The player state of the client at entity `number` (C
+    /// `ent->client->ps`), `None` if that edict has no client.
+    fn client_player_state(&self, number: usize) -> Option<&PlayerState>;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,11 +336,11 @@ mod tests {
     /// also prove the trait does not demand thread-safety the single-threaded
     /// engine never uses.
     #[derive(Default)]
-    struct MockGameImport {
+    struct NoopImport {
         _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
     }
 
-    impl GameImport for MockGameImport {
+    impl GameImport for NoopImport {
         fn bprintf(&self, _printlevel: i32, _msg: &str) {}
         fn dprintf(&self, _msg: &str) {}
         fn cprintf(&self, _ent_idx: Option<usize>, _printlevel: i32, _msg: &str) {}
@@ -282,6 +355,7 @@ mod tests {
             _time_ofs: f32,
         ) {
         }
+        fn positioned_sound(&self, _: Vec3f, _: usize, _: i32, _: i32, _: f32, _: f32, _: f32) {}
         fn model_index(&self, _name: &str) -> i32 {
             0
         }
@@ -354,7 +428,7 @@ mod tests {
     #[test]
     fn game_import_is_object_safe() {
         // Prove the trait is object-safe by constructing a trait object.
-        let gi: Box<dyn GameImport> = Box::new(MockGameImport::default());
+        let gi: Box<dyn GameImport> = Box::new(NoopImport::default());
         // Call methods through the vtable — this tests dispatch, not return values.
         gi.bprintf(0, "broadcast");
         gi.dprintf("debug");
@@ -372,7 +446,7 @@ mod tests {
 
     #[test]
     fn game_import_unobstructed_trace_ends_at_end_point() {
-        let gi: &dyn GameImport = &MockGameImport::default();
+        let gi: &dyn GameImport = &NoopImport::default();
         let end = Vec3f::new(100.0, 0.0, 0.0);
         let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
         // Contract: fraction 1.0 (no hit) implies endpos == end.
@@ -383,7 +457,7 @@ mod tests {
 
     #[test]
     fn game_import_box_edicts_returns_empty() {
-        let gi: &dyn GameImport = &MockGameImport::default();
+        let gi: &dyn GameImport = &NoopImport::default();
         // area_type 1 = AREA_SOLID; 0 is not a valid area type.
         let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 1);
         assert!(edicts.is_empty());

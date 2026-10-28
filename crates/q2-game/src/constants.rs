@@ -253,39 +253,12 @@ pub enum ArmorType {
     Body = 3,
 }
 
-/// Armor absorption ratios. C: ARMOR_*_ABSORB (not explicit in header,
-/// derived from item definitions in g_items.c).
-impl ArmorType {
-    pub fn normal_protection(self) -> f32 {
-        match self {
-            ArmorType::None => 0.0,
-            ArmorType::Jacket => 0.3,
-            ArmorType::Combat => 0.6,
-            ArmorType::Body => 0.8,
-        }
-    }
-
-    pub fn max_count(self) -> i32 {
-        match self {
-            ArmorType::None => 0,
-            ArmorType::Jacket => 50,
-            ArmorType::Combat => 100,
-            ArmorType::Body => 200,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Physics constants — matching C source exactly
 // ---------------------------------------------------------------------------
 
-/// Maximum step-up height for MOVETYPE_STEP entities.
-/// C ref: g_phys.c (STEPSIZE)
-pub const STEPSIZE: f32 = 18.0;
-
-/// Maximum number of clip planes for SV_FlyMove.
-/// C ref: g_phys.c
-pub const MAX_CLIP_PLANES: usize = 5;
+/// STEPSIZE and MAX_CLIP_PLANES (C g_phys.c / pmove.c share one value each).
+pub use q2_common::pmove::{MAX_CLIP_PLANES, STEPSIZE};
 
 /// Default gravity in units/sec^2. Can be overridden by sv_gravity cvar.
 /// C ref: g_main.c
@@ -300,7 +273,75 @@ pub const DEFAULT_MAX_VELOCITY: f32 = 2000.0;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of items in a player's inventory.
-pub const MAX_ITEMS: usize = 256;
+pub use q2_shared::constants::MAX_ITEMS;
+
+// ---------------------------------------------------------------------------
+// Contents, masks and effect flags game code uses — defined in q2-shared
+// ---------------------------------------------------------------------------
+
+pub use q2_shared::constants::{
+    CONTENTS_LAVA, CONTENTS_MONSTERCLIP, CONTENTS_SLIME, CONTENTS_WATER, EF_GIB, MASK_MONSTERSOLID,
+    MASK_OPAQUE, MASK_SHOT, MASK_WATER,
+};
+
+// Spawnflags every entity can carry (g_spawn.c / local.h).
+pub const SPAWNFLAG_NOT_EASY: i32 = 0x0000_0100;
+pub const SPAWNFLAG_NOT_MEDIUM: i32 = 0x0000_0200;
+pub const SPAWNFLAG_NOT_HARD: i32 = 0x0000_0400;
+pub const SPAWNFLAG_NOT_DEATHMATCH: i32 = 0x0000_0800;
+pub const SPAWNFLAG_NOT_COOP: i32 = 0x0000_1000;
+
+/// C `SFL_CROSS_TRIGGER_MASK`: `game.serverflags` bits a unit change clears.
+pub const SFL_CROSS_TRIGGER_MASK: i32 = 0x0000_00ff;
+
+// ---------------------------------------------------------------------------
+// Sound channels and attenuations (shared.h), skill levels, default spreads
+// and power armor types (local.h), temp entity types (shared.h
+// temp_event_t) that game code writes
+// ---------------------------------------------------------------------------
+
+pub const CHAN_AUTO: i32 = 0;
+pub const CHAN_WEAPON: i32 = 1;
+pub const CHAN_VOICE: i32 = 2;
+pub const CHAN_BODY: i32 = 4;
+pub const CHAN_NO_PHS_ADD: i32 = 8;
+
+pub const ATTN_NONE: f32 = 0.0;
+pub const ATTN_NORM: f32 = 1.0;
+pub const ATTN_IDLE: f32 = 2.0;
+pub const ATTN_STATIC: f32 = 3.0;
+
+pub const SKILL_EASY: i32 = 0;
+pub const SKILL_MEDIUM: i32 = 1;
+pub const SKILL_HARD: i32 = 2;
+pub const SKILL_HARDPLUS: i32 = 3;
+
+pub const DEFAULT_BULLET_HSPREAD: i32 = 300;
+pub const DEFAULT_BULLET_VSPREAD: i32 = 500;
+pub const DEFAULT_SHOTGUN_HSPREAD: i32 = 1000;
+pub const DEFAULT_SHOTGUN_VSPREAD: i32 = 500;
+pub const DEFAULT_SHOTGUN_COUNT: i32 = 12;
+
+pub const POWER_ARMOR_NONE: i32 = 0;
+pub const POWER_ARMOR_SCREEN: i32 = 1;
+pub const POWER_ARMOR_SHIELD: i32 = 2;
+
+pub const TE_EXPLOSION1: i32 = 5;
+pub const TE_EXPLOSION2: i32 = 6;
+pub const TE_SPLASH: i32 = 10;
+pub const TE_PARASITE_ATTACK: i32 = 16;
+pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
+/// Used as 22 in maps (shared.h: "DON'T RENUMBER").
+pub const TE_BOSSTPORT: i32 = 22;
+
+/// C `ANIM_DEATH` (local.h): the death animation holds its last frame.
+pub const ANIM_DEATH: i32 = 5;
+/// Most gibs thrown in one frame (C `MAX_GIBS`, local.h).
+pub const MAX_GIBS: i32 = 20;
+/// Most debris chunks thrown in one frame (C `MAX_DEBRIS`, local.h).
+pub const MAX_DEBRIS: i32 = 20;
+/// Corpses kept in coop and deathmatch (C `BODY_QUEUE_SIZE`, local.h).
+pub const BODY_QUEUE_SIZE: usize = 8;
 
 // ---------------------------------------------------------------------------
 // Range classification for AI — local.h:175-180
@@ -427,22 +468,6 @@ mod tests {
         assert_eq!(TakeDamage::default(), TakeDamage::No);
     }
 
-    // -- Armor math --
-
-    #[test]
-    fn armor_absorption_rates() {
-        assert_eq!(ArmorType::Jacket.normal_protection(), 0.3);
-        assert_eq!(ArmorType::Combat.normal_protection(), 0.6);
-        assert_eq!(ArmorType::Body.normal_protection(), 0.8);
-    }
-
-    #[test]
-    fn armor_max_counts() {
-        assert_eq!(ArmorType::Jacket.max_count(), 50);
-        assert_eq!(ArmorType::Combat.max_count(), 100);
-        assert_eq!(ArmorType::Body.max_count(), 200);
-    }
-
     // -- Physics constants --
 
     #[test]
@@ -451,6 +476,13 @@ mod tests {
         assert_eq!(MAX_CLIP_PLANES, 5);
         assert_eq!(DEFAULT_GRAVITY, 800.0);
         assert_eq!(FRAMETIME, 0.1);
+    }
+
+    #[test]
+    fn content_masks_match_c_shared_h() {
+        assert_eq!(MASK_MONSTERSOLID, 0x0202_0003);
+        assert_eq!(MASK_SHOT, 0x0600_0003);
+        assert_eq!(MASK_WATER, 0x38);
     }
 
     #[test]

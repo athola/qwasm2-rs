@@ -1,8 +1,10 @@
 //! Entity system — `SlotMap`-backed entity storage.
 //!
 //! Replaces the flat `edict_t` array from the C engine with a safe,
-//! generational-index `SlotMap` that gives O(1) insert / remove / lookup
-//! and catches use-after-free at the type level.
+//! generational-index `SlotMap` that gives O(1) insert / remove / lookup.
+//! Freeing is soft, as in C G_FreeEdict: a freed entity keeps its slot and
+//! key (with `in_use == false`) until its number is reused, so code that
+//! must notice a free checks `is_live`, not whether the key resolves.
 
 use q2_shared::types::*;
 use slotmap::{new_key_type, SlotMap};
@@ -90,30 +92,27 @@ pub struct MoveInfo {
 /// A single animation frame callback.
 pub type AnimFrameFn = fn(&mut GameWorld, EntityKey, f32);
 
-/// Monster animation move definition (mmove_t).
-/// Specifies a range of frames with per-frame callbacks.
-#[derive(Debug, Clone)]
+/// One animation frame of a move. C ref: `mframe_t` (local.h).
+#[derive(Debug, Clone, Copy)]
+pub struct MonsterFrame {
+    /// AI movement for this frame (e.g., ai_walk, ai_run, ai_charge).
+    pub aifunc: Option<AnimFrameFn>,
+    /// Distance passed to `aifunc`, before `monsterinfo.scale`.
+    pub dist: f32,
+    /// Called after `aifunc` on this frame (fire, sounds, refire checks).
+    pub thinkfunc: Option<ThinkFn>,
+}
+
+/// Monster animation move definition. C ref: `mmove_t` (local.h).
+/// `frames[i]` belongs to frame `firstframe + i`; the tables are statics,
+/// like C's, so callbacks stay plain `fn` pointers.
+#[derive(Debug, Clone, Default)]
 pub struct MonsterMove {
     pub firstframe: i32,
     pub lastframe: i32,
-    /// Per-frame AI callback (e.g., ai_walk, ai_run, ai_charge).
-    pub frame_fn: Option<AnimFrameFn>,
-    /// Distance argument passed to frame_fn each frame.
-    pub dist: f32,
+    pub frames: &'static [MonsterFrame],
     /// Called when animation sequence completes.
     pub endfunc: Option<ThinkFn>,
-}
-
-impl Default for MonsterMove {
-    fn default() -> Self {
-        Self {
-            firstframe: 0,
-            lastframe: 0,
-            frame_fn: None,
-            dist: 0.0,
-            endfunc: None,
-        }
-    }
 }
 
 /// Monster AI callback types.
@@ -153,6 +152,13 @@ pub struct MonsterInfo {
     pub lefty: bool,
     pub idle_time: f32,
     pub linkcount: i32,
+    /// Until when other monsters notice this one is angry (C
+    /// `edict_t.show_hostile`). C keeps it on every edict, but only
+    /// monsters set it; a player reads as C's zero.
+    pub show_hostile: f32,
+    /// When the monster starts to drown or suffocate (C
+    /// `edict_t.air_finished`, which only monster code sets here).
+    pub air_finished: f32,
 
     pub power_armor_type: i32,
     pub power_armor_power: i32,
@@ -171,9 +177,18 @@ pub struct ClientPersistent {
     pub health: i32,
     pub max_health: i32,
     pub selected_item: i32,
-    pub inventory: [i32; 256], // MAX_ITEMS
-    pub weapon: Option<EntityKey>,
-    pub last_weapon: Option<EntityKey>,
+    pub inventory: [i32; crate::constants::MAX_ITEMS],
+    /// C `max_bullets`..`max_slugs`; Bandolier and Ammo Pack raise them.
+    pub ammo_max: crate::items::AmmoMax,
+    /// Item indices (C `gitem_t *`): an `EntityKey` would dangle once
+    /// `spawn_entities` rebuilds the storage.
+    pub weapon: Option<usize>,
+    pub last_weapon: Option<usize>,
+    /// C `savedFlags`: the FL_GODMODE, FL_NOTARGET and FL_POWER_ARMOR bits
+    /// SaveClientData carries to the next level.
+    pub saved_flags: crate::constants::EntityFlags,
+    /// C `pers.score`: a coop score carried across levels.
+    pub score: i32,
 }
 
 impl Default for ClientPersistent {
@@ -185,9 +200,13 @@ impl Default for ClientPersistent {
             health: 0,
             max_health: 0,
             selected_item: 0,
-            inventory: [0; 256],
+            inventory: [0; crate::constants::MAX_ITEMS],
+            // C InitClientPersistant.
+            ammo_max: crate::items::AMMO_MAX_DEFAULT,
             weapon: None,
             last_weapon: None,
+            saved_flags: crate::constants::EntityFlags::empty(),
+            score: 0,
         }
     }
 }
@@ -214,6 +233,13 @@ pub struct ClientData {
     pub pickup_msg_time: f32,
     pub pers: ClientPersistent,
     pub resp: ClientRespawn,
+    /// Shots the silencer still muffles (C `silencer_shots`).
+    pub silencer_shots: i32,
+    /// Animation class playing; a higher one is not interrupted (C
+    /// `anim_priority`, `ANIM_*`).
+    pub anim_priority: i32,
+    /// Frame the playing animation stops on (C `anim_end`).
+    pub anim_end: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +261,17 @@ pub struct GameEntityData {
     pub target: String,
     pub targetname: String,
     pub killtarget: String,
+    /// Fired instead of `target` when a monster dies (C `ent->deathtarget`).
+    pub deathtarget: String,
     pub message: String,
     pub team: String,
+    /// Map to change to (C `ent->map`, target_changelevel).
+    pub map: String,
     pub pathtarget: String,
     pub combattarget: String,
+    /// The entity `target` resolved to, for those that hold on to it (C
+    /// `target_ent`): the path_corner a func_train drives to.
+    pub target_ent: Option<EntityKey>,
 
     // -- entity references -------------------------------------------------
     pub ground_entity: Option<EntityKey>,
@@ -257,6 +290,9 @@ pub struct GameEntityData {
     // -- combat / health ---------------------------------------------------
     pub health: i32,
     pub max_health: i32,
+    /// Health at or below which a monster's die callback gibs instead of
+    /// playing a death. C ref: `edict_t.gib_health` (local.h).
+    pub gib_health: i32,
     pub deadflag: DeadFlag,
     pub takedamage: TakeDamage,
     pub dmg: i32,
@@ -282,6 +318,9 @@ pub struct GameEntityData {
     pub last_move_time: f32,
     pub nextthink: f32,
     pub touch_debounce_time: f32,
+    /// Until when power armor shows it took a hit (C `powerarmor_time`,
+    /// set by `CheckPowerArmor`, read by `M_SetEffects`).
+    pub powerarmor_time: f32,
 
     // -- sound -------------------------------------------------------------
     pub noise_index: i32,
@@ -301,6 +340,13 @@ pub struct GameEntityData {
     pub waterlevel: i32,
     /// Eye height above the origin (C `edict_t.viewheight`).
     pub viewheight: f32,
+    /// How lit the entity is for monster sight: a player's from its
+    /// usercmd, 128 for a monster that just saw one (C `light_level`).
+    pub light_level: i32,
+    /// The player's own noise markers, made on first use (C `mynoise`
+    /// for PNOISE_SELF/WEAPON, `mynoise2` for PNOISE_IMPACT).
+    pub mynoise: Option<EntityKey>,
+    pub mynoise2: Option<EntityKey>,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +375,11 @@ pub struct Entity {
 
     pub clipmask: i32,
     pub owner: Option<EntityKey>,
+    /// The areas the server put the entity in at its last link, 0 for
+    /// none (C `areanum`/`areanum2`, written by SV_LinkEdict); a door may
+    /// straddle two.
+    pub areanum: i32,
+    pub areanum2: i32,
 
     // -- physics --
     pub velocity: Vec3f,
@@ -349,8 +400,9 @@ pub struct Entity {
     // -- monster AI state --
     pub monsterinfo: Option<Box<MonsterInfo>>,
 
-    /// Only `Some` for player entities.
-    pub client: Option<ClientData>,
+    /// Slot in `GameWorld::clients` (entity number - 1), only `Some` for
+    /// player entities: C `ent->client` pointing into `game.clients`.
+    pub client: Option<usize>,
 
     /// Game-specific data from `local.h`.
     pub game: GameEntityData,
@@ -371,6 +423,8 @@ impl Default for Entity {
             size: Vec3f::ZERO,
             clipmask: 0,
             owner: None,
+            areanum: 0,
+            areanum2: 0,
             velocity: Vec3f::ZERO,
             avelocity: Vec3f::ZERO,
             prethink: None,
@@ -549,6 +603,12 @@ impl EntityStorage {
         self.numbers.get(n).copied().flatten()
     }
 
+    /// Keys of occupied numbers from `first` upward, in entity-number order
+    /// (C walks `g_edicts`). Includes soft-freed entities.
+    pub fn keys_from(&self, first: usize) -> impl Iterator<Item = EntityKey> + '_ {
+        self.numbers.iter().skip(first).filter_map(|k| *k)
+    }
+
     /// Immutable lookup by key.
     pub fn get(&self, key: EntityKey) -> Option<&Entity> {
         self.entities.get(key)
@@ -559,17 +619,23 @@ impl EntityStorage {
         self.entities.get_mut(key)
     }
 
-    /// Number of entities currently alive.
+    /// Number of occupied slots, including soft-freed entities whose number
+    /// has not been reused yet.
     pub fn count(&self) -> usize {
         self.entities.len()
     }
 
-    /// Iterate over all live entities.
+    /// `true` if `key` names an entity that is in use (C `ent->inuse`).
+    pub fn is_live(&self, key: EntityKey) -> bool {
+        self.entities.get(key).is_some_and(|e| e.in_use)
+    }
+
+    /// Iterate over every occupied slot (in use or soft-freed), in slot order.
     pub fn iter(&self) -> impl Iterator<Item = (EntityKey, &Entity)> {
         self.entities.iter()
     }
 
-    /// Mutably iterate over all live entities.
+    /// Mutably iterate over every occupied slot (in use or soft-freed).
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (EntityKey, &mut Entity)> {
         self.entities.iter_mut()
     }
@@ -774,8 +840,11 @@ mod tests {
         let mm = MonsterMove {
             firstframe: 0,
             lastframe: 10,
-            frame_fn: None,
-            dist: 8.0,
+            frames: &[MonsterFrame {
+                aifunc: None,
+                dist: 8.0,
+                thinkfunc: None,
+            }],
             endfunc: None,
         };
         let mi = MonsterInfo {
@@ -785,7 +854,7 @@ mod tests {
         let cm = mi.currentmove.as_ref().unwrap();
         assert_eq!(cm.firstframe, 0);
         assert_eq!(cm.lastframe, 10);
-        assert_eq!(cm.dist, 8.0);
+        assert_eq!(cm.frames[0].dist, 8.0);
     }
 
     // -- LevelLocals / GameLocals tests --

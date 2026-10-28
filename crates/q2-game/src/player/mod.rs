@@ -7,3 +7,4 @@ pub mod client;
 pub mod hud;
 pub mod trail;
 pub mod view;
+pub mod weapon;
