@@ -10,6 +10,17 @@ wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 glow = { workspace = true }
 web-sys = { workspace = true, features = [
+    "AudioBuffer",
+    "AudioBufferSourceNode",
+    "AudioContext",
+    "AudioContextState",
+    "AudioDestinationNode",
+    "AudioNode",
+    "AudioParam",
+    "AudioScheduledSourceNode",
+    "BaseAudioContext",
+    "ChannelMergerNode",
+    "GainNode",
     "console",
     "Document",
     "Element",

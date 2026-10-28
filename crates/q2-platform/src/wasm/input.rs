@@ -9,12 +9,24 @@ use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent};
 pub use crate::keymap::key_code_to_q2;
 
 /// Shared input state that event listeners write to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WasmInputState {
     pub keys: [bool; 256],
     pub mouse_dx: f32,
     pub mouse_dy: f32,
     pub mouse_buttons: u8,
+}
+
+impl WasmInputState {
+    /// Release every key and button. Called when the page can no longer
+    /// see the matching key-up or mouse-up (focus lost, pointer lock
+    /// changed), so nothing stays held.
+    fn release_all(&mut self) {
+        self.keys = [false; 256];
+        self.mouse_buttons = 0;
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
+    }
 }
 
 impl Default for WasmInputState {
@@ -94,18 +106,30 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
         closure.forget();
     }
 
-    // Flush stale deltas whenever pointer lock changes state (acquire or release).
-    // Prevents a view jump from deltas that accumulated in an unlocked window.
+    // Release everything whenever pointer lock changes state (acquire or
+    // release): stale deltas from an unlocked window would jump the view,
+    // and a button released outside the canvas would stay down.
     {
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |_: Event| {
-            let mut s = state.borrow_mut();
-            s.mouse_dx = 0.0;
-            s.mouse_dy = 0.0;
+            state.borrow_mut().release_all();
         }) as Box<dyn FnMut(_)>);
         document
             .add_event_listener_with_callback("pointerlockchange", closure.as_ref().unchecked_ref())
             .map_err(|e| fatal(format!("pointerlockchange listener: {:?}", e)))?;
+        closure.forget();
+    }
+
+    // Losing focus (alt-tab, ctrl-tab) swallows the key-ups of held keys.
+    {
+        let state = state.clone();
+        let closure = Closure::wrap(Box::new(move |_: Event| {
+            state.borrow_mut().release_all();
+        }) as Box<dyn FnMut(_)>);
+        web_sys::window()
+            .ok_or_else(|| fatal("no window"))?
+            .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref())
+            .map_err(|e| fatal(format!("blur listener: {:?}", e)))?;
         closure.forget();
     }
 
@@ -142,7 +166,9 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
             let mut s = state.borrow_mut();
             s.mouse_buttons &= !(1u8.checked_shl(event.button() as u32).unwrap_or(0));
         }) as Box<dyn FnMut(_)>);
-        canvas
+        // On the document: a button pressed on the canvas may be released
+        // after the cursor has left it.
+        document
             .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
             .map_err(|e| fatal(format!("mouseup listener: {:?}", e)))?;
         closure.forget();

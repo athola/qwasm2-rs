@@ -3,7 +3,12 @@
 //! Maps browser KeyboardEvent.code values to Q2 key indices matching
 //! the default.cfg bindings from pak0.pak.
 
-/// Q2 special key codes (matching the C engine's K_* constants)
+/// Q2 special key codes. The arrows through `K_END` follow id's original
+/// Quake 2 numbering (`K_UPARROW` = 128); `K_PAUSE` is this port's own
+/// value. The Qwasm2 reference renumbers them (keyboard.h puts `K_COMMAND`,
+/// `K_CAPSLOCK`, `K_POWER` and `K_PAUSE` first, so its `K_UPARROW` is 132).
+/// Only this engine's tables use the numbers, which matters only once
+/// bindings or configs are loaded by key number.
 pub const K_TAB: u8 = 9;
 pub const K_ENTER: u8 = 13;
 pub const K_ESCAPE: u8 = 27;

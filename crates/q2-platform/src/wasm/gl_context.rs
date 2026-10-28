@@ -15,8 +15,16 @@ pub fn create_webgl2_context(canvas_id: &str) -> Q2Result<(glow::Context, HtmlCa
         .dyn_into()
         .map_err(|_| fatal("element is not a canvas"))?;
 
+    // No alpha channel: the renderer blends colour only, as C does on a
+    // desktop framebuffer whose alpha is ignored. With the default
+    // `alpha: true`, translucent draws would leave framebuffer alpha below 1
+    // and the page would show through when the browser composites the
+    // canvas.
+    let attributes = js_sys::Object::new();
+    js_sys::Reflect::set(&attributes, &"alpha".into(), &false.into())
+        .map_err(|e| fatal(format!("context attributes: {:?}", e)))?;
     let webgl2: WebGl2RenderingContext = canvas
-        .get_context("webgl2")
+        .get_context_with_context_options("webgl2", &attributes)
         .map_err(|e| fatal(format!("get_context error: {:?}", e)))?
         .ok_or_else(|| fatal("WebGL2 not supported"))?
         .dyn_into()

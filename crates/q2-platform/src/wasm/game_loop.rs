@@ -11,8 +11,10 @@ pub type FrameCallback = Box<dyn FnMut(f64)>;
 /// Self-referential slot: the RAF closure reschedules itself through it.
 type RafSlot = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
 
-/// Start the requestAnimationFrame game loop.
-pub fn start_game_loop(mut callback: FrameCallback) -> Q2Result<()> {
+/// Start the requestAnimationFrame game loop. If a frame cannot be
+/// scheduled the loop stops; `on_stop` gets the reason so the page can show
+/// it, since the canvas would otherwise just freeze on its last frame.
+pub fn start_game_loop(mut callback: FrameCallback, on_stop: Box<dyn Fn(&str)>) -> Q2Result<()> {
     let f: RafSlot = Rc::new(RefCell::new(None));
     let g = f.clone();
 
@@ -23,6 +25,7 @@ pub fn start_game_loop(mut callback: FrameCallback) -> Q2Result<()> {
         // Schedule next frame
         if let Err(e) = request_animation_frame(f.borrow().as_ref().unwrap()) {
             web_sys::console::error_1(&format!("[qwasm2-rs] RAF error: {}", e).into());
+            on_stop(&e.to_string());
         }
     }) as Box<dyn FnMut(f64)>));
 
