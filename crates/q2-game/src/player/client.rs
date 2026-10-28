@@ -451,9 +451,7 @@ impl GameWorld {
 
     /// Put a dead player back in: deathmatch and coop leave the corpse in
     /// the body queue and respawn at a start with a teleport effect; single
-    /// player asks for the load menu. Not called yet:
-    /// ClientBeginServerFrame's respawn waits on #16. `respawn_time` is not
-    /// ported. C ref: `respawn` (player/client.c).
+    /// player asks for the load menu. C ref: `respawn` (player/client.c).
     pub fn respawn(&mut self, key: EntityKey) {
         if !(self.game.deathmatch || self.game.coop) {
             // Restart the entire server.
@@ -472,11 +470,13 @@ impl GameWorld {
             ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
         }
         self.begin_client(key);
+        let time = self.level.time;
         if let Some((ent, client)) = self.entity_and_client_mut(key) {
             // Teleport effect, held in place briefly.
             ent.state.event = q2_shared::constants::EV_PLAYER_TELEPORT;
             client.ps.pmove.pm_flags = q2_common::pmove::PMF_TIME_TELEPORT;
             client.ps.pmove.pm_time = 14;
+            client.respawn_time = time;
         }
     }
 
@@ -526,6 +526,17 @@ impl GameWorld {
         let Some(number) = self.number_of(key) else {
             return;
         };
+        if self.level.intermission_time != 0.0 {
+            let can_exit = self.level.time > self.level.intermission_time + 5.0;
+            if let Some(client) = self.client_mut(key) {
+                client.ps.pmove.pm_type = PmType::Freeze;
+            }
+            // Can exit intermission after five seconds.
+            if can_exit && cmd.buttons & q2_shared::constants::BUTTON_ANY != 0 {
+                self.level.exitintermission = true;
+            }
+            return;
+        }
         let (state, snap_initial, mask) = {
             let Some((ent, client)) = self.entity_and_client_mut(key) else {
                 return;
@@ -677,6 +688,21 @@ impl GameWorld {
             .get(key)
             .is_none_or(|e| e.game.deadflag != crate::constants::DeadFlag::No);
         if dead {
+            // Wait for any button just going down; in deathmatch only
+            // attack, or none with forced respawn.
+            let deathmatch = self.game.deathmatch;
+            let force = deathmatch && self.game.dmflags & crate::constants::DF_FORCE_RESPAWN != 0;
+            let time = self.level.time;
+            let pressed = self.client(key).is_some_and(|c| {
+                let mask = if deathmatch { BUTTON_ATTACK } else { u8::MAX };
+                time > c.respawn_time && (c.latched_buttons & mask != 0 || force)
+            });
+            if pressed {
+                self.respawn(key);
+                if let Some(client) = self.client_mut(key) {
+                    client.latched_buttons = 0;
+                }
+            }
             return;
         }
         self.player_trail_follow(key);
@@ -779,7 +805,7 @@ fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
 /// Extract a value from a Quake-style userinfo string ("\\key\\value\\key\\value").
 /// Keys compare case-sensitively and a value may be empty, as in C
 /// `Info_ValueForKey`.
-fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
+pub(crate) fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
     let body = userinfo.strip_prefix('\\').unwrap_or(userinfo);
     let mut parts = body.split('\\');
     while let (Some(k), Some(value)) = (parts.next(), parts.next()) {
@@ -815,13 +841,22 @@ pub fn player_die(
     ent.maxs.z = -8.0;
     ent.svflags |= SvFlags::DEADMONSTER.bits();
     let first_death = ent.game.deadflag == DeadFlag::No;
+    let time = world.level.time;
     if let Some(client) = ent
         .client
         .and_then(|slot| world.clients.get_mut(slot))
         .filter(|_| first_death)
     {
+        client.respawn_time = time + 1.0;
         client.ps.pmove.pm_type = PmType::Dead;
         client.pers.inventory.fill(0);
+    }
+    // Remove powerups.
+    if let Some(client) = ent.client.and_then(|slot| world.clients.get_mut(slot)) {
+        client.quad_framenum = 0;
+        client.invincible_framenum = 0;
+        client.breather_framenum = 0;
+        client.enviro_framenum = 0;
     }
     ent.game.flags.remove(EntityFlags::POWER_ARMOR);
     if ent.game.health < -40 {
@@ -1259,6 +1294,92 @@ mod tests {
         world.client_mut(key).unwrap().weapon_sound = 0;
         world.client_end_server_frames();
         assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
+    }
+
+    fn dead_player(
+        deathmatch: bool,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        world.game.deathmatch = deathmatch;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = if deathmatch {
+            "info_player_deathmatch"
+        } else {
+            "info_player_start"
+        }
+        .into();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.time = 10.0;
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.health = 0;
+        ent.game.deadflag = DeadFlag::Dead;
+        world.client_mut(key).unwrap().respawn_time = 11.0;
+        (world, key, gi)
+    }
+
+    #[test]
+    fn a_dead_deathmatch_player_respawns_on_attack_after_a_second() {
+        use q2_shared::constants::{BUTTON_ATTACK, BUTTON_USE};
+        let (mut world, key, _) = dead_player(true);
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        world.client_begin_server_frame(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.deadflag,
+            DeadFlag::Dead,
+            "too soon"
+        );
+        world.level.time = 11.5;
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_USE;
+        world.client_begin_server_frame(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.deadflag,
+            DeadFlag::Dead,
+            "attack only"
+        );
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        world.client_begin_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().game.deadflag, DeadFlag::No);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.latched_buttons, client.respawn_time), (0, 11.5));
+    }
+
+    #[test]
+    fn force_respawn_brings_a_deathmatch_player_back_without_a_press() {
+        let (mut world, key, _) = dead_player(true);
+        world.game.dmflags = crate::constants::DF_FORCE_RESPAWN;
+        world.level.time = 11.5;
+        world.client_begin_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().game.deadflag, DeadFlag::No);
+    }
+
+    #[test]
+    fn a_dead_single_player_asks_for_the_load_menu_on_any_press() {
+        use q2_shared::constants::BUTTON_USE;
+        let (mut world, key, gi) = dead_player(false);
+        world.level.time = 11.5;
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_USE;
+        world.client_begin_server_frame(key);
+        assert_eq!(*gi.commands.borrow(), ["menu_loadgame\n"]);
+    }
+
+    #[test]
+    fn dying_schedules_the_respawn_a_second_later() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.time = 7.0;
+        let _ = gi;
+        world.client_mut(key).unwrap().quad_framenum = 500;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert_eq!(world.client(key).unwrap().respawn_time, 8.0);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 0, "powerups go");
     }
 
     #[test]

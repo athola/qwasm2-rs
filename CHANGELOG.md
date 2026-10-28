@@ -105,6 +105,17 @@ All notable changes to qwasm2-rs are documented here.
   armor switches off when cells run out), and the view tints for
   liquids, powerups and pickups with C's warning sounds three seconds
   before a powerup ends (`SV_CalcBlend`), drawn under the HUD
+- Deathmatch rules (C `CheckDMRules`, `EndDMLevel`): the frag and time
+  limits end the match and the next map comes from `DF_SAME_LEVEL`, the
+  map list, `nextmap` or the level's exit; levels end through C's
+  `BeginIntermission` (single player goes straight on, multiplayer
+  freezes everyone at an intermission spot until a button five seconds
+  later); deathmatch exits kill unless `DF_ALLOW_EXIT` and announce who
+  left; dead players respawn on a press (attack only in deathmatch, or
+  forced with `DF_FORCE_RESPAWN`), dying clears powerups; teams by skin
+  or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
+  `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
+  as the browser plays single player
 - Water, slime and lava act on the player (C `P_WorldEffects`): splash,
   submerge and gasp sounds, drowning once the air runs out (harder each
   second up to 15), the rebreather and envirosuit giving air, lava

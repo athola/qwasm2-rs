@@ -37,6 +37,9 @@ pub struct LevelLocals {
     pub changemap: String,
     pub intermission_time: f32,
     pub exitintermission: bool,
+    /// Where intermission puts everyone and which way they look.
+    pub intermission_origin: Vec3f,
+    pub intermission_angle: Vec3f,
     pub sight_client_key: Option<EntityKey>,
     /// A monster that just saw a player, which other monsters notice
     /// (C `level.sight_entity`, set by `FoundTarget`).
@@ -93,6 +96,11 @@ pub struct GameLocals {
     /// single player, so both stay false there.
     pub deathmatch: bool,
     pub coop: bool,
+    /// C `fraglimit` and `timelimit` (minutes) cvars, 0 for none, and
+    /// `sv_maplist`, the deathmatch rotation.
+    pub fraglimit: i32,
+    pub timelimit: f32,
+    pub maplist: String,
 }
 
 impl Default for GameLocals {
@@ -107,6 +115,9 @@ impl Default for GameLocals {
             skill: 1, // C cvar default
             deathmatch: false,
             coop: false,
+            fraglimit: 0,
+            timelimit: 0.0,
+            maplist: String::new(),
         }
     }
 }
@@ -1306,6 +1317,9 @@ impl GameWorld {
             }
             self.run_entity(key);
         }
+
+        // See if it is time to end a deathmatch.
+        self.check_dm_rules();
 
         // Build the player state each client is sent this frame.
         self.client_end_server_frames();

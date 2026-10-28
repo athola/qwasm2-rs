@@ -275,6 +275,8 @@ pub struct ClientData {
     pub grenade_blew_up: bool,
     /// Looping sound of the current weapon (C `weapon_sound`).
     pub weapon_sound: i32,
+    /// When a dead player may respawn (C `respawn_time`).
+    pub respawn_time: f32,
     /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).
     pub bonus_alpha: f32,
     /// When the air runs out under water (C the player edict's

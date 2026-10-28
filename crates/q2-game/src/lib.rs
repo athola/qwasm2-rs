@@ -20,6 +20,7 @@ pub mod misc;
 pub mod monster;
 pub mod physics;
 pub mod player;
+pub mod rules;
 pub mod spawn;
 pub mod targets;
 pub mod traits;

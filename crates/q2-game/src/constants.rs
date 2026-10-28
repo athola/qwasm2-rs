@@ -332,6 +332,16 @@ pub const DAMAGE_TIME: f32 = 0.5;
 /// (C `DF_WEAPONS_STAY`).
 pub const DF_WEAPONS_STAY: i32 = 0x0000_0004;
 
+/// `dmflags` bits for deathmatch (C `DF_*`): stay on the same map, teams
+/// by skin or model, no team damage, respawn without a press, exits
+/// allowed.
+pub const DF_SAME_LEVEL: i32 = 0x0000_0020;
+pub const DF_SKINTEAMS: i32 = 0x0000_0040;
+pub const DF_MODELTEAMS: i32 = 0x0000_0080;
+pub const DF_NO_FRIENDLY_FIRE: i32 = 0x0000_0100;
+pub const DF_FORCE_RESPAWN: i32 = 0x0000_0400;
+pub const DF_ALLOW_EXIT: i32 = 0x0000_1000;
+
 /// `dmflags` bit: deathmatch powerups are used when picked up (C
 /// `DF_INSTANT_ITEMS`).
 pub const DF_INSTANT_ITEMS: i32 = 0x0000_0010;

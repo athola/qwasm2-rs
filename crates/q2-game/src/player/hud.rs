@@ -1,9 +1,10 @@
 //! Player HUD — stat calculations for health, ammo, armor, weapon icon.
 //! C ref: `player/hud.c` (657 lines)
 
-use crate::constants::{EntityFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE};
+use crate::constants::{EntityFlags, ItemFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE};
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
+use q2_shared::types::{PmType, Solid};
 
 use q2_shared::constants::{
     STAT_AMMO, STAT_AMMO_ICON, STAT_ARMOR, STAT_ARMOR_ICON, STAT_FRAGS, STAT_HEALTH,
@@ -106,6 +107,115 @@ impl GameWorld {
         stats[STAT_SELECTED_ITEM] = selected as i16;
         stats[STAT_LAYOUTS] = 0;
         stats[STAT_FRAGS] = client.resp.score as i16;
+    }
+}
+
+impl GameWorld {
+    /// End the level through `targ` (a changelevel): respawn the dead,
+    /// note the next map, and in single player go straight on; otherwise
+    /// move everyone to an intermission spot until a button is pressed
+    /// five seconds later. A new coop unit takes everyone's keys. C ref:
+    /// `BeginIntermission` (player/hud.c), without the `fact1` spot fix
+    /// and the scoreboard.
+    pub fn begin_intermission(&mut self, targ: EntityKey) {
+        if self.level.intermission_time != 0.0 {
+            return; // already activated
+        }
+        let clients: Vec<EntityKey> = (1..=self.game.maxclients.max(0) as usize)
+            .filter_map(|n| self.entities.key_for_number(n))
+            .filter(|&k| self.entities.get(k).is_some_and(|e| e.in_use))
+            .collect();
+        // Respawn any dead clients.
+        for &key in &clients {
+            if self.entities.get(key).is_some_and(|e| e.game.health <= 0) {
+                self.respawn(key);
+            }
+        }
+        self.level.intermission_time = self.level.time;
+        self.level.changemap = self
+            .entities
+            .get(targ)
+            .map(|e| e.game.map.clone())
+            .unwrap_or_default();
+        if self.level.changemap.contains('*') {
+            if self.game.coop {
+                // Strip players of all keys between units.
+                let keys: Vec<usize> = (0..self.items.len())
+                    .filter(|&i| self.items[i].flags.contains(ItemFlags::KEY))
+                    .collect();
+                for &key in &clients {
+                    if let Some(client) = self.client_mut(key) {
+                        keys.iter().for_each(|&i| client.pers.inventory[i] = 0);
+                    }
+                }
+            }
+        } else if !self.game.deathmatch {
+            self.level.exitintermission = true; // go immediately to the next level
+            return;
+        }
+        self.level.exitintermission = false;
+
+        // An intermission spot: one of the first four at random, or a
+        // start when the map has none.
+        let spot = match self.find_by_classname(None, "info_player_intermission") {
+            Some(first) => {
+                let mut spot = Some(first);
+                for _ in 0..self.random_u32() & 3 {
+                    // Wrap around the list.
+                    spot = self
+                        .find_by_classname(spot, "info_player_intermission")
+                        .or_else(|| self.find_by_classname(None, "info_player_intermission"));
+                }
+                spot
+            }
+            None => self
+                .find_by_classname(None, "info_player_start")
+                .or_else(|| self.find_by_classname(None, "info_player_deathmatch")),
+        };
+        if let Some(spot) = spot.and_then(|k| self.entities.get(k)) {
+            self.level.intermission_origin = spot.state.origin;
+            self.level.intermission_angle = spot.state.angles;
+        }
+        for key in clients {
+            self.move_client_to_intermission(key);
+        }
+    }
+
+    /// Freeze a player at the intermission spot with nothing showing.
+    /// C ref: `MoveClientToIntermission` (player/hud.c), without the
+    /// scoreboard.
+    pub fn move_client_to_intermission(&mut self, key: EntityKey) {
+        let (origin, angles) = (
+            self.level.intermission_origin,
+            self.level.intermission_angle,
+        );
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        ent.state.origin = origin;
+        for i in 0..3 {
+            client.ps.pmove.origin[i] = (origin[i] * 8.0) as i16;
+        }
+        client.ps.viewangles = angles;
+        client.ps.pmove.pm_type = PmType::Freeze;
+        client.ps.gunindex = 0;
+        client.ps.blend[3] = 0.0;
+        client.ps.rdflags &= !q2_shared::constants::RDF_UNDERWATER;
+        // Clean up powerup info.
+        client.quad_framenum = 0;
+        client.invincible_framenum = 0;
+        client.breather_framenum = 0;
+        client.enviro_framenum = 0;
+        client.grenade_blew_up = false;
+        client.grenade_time = 0.0;
+        ent.game.viewheight = 0.0;
+        ent.state.modelindex = 0;
+        ent.state.modelindex2 = 0;
+        ent.state.modelindex3 = 0;
+        ent.state.effects = 0;
+        ent.state.sound = 0;
+        ent.solid = Solid::Not;
+        self.link_entity(key);
     }
 }
 
@@ -339,5 +449,141 @@ mod tests {
 
         let stats = world.client(key).unwrap().ps.stats;
         assert_eq!(stats[STAT_ARMOR], 50);
+    }
+
+    // ---- BeginIntermission / MoveClientToIntermission ----
+
+    use q2_shared::types::Vec3f;
+
+    fn spot(world: &mut GameWorld, classname: &str, origin: Vec3f, yaw: f32) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.classname = classname.into();
+        ent.state.origin = origin;
+        ent.state.angles = Vec3f::new(0.0, yaw, 0.0);
+        key
+    }
+
+    fn exit_to(world: &mut GameWorld, map: &str) -> EntityKey {
+        let exit = world.spawn().unwrap();
+        world.entities.get_mut(exit).unwrap().game.map = map.into();
+        exit
+    }
+
+    #[test]
+    fn single_player_intermission_goes_straight_to_the_next_level() {
+        let (mut world, key, _) = armed_player();
+        world.level.time = 12.0;
+        let exit = exit_to(&mut world, "base2");
+        world.begin_intermission(exit);
+        assert_eq!(world.level.intermission_time, 12.0);
+        assert_eq!(world.level.changemap, "base2");
+        assert!(world.level.exitintermission);
+        assert_eq!(
+            world.client(key).unwrap().ps.pmove.pm_type,
+            PmType::Normal,
+            "not moved"
+        );
+    }
+
+    #[test]
+    fn deathmatch_intermission_freezes_everyone_at_the_intermission_spot() {
+        let (mut world, key, _) = armed_player();
+        world.game.deathmatch = true;
+        world.level.time = 12.0;
+        spot(
+            &mut world,
+            "info_player_intermission",
+            Vec3f::new(64.0, 32.0, 16.0),
+            90.0,
+        );
+        let client = world.client_mut(key).unwrap();
+        client.quad_framenum = 500;
+        client.ps.blend = [1.0, 0.0, 0.0, 0.5];
+        let exit = exit_to(&mut world, "q2dm2");
+        world.begin_intermission(exit);
+        assert!(!world.level.exitintermission);
+        assert_eq!(
+            world.level.intermission_origin,
+            Vec3f::new(64.0, 32.0, 16.0)
+        );
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(64.0, 32.0, 16.0));
+        assert_eq!(
+            (ent.state.modelindex, ent.solid),
+            (0, q2_shared::types::Solid::Not)
+        );
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.pmove.origin, [512, 256, 128]);
+        assert_eq!(client.ps.viewangles, Vec3f::new(0.0, 90.0, 0.0));
+        assert_eq!(client.ps.pmove.pm_type, PmType::Freeze);
+        assert_eq!(
+            (client.ps.gunindex, client.ps.blend[3], client.quad_framenum),
+            (0, 0.0, 0)
+        );
+
+        // Already in intermission: a second exit changes nothing.
+        let other = exit_to(&mut world, "q2dm3");
+        world.begin_intermission(other);
+        assert_eq!(world.level.changemap, "q2dm2");
+    }
+
+    #[test]
+    fn without_an_intermission_spot_the_player_start_is_used() {
+        let (mut world, key, _) = armed_player();
+        world.game.deathmatch = true;
+        spot(
+            &mut world,
+            "info_player_start",
+            Vec3f::new(8.0, 0.0, 0.0),
+            0.0,
+        );
+        let exit = exit_to(&mut world, "q2dm2");
+        world.begin_intermission(exit);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.origin,
+            Vec3f::new(8.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_new_coop_unit_takes_the_players_keys() {
+        let (mut world, key, _) = armed_player();
+        world.game.coop = true;
+        let pass = world.find_item_by_name("Security Pass").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[pass] = 1;
+        spot(&mut world, "info_player_start", Vec3f::ZERO, 0.0);
+        let exit = exit_to(&mut world, "*bunk1$start");
+        world.begin_intermission(exit);
+        assert_eq!(world.client(key).unwrap().pers.inventory[pass], 0);
+    }
+
+    #[test]
+    fn the_intermission_ends_on_a_button_after_five_seconds() {
+        use q2_shared::constants::BUTTON_ANY;
+        use q2_shared::types::UserCmd;
+        let (mut world, key, _) = armed_player();
+        world.game.deathmatch = true;
+        spot(&mut world, "info_player_start", Vec3f::ZERO, 0.0);
+        world.level.time = 10.0;
+        let exit = exit_to(&mut world, "q2dm2");
+        world.begin_intermission(exit);
+        let press = UserCmd {
+            msec: 10,
+            buttons: BUTTON_ANY,
+            forwardmove: 400,
+            ..Default::default()
+        };
+        world.level.time = 14.0;
+        world.think_client(key, &press);
+        assert!(!world.level.exitintermission, "too soon");
+        assert_eq!(
+            world.entities.get(key).unwrap().state.origin,
+            Vec3f::ZERO,
+            "frozen"
+        );
+        world.level.time = 15.5;
+        world.think_client(key, &press);
+        assert!(world.level.exitintermission);
     }
 }
