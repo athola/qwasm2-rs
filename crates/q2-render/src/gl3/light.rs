@@ -2,14 +2,13 @@
 //! `RecursiveLightPoint` in `gl3_light.c`). GL-free.
 //!
 //! [`LightTree`] keeps only what the trace needs from the BSP (the node tree,
-//! per-face extents and lightmap samples) because `load_bsp` borrows the
-//! `BspData` and does not retain it. Only the first lightmap style is read,
-//! matching what the world shader draws; light styles and `r_modulate` (1.0)
-//! are not modelled.
+//! per-face extents and lightmap samples) because the world load borrows
+//! the `BspData` and does not retain it. `r_modulate` (1.0) is not modelled.
 
 use q2_render_api::DLight;
+use q2_shared::constants::MAX_LIGHTSTYLES;
 
-use super::lightmap::calc_surface_extents;
+use super::lightmap::{calc_surface_extents, style_count};
 use super::world::{face_positions, SURF_SKY, SURF_WARP};
 use crate::bsp::BspData;
 
@@ -31,6 +30,8 @@ struct LightFace {
     extents: [i32; 2],
     /// Byte offset into the lighting lump; `None` for faces without a lightmap.
     samples: Option<usize>,
+    /// Light styles of the face's consecutive sample blocks.
+    styles: Vec<u8>,
 }
 
 pub struct LightTree {
@@ -43,7 +44,7 @@ pub struct LightTree {
 
 impl LightTree {
     pub fn from_bsp(bsp: &BspData) -> Self {
-        let nodes = bsp
+        let nodes: Vec<LightNode> = bsp
             .nodes
             .iter()
             .map(|node| {
@@ -59,6 +60,21 @@ impl LightTree {
                 }
             })
             .collect();
+        // `trace` recurses along child links, so a link back to the node or
+        // an ancestor would never end. q2bsp writes nodes in preorder (the
+        // rule collision's `validate_references` enforces); without it the
+        // tree is dropped and everything traces dark.
+        let preorder = nodes.iter().enumerate().all(|(index, node)| {
+            node.children
+                .iter()
+                .all(|&child| usize::try_from(child).map_or(true, |child| child > index))
+        });
+        let nodes = if preorder {
+            nodes
+        } else {
+            tracing::warn!("GL3: BSP nodes are not in preorder; entity lighting disabled");
+            Vec::new()
+        };
         let faces = bsp
             .faces
             .iter()
@@ -74,6 +90,7 @@ impl LightTree {
                     texture_mins: extents.texture_mins,
                     extents: extents.extents,
                     samples: usize::try_from(face.light_ofs).ok(),
+                    styles: face.styles[..style_count(face)].to_vec(),
                 })
             })
             .collect();
@@ -86,13 +103,19 @@ impl LightTree {
 
     /// Light colour (0..1 per channel, may exceed 1 with dynamic lights) at
     /// `origin`: the lightmap of the first face hit by a ray straight down,
-    /// plus dynamic lights. Maps without lighting data are fullbright.
-    pub fn light_point(&self, origin: [f32; 3], dlights: &[DLight]) -> [f32; 3] {
+    /// each style's samples scaled by `styles`, plus dynamic lights. Maps
+    /// without lighting data are fullbright.
+    pub fn light_point(
+        &self,
+        origin: [f32; 3],
+        styles: &[f32; MAX_LIGHTSTYLES],
+        dlights: &[DLight],
+    ) -> [f32; 3] {
         if self.lighting.is_empty() {
             return [1.0; 3];
         }
         let end = [origin[0], origin[1], origin[2] - TRACE_DEPTH];
-        let mut color = self.trace(0, origin, end).unwrap_or([0.0; 3]);
+        let mut color = self.trace(0, origin, end, styles).unwrap_or([0.0; 3]);
         for light in dlights {
             let delta = [
                 origin[0] - light.origin.x,
@@ -111,13 +134,19 @@ impl LightTree {
     }
 
     /// C `RecursiveLightPoint`: `None` when the segment hits no lit face.
-    fn trace(&self, child: i32, start: [f32; 3], end: [f32; 3]) -> Option<[f32; 3]> {
+    fn trace(
+        &self,
+        child: i32,
+        start: [f32; 3],
+        end: [f32; 3],
+        styles: &[f32; MAX_LIGHTSTYLES],
+    ) -> Option<[f32; 3]> {
         let node = self.nodes.get(usize::try_from(child).ok()?)?;
         let front = dot(start, node.normal) - node.dist;
         let back = dot(end, node.normal) - node.dist;
         let side = usize::from(front < 0.0);
         if (back < 0.0) == (side == 1) {
-            return self.trace(node.children[side], start, end);
+            return self.trace(node.children[side], start, end, styles);
         }
 
         let fraction = front / (front - back);
@@ -126,17 +155,22 @@ impl LightTree {
             start[1] + (end[1] - start[1]) * fraction,
             start[2] + (end[2] - start[2]) * fraction,
         ];
-        if let Some(color) = self.trace(node.children[side], start, mid) {
+        if let Some(color) = self.trace(node.children[side], start, mid, styles) {
             return Some(color);
         }
-        if let Some(color) = self.face_color(node, mid) {
+        if let Some(color) = self.face_color(node, mid, styles) {
             return Some(color);
         }
-        self.trace(node.children[1 - side], mid, end)
+        self.trace(node.children[1 - side], mid, end, styles)
     }
 
-    /// Lightmap sample of the first face of `node` that contains `mid`.
-    fn face_color(&self, node: &LightNode, mid: [f32; 3]) -> Option<[f32; 3]> {
+    /// Styled lightmap sample of the first face of `node` that contains `mid`.
+    fn face_color(
+        &self,
+        node: &LightNode,
+        mid: [f32; 3],
+        styles: &[f32; MAX_LIGHTSTYLES],
+    ) -> Option<[f32; 3]> {
         let range = node.first_face..node.first_face.saturating_add(node.num_faces);
         for face in self.faces.get(range)?.iter().flatten() {
             // C stores the projection in ints, truncating toward zero.
@@ -152,18 +186,27 @@ impl LightTree {
                 continue;
             }
             let Some(offset) = face.samples else {
-                // Faces without a lightmap render fullbright in the world.
+                // Faces without a lightmap render fullbright in the world,
+                // so the entity is lit to match. Deliberate deviation: C
+                // returns 0 here ("hit") and `GL3_LightPoint` copies the
+                // static `pointcolor` left by the previous call (black on
+                // first use), which depends on draw order.
                 return Some([1.0; 3]);
             };
             let columns = usize::try_from((face.extents[0] >> 4) + 1).ok()?;
+            let rows = usize::try_from((face.extents[1] >> 4) + 1).ok()?;
             let luxel = usize::try_from(dt >> 4).ok()? * columns + usize::try_from(ds >> 4).ok()?;
-            let at = offset.checked_add(luxel * 3)?;
-            let rgb = self.lighting.get(at..at + 3)?;
-            return Some([
-                f32::from(rgb[0]) / 255.0,
-                f32::from(rgb[1]) / 255.0,
-                f32::from(rgb[2]) / 255.0,
-            ]);
+            // Style blocks follow each other, `columns * rows` luxels apart.
+            let mut color = [0.0; 3];
+            for (block, &style) in face.styles.iter().enumerate() {
+                let at = offset.checked_add((block * columns * rows + luxel) * 3)?;
+                let rgb = self.lighting.get(at..at + 3)?;
+                let scale = styles[usize::from(style)];
+                for (channel, &sample) in color.iter_mut().zip(rgb) {
+                    *channel += f32::from(sample) * scale / 255.0;
+                }
+            }
+            return Some(color);
         }
         None
     }
@@ -243,6 +286,9 @@ mod tests {
         }
     }
 
+    /// Every style at its normal brightness.
+    const ON: [f32; MAX_LIGHTSTYLES] = [1.0; MAX_LIGHTSTYLES];
+
     fn near(actual: [f32; 3], expected: [f32; 3]) {
         for axis in 0..3 {
             assert!(
@@ -257,8 +303,30 @@ mod tests {
         let tree = LightTree::from_bsp(&floor_bsp(0, 0));
         // s = 20 -> ds 1, t = 36 -> dt 2 -> luxel 2*5+1 = 11 -> (110, 55, 0).
         near(
-            tree.light_point([20.0, 36.0, 100.0], &[]),
+            tree.light_point([20.0, 36.0, 100.0], &ON, &[]),
             [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn each_style_layer_is_scaled_by_its_style_and_summed() {
+        let mut bsp = floor_bsp(0, 0);
+        bsp.faces[0].styles = [0, 7, 255, 255];
+        // Second style block: every luxel (0, 0, 40).
+        bsp.lightmap_data.extend((0..25).flat_map(|_| [0u8, 0, 40]));
+        let tree = LightTree::from_bsp(&bsp);
+        let mut styles = ON;
+        styles[7] = 0.0;
+        let point = [20.0, 36.0, 100.0];
+        near(
+            tree.light_point(point, &styles, &[]),
+            [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
+        styles[7] = 2.0;
+        styles[0] = 0.5;
+        near(
+            tree.light_point(point, &styles, &[]),
+            [55.0 / 255.0, 27.5 / 255.0, 80.0 / 255.0],
         );
     }
 
@@ -273,26 +341,26 @@ mod tests {
     #[test]
     fn point_beside_the_face_hits_nothing_and_is_dark() {
         let tree = LightTree::from_bsp(&floor_bsp(0, 0));
-        near(tree.light_point([200.0, 36.0, 100.0], &[]), [0.0; 3]);
+        near(tree.light_point([200.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
     }
 
     #[test]
     fn point_below_the_plane_never_crosses_it() {
         let tree = LightTree::from_bsp(&floor_bsp(0, 0));
-        near(tree.light_point([20.0, 36.0, -5.0], &[]), [0.0; 3]);
+        near(tree.light_point([20.0, 36.0, -5.0], &ON, &[]), [0.0; 3]);
     }
 
     #[test]
     fn faces_without_samples_are_fullbright() {
         let tree = LightTree::from_bsp(&floor_bsp(0, -1));
-        near(tree.light_point([20.0, 36.0, 100.0], &[]), [1.0; 3]);
+        near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [1.0; 3]);
     }
 
     #[test]
     fn warp_and_sky_faces_carry_no_light() {
         for flags in [SURF_WARP, SURF_SKY] {
             let tree = LightTree::from_bsp(&floor_bsp(flags, 0));
-            near(tree.light_point([20.0, 36.0, 100.0], &[]), [0.0; 3]);
+            near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
         }
     }
 
@@ -306,7 +374,10 @@ mod tests {
             color: Vec3f::new(1.0, 1.0, 1.0),
             intensity: 256.0,
         };
-        near(tree.light_point([20.0, 36.0, 100.0], &[lamp]), [1.0; 3]);
+        near(
+            tree.light_point([20.0, 36.0, 100.0], &ON, &[lamp]),
+            [1.0; 3],
+        );
     }
 
     #[test]
@@ -319,7 +390,7 @@ mod tests {
         };
         // (192 - 64) / 256 = 0.5 of the lamp colour on top of fullbright.
         near(
-            tree.light_point([20.0, 36.0, 100.0], &[lamp]),
+            tree.light_point([20.0, 36.0, 100.0], &ON, &[lamp]),
             [1.5, 1.25, 1.0],
         );
         let far = DLight {
@@ -327,7 +398,90 @@ mod tests {
             color: Vec3f::new(1.0, 1.0, 1.0),
             intensity: 100.0,
         };
-        near(tree.light_point([20.0, 36.0, 100.0], &[far]), [1.0; 3]);
+        near(tree.light_point([20.0, 36.0, 100.0], &ON, &[far]), [1.0; 3]);
+    }
+
+    #[test]
+    fn node_linking_back_to_itself_is_dark_not_a_stack_overflow() {
+        let mut bsp = floor_bsp(0, 0);
+        bsp.nodes[0].children = [0, 0];
+        near(
+            LightTree::from_bsp(&bsp).light_point([20.0, 36.0, -5.0], &ON, &[]),
+            [0.0; 3],
+        );
+    }
+
+    /// `floor_bsp` under a new root splitting on z = 100 whose front is a
+    /// leaf and whose back is the floor node, now index 1.
+    fn two_level_bsp() -> BspData {
+        let mut bsp = floor_bsp(0, 0);
+        bsp.planes.push(BspPlane {
+            normal: Vec3f::new(0.0, 0.0, 1.0),
+            dist: 100.0,
+            plane_type: 2,
+        });
+        let floor = bsp.nodes.remove(0);
+        bsp.nodes = vec![
+            BspNode {
+                plane_idx: 1,
+                children: [-1, 1],
+                mins: [0; 3],
+                maxs: [0; 3],
+                first_face: 0,
+                num_faces: 0,
+            },
+            floor,
+        ];
+        bsp
+    }
+
+    #[test]
+    fn trace_descends_past_an_empty_node_to_the_lit_face_below() {
+        let tree = LightTree::from_bsp(&two_level_bsp());
+        near(
+            tree.light_point([20.0, 36.0, 200.0], &ON, &[]),
+            [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
+        // Between the planes the root is not crossed; the floor still is.
+        near(
+            tree.light_point([20.0, 36.0, 50.0], &ON, &[]),
+            [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn face_on_an_inner_node_is_hit_before_the_floor() {
+        let mut bsp = two_level_bsp();
+        // Give the root a copy of the floor face lifted to z = 100 whose
+        // samples are the second half of a doubled lump.
+        let mut lifted = bsp.faces[0].clone();
+        lifted.light_ofs = 75;
+        bsp.faces.push(lifted);
+        bsp.nodes[0].first_face = 1;
+        bsp.nodes[0].num_faces = 1;
+        bsp.lightmap_data
+            .extend((0..25).flat_map(|_| [0u8, 0, 200]));
+        let tree = LightTree::from_bsp(&bsp);
+        near(
+            tree.light_point([20.0, 36.0, 200.0], &ON, &[]),
+            [0.0, 0.0, 200.0 / 255.0],
+        );
+    }
+
+    #[test]
+    fn face_range_or_samples_past_their_arrays_are_skipped_not_a_panic() {
+        let mut bsp = floor_bsp(0, 0);
+        bsp.nodes[0].num_faces = 9;
+        near(
+            LightTree::from_bsp(&bsp).light_point([20.0, 36.0, 100.0], &ON, &[]),
+            [0.0; 3],
+        );
+        let mut bsp = floor_bsp(0, 1000);
+        bsp.nodes[0].num_faces = 1;
+        near(
+            LightTree::from_bsp(&bsp).light_point([20.0, 36.0, 100.0], &ON, &[]),
+            [0.0; 3],
+        );
     }
 
     #[test]
@@ -335,7 +489,7 @@ mod tests {
         let mut bsp = floor_bsp(0, 0);
         bsp.nodes.clear();
         near(
-            LightTree::from_bsp(&bsp).light_point([0.0, 0.0, 10.0], &[]),
+            LightTree::from_bsp(&bsp).light_point([0.0, 0.0, 10.0], &ON, &[]),
             [0.0; 3],
         );
     }

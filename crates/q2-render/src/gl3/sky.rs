@@ -34,48 +34,49 @@ const ST_TO_VEC: [[i32; 3]; 6] = [
 /// Floats per vertex in the shared world layout: position(3) uv(2) lightmap uv(2).
 pub const VERTEX_FLOATS: usize = 7;
 
-/// Paths tried for one face, in C order: PCX then TGA.
+/// Paths tried for one face. C `GetSkyImage` reads the TGA and tries the PCX
+/// only when `r_palettedtexture` is set (default 0); the PCX stays here as a
+/// fallback for content that ships no TGA.
 pub fn sky_image_paths(sky: &str, suffix: &str) -> [String; 2] {
     [
-        format!("env/{sky}{suffix}.pcx"),
         format!("env/{sky}{suffix}.tga"),
+        format!("env/{sky}{suffix}.pcx"),
     ]
 }
 
 /// Load one sky face; `None` when neither file decodes.
 pub fn load_sky_image(loader: &FileLoader, sky: &str, suffix: &str) -> Option<Image> {
-    let [pcx_path, tga_path] = sky_image_paths(sky, suffix);
-    if let Some(bytes) = loader(&pcx_path) {
-        match load_pcx(&bytes) {
-            Ok(pcx) => {
-                if let Some(entries) = pcx.palette {
-                    let palette = Palette(entries);
-                    let mut rgba = Vec::with_capacity(pcx.pixels.len() * 4);
-                    for &index in &pcx.pixels {
-                        rgba.extend_from_slice(&palette.rgba(index));
-                    }
-                    return Some(Image {
-                        width: pcx.width,
-                        height: pcx.height,
-                        rgba,
-                        is_lava: false,
-                    });
-                }
-                tracing::warn!("GL3: {pcx_path} has no palette");
+    let [tga_path, pcx_path] = sky_image_paths(sky, suffix);
+    if let Some(bytes) = loader(&tga_path) {
+        match load_tga(&bytes) {
+            Ok(tga) => {
+                return Some(Image {
+                    width: tga.width,
+                    height: tga.height,
+                    rgba: tga.rgba,
+                    is_lava: false,
+                })
             }
-            Err(error) => tracing::warn!("GL3: bad {pcx_path}: {error:?}"),
+            Err(error) => tracing::warn!("GL3: bad {tga_path}: {error:?}"),
         }
     }
-    let bytes = loader(&tga_path)?;
-    match load_tga(&bytes) {
-        Ok(tga) => Some(Image {
-            width: tga.width,
-            height: tga.height,
-            rgba: tga.rgba,
-            is_lava: false,
-        }),
+    let bytes = loader(&pcx_path)?;
+    match load_pcx(&bytes) {
+        Ok(pcx) => {
+            let Some(entries) = pcx.palette else {
+                tracing::warn!("GL3: {pcx_path} has no palette");
+                return None;
+            };
+            let rgba = Palette(entries).indexed_to_rgba(&pcx.pixels, pcx.width);
+            Some(Image {
+                width: pcx.width,
+                height: pcx.height,
+                rgba,
+                is_lava: false,
+            })
+        }
         Err(error) => {
-            tracing::warn!("GL3: bad {tga_path}: {error:?}");
+            tracing::warn!("GL3: bad {pcx_path}: {error:?}");
             None
         }
     }
@@ -155,11 +156,22 @@ mod tests {
         file
     }
 
+    fn tga_1x1() -> Vec<u8> {
+        let mut tga = vec![0u8; 18];
+        tga[2] = 2;
+        tga[12] = 1;
+        tga[14] = 1;
+        tga[16] = 24;
+        tga[17] = 0x20;
+        tga.extend_from_slice(&[3, 2, 1]);
+        tga
+    }
+
     #[test]
     fn face_paths_follow_env_sky_suffix_pattern() {
         assert_eq!(
             sky_image_paths("unit1_", "rt"),
-            ["env/unit1_rt.pcx", "env/unit1_rt.tga"]
+            ["env/unit1_rt.tga", "env/unit1_rt.pcx"]
         );
     }
 
@@ -170,45 +182,38 @@ mod tests {
     }
 
     #[test]
-    fn pcx_is_preferred_over_tga() {
+    fn tga_is_preferred_over_pcx_like_c_with_r_palettedtexture_off() {
         let pcx = pcx_with_palette(2, 1, &[5, 6]);
+        let tga = tga_1x1();
         let loader: FileLoader = Box::new(move |path| {
             (path == "env/sky_up.pcx")
                 .then(|| pcx.clone())
-                .or_else(|| (path == "env/sky_up.tga").then(|| vec![0; 3]))
+                .or_else(|| (path == "env/sky_up.tga").then(|| tga.clone()))
         });
         let image = load_sky_image(&loader, "sky_", "up").unwrap();
-        assert_eq!((image.width, image.height), (2, 1));
-        assert_eq!(&image.rgba[0..4], &[5, 0, 0, 255]);
+        assert_eq!(image.rgba, vec![1, 2, 3, 255]);
     }
 
     #[test]
-    fn tga_is_used_when_pcx_is_absent_or_corrupt() {
-        let mut tga = vec![0u8; 18];
-        tga[2] = 2;
-        tga[12] = 1;
-        tga[14] = 1;
-        tga[16] = 24;
-        tga[17] = 0x20;
-        tga.extend_from_slice(&[3, 2, 1]);
-        let tga_only = tga.clone();
+    fn pcx_is_used_when_tga_is_absent_or_corrupt() {
+        let pcx = pcx_with_palette(2, 1, &[5, 6]);
+        let pcx_only = pcx.clone();
         let loader: FileLoader =
-            Box::new(move |path| path.ends_with(".tga").then(|| tga_only.clone()));
-        assert_eq!(
-            load_sky_image(&loader, "s", "dn").unwrap().rgba,
-            vec![1, 2, 3, 255]
-        );
+            Box::new(move |path| path.ends_with(".pcx").then(|| pcx_only.clone()));
+        let image = load_sky_image(&loader, "s", "dn").unwrap();
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(&image.rgba[0..4], &[5, 0, 0, 255]);
 
-        let corrupt_pcx: FileLoader = Box::new(move |path| {
-            if path.ends_with(".pcx") {
+        let corrupt_tga: FileLoader = Box::new(move |path| {
+            if path.ends_with(".tga") {
                 Some(vec![1; 40])
             } else {
-                Some(tga.clone())
+                Some(pcx.clone())
             }
         });
         assert_eq!(
-            load_sky_image(&corrupt_pcx, "s", "dn").unwrap().rgba,
-            vec![1, 2, 3, 255]
+            &load_sky_image(&corrupt_tga, "s", "dn").unwrap().rgba[0..4],
+            &[5, 0, 0, 255]
         );
     }
 

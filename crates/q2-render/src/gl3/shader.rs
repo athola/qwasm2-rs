@@ -3,9 +3,10 @@
 //! `u_mode` switch so one program serves every world draw).
 //!
 //! Colour constants are the C cvar defaults: `gl3_intensity` 1.5,
-//! `gl3_overbrightbits` 1.3 and `vid_gamma` 1.2 (applied as `pow(c, 1/gamma)`).
-//! In C the lightmap scale is `lmScales[0] = 1` for the all-white style table,
-//! so a style-0 lightmap sample is multiplied by `overbrightbits` only.
+//! `gl3_overbrightbits` 1.3 and `vid_gamma` 1.0 (applied as `pow(c, 1/gamma)`;
+//! GL3 asks for 1.2, but `VID_Init` registers the cvar with 1.0 first).
+//! Lightmap layer `n` is scaled by the brightness of the face's `n`th light
+//! style (C `lmScales`), then the sum by `overbrightbits`.
 
 use glow::HasContext;
 
@@ -19,12 +20,26 @@ precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec2 a_lightmap_uv;
+layout(location = 3) in vec4 a_styles;
 uniform mat4 u_view_proj;
 uniform int u_mode;
 uniform float u_scroll;
+// Light style brightness, four styles per vector (C lightstyles[].rgb).
+uniform vec4 u_styles[64];
 out vec2 v_uv;
 out vec2 v_lightmap_uv;
+out vec4 v_style_scales;
+float style_scale(float style) {
+    // -1 marks an unused layer; its texels are zero, so any scale works.
+    if (style < 0.0) {
+        return 1.0;
+    }
+    int index = int(style);
+    return u_styles[index / 4][index % 4];
+}
 void main() {
+    v_style_scales = vec4(style_scale(a_styles.x), style_scale(a_styles.y),
+                          style_scale(a_styles.z), style_scale(a_styles.w));
     v_uv = a_uv;
     // SURF_FLOWING shifts s in the vertex stage; warp applies it after the wobble.
     if (u_mode != 2) {
@@ -40,7 +55,10 @@ precision highp float;
 // Uniforms shared with the vertex stage must have the same precision there.
 precision highp int;
 uniform sampler2D u_texture;
-uniform sampler2D u_lightmap;
+uniform sampler2D u_lightmap0;
+uniform sampler2D u_lightmap1;
+uniform sampler2D u_lightmap2;
+uniform sampler2D u_lightmap3;
 uniform int u_mode;
 uniform float u_alpha;
 uniform float u_time;
@@ -48,9 +66,10 @@ uniform float u_scroll;
 uniform float u_turb_light;
 in vec2 v_uv;
 in vec2 v_lightmap_uv;
+in vec4 v_style_scales;
 out vec4 o_color;
 
-const float GAMMA = 1.0 / 1.2;
+const float GAMMA = 1.0 / 1.0;
 const float INTENSITY = 1.5;
 const float OVERBRIGHT = 1.3;
 
@@ -68,7 +87,11 @@ void main() {
     } else if (u_mode == 0) {
         vec4 texel = texture(u_texture, v_uv);
         texel.rgb *= INTENSITY;
-        vec3 light = texture(u_lightmap, v_lightmap_uv).rgb * OVERBRIGHT;
+        vec3 light = texture(u_lightmap0, v_lightmap_uv).rgb * v_style_scales.x
+                   + texture(u_lightmap1, v_lightmap_uv).rgb * v_style_scales.y
+                   + texture(u_lightmap2, v_lightmap_uv).rgb * v_style_scales.z
+                   + texture(u_lightmap3, v_lightmap_uv).rgb * v_style_scales.w;
+        light *= OVERBRIGHT;
         o_color = vec4(pow(light * texel.rgb, vec3(GAMMA)), 1.0);
     } else if (u_mode == 3) {
         vec4 texel = texture(u_texture, v_uv);
@@ -89,6 +112,7 @@ pub struct WorldUniforms {
     pub time: Option<glow::UniformLocation>,
     pub scroll: Option<glow::UniformLocation>,
     pub turb_light: Option<glow::UniformLocation>,
+    pub styles: Option<glow::UniformLocation>,
 }
 
 /// Compile and link one program from vertex and fragment source. Shader
@@ -171,10 +195,20 @@ fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
 }
 
 /// Compile and link the world program; texture units are bound to
-/// `u_texture` = 0 and `u_lightmap` = 1.
+/// `u_texture` = 0 and `u_lightmap0..3` = 1..4.
 pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, WorldUniforms), String> {
     let program = link_program(gl, VERTEX_SRC, FRAGMENT_SRC)?;
-    bind_samplers(gl, program, &["u_texture", "u_lightmap"]);
+    bind_samplers(
+        gl,
+        program,
+        &[
+            "u_texture",
+            "u_lightmap0",
+            "u_lightmap1",
+            "u_lightmap2",
+            "u_lightmap3",
+        ],
+    );
     // SAFETY: `program` is the linked program above; uniform lookups only
     // read from it.
     let uniforms = unsafe {
@@ -185,6 +219,7 @@ pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, World
             time: gl.get_uniform_location(program, "u_time"),
             scroll: gl.get_uniform_location(program, "u_scroll"),
             turb_light: gl.get_uniform_location(program, "u_turb_light"),
+            styles: gl.get_uniform_location(program, "u_styles"),
         }
     };
     Ok((program, uniforms))
@@ -214,7 +249,7 @@ uniform sampler2D u_texture;
 in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
-const float GAMMA = 1.0 / 1.2;
+const float GAMMA = 1.0 / 1.0;
 const float INTENSITY = 1.5;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
@@ -261,7 +296,7 @@ uniform sampler2D u_texture;
 in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
-const float GAMMA = 1.0 / 1.2;
+const float GAMMA = 1.0 / 1.0;
 const float INTENSITY_2D = 1.5;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
@@ -286,4 +321,18 @@ pub fn compile_ui_program(gl: &glow::Context) -> Result<(glow::Program, UiUnifor
     // SAFETY: `program` is the linked program above; the lookup only reads it.
     let ortho = unsafe { gl.get_uniform_location(program, "u_ortho") };
     Ok((program, UiUniforms { ortho }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_fragment_shader_uses_the_effective_c_gamma_of_one() {
+        // VID_Init registers vid_gamma "1.0" before GL3 asks for "1.2", and
+        // Cvar_Get keeps the first default, so C's gamma is 1/1.0.
+        for source in [FRAGMENT_SRC, ALIAS_FRAGMENT_SRC, UI_FRAGMENT_SRC] {
+            assert!(source.contains("const float GAMMA = 1.0 / 1.0;"));
+        }
+    }
 }

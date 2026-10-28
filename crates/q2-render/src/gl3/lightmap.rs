@@ -2,8 +2,9 @@
 //! `gl3_model.c`, `GL3_LM_AllocBlock` / `GL3_LM_CreateSurfaceLightmap` in
 //! `gl3_lightmap.c`, `GL3_BuildLightMap` in `gl3_light.c`).
 //!
-//! Only the first lightmap style of a face is packed; the shader scales it by
-//! 1.0 like C does for the default (all-white) light style table.
+//! Every page has [`MAX_LIGHTMAPS_PER_SURFACE`] layers and a face's block
+//! sits at the same spot in each, layer `n` holding its `n`th light style,
+//! so the shader can scale and sum them with one set of coordinates.
 
 use crate::bsp::{BspData, BspFace, BspTexInfo};
 
@@ -11,6 +12,10 @@ use crate::bsp::{BspData, BspFace, BspTexInfo};
 pub const BLOCK_WIDTH: usize = 1024;
 pub const BLOCK_HEIGHT: usize = 512;
 const LIGHTMAP_BYTES: usize = 4;
+/// C `MAX_LIGHTMAPS_PER_SURFACE`: light styles a face can blend.
+pub const MAX_LIGHTMAPS_PER_SURFACE: usize = 4;
+/// `BspFace::styles` entry that ends a face's style list.
+pub const NO_STYLE: u8 = 255;
 /// World units per lightmap sample.
 pub const LUXEL_SIZE: i32 = 16;
 
@@ -39,7 +44,8 @@ pub fn texel_coords(texinfo: &BspTexInfo, position: [f32; 3]) -> [f32; 2] {
     [project(&texinfo.vecs[0]), project(&texinfo.vecs[1])]
 }
 
-/// C `Mod_CalcSurfaceExtents`; `None` when the face has no vertices.
+/// C `Mod_CalcSurfaceExtents`; `None` when the face has no vertices or its
+/// texel span does not fit `i32` (malformed map; C overflows there).
 pub fn calc_surface_extents(texinfo: &BspTexInfo, positions: &[[f32; 3]]) -> Option<Extents> {
     if positions.is_empty() {
         return None;
@@ -58,11 +64,14 @@ pub fn calc_surface_extents(texinfo: &BspTexInfo, positions: &[[f32; 3]]) -> Opt
         extents: [0; 2],
     };
     for axis in 0..2 {
+        if !mins[axis].is_finite() || !maxs[axis].is_finite() {
+            return None;
+        }
         // floor/ceil, not truncation: negative coordinates round away from 0.
         let low = (mins[axis] / 16.0).floor() as i32;
         let high = (maxs[axis] / 16.0).ceil() as i32;
-        extents.texture_mins[axis] = low * LUXEL_SIZE;
-        extents.extents[axis] = (high - low) * LUXEL_SIZE;
+        extents.texture_mins[axis] = low.checked_mul(LUXEL_SIZE)?;
+        extents.extents[axis] = high.checked_sub(low)?.checked_mul(LUXEL_SIZE)?;
     }
     Some(extents)
 }
@@ -122,9 +131,26 @@ pub struct LightmapSlot {
     pub y: usize,
 }
 
-/// All lightmap pages for a map, RGBA8 `BLOCK_WIDTH` x `BLOCK_HEIGHT` each.
+/// What one layer of a face's lightmap block holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer<'a> {
+    /// RGB triples, row-major.
+    Samples(&'a [u8]),
+    /// All 255, C's stand-in for a face without lighting data.
+    Fullbright,
+    /// All 0: the face has no style in this slot.
+    Dark,
+}
+
+/// One atlas page: `MAX_LIGHTMAPS_PER_SURFACE` RGBA8 `BLOCK_WIDTH` x
+/// `BLOCK_HEIGHT` layers.
+pub struct LightmapPage {
+    pub layers: [Vec<u8>; MAX_LIGHTMAPS_PER_SURFACE],
+}
+
+/// All lightmap pages for a map.
 pub struct LightmapAtlas {
-    pub pages: Vec<Vec<u8>>,
+    pub pages: Vec<LightmapPage>,
     allocator: BlockAllocator,
 }
 
@@ -136,10 +162,15 @@ impl LightmapAtlas {
         }
     }
 
-    /// Reserve `w` x `h` samples and copy in `samples` (RGB triples, row-major);
-    /// `None` fills the block fullbright like C does for `lightofs == -1`.
-    /// Returns `None` when the block cannot fit even on an empty page.
-    pub fn add(&mut self, w: usize, h: usize, samples: Option<&[u8]>) -> Option<LightmapSlot> {
+    /// Reserve `w` x `h` samples and fill the block in each layer (C
+    /// `GL3_BuildLightMap`). Returns `None` when the block cannot fit even on
+    /// an empty page.
+    pub fn add(
+        &mut self,
+        w: usize,
+        h: usize,
+        layers: &[Layer; MAX_LIGHTMAPS_PER_SURFACE],
+    ) -> Option<LightmapSlot> {
         if w == 0 || h == 0 {
             return None;
         }
@@ -149,24 +180,30 @@ impl LightmapAtlas {
                 let mut fresh = BlockAllocator::new();
                 let (x, y) = fresh.alloc(w, h)?;
                 self.allocator = fresh;
-                self.pages
-                    .push(vec![0; BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES]);
+                self.pages.push(LightmapPage {
+                    layers: std::array::from_fn(|_| {
+                        vec![0; BLOCK_WIDTH * BLOCK_HEIGHT * LIGHTMAP_BYTES]
+                    }),
+                });
                 (x, y, self.pages.len() - 1)
             }
         };
-        let buffer = &mut self.pages[page];
-        for row in 0..h {
-            for column in 0..w {
-                let texel = ((y + row) * BLOCK_WIDTH + x + column) * LIGHTMAP_BYTES;
-                let rgba = match samples {
-                    Some(rgb) => {
-                        let at = (row * w + column) * 3;
-                        let (r, g, b) = (rgb[at], rgb[at + 1], rgb[at + 2]);
-                        [r, g, b, r.max(g).max(b)]
-                    }
-                    None => [255; 4],
-                };
-                buffer[texel..texel + 4].copy_from_slice(&rgba);
+        for (buffer, layer) in self.pages[page].layers.iter_mut().zip(layers) {
+            for row in 0..h {
+                for column in 0..w {
+                    let texel = ((y + row) * BLOCK_WIDTH + x + column) * LIGHTMAP_BYTES;
+                    let rgba = match layer {
+                        Layer::Samples(rgb) => {
+                            let at = (row * w + column) * 3;
+                            let (r, g, b) = (rgb[at], rgb[at + 1], rgb[at + 2]);
+                            [r, g, b, r.max(g).max(b)]
+                        }
+                        Layer::Fullbright => [255; 4],
+                        // Fresh pages are zeroed and blocks never overlap.
+                        Layer::Dark => continue,
+                    };
+                    buffer[texel..texel + 4].copy_from_slice(&rgba);
+                }
             }
         }
         Some(LightmapSlot { page, x, y })
@@ -179,12 +216,45 @@ impl Default for LightmapAtlas {
     }
 }
 
-/// Style-0 samples for a face: `w * h * 3` bytes at `lightofs`, or `None`
-/// when the face has no lightmap data or the offset leaves the lump.
-pub fn face_samples<'a>(bsp: &'a BspData, face: &BspFace, w: usize, h: usize) -> Option<&'a [u8]> {
-    let start = usize::try_from(face.light_ofs).ok()?;
-    let end = start.checked_add(w.checked_mul(h)?.checked_mul(3)?)?;
-    bsp.lightmap_data.get(start..end)
+/// Number of light styles a face blends: its styles up to the first
+/// [`NO_STYLE`].
+pub fn style_count(face: &BspFace) -> usize {
+    face.styles
+        .iter()
+        .take_while(|&&style| style != NO_STYLE)
+        .count()
+}
+
+/// The layers of a face's lightmap block (C `GL3_BuildLightMap`). Style `n`
+/// reads `w * h * 3` bytes after the previous one, from `lightofs`. A face
+/// without lighting data is fullbright in its style layers (at least one);
+/// a style whose samples leave the lump is dark.
+pub fn face_layers<'a>(
+    bsp: &'a BspData,
+    face: &BspFace,
+    w: usize,
+    h: usize,
+) -> [Layer<'a>; MAX_LIGHTMAPS_PER_SURFACE] {
+    let count = style_count(face);
+    let mut layers = [Layer::Dark; MAX_LIGHTMAPS_PER_SURFACE];
+    let size = w.checked_mul(h).and_then(|n| n.checked_mul(3));
+    let start = usize::try_from(face.light_ofs).ok();
+    let samples = |n: usize| {
+        let size = size?;
+        let first = start?.checked_add(n.checked_mul(size)?)?;
+        bsp.lightmap_data.get(first..first.checked_add(size)?)
+    };
+    match start.filter(|&ofs| ofs < bsp.lightmap_data.len()) {
+        Some(_) => {
+            for (n, layer) in layers.iter_mut().enumerate().take(count) {
+                if let Some(rgb) = samples(n) {
+                    *layer = Layer::Samples(rgb);
+                }
+            }
+        }
+        None => layers[..count.max(1)].fill(Layer::Fullbright),
+    }
+    layers
 }
 
 /// Lightmap coordinate of a vertex (C `GL3_LM_BuildPolygonFromSurface`):
@@ -246,6 +316,18 @@ mod tests {
     }
 
     #[test]
+    fn extents_of_huge_or_non_finite_coordinates_are_none_not_a_panic() {
+        let ti = texinfo([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]);
+        for x in [1e30, -1e30, f32::INFINITY] {
+            assert!(
+                calc_surface_extents(&ti, &[[x, 0.0, 0.0], [0.0, 0.0, 0.0]]).is_none(),
+                "x = {x}"
+            );
+        }
+        assert!(calc_surface_extents(&ti, &[[f32::NAN; 3]]).is_none());
+    }
+
+    #[test]
     fn extents_of_empty_face_are_none() {
         let ti = texinfo([1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]);
         assert!(calc_surface_extents(&ti, &[]).is_none());
@@ -280,13 +362,16 @@ mod tests {
         assert_eq!(alloc.alloc(BLOCK_WIDTH, 1), None);
     }
 
+    const FULLBRIGHT: [Layer<'static>; MAX_LIGHTMAPS_PER_SURFACE] =
+        [Layer::Fullbright, Layer::Dark, Layer::Dark, Layer::Dark];
+
     #[test]
     fn atlas_starts_new_page_when_full() {
         let mut atlas = LightmapAtlas::new();
         let w = BLOCK_WIDTH - 1;
-        let first = atlas.add(w, BLOCK_HEIGHT, None).unwrap();
+        let first = atlas.add(w, BLOCK_HEIGHT, &FULLBRIGHT).unwrap();
         assert_eq!(first.page, 0);
-        let second = atlas.add(w, 4, None).unwrap();
+        let second = atlas.add(w, 4, &FULLBRIGHT).unwrap();
         assert_eq!((second.page, second.x, second.y), (1, 0, 0));
         assert_eq!(atlas.pages.len(), 2);
     }
@@ -294,26 +379,49 @@ mod tests {
     #[test]
     fn atlas_rejects_block_that_cannot_fit_an_empty_page() {
         let mut atlas = LightmapAtlas::new();
-        assert!(atlas.add(BLOCK_WIDTH + 1, 1, None).is_none());
-        assert!(atlas.add(1, BLOCK_HEIGHT + 1, None).is_none());
-        assert!(atlas.add(0, 1, None).is_none());
+        assert!(atlas.add(BLOCK_WIDTH + 1, 1, &FULLBRIGHT).is_none());
+        assert!(atlas.add(1, BLOCK_HEIGHT + 1, &FULLBRIGHT).is_none());
+        assert!(atlas.add(0, 1, &FULLBRIGHT).is_none());
     }
 
     #[test]
     fn atlas_copies_samples_with_max_component_alpha() {
         let mut atlas = LightmapAtlas::new();
         // 2x1 block: two RGB samples.
-        let slot = atlas.add(2, 1, Some(&[10, 200, 30, 1, 2, 3])).unwrap();
-        let row = &atlas.pages[0][slot.y * BLOCK_WIDTH * 4 + slot.x * 4..][..8];
+        let rgb = [10, 200, 30, 1, 2, 3];
+        let layers = [Layer::Samples(&rgb), Layer::Dark, Layer::Dark, Layer::Dark];
+        let slot = atlas.add(2, 1, &layers).unwrap();
+        let row = &atlas.pages[0].layers[0][slot.y * BLOCK_WIDTH * 4 + slot.x * 4..][..8];
         assert_eq!(row, &[10, 200, 30, 200, 1, 2, 3, 3]);
+    }
+
+    #[test]
+    fn atlas_writes_each_style_layer_at_the_same_slot() {
+        let mut atlas = LightmapAtlas::new();
+        atlas.add(3, 1, &FULLBRIGHT).unwrap();
+        let (style0, style1) = ([1, 2, 3], [7, 8, 9]);
+        let layers = [
+            Layer::Samples(&style0),
+            Layer::Samples(&style1),
+            Layer::Fullbright,
+            Layer::Dark,
+        ];
+        let slot = atlas.add(1, 1, &layers).unwrap();
+        let at = (slot.y * BLOCK_WIDTH + slot.x) * 4;
+        let texel = |layer: usize| &atlas.pages[0].layers[layer][at..at + 4];
+        assert_eq!(texel(0), &[1, 2, 3, 3]);
+        assert_eq!(texel(1), &[7, 8, 9, 9]);
+        assert_eq!(texel(2), &[255; 4]);
+        assert_eq!(texel(3), &[0; 4]);
     }
 
     #[test]
     fn atlas_fills_missing_samples_fullbright() {
         let mut atlas = LightmapAtlas::new();
-        let slot = atlas.add(1, 1, None).unwrap();
+        let slot = atlas.add(1, 1, &FULLBRIGHT).unwrap();
         let at = (slot.y * BLOCK_WIDTH + slot.x) * 4;
-        assert_eq!(&atlas.pages[0][at..at + 4], &[255, 255, 255, 255]);
+        assert_eq!(&atlas.pages[0].layers[0][at..at + 4], &[255, 255, 255, 255]);
+        assert_eq!(&atlas.pages[0].layers[1][at..at + 4], &[0; 4]);
     }
 
     #[test]
@@ -334,37 +442,80 @@ mod tests {
         assert!((uv[1] - 28.0 / 8192.0).abs() < 1e-9);
     }
 
-    #[test]
-    fn face_samples_rejects_missing_or_out_of_range_offsets() {
-        let mut bsp = BspData {
+    fn lump(lightmap_data: Vec<u8>) -> BspData {
+        BspData {
             planes: vec![],
             vertices: vec![],
             visibility: vec![],
             nodes: vec![],
             texinfo: vec![],
             faces: vec![],
-            lightmap_data: vec![0; 12],
+            lightmap_data,
             leafs: vec![],
             leaf_faces: vec![],
             edges: vec![],
             surface_edges: vec![],
             models: vec![],
-        };
-        let mut face = BspFace {
+        }
+    }
+
+    fn face(styles: [u8; 4], light_ofs: i32) -> BspFace {
+        BspFace {
             plane_idx: 0,
             side: 0,
             first_edge: 0,
             num_edges: 3,
             texinfo_idx: 0,
-            styles: [0; 4],
-            light_ofs: 3,
-        };
-        assert_eq!(face_samples(&bsp, &face, 2, 1).unwrap().len(), 6);
-        assert!(face_samples(&bsp, &face, 2, 2).is_none()); // 3 + 12 > 12
-        face.light_ofs = -1;
-        assert!(face_samples(&bsp, &face, 1, 1).is_none());
-        bsp.lightmap_data.clear();
-        face.light_ofs = 0;
-        assert!(face_samples(&bsp, &face, 1, 1).is_none());
+            styles,
+            light_ofs,
+        }
+    }
+
+    #[test]
+    fn style_count_stops_at_the_first_unused_slot() {
+        assert_eq!(style_count(&face([0, 255, 255, 255], 0)), 1);
+        assert_eq!(style_count(&face([0, 5, 9, 2], 0)), 4);
+        assert_eq!(style_count(&face([255, 5, 255, 255], 0)), 0);
+    }
+
+    #[test]
+    fn face_layers_read_consecutive_style_blocks_from_lightofs() {
+        let bsp = lump((0..20).collect());
+        // 2x1 block = 6 bytes per style, starting at byte 2.
+        let layers = face_layers(&bsp, &face([0, 3, 255, 255], 2), 2, 1);
+        assert_eq!(layers[0], Layer::Samples(&[2, 3, 4, 5, 6, 7]));
+        assert_eq!(layers[1], Layer::Samples(&[8, 9, 10, 11, 12, 13]));
+        assert_eq!(&layers[2..], &[Layer::Dark, Layer::Dark]);
+    }
+
+    #[test]
+    fn face_layers_leave_styles_past_the_lump_dark() {
+        let bsp = lump(vec![0; 12]);
+        let layers = face_layers(&bsp, &face([0, 1, 2, 255], 3), 2, 1);
+        assert!(matches!(layers[0], Layer::Samples(rgb) if rgb.len() == 6));
+        assert_eq!(&layers[1..], &[Layer::Dark; 3], "3 + 12 > 12");
+    }
+
+    #[test]
+    fn faces_without_lighting_data_are_fullbright_in_their_style_layers() {
+        let bsp = lump(vec![0; 12]);
+        let no_data = face_layers(&bsp, &face([0, 1, 255, 255], -1), 1, 1);
+        assert_eq!(
+            no_data,
+            [
+                Layer::Fullbright,
+                Layer::Fullbright,
+                Layer::Dark,
+                Layer::Dark
+            ]
+        );
+        // C: at least one layer is fullbright even with no styles.
+        let no_styles = face_layers(&bsp, &face([255; 4], -1), 1, 1);
+        assert_eq!(no_styles[0], Layer::Fullbright);
+        let empty = lump(vec![]);
+        assert_eq!(
+            face_layers(&empty, &face([0, 255, 255, 255], 0), 1, 1)[0],
+            Layer::Fullbright
+        );
     }
 }

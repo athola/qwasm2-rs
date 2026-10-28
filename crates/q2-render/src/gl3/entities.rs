@@ -2,25 +2,29 @@
 //! buffers and the entity draw loop (C `GL3_DrawEntitiesOnList`,
 //! `GL3_DrawBrushModel`, `GL3_DrawAliasModel`).
 //!
-//! Not modelled relative to C: view-frustum culling of entities, the
+//! MD2 models outside the view frustum are skipped (C `CullAliasModel`).
+//!
+//! Not modelled relative to C: frustum culling of brush entities, the
 //! `RF_WEAPONMODEL` gun FOV and left-hand mirroring, `RF_DEPTHHACK`,
-//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, entity shadows, sprite
-//! (`.sp2`) models, per-entity custom skins (`RenderEntity::skin`, since
-//! `register_image` is not implemented) and dynamic lights on brush models.
+//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, `RF_BEAM` beams, the
+//! null-model placeholder, entity shadows, sprite (`.sp2`) models and
+//! dynamic lights on brush models. Entities whose model
+//! is none of the above are skipped.
 
 use glow::HasContext;
 use q2_render_api::{DLight, RefDef, RenderEntity};
-use q2_shared::constants::{RF_TRANSLUCENT, RF_VIEWERMODEL};
+use q2_shared::constants::{MAX_LIGHTSTYLES, RF_TRANSLUCENT, RF_VIEWERMODEL, RF_WEAPONMODEL};
 
 use super::alias::{
-    build_corners, entity_vertices, pick_skin, AliasModel, ALIAS_VERTEX_FLOATS, MAX_SKINS,
+    build_corners, clamp_frames, clamp_frames_independently, cull_alias, entity_skin,
+    entity_vertices, AliasModel, FrustumPlane, ALIAS_VERTEX_FLOATS, MAX_SKINS,
 };
 use super::draw::{
     create_stream_buffer, draw_batches, draw_mesh, free_stream_buffer, BatchDraw, BatchFilter,
     MeshDraw, StreamBuffer,
 };
 use super::entity::{alias_matrix, brush_matrix};
-use super::images::ImageStore;
+use super::images::{ImageKind, ImageStore};
 use super::light::LightTree;
 use super::mat4_mul;
 use super::model::{Model, ModelRegistry};
@@ -45,14 +49,16 @@ pub struct ExtraGpu {
     pub notexture: glow::Texture,
 }
 
+/// Every step is attempted; if any fails, the objects the others made are
+/// freed before the first error is returned, so a retried `init` leaks none.
 pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
-    let (alias_program, alias_uniforms) = compile_alias_program(gl)?;
-    let (ui_program, ui_uniforms) = compile_ui_program(gl)?;
+    let alias = compile_alias_program(gl);
+    let ui = compile_ui_program(gl);
     // Layouts: alias is position(3) uv(2) colour(4); 2D is position(2) uv(2) colour(4).
     let alias_stream =
-        create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &[(0, 3, 0), (1, 2, 3), (2, 4, 5)])?;
-    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &[(0, 2, 0), (1, 2, 2), (2, 4, 4)])?;
-    let white = upload_rgba(gl, 1, 1, &[255; 4], &CLAMPED_SAMPLING)?;
+        create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &[(0, 3, 0), (1, 2, 3), (2, 4, 5)]);
+    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &[(0, 2, 0), (1, 2, 2), (2, 4, 4)]);
+    let white = upload_rgba(gl, 1, 1, &[255; 4], &CLAMPED_SAMPLING);
     let checker = notexture();
     let notexture = upload_rgba(
         gl,
@@ -60,17 +66,55 @@ pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
         checker.height,
         &checker.rgba,
         &CLAMPED_SAMPLING,
-    )?;
-    Ok(ExtraGpu {
-        alias_program,
-        alias_uniforms,
-        alias_stream,
-        ui_program,
-        ui_uniforms,
-        ui_stream,
-        white,
-        notexture,
-    })
+    );
+    match (alias, ui, alias_stream, ui_stream, white, notexture) {
+        (
+            Ok((alias_program, alias_uniforms)),
+            Ok((ui_program, ui_uniforms)),
+            Ok(alias_stream),
+            Ok(ui_stream),
+            Ok(white),
+            Ok(notexture),
+        ) => Ok(ExtraGpu {
+            alias_program,
+            alias_uniforms,
+            alias_stream,
+            ui_program,
+            ui_uniforms,
+            ui_stream,
+            white,
+            notexture,
+        }),
+        (alias, ui, alias_stream, ui_stream, white, notexture) => {
+            let mut first_error = None;
+            let mut note = |error: String| {
+                first_error.get_or_insert(error);
+            };
+            for program in [alias.map(|(p, _)| p), ui.map(|(p, _)| p)] {
+                match program {
+                    // SAFETY: the program was linked on this `gl` above and
+                    // is dropped here, never stored.
+                    Ok(program) => unsafe { gl.delete_program(program) },
+                    Err(error) => note(error),
+                }
+            }
+            for stream in [alias_stream, ui_stream] {
+                match stream {
+                    Ok(stream) => free_stream_buffer(gl, stream),
+                    Err(error) => note(error),
+                }
+            }
+            for texture in [white, notexture] {
+                match texture {
+                    // SAFETY: the texture was created on this `gl` above and
+                    // is dropped here, never stored.
+                    Ok(texture) => unsafe { gl.delete_texture(texture) },
+                    Err(error) => note(error),
+                }
+            }
+            Err(first_error.unwrap_or_default())
+        }
+    }
 }
 
 pub fn free_extra(gl: &glow::Context, extra: ExtraGpu) {
@@ -109,7 +153,7 @@ pub fn load_alias_model(
         .skins
         .iter()
         .take(MAX_SKINS)
-        .map(|skin| images.find(gl, loader, palette, skin))
+        .map(|skin| images.find(gl, loader, palette, skin, ImageKind::Skin))
         .collect();
     Some(AliasModel {
         md2,
@@ -130,6 +174,10 @@ pub struct EntityScene<'a> {
     pub light: Option<&'a LightTree>,
     pub refdef: &'a RefDef,
     pub dlights: &'a [DLight],
+    /// Light style brightness from `refdef`, padded to every style.
+    pub styles: &'a [f32; MAX_LIGHTSTYLES],
+    /// View frustum for culling MD2 models (C `frustum`).
+    pub frustum: [FrustumPlane; 4],
     pub view_proj: [f32; 16],
 }
 
@@ -160,7 +208,10 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
         let draw = BatchDraw {
             view_proj: &view_proj,
             time: scene.refdef.time,
+            frame: entity.frame,
             filter: BatchFilter::All,
+            translucent_entity: translucent,
+            areabits: None,
         };
         draw_batches(scene.gl, scene.world_uniforms, world, batches, &draw);
     }
@@ -171,10 +222,33 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
             continue;
         };
         let origin = vec3(entity.origin);
+        let frame_count = model.md2.frames.len();
+        let weapon = entity.flags & RF_WEAPONMODEL != 0;
+        // C culls every MD2 but the gun, and the cull writes each frame
+        // reset on its own back into the entity before the draw sees it.
+        let (frame, oldframe) = if weapon {
+            clamp_frames(entity.frame, entity.oldframe, frame_count)
+        } else {
+            clamp_frames_independently(entity.frame, entity.oldframe, frame_count)
+        };
+        let culled = match (model.md2.frames.get(frame), model.md2.frames.get(oldframe)) {
+            (Some(frame), Some(oldframe)) => {
+                !weapon && cull_alias(frame, oldframe, origin, vec3(entity.angles), &scene.frustum)
+            }
+            _ => true,
+        };
+        if culled {
+            continue;
+        }
+        let entity = &RenderEntity {
+            frame: i32::try_from(frame).unwrap_or(0),
+            oldframe: i32::try_from(oldframe).unwrap_or(0),
+            ..entity.clone()
+        };
         let lit = || {
-            scene
-                .light
-                .map_or([1.0; 3], |tree| tree.light_point(origin, scene.dlights))
+            scene.light.map_or([1.0; 3], |tree| {
+                tree.light_point(origin, scene.styles, scene.dlights)
+            })
         };
         let Some(vertices) = entity_vertices(model, entity, lit, scene.refdef.time) else {
             continue;
@@ -184,8 +258,8 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
             unsafe { scene.gl.use_program(Some(scene.extra.alias_program)) };
             alias_program_bound = true;
         }
-        let texture = pick_skin(entity.skinnum, &model.skins)
-            .and_then(|index| scene.images.entries.get(index))
+        let texture = entity_skin(entity.skin, entity.skinnum, &model.skins)
+            .and_then(|index| scene.images.get(index))
             .and_then(|image| image.texture)
             .unwrap_or(scene.extra.notexture);
         let matrix = alias_matrix(origin, vec3(entity.angles));

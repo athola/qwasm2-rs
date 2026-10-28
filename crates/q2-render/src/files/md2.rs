@@ -148,7 +148,12 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
         skins.push(fixed_cstring(raw));
     }
 
-    let st_bytes = slice_at(WHAT, data, ofs_st, num_st * ST_SIZE)?;
+    // Checked so a huge `num_st` cannot wrap a 32-bit `usize` (wasm32) to a
+    // short slice before `with_capacity` trusts it.
+    let st_len = num_st
+        .checked_mul(ST_SIZE)
+        .ok_or_else(|| malformed(WHAT, "num_st overflow"))?;
+    let st_bytes = slice_at(WHAT, data, ofs_st, st_len)?;
     let mut st = Vec::with_capacity(num_st);
     for index in 0..num_st {
         st.push([
@@ -188,8 +193,9 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
 
     let mut frames = Vec::with_capacity(num_frames);
     for index in 0..num_frames {
-        let start = ofs_frames
-            .checked_add(index * frame_size)
+        let start = index
+            .checked_mul(frame_size)
+            .and_then(|offset| ofs_frames.checked_add(offset))
             .ok_or_else(|| malformed(WHAT, "frame offset overflow"))?;
         let raw = slice_at(WHAT, data, start, frame_size)?;
         let vec3 = |off: usize| -> Q2Result<[f32; 3]> {
@@ -406,6 +412,13 @@ mod tests {
             set_i32(&mut bytes, field, bad);
             assert!(load_md2(&bytes).is_err(), "field {field} = {bad}");
         }
+    }
+
+    #[test]
+    fn st_count_larger_than_the_file_is_rejected() {
+        let mut bytes = build(&Spec::default());
+        set_i32(&mut bytes, 7, 0x4000_0000);
+        assert!(load_md2(&bytes).is_err());
     }
 
     #[test]

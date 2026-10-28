@@ -37,12 +37,10 @@ pub fn load_palette(loader: &FileLoader) -> Option<Palette> {
     }
 }
 
-/// Index every pixel through the palette; index 255 becomes alpha 0 (C `d_8to24table`).
+/// Index every pixel through the palette; index 255 becomes alpha 0 with a
+/// neighbour's colour (C `GL3_Upload8`).
 pub fn wal_to_image(wal: &WalTexture, palette: &Palette, name: &str) -> Image {
-    let mut rgba = Vec::with_capacity(wal.pixels.len() * 4);
-    for &index in &wal.pixels {
-        rgba.extend_from_slice(&palette.rgba(index));
-    }
+    let rgba = palette.indexed_to_rgba(&wal.pixels, wal.width);
     Image {
         width: wal.width,
         height: wal.height,
@@ -151,6 +149,12 @@ pub const CLAMPED_SAMPLING: Sampling = Sampling {
     mipmaps: false,
 };
 
+/// Bytes an RGBA8 image of this size holds; `None` when the product overflows
+/// `usize` (32 bits on wasm32), so a wrapped size can never match a short slice.
+fn rgba_len(width: usize, height: usize) -> Option<usize> {
+    width.checked_mul(height)?.checked_mul(4)
+}
+
 /// Upload RGBA8 pixels as a new 2D texture, leaving it bound to the active unit.
 pub fn upload_rgba(
     gl: &glow::Context,
@@ -162,7 +166,7 @@ pub fn upload_rgba(
     let (Ok(gl_width), Ok(gl_height)) = (i32::try_from(width), i32::try_from(height)) else {
         return Err("texture too large".into());
     };
-    if rgba.len() != width * height * 4 {
+    if rgba_len(width, height) != Some(rgba.len()) {
         return Err(format!(
             "{} bytes for a {width}x{height} texture",
             rgba.len()
@@ -241,8 +245,16 @@ mod tests {
         let wal = load_wal(&wal_bytes(2, 1, &[1, 255])).unwrap();
         let image = wal_to_image(&wal, &gradient_palette(), "e1u1/x");
         assert_eq!((image.width, image.height), (2, 1));
-        assert_eq!(image.rgba, vec![1, 0, 254, 255, 255, 0, 0, 0]);
+        // The transparent pixel takes its left neighbour's colour (C Upload8).
+        assert_eq!(image.rgba, vec![1, 0, 254, 255, 1, 0, 254, 0]);
         assert!(!image.is_lava);
+    }
+
+    #[test]
+    fn rgba_len_reports_overflow_instead_of_wrapping() {
+        assert_eq!(rgba_len(3, 2), Some(24));
+        assert_eq!(rgba_len(usize::MAX / 2, 2), None);
+        assert_eq!(rgba_len(usize::MAX / 4 + 1, 1), None);
     }
 
     #[test]

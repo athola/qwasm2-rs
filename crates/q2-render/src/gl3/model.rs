@@ -3,6 +3,10 @@
 //! registry logic can be tested without a GL context.
 //!
 //! Handles are `index + 1` so [`ModelHandle::NONE`] (0) is never a model.
+//!
+//! Each alias model remembers the registration sequence it was last
+//! registered in (C `registration_sequence`), so `end_registration` can free
+//! the ones the new map did not ask for.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,11 +20,19 @@ pub enum Model<A> {
     Alias(A),
 }
 
+struct Slot<A> {
+    model: Model<A>,
+    /// Registration sequence of the last `register` that returned it.
+    sequence: u32,
+}
+
 pub struct ModelRegistry<A> {
-    slots: Vec<Option<Model<A>>>,
+    slots: Vec<Option<Slot<A>>>,
     by_name: HashMap<String, ModelHandle>,
-    /// Names whose load failed; remembered so the failure is logged once.
+    /// Names whose load failed this sequence; remembered so the failure is
+    /// logged once per registration.
     failed: HashSet<String>,
+    sequence: u32,
 }
 
 impl<A> Default for ModelRegistry<A> {
@@ -29,6 +41,7 @@ impl<A> Default for ModelRegistry<A> {
             slots: Vec::new(),
             by_name: HashMap::new(),
             failed: HashSet::new(),
+            sequence: 1,
         }
     }
 }
@@ -42,43 +55,82 @@ pub fn inline_index(name: &str) -> Option<usize> {
 }
 
 impl<A> ModelRegistry<A> {
-    /// Forget every model (C `R_BeginRegistration` frees the old map's models).
+    /// Forget every model (renderer init and shutdown, C `Mod_FreeAll`).
     pub fn clear(&mut self) {
+        let sequence = self.sequence;
         *self = Self::default();
+        self.sequence = sequence;
+    }
+
+    /// Start a registration sequence (C `registration_sequence++` in
+    /// `R_BeginRegistration`). Failed names are tried again, as C caches no
+    /// failures.
+    pub fn begin_sequence(&mut self) {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.failed.clear();
+    }
+
+    #[cfg(test)]
+    pub fn sequence(&self) -> u32 {
+        self.sequence
+    }
+
+    /// Free alias models not registered in the current sequence (C
+    /// `GL3_EndRegistration`). Inline models belong to the world and go with
+    /// it in [`ModelRegistry::clear_brush`].
+    pub fn free_unused(&mut self) {
+        let sequence = self.sequence;
+        self.retain(|slot| matches!(slot.model, Model::Brush { .. }) || slot.sequence == sequence);
     }
 
     /// Forget brush models only: a new BSP changes what `*n` means, while
     /// alias models are independent of the map.
     pub fn clear_brush(&mut self) {
+        self.retain(|slot| !matches!(slot.model, Model::Brush { .. }));
+        self.failed.clear();
+    }
+
+    /// Free the slots `keep` rejects and forget their names.
+    fn retain(&mut self, keep: impl Fn(&Slot<A>) -> bool) {
         for slot in &mut self.slots {
-            if matches!(slot, Some(Model::Brush { .. })) {
+            if slot.as_ref().is_some_and(|slot| !keep(slot)) {
                 *slot = None;
             }
         }
-        let live: Vec<ModelHandle> = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.is_some())
-            .map(|(index, _)| Self::handle_for(index))
-            .collect();
-        self.by_name.retain(|_, handle| live.contains(handle));
-        self.failed.clear();
+        // Freed slots stay so a stale handle never names a later model; that
+        // costs one slot per freed model.
+        let slots = &self.slots;
+        self.by_name.retain(|_, handle| {
+            usize::try_from(handle.raw())
+                .ok()
+                .and_then(|raw| raw.checked_sub(1))
+                .and_then(|index| slots.get(index))
+                .is_some_and(Option::is_some)
+        });
     }
 
     fn handle_for(index: usize) -> ModelHandle {
         ModelHandle::new(i32::try_from(index + 1).unwrap_or(i32::MAX))
     }
 
+    fn index_of(handle: ModelHandle) -> Option<usize> {
+        usize::try_from(handle.raw()).ok()?.checked_sub(1)
+    }
+
     pub fn get(&self, handle: ModelHandle) -> Option<&Model<A>> {
-        let index = usize::try_from(handle.raw()).ok()?.checked_sub(1)?;
-        self.slots.get(index)?.as_ref()
+        let index = Self::index_of(handle)?;
+        self.slots.get(index)?.as_ref().map(|slot| &slot.model)
     }
 
     /// Handle for `name`, running `load` only the first time the name is seen.
-    /// A failed load returns `NONE` and is logged once.
+    /// A failed load returns `NONE` and is logged once. Either way the model
+    /// is marked as used by the current sequence.
     pub fn register(&mut self, name: &str, load: impl FnOnce() -> Option<Model<A>>) -> ModelHandle {
+        let sequence = self.sequence;
         if let Some(&handle) = self.by_name.get(name) {
+            if let Some(Some(slot)) = Self::index_of(handle).and_then(|i| self.slots.get_mut(i)) {
+                slot.sequence = sequence;
+            }
             return handle;
         }
         if self.failed.contains(name) {
@@ -86,7 +138,7 @@ impl<A> ModelRegistry<A> {
         }
         match load() {
             Some(model) => {
-                self.slots.push(Some(model));
+                self.slots.push(Some(Slot { model, sequence }));
                 let handle = Self::handle_for(self.slots.len() - 1);
                 self.by_name.insert(name.to_string(), handle);
                 handle
@@ -210,6 +262,45 @@ mod tests {
             registry.get(again),
             Some(Model::Brush { submodel: 1 })
         ));
+    }
+
+    #[test]
+    fn free_unused_drops_alias_models_not_registered_since_begin_sequence() {
+        let mut registry = Registry::default();
+        let old = registry.register("old.md2", || Some(Model::Alias("old")));
+        let kept = registry.register("kept.md2", || Some(Model::Alias("kept")));
+        let brush = registry.register_inline("*1", Some(2));
+        registry.begin_sequence();
+        assert_eq!(registry.register("kept.md2", || None), kept);
+        registry.free_unused();
+        assert!(registry.get(old).is_none());
+        assert!(matches!(registry.get(kept), Some(Model::Alias("kept"))));
+        // Inline models belong to the world and go with it, not the sweep.
+        assert!(registry.get(brush).is_some());
+        // A freed name loads afresh under a new handle.
+        let again = registry.register("old.md2", || Some(Model::Alias("old")));
+        assert_ne!(again, old);
+        assert!(matches!(registry.get(again), Some(Model::Alias("old"))));
+    }
+
+    #[test]
+    fn failed_load_is_retried_in_a_new_sequence() {
+        // C Mod_ForName caches no failures; this registry remembers one only
+        // for the current registration so it is logged once per map load.
+        let mut registry = Registry::default();
+        assert_eq!(registry.register("late.md2", || None), ModelHandle::NONE);
+        registry.begin_sequence();
+        let late = registry.register("late.md2", || Some(Model::Alias("late")));
+        assert!(matches!(registry.get(late), Some(Model::Alias("late"))));
+    }
+
+    #[test]
+    fn free_unused_keeps_models_registered_in_the_current_sequence() {
+        let mut registry = Registry::default();
+        registry.begin_sequence();
+        let model = registry.register("a.md2", || Some(Model::Alias("a")));
+        registry.free_unused();
+        assert!(registry.get(model).is_some());
     }
 
     #[test]

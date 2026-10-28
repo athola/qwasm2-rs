@@ -63,6 +63,8 @@ mod real_assets {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gamedata"));
         let pak_path = root.join("baseq2/pak0.pak");
         if !pak_path.is_file() {
+            // Visible with `--nocapture` or on failure; CI has no game data.
+            eprintln!("SKIPPED: {} not found", pak_path.display());
             return None;
         }
         let mut filesystem = FileSystem::new("baseq2");

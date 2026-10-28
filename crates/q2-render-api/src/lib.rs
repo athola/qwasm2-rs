@@ -10,6 +10,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+use q2_shared::constants::MAX_LIGHTSTYLES;
 use q2_shared::error::Q2Result;
 use q2_shared::types::*;
 use std::fmt;
@@ -100,8 +101,9 @@ pub enum ImageType {
 
 /// Renderer view definition — describes what to render this frame.
 ///
-/// Corresponds to `refdef_t` in the C code (ref.h).
-#[derive(Debug, Clone, Default)]
+/// Corresponds to `refdef_t` in the C code (ref.h). A backend may ignore
+/// fields it does not implement yet; each backend's module docs list them.
+#[derive(Debug, Clone)]
 pub struct RefDef {
     /// Viewport x-offset in virtual screen coordinates.
     pub x: i32,
@@ -125,6 +127,36 @@ pub struct RefDef {
     pub time: f32,
     /// Render-definition flags (RDF_UNDERWATER, etc.).
     pub rdflags: i32,
+    /// Brightness of each light style this frame, indexed by style number
+    /// (C `lightstyles`; the client sets r, g and b alike, so one value).
+    pub lightstyles: [f32; MAX_LIGHTSTYLES],
+    /// One bit per map area the view can see (C `areabits`, the frame's
+    /// `CM_WriteAreaBits` from the server): world surfaces only in areas
+    /// whose bit is clear, behind shut doors, are skipped. `None` (C NULL)
+    /// draws every area.
+    pub areabits: Option<Vec<u8>>,
+}
+
+impl Default for RefDef {
+    /// Everything zero (no area bits) but the light styles, which start
+    /// at full brightness like the table C's renderer seeds.
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            fov_x: 0.0,
+            fov_y: 0.0,
+            vieworg: Vec3f::ZERO,
+            viewangles: Vec3f::ZERO,
+            blend: [0.0; 4],
+            time: 0.0,
+            rdflags: 0,
+            lightstyles: [1.0; MAX_LIGHTSTYLES],
+            areabits: None,
+        }
+    }
 }
 
 /// An entity to render — one model instance in the world.
@@ -179,6 +211,10 @@ pub struct Particle {
 ///
 /// Corresponds to `refexport_t` in the C code (ref.h).
 ///
+/// A backend is constructed with what C `R_Init` gets from the platform
+/// (for GL3, the GL context and the `FS_LoadFile` loader), so the engine
+/// sets it up and loads worlds through this trait alone.
+///
 /// Not `Send`: a GL context is bound to its thread, and the GL3 renderer
 /// holds a file loader that shares the (single-threaded) wasm filesystem.
 pub trait Renderer {
@@ -189,21 +225,37 @@ pub trait Renderer {
     /// Shut down the renderer, releasing all GPU resources.
     fn shutdown(&mut self);
 
-    /// Begin registration of models/images for a new map.
-    ///
-    /// Called at the start of a level load. All assets registered between
-    /// `begin_registration` and `end_registration` are kept; unreferenced
-    /// assets are freed in `end_registration`.
-    fn begin_registration(&mut self, map_name: &str);
+    /// Begin registration for the map `map_name` (short name, e.g. `demo1`)
+    /// and load `maps/<map_name>.bsp` through the backend's file loader as
+    /// the world (C `R_BeginRegistration`). The same map again keeps the
+    /// loaded world; a different one replaces it, which invalidates inline
+    /// model handles (`*n`). Other handles stay valid until
+    /// [`Renderer::end_registration`]. A missing or corrupt map is
+    /// `Err(Q2Error::Drop)`, like C `Mod_ForName(..., crash = true)`, and
+    /// leaves no world loaded.
+    fn begin_registration(&mut self, map_name: &str) -> Q2Result<()>;
 
-    /// Register a model (BSP, MD2, SP2). Returns a handle.
+    /// Register a model (`*n` inline model of the world, MD2, SP2) and mark it
+    /// used in this registration. Returns `ModelHandle::NONE` on failure.
     fn register_model(&mut self, name: &str) -> ModelHandle;
 
-    /// Register an image/texture. Returns a handle.
+    /// Register an image and mark it used in this registration: `Skin` is a
+    /// path (C `RegisterSkin`), `Pic` a 2D pic name as for
+    /// [`Renderer::draw_pic`] (C `Draw_FindPic`). The handle can be set as
+    /// [`RenderEntity::skin`]. Returns `ImageHandle::NONE` when the image is
+    /// missing or the type is not registrable (C exports only those two).
     fn register_image(&mut self, name: &str, img_type: ImageType) -> ImageHandle;
 
-    /// End registration — free any models/images not referenced since `begin_registration`.
+    /// End registration (C `R_EndRegistration`): free models and images not
+    /// registered since [`Renderer::begin_registration`], whose handles become
+    /// invalid. 2D pics and the world are kept.
     fn end_registration(&mut self);
+
+    /// Start a frame drawn at `width` x `height` pixels, before any draw
+    /// (C `re.BeginFrame`, which sets up 2D for the window's size): 2D
+    /// draws of this frame use that size even when no
+    /// [`Renderer::render_frame`] runs, as for a picture level.
+    fn begin_frame(&mut self, width: i32, height: i32);
 
     /// Render a complete frame.
     fn render_frame(
@@ -239,6 +291,15 @@ pub trait Renderer {
 
     /// Swap buffers / present the rendered frame.
     fn end_frame(&mut self);
+
+    /// How lit the last rendered view origin was, for the server's monster
+    /// sight check (C `r_lightlevel`, set by `GL3_SetLightLevel`: 150 times
+    /// the brightest channel of `GL3_LightPoint` at the view origin). C
+    /// GL3 passes no entity, for which `GL3_LightPoint` answers 1.0 without
+    /// reading the lightmap, so GL3 always reports 150: the default.
+    fn light_level(&self) -> f32 {
+        150.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +368,10 @@ mod tests {
         assert_eq!(rd.blend, [0.0; 4]);
         assert_eq!(rd.time, 0.0);
         assert_eq!(rd.rdflags, 0);
+        // C seeds every style at full brightness.
+        assert_eq!(rd.lightstyles, [1.0; MAX_LIGHTSTYLES]);
+        // C NULL areabits: every area drawn.
+        assert_eq!(rd.areabits, None);
     }
 
     #[test]

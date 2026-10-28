@@ -53,7 +53,19 @@ pub fn build_corners(model: &Md2Model) -> Vec<AliasCorner> {
     corners
 }
 
-/// C resets both frames to 0 when either is out of range.
+/// C `CullAliasModel` resets each out-of-range frame to 0 on its own, and
+/// writes the result back into the entity before the draw-time check below.
+pub fn clamp_frames_independently(frame: i32, oldframe: i32, num_frames: usize) -> (usize, usize) {
+    let valid = |f: i32| {
+        usize::try_from(f)
+            .ok()
+            .filter(|&f| f < num_frames)
+            .unwrap_or(0)
+    };
+    (valid(frame), valid(oldframe))
+}
+
+/// C `GL3_DrawAliasModel` resets both frames to 0 when either is out of range.
 pub fn clamp_frames(frame: i32, oldframe: i32, num_frames: usize) -> (usize, usize) {
     let valid = |f: i32| usize::try_from(f).ok().filter(|&f| f < num_frames);
     match (valid(frame), valid(oldframe)) {
@@ -62,7 +74,78 @@ pub fn clamp_frames(frame: i32, oldframe: i32, num_frames: usize) -> (usize, usi
     }
 }
 
-/// C `AngleVectors`: forward, right, up for pitch/yaw/roll degrees.
+/// One view frustum plane: inward normal and distance from the origin.
+pub type FrustumPlane = ([f32; 3], f32);
+
+/// C `R_SetFrustum`: the right, left, bottom and top planes of the view.
+/// C rotates the view direction by `90 - fov / 2` towards each edge; the
+/// result is `forward * sin(fov / 2) -+ side * cos(fov / 2)`.
+pub fn frustum(origin: [f32; 3], angles: [f32; 3], fov_x: f32, fov_y: f32) -> [FrustumPlane; 4] {
+    let (forward, right, up) = angle_vectors(angles);
+    let edge = |side: [f32; 3], half_fov: f32, sign: f32| {
+        let (sin, cos) = half_fov.to_radians().sin_cos();
+        let normal: [f32; 3] = std::array::from_fn(|i| forward[i] * sin + sign * side[i] * cos);
+        (normal, dot(normal, origin))
+    };
+    [
+        edge(right, fov_x / 2.0, -1.0),
+        edge(right, fov_x / 2.0, 1.0),
+        edge(up, fov_y / 2.0, 1.0),
+        edge(up, fov_y / 2.0, -1.0),
+    ]
+}
+
+/// C `CullAliasModel`: true when the box holding both lerped frames,
+/// turned by the entity's angles, lies wholly outside one frustum plane.
+pub fn cull_alias(
+    frame: &Md2Frame,
+    oldframe: &Md2Frame,
+    origin: [f32; 3],
+    angles: [f32; 3],
+    frustum: &[FrustumPlane; 4],
+) -> bool {
+    let bounds = |f: &Md2Frame, axis: usize| {
+        let low = f.translate[axis];
+        (low, low + f.scale[axis] * 255.0)
+    };
+    let (mut mins, mut maxs) = ([0.0f32; 3], [0.0f32; 3]);
+    for axis in 0..3 {
+        let ((this_min, this_max), (old_min, old_max)) =
+            (bounds(frame, axis), bounds(oldframe, axis));
+        mins[axis] = this_min.min(old_min);
+        maxs[axis] = this_max.max(old_max);
+    }
+    // C negates yaw, then maps p to (forward.p, -right.p, up.p).
+    let (forward, right, up) = angle_vectors([angles[0], -angles[1], angles[2]]);
+    let mut outside_all = !0u32;
+    for corner in 0..8 {
+        let pick = |axis: usize| {
+            if corner & (1 << axis) != 0 {
+                mins[axis]
+            } else {
+                maxs[axis]
+            }
+        };
+        let local = [pick(0), pick(1), pick(2)];
+        let world = [
+            origin[0] + dot(forward, local),
+            origin[1] - dot(right, local),
+            origin[2] + dot(up, local),
+        ];
+        let outside = frustum
+            .iter()
+            .enumerate()
+            .filter(|(_, (normal, dist))| dot(*normal, world) - dist < 0.0)
+            .fold(0u32, |mask, (plane, _)| mask | 1 << plane);
+        outside_all &= outside;
+    }
+    outside_all != 0
+}
+
+/// C `AngleVectors`: forward, right, up for pitch/yaw/roll degrees. Plain
+/// f32 on purpose: this only places models on screen, so it skips the
+/// double-path rounding that `q2_common::pmove`'s copy reproduces for
+/// client/server prediction sync.
 pub fn angle_vectors(angles: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let (sy, cy) = angles[1].to_radians().sin_cos();
     let (sp, cp) = angles[0].to_radians().sin_cos();
@@ -142,6 +225,8 @@ pub fn shade_row(yaw: f32) -> usize {
 /// `1 + d` for `d >= 0` and `1 + 0.3 d` otherwise, where `d` is the normal
 /// dotted with the unit light direction `(cos(-a), sin(-a), 1)` at
 /// `a = row * 360/16` degrees; the shipped table rounds that to 2 decimals.
+/// Computing it instead of embedding the 16x162 table is a deliberate
+/// deviation: shade differs from C by at most 0.005, render-only.
 /// Unknown normal indices shade as 1.
 pub fn normal_dot(row: usize, normal_index: u8) -> f32 {
     let Some(normal) = VERTEX_NORMALS.get(usize::from(normal_index)) else {
@@ -187,6 +272,17 @@ pub fn entity_alpha(flags: i32, alpha: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+/// Image-store index of the skin an entity draws with: its custom skin
+/// (a `register_image` handle) when set, else the model's own (C
+/// `GL3_DrawAliasModel`).
+pub fn entity_skin(
+    custom: q2_render_api::ImageHandle,
+    skinnum: i32,
+    skins: &[Option<usize>],
+) -> Option<usize> {
+    super::images::handle_index(custom).or_else(|| pick_skin(skinnum, skins))
 }
 
 /// Skin slot for `skinnum`: out of range or empty falls back to slot 0.
@@ -294,6 +390,87 @@ mod tests {
     use super::*;
     use crate::files::md2::{Md2Triangle, Md2Vertex};
 
+    /// A 32-unit cube frame centred on the entity origin.
+    fn cube() -> Md2Frame {
+        frame([32.0 / 255.0; 3], [-16.0; 3], &[])
+    }
+
+    /// Eye at the origin looking down +x with C's default 90 x 73.74 fov.
+    fn ahead() -> [([f32; 3], f32); 4] {
+        frustum([0.0; 3], [0.0; 3], 90.0, 73.74)
+    }
+
+    #[test]
+    fn models_in_front_are_kept_and_behind_or_beside_are_culled() {
+        let (cube, view) = (cube(), ahead());
+        let culled = |origin| cull_alias(&cube, &cube, origin, [0.0; 3], &view);
+        assert!(!culled([200.0, 0.0, 0.0]));
+        assert!(culled([-200.0, 0.0, 0.0]), "behind the eye");
+        assert!(culled([100.0, 300.0, 0.0]), "outside the left edge");
+        assert!(culled([100.0, 0.0, -300.0]), "below the bottom edge");
+    }
+
+    #[test]
+    fn a_model_straddling_an_edge_or_around_the_eye_is_kept() {
+        let (cube, view) = (cube(), ahead());
+        // Centre just outside the left plane (y = x at 90 fov), corner inside.
+        assert!(!cull_alias(
+            &cube,
+            &cube,
+            [100.0, 110.0, 0.0],
+            [0.0; 3],
+            &view
+        ));
+        assert!(!cull_alias(&cube, &cube, [0.0; 3], [0.0; 3], &view));
+    }
+
+    #[test]
+    fn cull_box_spans_both_lerped_frames() {
+        let view = ahead();
+        // Only the old frame's box, shifted 400 units forward, is in view.
+        let far = frame([32.0 / 255.0; 3], [384.0, -16.0, -16.0], &[]);
+        assert!(!cull_alias(
+            &cube(),
+            &far,
+            [-200.0, 0.0, 0.0],
+            [0.0; 3],
+            &view
+        ));
+        assert!(cull_alias(
+            &cube(),
+            &cube(),
+            [-200.0, 0.0, 0.0],
+            [0.0; 3],
+            &view
+        ));
+    }
+
+    #[test]
+    fn entity_yaw_rotates_the_cull_box() {
+        let view = ahead();
+        // A box stretched 400 units along its own +x reaches into view only
+        // when the entity is turned to face the eye's view direction.
+        let long = frame(
+            [400.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0],
+            [0.0, -16.0, -16.0],
+            &[],
+        );
+        assert!(cull_alias(
+            &long,
+            &long,
+            [-200.0, 0.0, 0.0],
+            [0.0, 180.0, 0.0],
+            &view
+        ));
+        assert!(!cull_alias(
+            &long,
+            &long,
+            [-200.0, 0.0, 0.0],
+            [0.0; 3],
+            &view
+        ));
+    }
+
     fn frame(scale: [f32; 3], translate: [f32; 3], verts: &[[u8; 3]]) -> Md2Frame {
         Md2Frame {
             name: "f".into(),
@@ -382,6 +559,14 @@ mod tests {
     }
 
     #[test]
+    fn cull_resets_each_out_of_range_frame_on_its_own() {
+        assert_eq!(clamp_frames_independently(3, 2, 4), (3, 2));
+        assert_eq!(clamp_frames_independently(4, 2, 4), (0, 2));
+        assert_eq!(clamp_frames_independently(1, -1, 4), (1, 0));
+        assert_eq!(clamp_frames_independently(-5, 9, 4), (0, 0));
+    }
+
+    #[test]
     fn shade_row_quantises_yaw_into_16_steps_like_c() {
         assert_eq!(shade_row(0.0), 0);
         assert_eq!(shade_row(30.0), 1);
@@ -443,6 +628,15 @@ mod tests {
     fn translucent_entities_use_two_thirds_alpha() {
         assert!((entity_alpha(RF_TRANSLUCENT, 0.5) - 0.333).abs() < 1e-6);
         assert_eq!(entity_alpha(0, 0.5), 1.0);
+    }
+
+    #[test]
+    fn custom_entity_skin_wins_over_the_models_own() {
+        use q2_render_api::ImageHandle;
+        let skins = [Some(7), Some(9)];
+        // C GL3_DrawAliasModel: `if (entity->skin) skin = entity->skin;`
+        assert_eq!(entity_skin(ImageHandle::new(4), 1, &skins), Some(3));
+        assert_eq!(entity_skin(ImageHandle::NONE, 1, &skins), Some(9));
     }
 
     #[test]

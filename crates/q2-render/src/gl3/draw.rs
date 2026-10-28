@@ -4,14 +4,14 @@
 
 use glow::HasContext;
 
-use super::lightmap::{BLOCK_HEIGHT, BLOCK_WIDTH};
+use super::lightmap::{BLOCK_HEIGHT, BLOCK_WIDTH, MAX_LIGHTMAPS_PER_SURFACE};
 use super::pics::{batch_runs, Quad, QuadImage, QUAD_VERTICES};
 use super::shader::{
     AliasUniforms, UiUniforms, WorldUniforms, MODE_LIT, MODE_PLAIN, MODE_SKY, MODE_WARP,
 };
-use super::sky::{sky_box_vertices, SKY_TEX_ORDER, VERTEX_FLOATS};
+use super::sky::{sky_box_vertices, SKY_TEX_ORDER, VERTEX_FLOATS as SKY_VERTEX_FLOATS};
 use super::texture::{upload_rgba, Image, Sampling, WorldImages, CLAMPED_SAMPLING, WORLD_SAMPLING};
-use super::world::{Batch, Shading, Translucency, WorldMesh};
+use super::world::{Batch, Shading, Translucency, WorldMesh, VERTEX_FLOATS};
 
 /// Uploaded world model: vertex buffer, textures and the draw list.
 pub struct WorldGpu {
@@ -23,6 +23,7 @@ pub struct WorldGpu {
     textures: Vec<glow::Texture>,
     /// Parallel to `textures`; lava is drawn at full brightness, water at half.
     is_lava: Vec<bool>,
+    /// Layer `n` of page `p` at `p * MAX_LIGHTMAPS_PER_SURFACE + n`.
     lightmaps: Vec<glow::Texture>,
 }
 
@@ -33,19 +34,45 @@ pub struct SkyGpu {
     faces: Vec<glow::Texture>,
 }
 
-/// Create a VAO/VBO for [`VERTEX_FLOATS`]-float vertices.
+/// World vertex attributes: position, texture uv, lightmap uv, styles.
+const WORLD_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7)];
+/// Sky vertices stop after the lightmap uv the sky never reads.
+const SKY_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 2, 5)];
+
+/// The bytes of `floats` as GL reads them (native byte order), without a
+/// copy: MD2 and 2D vertices are re-uploaded every draw, and converting them
+/// float by float dominated the browser frame time.
+fn float_bytes(floats: &[f32]) -> &[u8] {
+    bytemuck::cast_slice(floats)
+}
+
+/// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
+/// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
+/// WebGL canvas (alpha, premultiplied) would show the page through it.
+fn set_alpha_blend(gl: &glow::Context) {
+    // SAFETY: state-only call on the live context `gl`.
+    unsafe {
+        gl.blend_func_separate(
+            glow::SRC_ALPHA,
+            glow::ONE_MINUS_SRC_ALPHA,
+            glow::ONE,
+            glow::ONE_MINUS_SRC_ALPHA,
+        );
+    }
+}
+
+/// Create a VAO/VBO for `stride_floats`-float vertices.
 fn create_vertex_buffers(
     gl: &glow::Context,
     floats: &[f32],
+    stride_floats: usize,
+    attributes: &[Attribute],
 ) -> Result<(glow::VertexArray, glow::Buffer), String> {
-    let bytes: Vec<u8> = floats
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect();
-    let stride = (VERTEX_FLOATS * 4) as i32;
-    // SAFETY: VAO and VBO are created here on `gl`; `bytes` is a live slice
-    // consumed by `buffer_data_u8_slice` before it is dropped, and the
-    // attribute offsets (0, 12, 20) and stride (28) match the 7-float layout.
+    let bytes = float_bytes(floats);
+    let stride = (stride_floats * 4) as i32;
+    // SAFETY: VAO and VBO are created here on `gl`; `bytes` borrows `floats`
+    // and is copied by `buffer_data_u8_slice`, and the attributes lie within
+    // the caller's `stride_floats` layout.
     unsafe {
         let vao = gl.create_vertex_array()?;
         let vbo = match gl.create_buffer() {
@@ -57,13 +84,18 @@ fn create_vertex_buffers(
         };
         gl.bind_vertex_array(Some(vao));
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STATIC_DRAW);
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 12);
-        gl.enable_vertex_attrib_array(2);
-        gl.vertex_attrib_pointer_f32(2, 2, glow::FLOAT, false, stride, 20);
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+        for &(location, components, offset) in attributes {
+            gl.enable_vertex_attrib_array(location);
+            gl.vertex_attrib_pointer_f32(
+                location,
+                components,
+                glow::FLOAT,
+                false,
+                stride,
+                (offset * 4) as i32,
+            );
+        }
         gl.bind_vertex_array(None);
         gl.bind_buffer(glow::ARRAY_BUFFER, None);
         Ok((vao, vbo))
@@ -113,10 +145,11 @@ pub fn upload_world(
         .lightmaps
         .pages
         .iter()
-        .map(|page| Image {
+        .flat_map(|page| &page.layers)
+        .map(|layer| Image {
             width: BLOCK_WIDTH,
             height: BLOCK_HEIGHT,
-            rgba: page.clone(),
+            rgba: layer.clone(),
             is_lava: false,
         })
         .collect();
@@ -127,7 +160,7 @@ pub fn upload_world(
             return Err(error);
         }
     };
-    match create_vertex_buffers(gl, &mesh.vertices) {
+    match create_vertex_buffers(gl, &mesh.vertices, VERTEX_FLOATS, &WORLD_ATTRIBUTES) {
         Ok((vao, vbo)) => Ok(WorldGpu {
             vao,
             vbo,
@@ -149,7 +182,7 @@ pub fn upload_sky(gl: &glow::Context, faces: &[Image; 6]) -> Result<SkyGpu, Stri
     // SAFETY: state-only call on the live context.
     unsafe { gl.active_texture(glow::TEXTURE0) };
     let textures = upload_all(gl, faces.iter().map(|face| (face, &CLAMPED_SAMPLING)))?;
-    match create_vertex_buffers(gl, &sky_box_vertices()) {
+    match create_vertex_buffers(gl, &sky_box_vertices(), SKY_VERTEX_FLOATS, &SKY_ATTRIBUTES) {
         Ok((vao, vbo)) => Ok(SkyGpu {
             vao,
             vbo,
@@ -244,7 +277,14 @@ impl BatchFilter {
 pub struct BatchDraw<'a> {
     pub view_proj: &'a [f32; 16],
     pub time: f32,
+    /// Texture animation frame (C `R_TextureAnimation`).
+    pub frame: i32,
     pub filter: BatchFilter,
+    /// An `RF_TRANSLUCENT` brush entity: every batch blends, none writes depth.
+    pub translucent_entity: bool,
+    /// The view's area bits (see `Batch::in_visible_area`); `None` for
+    /// brush entities, which the server already culls by area.
+    pub areabits: Option<&'a [u8]>,
 }
 
 impl WorldGpu {
@@ -255,6 +295,14 @@ impl WorldGpu {
             n => self.submodels.get(n - 1).map(Vec::as_slice),
         }
     }
+}
+
+/// Whether a batch is drawn blended and without depth writes: translucent
+/// faces always, and every face of an `RF_TRANSLUCENT` brush entity (C
+/// `R_DrawInlineBModel` enables blending inside the translucent entity pass,
+/// which runs under `glDepthMask(0)`; opaque faces keep alpha 1).
+fn batch_blends(translucency: Translucency, translucent_entity: bool) -> bool {
+    translucent_entity || translucency != Translucency::Opaque
 }
 
 /// Draw the selected batches of one model. Translucent batches blend and
@@ -274,21 +322,24 @@ pub fn draw_batches(
         gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, draw.view_proj);
         gl.uniform_1_f32(uniforms.time.as_ref(), draw.time);
         gl.bind_vertex_array(Some(world.vao));
-        let mut blending = false;
-        for batch in batches
-            .iter()
-            .filter(|batch| draw.filter.includes(batch.translucency))
-        {
-            let blend = batch.translucency != Translucency::Opaque;
-            if blend && !blending {
-                gl.enable(glow::BLEND);
-                gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-                gl.depth_mask(false);
-                blending = true;
-            } else if !blend && blending {
-                gl.depth_mask(true);
-                gl.disable(glow::BLEND);
-                blending = false;
+        let (mut blending, mut writing_depth) = (false, true);
+        for batch in batches.iter().filter(|batch| {
+            draw.filter.includes(batch.translucency) && batch.in_visible_area(draw.areabits)
+        }) {
+            let blend = batch_blends(batch.translucency, draw.translucent_entity);
+            if blend != blending {
+                if blend {
+                    gl.enable(glow::BLEND);
+                    set_alpha_blend(gl);
+                } else {
+                    gl.disable(glow::BLEND);
+                }
+                blending = blend;
+            }
+            // Blended draws never write depth (C draws them under glDepthMask(0)).
+            if writing_depth == blend {
+                gl.depth_mask(!blend);
+                writing_depth = !blend;
             }
             let mode = match batch.shading {
                 Shading::Lit => MODE_LIT,
@@ -301,24 +352,29 @@ pub fn draw_batches(
                 uniforms.scroll.as_ref(),
                 batch_scroll(batch.shading, batch.flowing, draw.time),
             );
-            let lava = world.is_lava.get(batch.image).copied().unwrap_or(false);
+            let image = batch.image(draw.frame);
+            let lava = world.is_lava.get(image).copied().unwrap_or(false);
             gl.uniform_1_f32(uniforms.turb_light.as_ref(), if lava { 1.0 } else { 0.5 });
 
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, world.textures.get(batch.image).copied());
+            gl.bind_texture(glow::TEXTURE_2D, world.textures.get(image).copied());
             if batch.shading == Shading::Lit {
-                gl.active_texture(glow::TEXTURE1);
-                gl.bind_texture(
-                    glow::TEXTURE_2D,
-                    world.lightmaps.get(batch.lightmap_page).copied(),
-                );
+                let first = batch.lightmap_page * MAX_LIGHTMAPS_PER_SURFACE;
+                for (unit, layer) in
+                    (glow::TEXTURE1..).zip(first..first + MAX_LIGHTMAPS_PER_SURFACE)
+                {
+                    gl.active_texture(unit);
+                    gl.bind_texture(glow::TEXTURE_2D, world.lightmaps.get(layer).copied());
+                }
                 gl.active_texture(glow::TEXTURE0);
             }
             gl.draw_arrays(glow::TRIANGLES, batch.first_vertex, batch.vertex_count);
         }
         if blending {
-            gl.depth_mask(true);
             gl.disable(glow::BLEND);
+        }
+        if !writing_depth {
+            gl.depth_mask(true);
         }
         gl.bind_vertex_array(None);
     }
@@ -381,16 +437,13 @@ pub fn free_stream_buffer(gl: &glow::Context, stream: StreamBuffer) {
 
 /// Replace the stream's contents and leave its VAO bound.
 fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
-    let bytes: Vec<u8> = floats
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect();
-    // SAFETY: `stream` objects belong to `gl`; `bytes` is a live slice that
-    // `buffer_data_u8_slice` copies before returning.
+    let bytes = float_bytes(floats);
+    // SAFETY: `stream` objects belong to `gl`; `bytes` borrows `floats` and
+    // `buffer_data_u8_slice` copies it before returning.
     unsafe {
         gl.bind_vertex_array(Some(stream.vao));
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(stream.vbo));
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
     }
 }
 
@@ -404,8 +457,8 @@ pub struct MeshDraw<'a> {
     pub blend: bool,
 }
 
-/// Draw one MD2 mesh. Culling is off for the draw: the MD2 triangle winding
-/// is not assumed to match the cull state the world was verified with.
+/// Draw one MD2 mesh under the world's cull state: MD2 triangles wind like
+/// world faces, and C keeps `GL_FRONT` culling for them too.
 pub fn draw_mesh(
     gl: &glow::Context,
     uniforms: &AliasUniforms,
@@ -420,10 +473,9 @@ pub fn draw_mesh(
         gl.uniform_matrix_4_f32_slice(uniforms.mvp.as_ref(), false, draw.mvp);
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, draw.texture);
-        gl.disable(glow::CULL_FACE);
         if draw.blend {
             gl.enable(glow::BLEND);
-            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            set_alpha_blend(gl);
             gl.depth_mask(false);
         }
         gl.draw_arrays(glow::TRIANGLES, 0, draw.vertex_count);
@@ -431,7 +483,6 @@ pub fn draw_mesh(
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
         }
-        gl.enable(glow::CULL_FACE);
         gl.bind_vertex_array(None);
     }
 }
@@ -461,13 +512,15 @@ pub fn draw_ui(
         gl.disable(glow::DEPTH_TEST);
         gl.disable(glow::CULL_FACE);
         gl.enable(glow::BLEND);
-        gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+        set_alpha_blend(gl);
         gl.active_texture(glow::TEXTURE0);
     }
+    let mut floats = Vec::new();
     for (image, first_vertex, vertex_count) in batch_runs(quads) {
         let first_quad = first_vertex / QUAD_VERTICES;
         let run = &quads[first_quad..first_quad + vertex_count / QUAD_VERTICES];
-        let floats: Vec<f32> = run.iter().flat_map(|quad| quad.vertices).collect();
+        floats.clear();
+        floats.extend(run.iter().flat_map(|quad| quad.vertices));
         fill_stream(gl, target.stream, &floats);
         // SAFETY: the texture belongs to `gl` (or is unbound); the stream
         // was just filled with `vertex_count` vertices in the 2D layout.
@@ -493,6 +546,28 @@ pub fn draw_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_bytes_are_the_native_bytes_of_each_float_in_order() {
+        let floats = [1.0f32, -2.5, f32::MAX];
+        let expected: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
+        assert_eq!(float_bytes(&floats), expected.as_slice());
+        assert!(float_bytes(&[]).is_empty());
+    }
+
+    #[test]
+    fn translucent_brush_entities_blend_every_batch_like_c() {
+        assert!(!batch_blends(Translucency::Opaque, false));
+        assert!(batch_blends(Translucency::Opaque, true));
+        for translucency in [
+            Translucency::Opaque,
+            Translucency::Third,
+            Translucency::TwoThirds,
+        ] {
+            assert!(batch_blends(translucency, true));
+        }
+        assert!(batch_blends(Translucency::Third, false));
+    }
 
     #[test]
     fn non_flowing_surfaces_do_not_scroll() {

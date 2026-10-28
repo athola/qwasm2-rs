@@ -377,6 +377,30 @@ impl BspData {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// A valid `.bsp` file with empty lumps except `models` zero-sized
+/// submodels, for tests that load maps through a file loader.
+#[cfg(test)]
+pub(crate) fn test_bsp_bytes(models: usize) -> Vec<u8> {
+    use q2_common::bsp_file::{BSPVERSION, HEADER_LUMPS, IDBSPHEADER, LUMP_MODELS};
+    const MODEL_SIZE: usize = 48;
+    let header_size = (4 + 4 + HEADER_LUMPS * 8) as u32;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&IDBSPHEADER.to_le_bytes());
+    buf.extend_from_slice(&BSPVERSION.to_le_bytes());
+    // Every lump starts right after the header; only models has a length.
+    for lump in 0..HEADER_LUMPS {
+        let length = if lump == LUMP_MODELS {
+            models * MODEL_SIZE
+        } else {
+            0
+        };
+        buf.extend_from_slice(&header_size.to_le_bytes());
+        buf.extend_from_slice(&(length as u32).to_le_bytes());
+    }
+    buf.resize(buf.len() + models * MODEL_SIZE, 0);
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,21 +408,12 @@ mod tests {
 
     /// Build a minimal valid BSP byte buffer with header + empty lumps.
     fn make_minimal_bsp() -> Vec<u8> {
-        let header_size: u32 = (4 + 4 + HEADER_LUMPS * 8) as u32;
-        let mut buf = Vec::new();
+        test_bsp_bytes(0)
+    }
 
-        // Magic
-        buf.extend_from_slice(&IDBSPHEADER.to_le_bytes());
-        // Version
-        buf.extend_from_slice(&BSPVERSION.to_le_bytes());
-
-        // 19 lumps, all pointing to offset=header_size, length=0
-        for _ in 0..HEADER_LUMPS {
-            buf.extend_from_slice(&header_size.to_le_bytes()); // offset
-            buf.extend_from_slice(&0u32.to_le_bytes()); // length
-        }
-
-        buf
+    #[test]
+    fn test_bsp_bytes_parse_with_the_requested_model_count() {
+        assert_eq!(BspData::load(&test_bsp_bytes(3)).unwrap().models.len(), 3);
     }
 
     #[test]

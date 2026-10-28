@@ -2,7 +2,10 @@
 //!
 //! Supports the two variants Quake 2 content ships: uncompressed (type 2) and
 //! RLE (type 10) truecolour, 24 or 32 bits per pixel. Output is RGBA with the
-//! first row at the top, matching the other loaders.
+//! first row at the top, matching the other loaders. stb also decodes
+//! colour-mapped (1/9), greyscale (3/11) and 16-bit TGAs; none ship with the
+//! game, so those are rejected and a sky in such a format draws the checker.
+//! Like stb, descriptor bit 4 (right-to-left columns) is ignored.
 
 use super::{malformed, slice_at};
 use q2_common::error::Q2Result;
@@ -13,6 +16,9 @@ const TYPE_TRUECOLOR: u8 = 2;
 const TYPE_TRUECOLOR_RLE: u8 = 10;
 /// Image descriptor bit 5: rows are stored top-to-bottom.
 const TOP_ORIGIN_BIT: u8 = 0x20;
+/// Largest decoded size in bytes, stb's `stbi__mad3sizes_valid` int limit.
+/// Also keeps every size product inside a 32-bit `usize` on wasm32.
+const MAX_DECODED_BYTES: usize = i32::MAX as usize;
 
 /// Decoded truecolour image.
 #[derive(Debug, Clone)]
@@ -44,6 +50,9 @@ pub fn load_tga(data: &[u8]) -> Q2Result<TgaImage> {
     }
     let bytes_per_pixel = usize::from(bits / 8);
     let pixel_count = width * height;
+    if (width as u64) * (height as u64) * 4 > MAX_DECODED_BYTES as u64 {
+        return Err(malformed(WHAT, format_args!("{width}x{height} too large")));
+    }
     let body_start = HEADER_SIZE + id_length;
 
     let packed = if image_type == TYPE_TRUECOLOR {
@@ -81,7 +90,9 @@ fn decode_rle(
     bytes_per_pixel: usize,
 ) -> Q2Result<Vec<u8>> {
     let total = pixel_count * bytes_per_pixel;
-    let mut out = Vec::with_capacity(total);
+    // A packet expands to at most 128 pixels, so the file bounds the output;
+    // reserving `total` up front would trust the header before the data.
+    let mut out = Vec::with_capacity(total.min(data.len().saturating_mul(128)));
     let mut at = start;
     while out.len() < total {
         let packet = slice_at(WHAT, data, at, 1)?[0];
@@ -164,6 +175,16 @@ mod tests {
         assert!(load_tga(&header(1, 1, 1, 8, 0)).is_err()); // colour-mapped
         assert!(load_tga(&header(2, 1, 1, 16, 0)).is_err()); // 16-bit
         assert!(load_tga(&header(2, 0, 1, 24, 0)).is_err());
+    }
+
+    #[test]
+    fn header_claiming_an_image_beyond_the_stb_size_limit_is_rejected() {
+        for image_type in [2, 10] {
+            let mut file = header(image_type, 65535, 65535, 32, TOP_ORIGIN_BIT);
+            file.extend_from_slice(&[0x81, 1, 2, 3, 4]);
+            let err = load_tga(&file).unwrap_err().to_string();
+            assert!(err.contains("too large"), "type {image_type}: {err}");
+        }
     }
 
     #[test]
