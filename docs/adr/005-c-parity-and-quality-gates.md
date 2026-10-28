@@ -12,7 +12,8 @@ findings) found the wire format claiming protocol 34 while encoding entities
 and user commands differently, pmove numerics drifting from C's float and
 double mix, and CI going red on a toolchain update with no code change. This
 ADR records the rules that came out of that review. It replaces the review
-reports in `reviews/` and the fix plan in `docs/plans/`.
+reports and fix plan, which were local working notes (not in the
+repository).
 
 ## Decision
 
@@ -23,12 +24,24 @@ change together, and tests pin bytes derived from `movemsg.c`. Physics and
 collision follow C's precision: trigonometry and normalisation in double
 where C promotes, comparisons against double constants where C compares a
 float to a double literal, and shorts that wrap rather than saturate.
-Behaviour that is deliberately stricter than C is allowed when it only
-rejects input C would mis-handle, and is written down where it lives. Today
-that covers BSP node children having a higher index than their parent (rules
-out cycles; the retail demo maps pass), entity numbers in a frame being
-strictly ascending, and area queries rejecting negative or `== numareas`
-indices that C would read past.
+Behaviour that deliberately deviates from C is allowed when it only changes
+what happens on input C would mis-handle (reject it, or stay in bounds where C
+would read past a buffer), and is written down in a comment where it
+lives; the code comments, not this ADR, are the complete list. Examples: BSP
+node children having a higher index than their parent (rules out cycles; the
+retail demo maps pass), entity numbers in a frame being strictly ascending,
+area queries rejecting negative or `== numareas` indices that C would read
+past, and truncated or out-of-range vis data decompressing as all-visible.
+The collision loader adds more of the same kind: vis cluster -1 sees
+nothing while any other cluster the lump does not describe sees
+everything; an empty areas lump still has area 0, and the `map_noareas`
+override is not ported; up to 1024 area portals are accepted; a box trace
+on an empty map or from a bad head node ends at `end` where C leaves
+`endpos` at the origin; the temporary box leaf has cluster and area -1;
+`world_trace` names the world entity only on a hit. Outside collision,
+every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
+`CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
+missing).
 
 ### Untrusted input never panics
 
@@ -43,7 +56,8 @@ would kill the whole page.
 The toolchain is pinned in `rust-toolchain.toml`. `make ci` runs
 `cargo fmt --check`, clippy with `--all-targets -D warnings` on the host and
 on the wasm32 libraries, `cargo check`, and the tests, all with `--locked`;
-CI adds `cargo audit` and the Playwright suite. Tests come first for a fix,
+CI adds `cargo audit` and the Playwright suite, and restores the demo
+`pak0.pak` first so the map-data tests run instead of returning early. Tests come first for a fix,
 and a test that encoded non-C behaviour is changed only together with the
 code and with the reason in the commit message.
 

@@ -10,8 +10,8 @@ management, physics, combat, items, weapons, AI, monsters, triggers, the
 player subsystem and save/load. It reaches engine services through the
 `game_import_t` function-pointer table and keeps its state in globals
 (`g_edicts`, `level`, `game`). This ADR replaces the Phase 2 specification
-and implementation plan that lived in `docs/specification.md` and
-`docs/implementation-plan.md`.
+and implementation plan, which were local working notes (not in the
+repository).
 
 ## Decision
 
@@ -49,9 +49,8 @@ engine I/O goes through `GameImport`.
 In: the base Quake II entity set (107 spawn types), 11 weapons, the item
 table, 10 movement types, the base AI, 20 monster types, triggers, targets,
 functional entities, and the player subsystem. Out: mission packs, CTF, and
-anti-cheat. Deferred with issues: full monster attack and pain animations
-(#14), save/load (#15), the player weapon state machine and deathmatch rules
-(#16), and `SV_Push` rollback (#17).
+anti-cheat. Deferred with issues: save/load (#15), the player weapon state
+machine (#16), and `SV_Push` rollback (#17).
 
 ## Current state (2026-10-27)
 
@@ -65,16 +64,67 @@ name entities the way C does. The game passes the import `EntityLink`s
 `SelectSpawnPoint` and `PutClientInServer`, and its tail fires
 `G_TouchTriggers` and pmove's touch list.
 
-Spawn functions see only `EntityStorage`, so `spawn_entities` does the
-parts of C `SP_*` functions that need the import: `gi.setmodel` for every
-`*n` model before the spawn function (brush entities get their
-inline-model bounds), the C model path for monsters and misc objects from
-one classname table, worldspawn's configstrings (status bar, sky, item
-names, light styles), `SP_light`, and a link for every entity afterwards.
-Map items go through `SpawnItem` as in `ED_CallSpawn`. Doors, plats and
-buttons follow C's `Move_Calc` movers; `func_door_rotating` and
-`func_door_secret` are still static brushes. Remaining per-type spawn
-details are tracked in #11, #14 and #16.
+Classnames live in one static table, `spawn::SPAWNS`, in C `spawns[]`
+order: each row names the spawn function, the C model path for monsters
+and misc objects, and an optional finish step. Spawn functions see only
+`EntityStorage`, so the finish step and `spawn_entities` do the parts of C
+`SP_*` functions that need the import: `gi.setmodel` for every `*n` model
+before the spawn function (brush entities get their inline-model bounds),
+worldspawn's configstrings (status bar, sky, item names, light styles),
+`SP_light`, a monster's `item` key, and a link for every entity
+afterwards. Map items go through `SpawnItem` ahead of the table as in
+`ED_CallSpawn`. Doors, rotating and secret doors, water, plats, buttons,
+trains, elevators and conveyors follow C's `Move_Calc`/`AngleMove_Calc`
+movers. Remaining per-type spawn details are tracked in #14 and #16.
+
+Client records outlive the map. `spawn_entities` runs C `SaveClientData`
+before it clears the entities; the records stay in `GameWorld::clients`,
+and `ClientBegin` keeps `pers`, runs `InitClientPersistant` only for a
+dead player, then `FetchClientEntData`. A level exit queues `gamemap`; `LocalGame` parses it
+like `SV_Map` (`map$spawnpoint`, `*`, `+`), loads the next map into the
+same game and begins the client again, and the browser re-registers
+models and the sky in `CL_PrepRefresh` order. Monster moves are C
+`mframe_t` tables: each frame has its own AI function, distance and think
+function.
+
+### Monsters, sound and areas (2026-10-28)
+
+All 20 monsters are ported from their `m_*.c` files: every `mframe_t`
+table frame by frame, every callback (sight, attack, melee, dodge, pain,
+die) and their sounds, which a `SPAWNS` finish step indexes because spawn
+functions see only `EntityStorage`. They run on the full `g_ai.c` and
+`g_monster.c` (C's `enemy_vis`/`enemy_range` statics are `GameWorld`
+fields), fire through `monster_fire_*` with the `m_flash.c` offsets, and
+gib through `ThrowGib`/`ThrowHead`. Players make `PlayerNoise` when they
+fire, so monsters hear them, and the `light_level` dark check applies.
+
+Client records live in `GameWorld::clients` for the whole game; an
+entity holds its slot, as C's `ent->client` points into `game.clients`.
+The coop and deathmatch branches of persistence, spawning, spawn-point
+selection and drops are ported; `deathmatch`, `coop` and `dmflags` are
+game-state fields (no cvar path), so the browser plays single player.
+
+Mover sounds, door messages and area portals are ported. Doors open and
+close portals through `GameImport::set_area_portal_state`; the server
+links entities with their areas, drops entities in unconnected areas from
+the client frame, and sends the client's area bits, which the renderer
+uses to skip the world behind a shut door. The game's sounds reach the
+browser through a server event queue and a WebAudio backend. Picture
+levels (`victory.pcx`) show the picture as C's `ss_pic` does.
+
+### Known deviations from C (2026-10-28)
+
+- **Player trail nodes are data.** C keeps the eight trail nodes as
+  `player_trail` edicts; here they are plain data on `GameWorld`, so they
+  take no entity numbers. Monsters follow them as C's `ai_run` does.
+- **No cvars.** Skill, deathmatch, coop and dmflags are fields;
+  `g_monsterfootsteps` stays off (its C default), so footsteps are silent.
+- **Sound routing.** One local client hears every sound (no PHS or
+  reliable routing); `timeofs` is a start delay. Music, OGG and the
+  underwater filter are not ported.
+- **Not ported:** the player's item-drop commands and weapon state
+  machine (#16), cinematic and demo playback (`.cin`/`.dm2` levels are
+  refused), savegames (#15), `SP_FixCoopSpots`, and power-armor sparks.
 
 ## Consequences
 

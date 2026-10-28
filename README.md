@@ -8,13 +8,17 @@ Loads real Quake 2 game data (PAK files, BSP maps), renders with
 WebGL2, and runs player movement in the browser.
 
 > **Status: alpha.** The browser build loads a demo map into an
-> in-process server running the full game logic (`q2-game`: physics,
-> combat, items, weapons, AI, 20 monster types) and moves the player with
-> the C pmove port through the server's collision. Doors, platforms and
-> buttons collide and open, triggers fire on the player, and items can be
-> picked up. The renderer draws the world textured and lightmapped with sky
-> and warp surfaces, brush entities and MD2 models, and the status bar.
-> Weapons, animated light styles and sound are not in yet (#16, #20).
+> in-process server running the game logic (`q2-game`: physics, combat,
+> items, triggers; all 20 monster types sight, hear, chase, attack and
+> die as in C) and moves the player with the C pmove port through the
+> server's collision. Doors, platforms, buttons, trains and elevators
+> move with their sounds, shut doors hide the areas behind them, triggers
+> fire on the player, items can be picked up, and level exits load the
+> next map with the player's inventory. The renderer draws the world
+> textured and lightmapped with sky and warp surfaces, flickering light
+> styles and animated textures, brush entities and MD2 models, and the
+> status bar; game sounds play through WebAudio. The player's weapons
+> (#16) are not in yet.
 > Expect breaking changes.
 
 ## Progress
@@ -28,7 +32,10 @@ WebGL2, and runs player movement in the browser.
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | done |
 | CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (no weapons yet) |
+| CP-5c Sound | Sound through Web Audio | — |
+| CP-6 Saves | Saves persist across a browser refresh | — |
 | CP-7 Multiplayer | Two browser tabs connect via Matchbox | — |
+| CP-8 Campaign | Single-player campaign map loads and plays | — |
 
 ## Features
 
@@ -40,7 +47,7 @@ WebGL2, and runs player movement in the browser.
 - `PakReader` trait with lazy WASM backend — avoids copying the full
   PAK (~100 MB) into linear memory until individual assets are requested
 - Q2 wire-protocol delta machinery: `parse_frame`, player-state delta,
-  packet-entity delta (30 tests)
+  packet-entity delta
 - Server frame loop with `GameImport`/`GameExport` traits replacing C
   function-pointer tables; the browser runs server and game in one process
   (`q2_server::local::LocalGame`)
@@ -85,17 +92,18 @@ Run `make prereqs` to verify all tools are present.
 
 | Command | Description |
 |---------|-------------|
-| `make play` | Full build + dev server (recommended) |
-| `make play-release` | Release build + dev server |
+| `make play` | Full optimized build + dev server (recommended) |
+| `make play-release` | Same as `make play` |
+| `make play-dev` | Debug WASM build + dev server (slow frames, symbolized panics) |
 | `make wasm` | Build WASM module only |
 | `make bundle` | WASM + single-file HTML bundle |
 | `make build` | Native build (all crates) |
-| `make devserver` | Run dev server without rebuilding |
+| `make devserver` | Run dev server without rebuilding the WASM bundle (builds the web pak if needed) |
 | `make gamedata` | Download Quake 2 demo pak0.pak |
 | `make pak-web` | Repack game data and Brotli-compress for web delivery |
 | `make check` | Type-check native + WASM targets without full build |
 | `make test` | Run all workspace tests (unit, integration, doc) |
-| `make test-browser` | Run Playwright browser tests (requires npm) |
+| `make test-browser` | Run Playwright browser tests on the release bundle (requires npm) |
 | `make lint` | Clippy on all native targets + wasm32 libraries (zero warnings) |
 | `make ci` | fmt-check, lint, check and test, as CI runs them |
 | `make fmt` | Format code |
@@ -119,8 +127,6 @@ Entry point:   q2-wasm (browser)
 Placeholders:  q2-bin (native), q2-net (networking, #22)    (no dependencies)
 Tools:         q2-devserver, q2-bundler, q2-pak-repack      (no workspace dependencies)
 ```
-
-q2-server is not yet a dependency of any entry point.
 
 ### Trait Boundaries
 
@@ -146,7 +152,7 @@ function-pointer tables and backend coupling:
 | `q2-server` | Server state, frame loop, world | q2-shared, q2-common, q2-game |
 | `q2-client` | Client state, parsing, input, view | q2-shared, q2-common |
 | `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-common |
-| `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-game, q2-server, q2-client, q2-render-api, q2-render, q2-platform |
+| `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-server, q2-client, q2-render-api, q2-render, q2-platform |
 | `q2-net` | Placeholder for P2P networking (WebRTC via Matchbox, #22) | none |
 | `q2-bin` | Placeholder for a native binary | none |
 | `q2-devserver` | Axum dev server for local development (Brotli content negotiation) | none |
@@ -167,7 +173,8 @@ make pak-web        # repack + Brotli-compress → pak0-web.pak{,.br}
 `pak0-web.pak.br` (Brotli, ~28 MB) to browsers that advertise
 `Accept-Encoding: br`, and falls back to the uncompressed `pak0-web.pak`
 otherwise or when the `.br` is older than the pak. `make pak-web` only
-reruns when `pak0.pak` or the repacker changes.
+reruns when `pak0.pak` or the repacker (including its `Cargo.toml` and
+`Cargo.lock`) changes.
 
 To use the full game, copy your `pak0.pak` (and optionally `pak1.pak`,
 `pak2.pak`) from a Quake 2 installation into `gamedata/baseq2/`, then
@@ -177,6 +184,8 @@ run `make pak-web` to produce the web-optimized variant.
 
 ```bash
 make ci             # everything below except fmt, as CI runs it
+                    # (CI fetches the demo pak first; run `make gamedata`
+                    # for the same map-data test coverage locally)
 make test           # run all workspace tests
 make lint           # clippy, native + wasm32 (zero warnings required)
 make fmt            # format code
@@ -192,8 +201,9 @@ make check          # type-check native + WASM targets
   by reference.
 - **Unsafe code** only at FFI boundaries (q2-render). Every `unsafe`
   block requires a `// SAFETY:` comment.
-- **Entity storage** uses SlotMap with generational indices — never
-  raw pointers or array indices.
+- **Entity storage** in the game uses SlotMap with generational keys,
+  never raw pointers. The `GameImport` boundary names entities by C
+  edict number (ADR-003).
 - **Physics constants** must match the C original exactly (numerical
   precision matters for prediction sync).
 

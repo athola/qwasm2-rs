@@ -9,8 +9,8 @@ qwasm2-rs rewrites Qwasm2, the Emscripten build of Yamagi Quake II
 (`~/Qwasm2/src`), in Rust. The goals are a browser build that uses
 wasm-bindgen instead of Emscripten, peer-to-peer multiplayer over WebRTC, and
 gameplay that matches the C original closely enough for client prediction to
-agree with the server. This ADR replaces the conversion plan that lived in
-`docs/superpowers/plans/2026-03-26-c-to-rust-conversion.md`.
+agree with the server. This ADR replaces an earlier conversion plan kept as
+local working notes (not in the repository).
 
 ## Decision
 
@@ -52,8 +52,8 @@ work continues.
 
 Unsafe code is allowed only at FFI boundaries, today the GL calls in
 q2-render. Each block carries a `// SAFETY:` comment stating the invariant it
-relies on, each file with unsafe code carries an audit header counting its
-blocks, and the workspace denies `clippy::undocumented_unsafe_blocks`.
+relies on, each crate with unsafe code carries an audit header in its
+`lib.rs` counting its blocks, and the workspace denies `clippy::undocumented_unsafe_blocks`.
 
 ### Technology choices
 
@@ -72,7 +72,7 @@ and a native SDL2 backend are planned but have no code or dependencies yet.
 | 2 Game logic | Core done, see ADR-003; gaps #14-#17 |
 | 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
-| 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles, dynamic lights, sprites and texture animation open (#20) |
+| 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles and texture animation run; dynamic lights and sprites wait on weapons (#16, #20) |
 | 6 WASM platform | Game loop, pointer lock, input and resize done; saves open (#21) |
 | 7 P2P networking | Not started (#22) |
 | 8 Integration | Server and game run in-process in the browser (`LocalGame`); networking open (#23) |

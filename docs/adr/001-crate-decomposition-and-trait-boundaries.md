@@ -41,9 +41,10 @@ q2-pak-repack   Repacks a PAK and writes a Brotli variant for web delivery (stan
 
 Four trait interfaces enforce the key abstraction boundaries:
 
-1. **`Renderer`** (q2-render-api) - 14 methods covering init, registration,
-   rendering, 2D drawing. `Send`-safe, object-safe. Backends implement this
-   trait without touching game logic.
+1. **`Renderer`** (q2-render-api) - 15 methods covering init, registration,
+   rendering, 2D drawing. Object-safe, and not `Send`: a GL context is bound
+   to the thread that created it. Backends implement this trait without
+   touching game logic.
 
 2. **`GameImport`** (q2-game) - Server callbacks available to game code:
    printing, sound, collision queries, entity linking, networking. Replaces
@@ -72,9 +73,8 @@ Engine       q2-game         -> q2-shared, q2-common
              q2-render       -> q2-shared, q2-common, q2-render-api
              q2-server       -> q2-shared, q2-common, q2-game
 Adapter      q2-platform     -> q2-common
-Entry point  q2-wasm         -> q2-shared, q2-common, q2-game, q2-server,
-                                q2-client, q2-render-api, q2-render,
-                                q2-platform
+Entry point  q2-wasm         -> q2-shared, q2-common, q2-server, q2-client,
+                                q2-render-api, q2-render, q2-platform
 ```
 
 q2-common and q2-render-api are siblings: neither depends on the other.
@@ -99,9 +99,9 @@ yet implemented.
 - Subsystem boundaries are enforced by the compiler (no accidental coupling).
 - Renderer and game logic are independently swappable.
 - Each crate compiles and tests independently; parallel compilation.
-- Unsafe code is contained to the GL FFI boundary in q2-render (8 blocks in
-  `src/gl3`, each with a `// SAFETY` comment). Clippy denies undocumented
-  unsafe blocks workspace-wide.
+- Unsafe code is contained to q2-render (`src/gl3`, each block with a
+  `// SAFETY` comment); the audit header in `q2-render/src/lib.rs` holds the
+  block count. Clippy denies undocumented unsafe blocks workspace-wide.
 
 **Negative:**
 - q2-common is a large crate (~11,000 LOC including tests) aggregating
@@ -129,18 +129,34 @@ client decoder together. ADR-005 holds the parity rules.
 - **No `Send + Sync` on engine traits.** `PakReader`, `GameImport` and
   `GameExport` dropped the bounds: nothing in the workspace runs them on
   another thread, and the bounds had forced an `unsafe impl` in q2-platform
-  and a `Mutex` in q2-server. `Renderer` keeps `Send`.
+  and a `Mutex` in q2-server. `Renderer` dropped `Send` too (see above).
 - **One BSP header reader.** `q2_common::bsp_file` validates the header and
   lump ranges and decodes the plane, node, leaf, texinfo and model records for
   both the collision and render loaders; collision owns the entity string.
-- **Unsafe** now exists only in q2-render (8 blocks), after the q2-platform
-  `unsafe impl`s were removed.
+- **Unsafe** now exists only in q2-render (counted in its `lib.rs` audit
+  header), after the q2-platform `unsafe impl`s were removed.
 - **Game boundary.** `GameExport::init` takes no import; the game holds an
   `Rc<dyn GameImport>` from construction and client calls take entity
   numbers (`slot + 1`). `GameImport::link_entity` takes an `EntityLink`,
   since the server cannot read the game's entities as C reads `edict_t`.
 - **q2-wasm depends on q2-server**, running server and game in-process
   through `LocalGame`.
+
+## Amendments (2026-10-27): the server and the renderer behind their traits
+
+- **The server reads the game through `GameExport`.** The trait has C's
+  `ge->edicts` read surface: `num_edicts`, `edict(n)` (an `EdictView` of
+  the entity state, svflags, owner number and link state, `None` when not
+  in use) and `client_player_state(n)`. `LocalGame` holds a
+  `Box<dyn GameExport>` and names `GameWorld` only to construct it, as C
+  loads the game library in `SV_InitGameProgs`.
+- **The renderer is set up through its constructor and the trait.**
+  `Gl3Renderer::new(gl, loader)` takes the GL context and the file loader
+  (C `R_Init` and `FS_LoadFile`); `begin_registration(map)` loads
+  `maps/<map>.bsp` through the loader (C `R_BeginRegistration`), keeps the
+  world for the same map and replaces it for another; `end_registration`
+  frees models and skins not registered since. q2-wasm holds a
+  `Box<dyn Renderer>`.
 
 ## Review Triggers
 

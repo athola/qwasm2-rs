@@ -20,8 +20,9 @@ Key C source directories:
 Decisions and phase status live in `docs/adr/` (ADR-002 roadmap, ADR-003 game logic, ADR-005 C-parity rules).
 
 ```
-q2-shared (types) → q2-common (services) → q2-game/client/render → q2-wasm
-(q2-server builds on q2-game but no entry point uses it yet)
+q2-shared (types) → q2-common (services) → q2-game → q2-server ─┐
+                                         → q2-client/render ────┴→ q2-wasm
+(q2-wasm runs q2-server and q2-game in-process via LocalGame)
 q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-repack are tools
 ```
 
@@ -32,7 +33,7 @@ q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-r
 - **Platform**: `q2-platform` — WASM-specific code gated on `cfg(target_arch = "wasm32")`.
 
 ### q2-game patterns
-- **Entity callbacks are `fn` pointers** (not closures) — keeps entities Send+Sync and serializable for save/load.
+- **Entity callbacks are `fn` pointers** (not closures) — no captured state, so callbacks can be saved by name once save/load (#15) lands.
 - **Callback borrow pattern**: Read `Option<fn>` into a local variable before calling, since callbacks take `&mut GameWorld`.
 - **GameWorld is the central state** — all game code receives `&mut GameWorld`. Replaces C globals (`g_edicts[]`, `level`, `game`).
 - **MockGameImport** (`world::test_world()`) enables unit testing game logic without a real server.
@@ -43,7 +44,7 @@ q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-r
 - No circular dependencies between crates.
 - Unsafe code only at FFI boundaries (q2-render). All unsafe blocks must have `// SAFETY:` comments.
 - Errors: use `Q2Error` (q2-common) internally. At WASM boundary, use `q2err_to_js()`.
-- Entity storage uses SlotMap with generational indices — never raw pointers/indices.
+- Game-side entity storage uses SlotMap with generational keys — never raw pointers. The `GameImport` boundary names entities by C edict number (ADR-003).
 - Physics constants must match the C original exactly (numerical precision matters for client/server prediction sync).
 
 ## Build & Test
@@ -53,7 +54,7 @@ make ci                         # fmt-check + lint + check + test, as CI runs th
 make test                       # cargo test --workspace
 make lint                       # clippy -D warnings: native --all-targets + wasm32 libraries
 make wasm                       # Build WASM target
-make play                       # Build, bundle, repack game data, run devserver
+make play                       # Release build, bundle, repack game data, run devserver
 ```
 
 ## Conventions
@@ -62,4 +63,3 @@ make play                       # Build, bundle, repack game data, run devserver
 - Large algorithmic modules (collision, pmove) are faithful C ports — modify with care and tests.
 - `#[allow(clippy::too_many_arguments)]` on weapon fire functions matching C signatures.
 - `#[allow(clippy::field_reassign_with_default)]` on spawn functions building MoveInfo incrementally.
-- Use `.to_string()` not `.into()` when passing string literals to `SpawnTable::insert()`.

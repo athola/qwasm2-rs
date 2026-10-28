@@ -10,8 +10,8 @@ The browser build fetches `pak0.pak` before play starts. The demo pak is about
 59% WAV audio, 13% PCX textures, 13% BSP maps, 7% MD2 models and 5% WAL
 textures, while the engine read only the BSP maps. Distribution must stay a
 single HTML page plus one pak-like file that any static host can serve. This
-ADR replaces the PAK compression brief, specification and plan that lived in
-`docs/project-brief.md` and `docs/pak-web-*.md`.
+ADR replaces the PAK compression brief, specification and plan, which were
+local working notes (not in the repository).
 
 ## Options considered
 
@@ -34,7 +34,8 @@ Repack at build time and compress, with room to transcode later.
   temp file and rename, reporting write errors. It keeps every file unless
   `--allow` lists extensions.
 - **Build.** `make pak-web` is a file rule that reruns only when `pak0.pak`
-  or the repacker changes.
+  or the repacker (including its `Cargo.toml` and `Cargo.lock`)
+  changes.
 - **Serving.** The dev server sends the `.br` variant with
   `Content-Encoding: br` and `Vary: Accept-Encoding` when the client accepts
   Brotli (honouring `q=0`) and the `.br` is not older than the pak; otherwise
