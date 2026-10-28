@@ -4,9 +4,9 @@
 //! models match C. Not ported: temp-entity effects (impacts, trails,
 //! explosions), sounds, `check_dodge`, water handling in hitscan traces, the
 //! SURF_SKY checks, and the BFG laser think and `bfg_explode` frames.
-//! Nothing outside tests fires yet: the player weapon state machine is #16.
-//! Until it lands, the fire functions make p_weapon.c's PNOISE_WEAPON
-//! `PlayerNoise` at the muzzle when a client fires (a no-op for monsters).
+//! The fire functions also make p_weapon.c's PNOISE_WEAPON `PlayerNoise`
+//! at the muzzle when a client fires (a no-op for monsters), so the
+//! player's weapon code does not repeat it.
 //!
 //! # Weapon types
 //! - **Hitscan**: fire_bullet, fire_shotgun, fire_rail, fire_hit — instant trace

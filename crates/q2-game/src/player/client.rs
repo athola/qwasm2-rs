@@ -668,10 +668,9 @@ impl GameWorld {
     }
 
     /// Per-frame setup for a client at the start of the server frame:
-    /// run the weapon unless a command already did, then the player
-    /// trail. C ref: `ClientBeginServerFrame` (player/client.c); the
-    /// deathmatch spectator switch and respawn on a dead player's press
-    /// are not ported yet.
+    /// run the weapon unless a command already did, respawn a dead player
+    /// on a press, then the player trail. C ref: `ClientBeginServerFrame`
+    /// (player/client.c); the deathmatch spectator switch is not ported.
     pub fn client_begin_server_frame(&mut self, key: EntityKey) {
         if self.level.intermission_time != 0.0 {
             return;

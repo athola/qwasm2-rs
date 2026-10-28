@@ -49,8 +49,8 @@ engine I/O goes through `GameImport`.
 In: the base Quake II entity set (107 spawn types), 11 weapons, the item
 table, 10 movement types, the base AI, 20 monster types, triggers, targets,
 functional entities, and the player subsystem. Out: mission packs, CTF, and
-anti-cheat. Deferred with issues: save/load (#15), the player weapon state
-machine (#16), and `SV_Push` rollback (#17).
+anti-cheat. Deferred with issues: save/load (#15) and `SV_Push` rollback
+(#17).
 
 ## Current state (2026-10-27)
 
@@ -75,7 +75,7 @@ worldspawn's configstrings (status bar, sky, item names, light styles),
 afterwards. Map items go through `SpawnItem` ahead of the table as in
 `ED_CallSpawn`. Doors, rotating and secret doors, water, plats, buttons,
 trains, elevators and conveyors follow C's `Move_Calc`/`AngleMove_Calc`
-movers. Remaining per-type spawn details are tracked in #14 and #16.
+movers.
 
 Client records outlive the map. `spawn_entities` runs C `SaveClientData`
 before it clears the entities; the records stay in `GameWorld::clients`,
@@ -112,6 +112,21 @@ uses to skip the world behind a shut door. The game's sounds reach the
 browser through a server event queue and a WebAudio backend. Picture
 levels (`victory.pcx`) show the picture as C's `ss_pic` does.
 
+### Player weapons and powerups (2026-10-28)
+
+The player's weapons are `p_weapon.c`: `Think_Weapon`, `Weapon_Generic`
+and every `Weapon_*`, run from `ClientThink` on a fresh attack press and
+from `ClientBeginServerFrame` otherwise. Weapons switch through
+`ClientCommand` (`use`, `weapnext`, `invuse`, ...), whose arguments come
+from `GameImport::argv`/`args` as in C. The client draws the gun
+(`CL_AddViewWeapon`) and plays muzzle flashes: in C the gunfire sounds of
+players and monsters come from the client's `CL_AddMuzzleFlash`/`2`, so
+the server hands its multicast messages to `LocalGame` and the client
+ports those functions and the dlight list; lit world faces add GL3's
+dynamic light term. Powerups and power armor are usable and droppable,
+`P_WorldEffects`, `SV_CalcBlend` and `G_SetClientEffects` give them their
+effects, and the deathmatch rules end matches through C's intermission.
+
 ### Known deviations from C (2026-10-28)
 
 - **Player trail nodes are data.** C keeps the eight trail nodes as
@@ -122,9 +137,18 @@ levels (`victory.pcx`) show the picture as C's `ss_pic` does.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
-- **Not ported:** the player's item-drop commands and weapon state
-  machine (#16), cinematic and demo playback (`.cin`/`.dm2` levels are
-  refused), savegames (#15), `SP_FixCoopSpots`, and power-armor sparks.
+- **Weapons.** Right-handed only (no userinfo `hand`), `aimfix` and
+  `g_swap_speed` at their C defaults. The game writes no temp entities
+  for impacts, explosions or trails, and the renderer draws no
+  particles, so those are invisible; monster flash particles and smoke
+  likewise. Brush models moved by doors take dlights at their rest
+  position.
+- **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
+  refused), savegames (#15; a dead single player's press sends
+  `menu_loadgame`, which nothing handles), `P_DamageFeedback` (no damage
+  flash or pain view kick), the scoreboard, obituaries (no
+  `MOD_FRIENDLY_FIRE` bit), the random pick in an item team's respawn,
+  `SP_FixCoopSpots`, and power-armor sparks.
 
 ## Consequences
 
