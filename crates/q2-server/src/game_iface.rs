@@ -23,6 +23,7 @@ use q2_shared::{
     types::*,
 };
 
+use crate::vis::{entity_clusters, fat_pvs, in_pvs, EntityClusters, MAX_TOTAL_ENT_LEAFS};
 use crate::world::{ServerWorld, AREA_SOLID};
 
 // ---------------------------------------------------------------------------
@@ -44,9 +45,52 @@ struct GiInner {
     collision: CollisionMap,
     /// Area tree for entity queries (C `sv_areanodes`).
     world: ServerWorld,
-    /// Last link per entity number: what SV_ClipMoveToEntities reads from
-    /// the edict in C.
+    /// Last link per entity number: what SV_ClipMoveToEntities and
+    /// SV_PointContents read from the edict in C. C reads the live edict,
+    /// so a game change to `solid`, `owner`, `svflags`, origin or bounds
+    /// takes effect at once; here it takes effect at the next
+    /// `link_entity`. Game code that changes those fields must relink, as
+    /// C game code does to move the entity in the area tree anyway.
     links: Vec<Option<EntityLink>>,
+    /// Visibility clusters per entity number from its last link; kept when
+    /// it unlinks, as C leaves `clusternums` in the edict.
+    clusters: Vec<EntityClusters>,
+    /// C `areanum`/`areanum2` per entity number from its last link (0 for
+    /// none); kept when it unlinks, like `clusters`.
+    areas: Vec<(i32, i32)>,
+    /// Console text the game queued (C `gi.AddCommandString` ->
+    /// `Cbuf_AddText`), for the server loop to run.
+    commands: String,
+    /// Sounds the game started since the last `take_sounds`.
+    sounds: Vec<SoundEvent>,
+}
+
+/// One sound the game started: what C `SV_StartSound` writes as an
+/// `svc_sound` message. The PHS and reliable routing of that message is a
+/// network concern; the one local client hears every sound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SoundEvent {
+    /// Entity number the sound plays on (for channel overrides).
+    pub ent: usize,
+    /// `CHAN_*` with the routing bits stripped, as the client reads it.
+    pub channel: i32,
+    /// `CS_SOUNDS` index.
+    pub sound_index: i32,
+    pub volume: f32,
+    pub attenuation: f32,
+    /// Delay in seconds, 0..=0.255.
+    pub time_ofs: f32,
+    /// Where the sound stays (C `SND_POS`), or `None` to follow the
+    /// entity as the client sees it move.
+    pub origin: Option<Vec3f>,
+}
+
+/// Whether `cluster`'s bit is set in a PVS or PHS row; no cluster is not.
+fn cluster_bit(row: &[u8], cluster: i32) -> bool {
+    usize::try_from(cluster).is_ok_and(|cluster| {
+        row.get(cluster >> 3)
+            .is_some_and(|bits| bits & (1 << (cluster & 7)) != 0)
+    })
 }
 
 impl GiInner {
@@ -58,7 +102,62 @@ impl GiInner {
             collision: CollisionMap::new(),
             world: ServerWorld::new(),
             links: vec![None; MAX_EDICTS],
+            clusters: vec![EntityClusters::List(Vec::new()); MAX_EDICTS],
+            areas: vec![(0, 0); MAX_EDICTS],
+            commands: String::new(),
+            sounds: Vec::new(),
         }
+    }
+
+    /// C SV_StartSound. Out-of-range volume, attenuation or offset is
+    /// ERR_FATAL in C; the trait cannot fail, so the sound is logged and
+    /// dropped. An explicit `origin` is kept; otherwise a brush model plays
+    /// from its center and an entity clients are not sent from its origin
+    /// (both sent with `SND_POS`, the client cannot place them), and any
+    /// other entity is followed by the client. The origin and flags are
+    /// read from the entity's last link; an unlinked entity is followed.
+    #[allow(clippy::too_many_arguments)]
+    fn start_sound(
+        &mut self,
+        origin: Option<Vec3f>,
+        ent: usize,
+        channel: i32,
+        sound_index: i32,
+        volume: f32,
+        attenuation: f32,
+        time_ofs: f32,
+    ) {
+        if !(0.0..=1.0).contains(&volume)
+            || !(0.0..=4.0).contains(&attenuation)
+            || !(0.0..=0.255).contains(&time_ofs)
+        {
+            tracing::error!(
+                volume,
+                attenuation,
+                time_ofs,
+                "SV_StartSound: bad parameter (C ERR_FATAL)"
+            );
+            return;
+        }
+        let origin = origin.or_else(|| {
+            let link = self.links.get(ent).copied().flatten()?;
+            if link.solid == Solid::Bsp {
+                Some(link.origin + (link.mins + link.maxs) * 0.5)
+            } else if link.svflags & q2_shared::constants::SVF_NOCLIENT != 0 {
+                Some(link.origin)
+            } else {
+                None
+            }
+        });
+        self.sounds.push(SoundEvent {
+            ent,
+            channel: channel & 7,
+            sound_index,
+            volume,
+            attenuation,
+            time_ofs,
+            origin,
+        });
     }
 
     fn set_configstring(&mut self, idx: usize, value: &str) {
@@ -128,6 +227,16 @@ impl ServerGameImport {
         }
     }
 
+    /// The console text queued by `add_command_string` since the last call.
+    pub fn take_commands(&self) -> String {
+        std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// The sounds the game started since the last call, in order.
+    pub fn take_sounds(&self) -> Vec<SoundEvent> {
+        std::mem::take(&mut self.inner.borrow_mut().sounds)
+    }
+
     /// Load a map's collision data and rebuild the area tree (C CM_LoadMap +
     /// SV_ClearWorld). Links and the configstring mirror start empty, as C
     /// SV_SpawnServer zeroes `sv`. Returns the map checksum.
@@ -141,9 +250,98 @@ impl ServerGameImport {
             .unwrap_or_default();
         inner.world.clear(mins, maxs);
         inner.links.fill(None);
+        inner.clusters.fill(EntityClusters::List(Vec::new()));
+        inner.areas.fill((0, 0));
         inner.configstrings.fill(String::new());
         inner.dirty.fill(false);
         Ok(checksum)
+    }
+
+    /// C `SV_FatPVS`: what can be seen from the eye at `org`, as one bit
+    /// per cluster.
+    pub fn fat_pvs(&self, org: Vec3f) -> Vec<u8> {
+        let inner = self.inner.borrow();
+        let reach = Vec3f::new(8.0, 8.0, 8.0);
+        let (leafs, _) = inner.collision.box_leafnums(org - reach, org + reach, 64);
+        let clusters: Vec<i32> = leafs
+            .iter()
+            .map(|&leaf| i32::from(inner.collision.leaf_cluster(leaf)))
+            .collect();
+        fat_pvs(&clusters, |cluster| inner.collision.cluster_pvs(cluster))
+    }
+
+    /// Whether entity `number`, where it was last linked, touches a cluster
+    /// set in `pvs` (the PVS test of C `SV_BuildClientFrame`).
+    pub fn entity_in_pvs(&self, number: usize, pvs: &[u8]) -> bool {
+        let inner = self.inner.borrow();
+        inner.clusters.get(number).is_some_and(|clusters| {
+            in_pvs(clusters, pvs, |node, bits| {
+                inner.collision.headnode_visible(node, bits)
+            })
+        })
+    }
+
+    /// Entity `number`'s C `areanum` and `areanum2` (0 for none) from its
+    /// last link.
+    pub fn entity_areas(&self, number: usize) -> (i32, i32) {
+        self.inner
+            .borrow()
+            .areas
+            .get(number)
+            .copied()
+            .unwrap_or((0, 0))
+    }
+
+    /// Whether the areas of two leafs are connected (the area check of C
+    /// PF_inPVS/PF_inPHS).
+    fn leaf_areas_connected(&self, leaf1: usize, leaf2: usize) -> bool {
+        let (area1, area2) = {
+            let inner = self.inner.borrow();
+            let cm = &inner.collision;
+            (
+                i32::from(cm.leaf_area(leaf1)),
+                i32::from(cm.leaf_area(leaf2)),
+            )
+        };
+        self.areas_connected(area1, area2)
+    }
+
+    /// Which areas a client in `area` can see (C `SV_BuildClientFrame`'s
+    /// `CM_WriteAreaBits`), or `None`, which draws every area, when `area`
+    /// is not in the map.
+    pub fn area_bits(&self, area: i32) -> Option<Vec<u8>> {
+        let bits = self.inner.borrow().collision.write_area_bits(area, false);
+        bits.map_err(|e| tracing::warn!(area, "area_bits: {e}"))
+            .ok()
+    }
+
+    /// The area holding `point` (C `CM_LeafArea(CM_PointLeafnum(p))`).
+    pub fn point_area(&self, point: Vec3f) -> i32 {
+        let inner = self.inner.borrow();
+        let cm = &inner.collision;
+        i32::from(cm.leaf_area(cm.point_leafnum(point)))
+    }
+
+    /// C `SV_BuildClientFrame`'s `clientphs`: the PHS row of the cluster
+    /// holding `eye` (the eye's own leaf, not the fat PVS box).
+    pub fn client_phs(&self, eye: Vec3f) -> Vec<u8> {
+        let inner = self.inner.borrow();
+        let cm = &inner.collision;
+        cm.cluster_phs(i32::from(cm.leaf_cluster(cm.point_leafnum(eye))))
+    }
+
+    /// The beam test of C `SV_BuildClientFrame`: whether the first cluster
+    /// entity `number` was linked in is set in `phs`. An entity listed by
+    /// headnode asks the tree, as C's first cluster is then one of many.
+    pub fn entity_in_phs(&self, number: usize, phs: &[u8]) -> bool {
+        let inner = self.inner.borrow();
+        match inner.clusters.get(number) {
+            Some(EntityClusters::List(list)) => list
+                .first()
+                .is_some_and(|&cluster| cluster_bit(phs, cluster)),
+            Some(EntityClusters::Headnode(node)) => inner.collision.headnode_visible(*node, phs),
+            None => false,
+        }
     }
 
     /// The loaded map's entity lump.
@@ -214,15 +412,48 @@ impl GameImport for ServerGameImport {
 
     // -- sound ---------------------------------------------------------------
 
+    /// C PF_StartSound: no entity, no sound.
     fn sound(
         &self,
-        _ent_idx: Option<usize>,
-        _channel: i32,
-        _sound_index: i32,
-        _volume: f32,
-        _attenuation: f32,
-        _time_ofs: f32,
+        ent_idx: Option<usize>,
+        channel: i32,
+        sound_index: i32,
+        volume: f32,
+        attenuation: f32,
+        time_ofs: f32,
     ) {
+        if let Some(ent) = ent_idx {
+            self.inner.borrow_mut().start_sound(
+                None,
+                ent,
+                channel,
+                sound_index,
+                volume,
+                attenuation,
+                time_ofs,
+            );
+        }
+    }
+
+    fn positioned_sound(
+        &self,
+        origin: Vec3f,
+        ent_idx: usize,
+        channel: i32,
+        sound_index: i32,
+        volume: f32,
+        attenuation: f32,
+        time_ofs: f32,
+    ) {
+        self.inner.borrow_mut().start_sound(
+            Some(origin),
+            ent_idx,
+            channel,
+            sound_index,
+            volume,
+            attenuation,
+            time_ofs,
+        );
     }
 
     // -- asset indexing ------------------------------------------------------
@@ -246,12 +477,16 @@ impl GameImport for ServerGameImport {
     }
 
     /// C PF_setmodel: SV_ModelIndex (`*n` is already registered by
-    /// SV_SpawnServer) plus CM_InlineModel's bounds for `*n`.
+    /// SV_SpawnServer) plus CM_InlineModel's bounds for `*n`. A bad `*n`
+    /// (including `*0`) is ERR_DROP in C; the trait cannot fail, so it is
+    /// logged and the entity gets no bounds.
     fn set_model(&self, _ent_idx: usize, name: &str) -> ModelInfo {
         let index = self.model_index(name);
         let bounds = name
             .strip_prefix('*')
             .and_then(|n| n.parse::<usize>().ok())
+            // C CM_InlineModel: `*0` is the world, not an entity's model.
+            .filter(|&n| n >= 1)
             .and_then(|n| {
                 let inner = self.inner.borrow();
                 inner.collision.model(n).map(|m| (m.mins, m.maxs))
@@ -298,7 +533,9 @@ impl GameImport for ServerGameImport {
             boxmaxs[i] = hi + maxs[i] + 1.0;
         }
 
-        let pass_owner = pass_ent.and_then(|p| inner.links[p].and_then(|l| l.owner));
+        let pass_owner = pass_ent
+            .and_then(|p| inner.links.get(p).copied().flatten())
+            .and_then(|l| l.owner);
         for number in inner.world.area_edicts(boxmins, boxmaxs, AREA_SOLID) {
             let Some(touch) = inner.links[number] else {
                 continue;
@@ -371,15 +608,66 @@ impl GameImport for ServerGameImport {
         contents
     }
 
-    /// No visibility lump is loaded yet, and C treats a map without vis data
-    /// as fully visible (CM_ClusterPVS returns all bits set).
-    fn in_pvs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
-        true
+    /// C PF_inPVS: whether `p2`'s cluster is in the PVS of `p1`'s and no
+    /// closed door (area portal) parts them. A point in no cluster (solid,
+    /// outside the map) is not visible; a map without vis data sees
+    /// everything.
+    fn in_pvs(&self, p1: Vec3f, p2: Vec3f) -> bool {
+        let (leaf1, leaf2, visible) = {
+            let inner = self.inner.borrow();
+            let cm = &inner.collision;
+            let (leaf1, leaf2) = (cm.point_leafnum(p1), cm.point_leafnum(p2));
+            let mask = cm.cluster_pvs(i32::from(cm.leaf_cluster(leaf1)));
+            let cluster = i32::from(cm.leaf_cluster(leaf2));
+            (leaf1, leaf2, cluster_bit(&mask, cluster))
+        };
+        visible && self.leaf_areas_connected(leaf1, leaf2)
     }
 
-    /// See `in_pvs`: without vis data everything is hearable.
-    fn in_phs(&self, _p1: Vec3f, _p2: Vec3f) -> bool {
-        true
+    /// C PF_inPHS: `in_pvs` against the PHS row of `p1`'s cluster.
+    fn in_phs(&self, p1: Vec3f, p2: Vec3f) -> bool {
+        let (leaf1, leaf2, audible) = {
+            let inner = self.inner.borrow();
+            let cm = &inner.collision;
+            let (leaf1, leaf2) = (cm.point_leafnum(p1), cm.point_leafnum(p2));
+            let mask = cm.cluster_phs(i32::from(cm.leaf_cluster(leaf1)));
+            let cluster = i32::from(cm.leaf_cluster(leaf2));
+            (leaf1, leaf2, cluster_bit(&mask, cluster))
+        };
+        audible && self.leaf_areas_connected(leaf1, leaf2)
+    }
+
+    // -- area portals --------------------------------------------------------
+
+    /// C CM_SetAreaPortalState raises ERR_DROP for a portal number past
+    /// the map's; the trait cannot fail, so the change is logged and
+    /// dropped, as `configstring` does.
+    fn set_area_portal_state(&self, portal_num: i32, open: bool) {
+        let result = usize::try_from(portal_num)
+            .map_err(|_| q2_common::error::Q2Error::Drop("areaportal < 0".into()))
+            .and_then(|n| {
+                self.inner
+                    .borrow_mut()
+                    .collision
+                    .set_area_portal_state(n, open)
+            });
+        if let Err(e) = result {
+            tracing::warn!(portal_num, "set_area_portal_state: {e}");
+        }
+    }
+
+    /// C CM_AreasConnected; an area past the map's (ERR_DROP in C) is
+    /// logged and treated as cut off.
+    fn areas_connected(&self, area1: i32, area2: i32) -> bool {
+        let connected = self.inner.borrow().collision.areas_connected(area1, area2);
+        connected.unwrap_or_else(|e| {
+            tracing::warn!(area1, area2, "areas_connected: {e}");
+            false
+        })
+    }
+
+    fn entity_areas(&self, number: usize) -> (i32, i32) {
+        ServerGameImport::entity_areas(self, number)
     }
 
     // -- entity linking ------------------------------------------------------
@@ -394,6 +682,34 @@ impl GameImport for ServerGameImport {
             .world
             .link_entity(ent.number, ent.absmin, ent.absmax, ent.solid);
         inner.links[ent.number] = Some(*ent);
+        // C SV_LinkEdict: link to the PVS leafs the box touches.
+        let (leafs, topnode) =
+            inner
+                .collision
+                .box_leafnums(ent.absmin, ent.absmax, MAX_TOTAL_ENT_LEAFS);
+        let leaf_clusters: Vec<i32> = leafs
+            .iter()
+            .map(|&leaf| i32::from(inner.collision.leaf_cluster(leaf)))
+            .collect();
+        inner.clusters[ent.number] = entity_clusters(&leaf_clusters, topnode);
+        // Doors may legally straddle two areas, but nothing should ever
+        // need more than that.
+        let (mut area1, mut area2) = (0, 0);
+        for &leaf in &leafs {
+            let area = i32::from(inner.collision.leaf_area(leaf));
+            if area == 0 {
+                continue;
+            }
+            if area1 != 0 && area1 != area {
+                if area2 != 0 && area2 != area {
+                    tracing::debug!(absmin = ?ent.absmin, "object touching 3 areas");
+                }
+                area2 = area;
+            } else {
+                area1 = area;
+            }
+        }
+        inner.areas[ent.number] = (area1, area2);
     }
 
     fn unlink_entity(&self, number: usize) {
@@ -413,13 +729,15 @@ impl GameImport for ServerGameImport {
 
     // -- configstrings -------------------------------------------------------
 
+    /// C PF_Configstring raises ERR_DROP for an index outside
+    /// `0..MAX_CONFIGSTRINGS`; the trait cannot fail, so the write is
+    /// logged and dropped.
     fn configstring(&self, num: i32, string: &str) {
-        if num < 0 {
+        let Some(index) = usize::try_from(num).ok().filter(|&i| i < MAX_CONFIGSTRINGS) else {
+            tracing::error!(num, "configstring: bad index (C ERR_DROP)");
             return;
-        }
-        self.inner
-            .borrow_mut()
-            .set_configstring(num as usize, string);
+        };
+        self.inner.borrow_mut().set_configstring(index, string);
     }
 
     // -- network writing (buffered; flushed on multicast/unicast) -----------
@@ -480,7 +798,9 @@ impl GameImport for ServerGameImport {
         String::new()
     }
 
-    fn add_command_string(&self, _text: &str) {}
+    fn add_command_string(&self, text: &str) {
+        self.inner.borrow_mut().commands.push_str(text);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,6 +810,116 @@ impl GameImport for ServerGameImport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn link(gi: &ServerGameImport, number: usize, solid: Solid, svflags: u32) {
+        gi.link_entity(&EntityLink {
+            number,
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            mins: Vec3f::new(-10.0, -20.0, 0.0),
+            maxs: Vec3f::new(30.0, 20.0, 40.0),
+            solid,
+            svflags,
+            ..Default::default()
+        });
+    }
+
+    fn event(ent: usize, channel: i32, origin: Option<Vec3f>) -> SoundEvent {
+        SoundEvent {
+            ent,
+            channel,
+            sound_index: 5,
+            volume: 0.5,
+            attenuation: 1.0,
+            time_ofs: 0.1,
+            origin,
+        }
+    }
+
+    #[test]
+    fn sound_on_an_entity_follows_the_entity_on_the_client() {
+        // C SV_StartSound sends no SND_POS for an ordinary entity.
+        let gi = ServerGameImport::new();
+        link(&gi, 3, Solid::Bbox, 0);
+        gi.sound(Some(3), 2, 5, 0.5, 1.0, 0.1);
+        assert_eq!(gi.take_sounds(), vec![event(3, 2, None)]);
+        assert_eq!(gi.take_sounds(), vec![]);
+    }
+
+    #[test]
+    fn sound_on_a_brush_model_is_positioned_at_its_center() {
+        let gi = ServerGameImport::new();
+        link(&gi, 4, Solid::Bsp, 0);
+        gi.sound(Some(4), 2, 5, 0.5, 1.0, 0.1);
+        let center = Some(Vec3f::new(110.0, 0.0, 20.0));
+        assert_eq!(gi.take_sounds(), vec![event(4, 2, center)]);
+    }
+
+    #[test]
+    fn sound_on_an_entity_clients_are_not_sent_is_positioned_at_its_origin() {
+        let gi = ServerGameImport::new();
+        link(&gi, 5, Solid::Not, q2_shared::constants::SVF_NOCLIENT);
+        gi.sound(Some(5), 2, 5, 0.5, 1.0, 0.1);
+        let origin = Some(Vec3f::new(100.0, 0.0, 0.0));
+        assert_eq!(gi.take_sounds(), vec![event(5, 2, origin)]);
+    }
+
+    #[test]
+    fn sound_on_an_unlinked_entity_follows_the_entity() {
+        let gi = ServerGameImport::new();
+        gi.sound(Some(6), 2, 5, 0.5, 1.0, 0.1);
+        assert_eq!(gi.take_sounds(), vec![event(6, 2, None)]);
+    }
+
+    #[test]
+    fn sound_without_an_entity_is_dropped() {
+        // C PF_StartSound returns on a NULL entity.
+        let gi = ServerGameImport::new();
+        gi.sound(None, 2, 5, 0.5, 1.0, 0.1);
+        assert_eq!(gi.take_sounds(), vec![]);
+    }
+
+    #[test]
+    fn positioned_sound_keeps_its_origin_even_on_a_brush_model() {
+        let gi = ServerGameImport::new();
+        link(&gi, 4, Solid::Bsp, 0);
+        let at = Vec3f::new(1.0, 2.0, 3.0);
+        gi.positioned_sound(at, 4, 2, 5, 0.5, 1.0, 0.1);
+        assert_eq!(gi.take_sounds(), vec![event(4, 2, Some(at))]);
+    }
+
+    #[test]
+    fn sound_channel_keeps_only_the_low_three_bits() {
+        // CHAN_NO_PHS_ADD (8) and CHAN_RELIABLE (16) choose how C sends the
+        // sound; the client sees `sendchan & 7`.
+        let gi = ServerGameImport::new();
+        gi.sound(Some(3), 2 | 8 | 16, 5, 0.5, 1.0, 0.1);
+        assert_eq!(gi.take_sounds(), vec![event(3, 2, None)]);
+    }
+
+    #[test]
+    fn sound_with_out_of_range_volume_attenuation_or_offset_is_dropped() {
+        // C SV_StartSound: Com_Error(ERR_FATAL) for each.
+        let gi = ServerGameImport::new();
+        gi.sound(Some(3), 0, 5, -0.1, 1.0, 0.0);
+        gi.sound(Some(3), 0, 5, 1.1, 1.0, 0.0);
+        gi.sound(Some(3), 0, 5, 1.0, -0.1, 0.0);
+        gi.sound(Some(3), 0, 5, 1.0, 4.1, 0.0);
+        gi.sound(Some(3), 0, 5, 1.0, 1.0, -0.01);
+        gi.sound(Some(3), 0, 5, 1.0, 1.0, 0.256);
+        assert_eq!(gi.take_sounds(), vec![]);
+        // The limits themselves are allowed.
+        gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
+        assert_eq!(gi.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn add_command_string_queues_text_until_the_server_takes_it() {
+        let gi = ServerGameImport::new();
+        gi.add_command_string("gamemap \"base2\"\n");
+        gi.add_command_string("echo hi\n");
+        assert_eq!(gi.take_commands(), "gamemap \"base2\"\necho hi\n");
+        assert_eq!(gi.take_commands(), "");
+    }
 
     #[test]
     fn unobstructed_trace_ends_at_requested_end_point() {

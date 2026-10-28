@@ -29,6 +29,7 @@ fn map_loads_collision_registers_the_world_and_spawns_entities() {
         &mut svs,
         "floor_wall",
         &common::floor_wall_bsp(),
+        "",
         &gi,
         &mut game,
     )
@@ -51,7 +52,7 @@ fn map_loads_collision_registers_the_world_and_spawns_entities() {
 fn map_with_a_bad_bsp_fails_and_leaves_the_server_not_running() {
     let (mut sv, mut svs, gi, mut game) = setup();
     assert!(sv
-        .map(&mut svs, "broken", b"not a bsp", &gi, &mut game)
+        .map(&mut svs, "broken", b"not a bsp", "", &gi, &mut game)
         .is_err());
     assert_ne!(sv.state, ServerState::Game);
 }
@@ -63,7 +64,7 @@ fn map_registers_every_inline_model_of_demo1() {
         return;
     };
     let (mut sv, mut svs, gi, mut game) = setup();
-    sv.map(&mut svs, "demo1", &bsp, &gi, &mut game)
+    sv.map(&mut svs, "demo1", &bsp, "", &gi, &mut game)
         .expect("demo1 loads");
 
     let inline = gi.num_inline_models();

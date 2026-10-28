@@ -1,14 +1,15 @@
 //! The player moves through the full chain C uses: GameWorld::client_think
 //! runs pmove, whose traces go through ServerGameImport (SV_Trace) against
-//! the loaded map.
+//! the loaded map. The tests drive the concrete `GameWorld` so they can
+//! check game state (ground entities, killed targets) that `LocalGame`
+//! keeps behind `GameExport`.
 
 mod common;
 
 use q2_common::pmove::PMF_ON_GROUND;
-use q2_server::local::LocalGame;
 use q2_shared::types::{PlayerState, UserCmd, Vec3f};
 
-struct Game(LocalGame);
+struct Game(common::ServerWorld);
 
 impl Game {
     /// The fixture map with one client in the game at the player start.
@@ -18,7 +19,7 @@ impl Game {
 
     /// `bsp` with one client in the game at its player start.
     fn start_on(name: &str, bsp: &[u8]) -> Self {
-        Game(LocalGame::start(name, bsp).expect("map loads"))
+        Game(common::ServerWorld::start(name, bsp))
     }
 
     /// 100 ms of play: two 50 ms client commands, then a server frame, the
@@ -30,12 +31,20 @@ impl Game {
         self.0.frame(100_000);
     }
 
+    fn player(&self) -> &q2_game::entity::Entity {
+        let world = &self.0.game;
+        let key = world.entities.key_for_number(1).expect("player in game");
+        world.entities.get(key).expect("player in game")
+    }
+
     fn origin(&self) -> Vec3f {
-        self.0.player().expect("player in game").0
+        self.player().state.origin
     }
 
     fn ps(&self) -> PlayerState {
-        self.0.player().expect("player in game").1
+        let world = &self.0.game;
+        let key = world.entities.key_for_number(1).expect("player in game");
+        world.client(key).expect("a client").ps.clone()
     }
 }
 
@@ -166,9 +175,9 @@ fn walking_into_a_trigger_once_fires_its_killtarget() {
     ));
     let mut g = Game::start_on("floor_wall", &map);
     let alive = |g: &Game| {
-        g.0.game()
+        g.0.game
             .find_by_targetname(None, "victim")
-            .is_some_and(|k| g.0.game().entities.get(k).is_some_and(|e| e.in_use))
+            .is_some_and(|k| g.0.game.entities.get(k).is_some_and(|e| e.in_use))
     };
     for _ in 0..10 {
         g.tick(&UserCmd::default());
@@ -190,7 +199,7 @@ fn standing_on_a_brush_entity_makes_it_the_ground_entity() {
     for _ in 0..20 {
         g.tick(&UserCmd::default());
     }
-    let game = g.0.game();
+    let game = &g.0.game;
     let wall = game.find_by_classname(None, "func_wall").unwrap();
     let player = game.entities.key_for_number(1).unwrap();
     assert_eq!(

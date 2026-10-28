@@ -66,13 +66,7 @@ impl Server {
 
         game.run_frame();
 
-        // In C the game writes sv.configstrings directly; here it writes the
-        // import's mirror, so copy those writes back before anything is sent.
-        for (index, value) in gi.drain_configstring_updates() {
-            if let Some(slot) = self.configstrings.get_mut(index) {
-                *slot = value;
-            }
-        }
+        self.sync_configstrings(gi);
 
         // Never get more than one tick behind.
         if self.time < svs.realtime {
@@ -101,7 +95,7 @@ mod tests {
             initialized: true,
             ..Default::default()
         };
-        (sv, svs, NullGame { frames_run: 0 })
+        (sv, svs, NullGame::default())
     }
 
     #[test]
@@ -139,7 +133,7 @@ mod tests {
         let gi = ServerGameImport::new();
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
-        let mut game = NullGame { frames_run: 0 };
+        let mut game = NullGame::default();
 
         sv.frame(&mut svs, 16_000, &mut game, &gi);
 

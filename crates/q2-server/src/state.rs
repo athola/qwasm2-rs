@@ -26,6 +26,9 @@ pub enum ServerState {
     Loading,
     /// Actively running.
     Game,
+    /// Showing a `.pcx` level such as `victory.pcx` (C `ss_pic`): no map,
+    /// no player in the game, but game frames still run.
+    Pic,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +122,6 @@ pub struct Server {
     pub state: ServerState,
     /// Map name (e.g. `"base1"`).
     pub name: String,
-    /// Precached model paths.
-    pub models: Vec<String>,
     /// Configstrings indexed by the CS_* offsets from `q2-shared`.
     pub configstrings: Vec<String>,
     /// Entity baselines for delta compression.
@@ -138,7 +139,6 @@ impl Default for Server {
         Self {
             state: ServerState::Dead,
             name: String::new(),
-            models: Vec::new(),
             configstrings: Vec::new(),
             baselines: Vec::new(),
             framenum: 0,

@@ -17,9 +17,9 @@ use q2_shared::types::{Solid, Vec3f};
 /// Depth limit when building the area tree (matches `AREA_DEPTH` in C).
 const AREA_DEPTH: usize = 4;
 
-/// Area type constants used by `area_edicts()`.
-pub const AREA_SOLID: i32 = 1;
-pub const AREA_TRIGGERS: i32 = 2;
+/// Area type constants used by `area_edicts()`, shared with the game so the
+/// two sides of `GameImport::box_edicts` agree.
+pub use q2_shared::constants::{AREA_SOLID, AREA_TRIGGERS};
 
 // ---------------------------------------------------------------------------
 // AreaNode
@@ -247,7 +247,8 @@ impl ServerWorld {
     /// Query all entities whose AABB overlaps the given region.
     ///
     /// Corresponds to `SV_AreaEdicts()` in the C codebase. `area_type`
-    /// should be one of `AREA_SOLID` or `AREA_TRIGGERS`.
+    /// should be one of `AREA_SOLID` or `AREA_TRIGGERS`; any other value
+    /// reads the trigger list, as in C.
     pub fn area_edicts(&self, mins: Vec3f, maxs: Vec3f, area_type: i32) -> Vec<usize> {
         let mut result = Vec::new();
         if !self.area_nodes.is_empty() {
@@ -268,13 +269,7 @@ impl ServerWorld {
     ) {
         let node = &self.area_nodes[node_idx];
 
-        debug_assert!(
-            area_type == AREA_SOLID || area_type == AREA_TRIGGERS,
-            "invalid area_type: {}",
-            area_type
-        );
-
-        // Choose the correct list based on area_type.
+        // Like C, any area type but AREA_SOLID reads the trigger list.
         let list = if area_type == AREA_SOLID {
             &node.solid_edicts
         } else {

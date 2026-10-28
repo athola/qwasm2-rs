@@ -297,3 +297,97 @@ fn load_map_exposes_the_entity_string_and_rejects_bad_bsp() {
     assert!(gi.entity_string().contains("info_player_start"));
     assert!(gi.load_map(b"not a bsp").is_err());
 }
+
+#[test]
+fn linked_entity_is_in_the_fat_pvs_and_never_linked_one_is_not() {
+    // The fixture has no vis lump, so every cluster sees every other.
+    let gi = loaded();
+    gi.link_entity(&box_link(3, Vec3f::new(0.0, 0.0, 40.0)));
+    let pvs = gi.fat_pvs(Vec3f::new(-40.0, 0.0, 40.0));
+    assert!(!pvs.is_empty());
+    assert!(gi.entity_in_pvs(3, &pvs));
+    assert!(!gi.entity_in_pvs(4, &pvs), "C: num_clusters 0 until linked");
+    assert!(!gi.entity_in_pvs(3, &[]), "an empty PVS sees nothing");
+}
+
+#[test]
+fn in_pvs_is_false_between_clusters_that_cannot_see_each_other() {
+    let gi = ServerGameImport::new();
+    gi.load_map(&common::two_cluster_bsp_with(common::ENTSTRING))
+        .expect("fixture loads");
+    let eye = Vec3f::new(0.0, 200.0, 40.0);
+    assert!(gi.in_pvs(eye, Vec3f::new(0.0, 300.0, 40.0)), "same cluster");
+    assert!(
+        !gi.in_pvs(eye, Vec3f::new(0.0, -200.0, 40.0)),
+        "other cluster"
+    );
+    assert!(
+        !gi.in_pvs(eye, Vec3f::new(0.0, 200.0, -100.0)),
+        "a point in solid is in no cluster"
+    );
+}
+
+#[test]
+fn in_phs_follows_the_hearing_row_of_the_first_points_cluster() {
+    let gi = ServerGameImport::new();
+    gi.load_map(&common::two_cluster_bsp_with(common::ENTSTRING))
+        .expect("fixture loads");
+    let (north, south) = (Vec3f::new(0.0, 200.0, 40.0), Vec3f::new(0.0, -200.0, 40.0));
+    assert!(gi.in_phs(north, south), "cluster 0 hears cluster 1");
+    assert!(!gi.in_phs(south, north), "cluster 1 hears only itself");
+    assert!(!gi.in_pvs(north, south), "while neither sees the other");
+    assert!(
+        !gi.in_phs(north, Vec3f::new(0.0, 200.0, -100.0)),
+        "a point in solid is in no cluster"
+    );
+}
+
+#[test]
+fn in_phs_hears_everything_on_a_map_without_vis_data() {
+    let gi = loaded();
+    assert!(gi.in_phs(Vec3f::new(0.0, 200.0, 40.0), Vec3f::new(0.0, -200.0, 40.0)));
+}
+
+#[test]
+fn in_pvs_sees_everything_on_a_map_without_vis_data() {
+    let gi = loaded();
+    assert!(gi.in_pvs(Vec3f::new(0.0, 200.0, 40.0), Vec3f::new(0.0, -200.0, 40.0)));
+}
+
+#[test]
+fn set_model_gives_no_bounds_for_inline_model_zero() {
+    // C CM_InlineModel rejects `*0` (ERR_DROP); the world is not an
+    // entity's model.
+    let gi = loaded();
+    assert_eq!(gi.set_model(5, "*0").bounds, None);
+}
+
+#[test]
+fn trace_with_a_pass_entity_beyond_max_edicts_does_not_panic() {
+    let gi = loaded();
+    let trace = gi.trace(
+        Vec3f::new(0.0, 0.0, 40.0),
+        PLAYER_MINS,
+        PLAYER_MAXS,
+        Vec3f::new(100.0, 0.0, 40.0),
+        Some(q2_shared::constants::MAX_EDICTS + 5),
+        MASK_PLAYERSOLID,
+    );
+    assert_eq!(trace.fraction, 1.0);
+}
+
+#[test]
+fn box_edicts_treats_an_unknown_area_type_as_triggers_like_c() {
+    // C SV_AreaEdicts takes the solid list for AREA_SOLID and the trigger
+    // list for anything else, in every build.
+    let gi = loaded();
+    gi.link_entity(&box_link(5, Vec3f::new(0.0, 0.0, 40.0)));
+    gi.link_entity(&EntityLink {
+        solid: Solid::Trigger,
+        ..box_link(6, Vec3f::new(0.0, 0.0, 40.0))
+    });
+    assert_eq!(
+        gi.box_edicts(Vec3f::splat(-200.0), Vec3f::splat(200.0), 16, 7),
+        [6]
+    );
+}

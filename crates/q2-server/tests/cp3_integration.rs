@@ -55,7 +55,7 @@ fn cp3_server_runs_100_frames() {
 
     // 4. Load a minimal map (no real BSP — sets state to Game).
     let mut sv = Server::default();
-    sv.map(&mut svs, "cp3_test", &[], &gi, &mut game)
+    sv.map(&mut svs, "cp3_test", &[], "", &gi, &mut game)
         .expect("map() must succeed");
     assert_eq!(sv.state, ServerState::Game);
 
@@ -97,7 +97,7 @@ fn cp3_client_disconnect_does_not_panic() {
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
-    sv.map(&mut svs, "test", &[], &gi, &mut game).unwrap();
+    sv.map(&mut svs, "test", &[], "", &gi, &mut game).unwrap();
 
     game.client_connect(1, "");
     game.client_begin(1);
@@ -127,7 +127,8 @@ fn cp3_configstring_written_by_game_survives_frame() {
     let mut svs = ServerStatic::default();
     svs.init_game(1);
     let mut sv = Server::default();
-    sv.map(&mut svs, "cp3_test", &[], &gi, &mut game).unwrap();
+    sv.map(&mut svs, "cp3_test", &[], "", &gi, &mut game)
+        .unwrap();
 
     // A game-side configstring write (C: gi.configstring during a frame).
     gi.configstring(CS_SKY as i32, "unit1_");
