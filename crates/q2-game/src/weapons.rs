@@ -166,7 +166,7 @@ pub fn rocket_touch(
 /// The entity a grenade touched (`enemy`) takes one radius-style hit and
 /// is left out of the splash. C ref: `Grenade_Explode` (g_weapon.c:510-596).
 pub fn grenade_explode(world: &mut GameWorld, self_key: EntityKey) {
-    let (dmg, dmg_radius, owner, origin, enemy) = {
+    let (dmg, dmg_radius, owner, origin, enemy, spawnflags) = {
         let Some(ent) = world.entities.get(self_key) else {
             return;
         };
@@ -176,6 +176,7 @@ pub fn grenade_explode(world: &mut GameWorld, self_key: EntityKey) {
             ent.owner,
             ent.state.origin,
             ent.game.enemy,
+            ent.game.spawnflags,
         )
     };
     if let Some(owner) = owner {
@@ -199,18 +200,22 @@ pub fn grenade_explode(world: &mut GameWorld, self_key: EntityKey) {
             points as i32,
             points as i32,
             DamageFlags::RADIUS,
-            MeansOfDeath::Grenade,
+            if spawnflags & 1 != 0 {
+                MeansOfDeath::Handgrenade
+            } else {
+                MeansOfDeath::Grenade
+            },
         );
     }
 
-    world.t_radius_damage(
-        self_key,
-        attacker,
-        dmg as f32,
-        enemy,
-        dmg_radius,
-        MeansOfDeath::GrenadeSplash,
-    );
+    let splash = if spawnflags & 2 != 0 {
+        MeansOfDeath::HeldGrenade
+    } else if spawnflags & 1 != 0 {
+        MeansOfDeath::HandgrenadeSplash
+    } else {
+        MeansOfDeath::GrenadeSplash
+    };
+    world.t_radius_damage(self_key, attacker, dmg as f32, enemy, dmg_radius, splash);
 
     world.free_entity(self_key);
 }
@@ -240,7 +245,24 @@ pub fn grenade_touch(
         .map(|e| e.game.takedamage != TakeDamage::No)
         .unwrap_or(false);
     if !takes_damage {
-        return; // bounce (MOVETYPE_BOUNCE physics)
+        // Bounce (MOVETYPE_BOUNCE physics) with a clatter.
+        let hand = world
+            .entities
+            .get(self_key)
+            .is_some_and(|e| e.game.spawnflags & 1 != 0);
+        let sound = if !hand {
+            "weapons/grenlb1b.wav"
+        } else if world.random() > 0.5 {
+            "weapons/hgrenb1a.wav"
+        } else {
+            "weapons/hgrenb2a.wav"
+        };
+        let number = world.number_of(self_key);
+        let index = world.gi.sound_index(sound);
+        world
+            .gi
+            .sound(number, CHAN_VOICE, index, 1.0, ATTN_NORM, 0.0);
+        return;
     }
 
     if let Some(ent) = world.entities.get_mut(self_key) {
@@ -550,7 +572,9 @@ impl GameWorld {
             return;
         };
 
-        let (_, _, up) = angle_vectors(vectoangles(dir));
+        let (_, right, up) = angle_vectors(vectoangles(dir));
+        let lift = 200.0 + self.crandom() * 10.0;
+        let side = self.crandom() * 10.0;
 
         if let Some(gren) = self.entities.get_mut(gren_key) {
             gren.game.classname = "grenade".into();
@@ -562,7 +586,8 @@ impl GameWorld {
             gren.state.effects |= EF_GRENADE;
 
             gren.state.origin = start;
-            gren.velocity = dir * speed as f32 + up * 200.0;
+            gren.clipmask = MASK_SHOT;
+            gren.velocity = dir * speed as f32 + up * lift + right * side;
             // Spin.
             gren.avelocity = Vec3f::new(300.0, 300.0, 300.0);
 
@@ -1187,6 +1212,150 @@ mod tests {
         assert!(world.entities.get(target).unwrap().game.health < 200);
         // Grenade should be freed.
         assert!(!world.entities.get(gren).is_some_and(|e| e.in_use));
+    }
+
+    /// A grenade with `spawnflags` at the origin, a target 30 units away
+    /// and, with `direct`, the target as the one it hit.
+    fn grenade_blast(spawnflags: i32, direct: bool) -> GameWorld {
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        let target = world.spawn().unwrap();
+        let gren = world.spawn().unwrap();
+        let g = world.entities.get_mut(gren).unwrap();
+        g.game.dmg = 120;
+        g.game.dmg_radius = 150.0;
+        g.game.spawnflags = spawnflags;
+        g.owner = Some(owner);
+        g.game.enemy = direct.then_some(target);
+        let t = world.entities.get_mut(target).unwrap();
+        t.state.origin = Vec3f::new(30.0, 0.0, 0.0);
+        t.game.health = 200;
+        t.game.takedamage = TakeDamage::Yes;
+        t.solid = Solid::Bbox;
+        grenade_explode(&mut world, gren);
+        world
+    }
+
+    #[test]
+    fn grenade_blasts_record_c_means_of_death_by_kind() {
+        // The splash is the last T_Damage, so it is what meansOfDeath holds.
+        let splash = |flags| grenade_blast(flags, false).means_of_death;
+        assert_eq!(splash(0), MeansOfDeath::GrenadeSplash);
+        assert_eq!(splash(1), MeansOfDeath::HandgrenadeSplash);
+        assert_eq!(splash(3), MeansOfDeath::HeldGrenade);
+    }
+
+    #[test]
+    fn a_direct_grenade_hit_is_recorded_before_the_splash() {
+        // The splash leaves out the entity hit, so with nothing else in
+        // range the direct hit's kind stays recorded.
+        assert_eq!(
+            grenade_blast(1, true).means_of_death,
+            MeansOfDeath::Handgrenade
+        );
+        assert_eq!(grenade_blast(0, true).means_of_death, MeansOfDeath::Grenade);
+    }
+
+    #[test]
+    fn t_damage_records_the_means_of_death_like_c_meansofdeath() {
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.health = 100;
+        t.game.takedamage = TakeDamage::Yes;
+        world.t_damage(
+            target,
+            target,
+            target,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Railgun,
+        );
+        assert_eq!(world.means_of_death, MeansOfDeath::Railgun);
+
+        // A target that can't be hurt leaves it alone (C returns first).
+        let wall = world.spawn().unwrap();
+        world.t_damage(
+            wall,
+            wall,
+            wall,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Blaster,
+        );
+        assert_eq!(world.means_of_death, MeansOfDeath::Railgun);
+    }
+
+    /// Bounce a grenade off the world (no `takedamage`) and return the
+    /// sound it played.
+    fn bounce_sound(spawnflags: i32, seed_draws: usize) -> String {
+        let (mut world, gi) = crate::world::test_world_recording();
+        for _ in 0..seed_draws {
+            world.random();
+        }
+        let owner = world.spawn().unwrap();
+        let gren = world.spawn().unwrap();
+        world.entities.get_mut(gren).unwrap().owner = Some(owner);
+        world.entities.get_mut(gren).unwrap().game.spawnflags = spawnflags;
+        let wall = world.spawn().unwrap(); // takedamage No
+        grenade_touch(&mut world, gren, wall, None, None);
+        assert!(
+            world.entities.get(gren).unwrap().in_use,
+            "bounced, not exploded"
+        );
+        let calls = gi.sound_calls.borrow().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, CHAN_VOICE);
+        let name = gi.sounds.borrow()[calls[0].2 as usize - 1].clone();
+        name
+    }
+
+    #[test]
+    fn a_launcher_grenade_bounces_with_grenlb1b() {
+        assert_eq!(bounce_sound(0, 0), "weapons/grenlb1b.wav");
+    }
+
+    #[test]
+    fn a_hand_grenade_bounces_with_either_of_two_sounds() {
+        let heard: std::collections::HashSet<String> =
+            (0..16).map(|draws| bounce_sound(1, draws)).collect();
+        let expected: std::collections::HashSet<String> =
+            ["weapons/hgrenb1a.wav", "weapons/hgrenb2a.wav"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        assert_eq!(heard, expected);
+    }
+
+    #[test]
+    fn launcher_grenades_lift_and_drift_by_c_random_amounts() {
+        // C: velocity = dir * speed + (200 + crandom()*10) up
+        // + crandom()*10 right. Fired along +x: up is +z, right is -y.
+        let mut lifts = Vec::new();
+        for draws in 0..8 {
+            let mut world = test_world();
+            for _ in 0..draws {
+                world.random();
+            }
+            let owner = world.spawn().unwrap();
+            world.fire_grenade(owner, Vec3f::ZERO, Vec3f::X, 120, 600, 2.5, 160.0);
+            let gren = world.find_by_classname(None, "grenade").unwrap();
+            let v = world.entities.get(gren).unwrap().velocity;
+            assert!((v.x - 600.0).abs() < 1e-3, "{v:?}");
+            assert!((190.0..=210.0).contains(&v.z), "{v:?}");
+            assert!(v.y.abs() <= 10.0, "{v:?}");
+            assert_eq!(world.entities.get(gren).unwrap().clipmask, MASK_SHOT);
+            lifts.push(v.z);
+        }
+        assert!(lifts.iter().any(|&z| z != lifts[0]), "random: {lifts:?}");
     }
 
     #[test]

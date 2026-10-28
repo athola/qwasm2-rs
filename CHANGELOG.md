@@ -78,6 +78,11 @@ All notable changes to qwasm2-rs are documented here.
   cooked hand grenades that go off in the hand; picking up a new weapon
   switches to it, the weapon hum plays on the player and the BFG's pitch
   kick fades over `DAMAGE_TIME`
+- Grenades: blasts record C's means of death by kind (launcher, hand,
+  held) in `GameWorld::means_of_death`, set by every `t_damage` like C
+  `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two
+  hand grenade sounds) and launched grenades get C's random lift and
+  drift
 - Gamma is tunable: `?gamma=1.2` sets `vid_gamma` at load and F7/F8 step
   it by 0.1 in game, within C's brightness slider range 0.1..2.0; the
   shaders read it as C's `gamma` uniform (`1/vid_gamma`) through the new

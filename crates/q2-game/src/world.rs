@@ -129,6 +129,9 @@ pub struct GameWorld {
     /// outlives the edicts `spawn_entities` rebuilds.
     pub clients: Vec<ClientData>,
     pub items: Vec<ItemDef>,
+    /// What the last `t_damage` was from, for obituaries (C global
+    /// `meansOfDeath`).
+    pub means_of_death: crate::constants::MeansOfDeath,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -156,6 +159,7 @@ impl GameWorld {
             game,
             clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
+            means_of_death: crate::constants::MeansOfDeath::Unknown,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),

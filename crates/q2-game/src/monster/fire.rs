@@ -282,7 +282,10 @@ mod tests {
         assert_eq!(gren.game.dmg, 50);
         assert_eq!(gren.game.dmg_radius, 90.0);
         assert_eq!(gren.game.nextthink, 1.0 + 2.5);
-        assert_eq!(gren.velocity, DIR * 600.0 + Vec3f::new(0.0, 0.0, 200.0));
+        // fire_grenade adds 200 +- 10 up and +-10 sideways (C crandom).
+        let off = gren.velocity - DIR * 600.0;
+        assert!((190.0..=210.0).contains(&off.z), "{off:?}");
+        assert!(off.x.abs() <= 10.0 && off.y.abs() <= 10.0, "{off:?}");
         assert_muzzle_flash(&world, &gi, monster, 12);
     }
 

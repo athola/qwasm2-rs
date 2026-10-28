@@ -336,7 +336,7 @@ impl GameWorld {
         damage: i32,
         knockback: i32,
         dflags: DamageFlags,
-        _means_of_death: MeansOfDeath,
+        means_of_death: MeansOfDeath,
     ) {
         // Check if target can take damage.
         let takes_damage = self
@@ -347,6 +347,9 @@ impl GameWorld {
         if !takes_damage {
             return;
         }
+        // C sets it after friendly fire avoidance, which can only add
+        // MOD_FRIENDLY_FIRE (teams are not ported).
+        self.means_of_death = means_of_death;
 
         let mut damage = damage;
         let mut knockback = knockback as f32;
