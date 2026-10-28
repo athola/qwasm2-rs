@@ -292,6 +292,10 @@ pub trait Renderer {
     /// Swap buffers / present the rendered frame.
     fn end_frame(&mut self);
 
+    /// Brightness curve for everything drawn after the call (C `vid_gamma`;
+    /// 1.0 is unchanged, higher is brighter).
+    fn set_gamma(&mut self, vid_gamma: f32);
+
     /// How lit the last rendered view origin was, for the server's monster
     /// sight check (C `r_lightlevel`, set by `GL3_SetLightLevel`: 150 times
     /// the brightest channel of `GL3_LightPoint` at the view origin). C

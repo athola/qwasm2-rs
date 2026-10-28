@@ -113,6 +113,8 @@ pub struct Gl3Renderer {
     ui_queue: Vec<Quad>,
     /// 2D coordinate space in pixels: the init size, then the last RefDef size.
     canvas: (i32, i32),
+    /// C `vid_gamma`; every program's `u_gamma` is `1/vid_gamma`.
+    vid_gamma: f32,
 }
 
 impl Gl3Renderer {
@@ -158,6 +160,7 @@ impl Gl3Renderer {
             light: None,
             ui_queue: Vec::new(),
             canvas: (0, 0),
+            vid_gamma: 1.0,
         }
     }
 
@@ -289,6 +292,7 @@ impl Renderer for Gl3Renderer {
         }
 
         self.initialized = true;
+        self.apply_gamma();
         tracing::info!("GL3 renderer initialized ({}x{})", width, height);
         Ok(())
     }
@@ -579,6 +583,11 @@ impl Renderer for Gl3Renderer {
         }
     }
 
+    fn set_gamma(&mut self, vid_gamma: f32) {
+        self.vid_gamma = vid_gamma;
+        self.apply_gamma();
+    }
+
     fn end_frame(&mut self) {
         let queue = std::mem::take(&mut self.ui_queue);
         let (Some(gl), Some(extra)) = (&self.gl, &self.extra) else {
@@ -603,6 +612,24 @@ impl Renderer for Gl3Renderer {
 }
 
 impl Gl3Renderer {
+    /// Set `u_gamma` on every linked program (C `GL3_UpdateUBOCommon` when
+    /// `vid_gamma` is modified). Before `init` there are none; init calls
+    /// this again.
+    fn apply_gamma(&self) {
+        let Some(gl) = &self.gl else {
+            return;
+        };
+        let extra = self.extra.as_ref();
+        let programs = self.program.into_iter().chain(
+            extra
+                .into_iter()
+                .flat_map(|extra| [extra.alias_program, extra.ui_program]),
+        );
+        for program in programs {
+            shader::set_gamma(gl, program, self.vid_gamma);
+        }
+    }
+
     /// Image-store index of the pic `name` resolves to (C `R_FindPic`).
     fn find_pic(&mut self, name: &str) -> Option<usize> {
         self.images.find_pic(
@@ -741,6 +768,22 @@ mod tests {
         assert_eq!(r.height, 0);
         // Also proves object safety: Gl3Renderer implements Renderer
         let _boxed: Box<dyn Renderer> = Box::new(r);
+    }
+
+    #[test]
+    fn vid_gamma_starts_at_the_effective_c_default_of_one() {
+        // VID_Init registers vid_gamma "1.0" before GL3 asks for "1.2", and
+        // Cvar_Get keeps the first default.
+        assert_eq!(Gl3Renderer::headless(no_files()).vid_gamma, 1.0);
+    }
+
+    #[test]
+    fn set_gamma_before_init_is_kept_for_init_to_apply() {
+        let mut r = Gl3Renderer::headless(no_files());
+        r.set_gamma(1.4);
+        assert_eq!(r.vid_gamma, 1.4);
+        assert!(r.init(800, 600).is_err());
+        assert_eq!(r.vid_gamma, 1.4);
     }
 
     #[test]

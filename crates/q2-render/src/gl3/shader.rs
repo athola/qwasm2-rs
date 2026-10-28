@@ -2,9 +2,9 @@
 //! `fragmentSrc3Dwater`, `fragmentSrc3D`, `fragmentSrc3Dsky`, merged behind a
 //! `u_mode` switch so one program serves every world draw).
 //!
-//! Colour constants are the C cvar defaults: `gl3_intensity` 1.5,
-//! `gl3_overbrightbits` 1.3 and `vid_gamma` 1.0 (applied as `pow(c, 1/gamma)`;
-//! GL3 asks for 1.2, but `VID_Init` registers the cvar with 1.0 first).
+//! Colour constants are the C cvar defaults: `gl3_intensity` 1.5 and
+//! `gl3_overbrightbits` 1.3. Gamma is the `u_gamma` uniform, `1/vid_gamma`
+//! (applied as `pow(c, u_gamma)`), so it can change at run time like C's.
 //! Lightmap layer `n` is scaled by the brightness of the face's `n`th light
 //! style (C `lmScales`), then the sum by `overbrightbits`.
 
@@ -69,7 +69,7 @@ in vec2 v_lightmap_uv;
 in vec4 v_style_scales;
 out vec4 o_color;
 
-const float GAMMA = 1.0 / 1.0;
+uniform float u_gamma;
 const float INTENSITY = 1.5;
 const float OVERBRIGHT = 1.3;
 
@@ -83,7 +83,7 @@ void main() {
         tc *= 1.0 / 64.0;
         vec4 texel = texture(u_texture, tc);
         texel.rgb *= INTENSITY * u_turb_light;
-        o_color = vec4(pow(texel.rgb, vec3(GAMMA)), texel.a * u_alpha);
+        o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a * u_alpha);
     } else if (u_mode == 0) {
         vec4 texel = texture(u_texture, v_uv);
         texel.rgb *= INTENSITY;
@@ -92,14 +92,14 @@ void main() {
                    + texture(u_lightmap2, v_lightmap_uv).rgb * v_style_scales.z
                    + texture(u_lightmap3, v_lightmap_uv).rgb * v_style_scales.w;
         light *= OVERBRIGHT;
-        o_color = vec4(pow(light * texel.rgb, vec3(GAMMA)), 1.0);
+        o_color = vec4(pow(light * texel.rgb, vec3(u_gamma)), 1.0);
     } else if (u_mode == 3) {
         vec4 texel = texture(u_texture, v_uv);
-        o_color = vec4(pow(texel.rgb, vec3(GAMMA)), 1.0);
+        o_color = vec4(pow(texel.rgb, vec3(u_gamma)), 1.0);
     } else {
         vec4 texel = texture(u_texture, v_uv);
         texel.rgb *= INTENSITY;
-        o_color = vec4(pow(texel.rgb, vec3(GAMMA)), texel.a * u_alpha);
+        o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a * u_alpha);
     }
 }
 "#;
@@ -194,6 +194,25 @@ fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
     }
 }
 
+/// The shader exponent for a `vid_gamma` (C `uniCommonData.gamma`).
+pub fn gamma_exponent(vid_gamma: f32) -> f32 {
+    1.0 / vid_gamma
+}
+
+/// Set `u_gamma` on `program` from `vid_gamma`.
+pub fn set_gamma(gl: &glow::Context, program: glow::Program, vid_gamma: f32) {
+    // SAFETY: `program` was linked on `gl` by the caller; this only sets
+    // one float uniform on it and restores the null program binding.
+    unsafe {
+        gl.use_program(Some(program));
+        gl.uniform_1_f32(
+            gl.get_uniform_location(program, "u_gamma").as_ref(),
+            gamma_exponent(vid_gamma),
+        );
+        gl.use_program(None);
+    }
+}
+
 /// Compile and link the world program; texture units are bound to
 /// `u_texture` = 0 and `u_lightmap0..3` = 1..4.
 pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, WorldUniforms), String> {
@@ -249,13 +268,13 @@ uniform sampler2D u_texture;
 in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
-const float GAMMA = 1.0 / 1.0;
+uniform float u_gamma;
 const float INTENSITY = 1.5;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
     texel.rgb *= INTENSITY;
     texel *= min(vec4(1.5), v_color);
-    o_color = vec4(pow(texel.rgb, vec3(GAMMA)), texel.a);
+    o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a);
 }
 "#;
 
@@ -296,7 +315,7 @@ uniform sampler2D u_texture;
 in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
-const float GAMMA = 1.0 / 1.0;
+uniform float u_gamma;
 const float INTENSITY_2D = 1.5;
 void main() {
     vec4 texel = texture(u_texture, v_uv);
@@ -305,7 +324,7 @@ void main() {
         discard;
     }
     vec3 rgb = texel.rgb * v_color.rgb * INTENSITY_2D;
-    o_color = vec4(pow(rgb, vec3(GAMMA)), texel.a * v_color.a);
+    o_color = vec4(pow(rgb, vec3(u_gamma)), texel.a * v_color.a);
 }
 "#;
 
@@ -328,11 +347,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_fragment_shader_uses_the_effective_c_gamma_of_one() {
-        // VID_Init registers vid_gamma "1.0" before GL3 asks for "1.2", and
-        // Cvar_Get keeps the first default, so C's gamma is 1/1.0.
+    fn every_fragment_shader_takes_gamma_from_the_u_gamma_uniform() {
         for source in [FRAGMENT_SRC, ALIAS_FRAGMENT_SRC, UI_FRAGMENT_SRC] {
-            assert!(source.contains("const float GAMMA = 1.0 / 1.0;"));
+            assert!(source.contains("uniform float u_gamma;"));
+            assert!(source.contains("vec3(u_gamma)"));
+            assert!(!source.contains("GAMMA"));
         }
+    }
+
+    #[test]
+    fn gamma_exponent_is_the_reciprocal_of_vid_gamma_like_c() {
+        assert_eq!(gamma_exponent(1.0), 1.0);
+        assert_eq!(gamma_exponent(1.2), 1.0 / 1.2);
+        assert_eq!(gamma_exponent(0.5), 2.0);
     }
 }

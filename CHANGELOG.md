@@ -67,6 +67,10 @@ All notable changes to qwasm2-rs are documented here.
   `gib_health` are shared (`STUB_STAND_FRAMES` removed)
 
 ### Added
+- Gamma is tunable: `?gamma=1.2` sets `vid_gamma` at load and F7/F8 step
+  it by 0.1 in game, within C's brightness slider range 0.1..2.0; the
+  shaders read it as C's `gamma` uniform (`1/vid_gamma`) through the new
+  `Renderer::set_gamma` (breaking for `Renderer` implementors)
 - All 20 monsters ported from their C files: move tables, sight, attacks,
   pain, death, gibs and sounds, on the full `g_ai.c`/`g_monster.c`,
   `monster_fire_*` with `m_flash.c` offsets, and the medic's resurrection

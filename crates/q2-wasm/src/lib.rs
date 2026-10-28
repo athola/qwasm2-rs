@@ -61,6 +61,10 @@ struct Engine {
     /// output means no sound, as when C's `S_Init` fails.
     sound: q2_client::sound::SoundSystem,
     audio: Option<q2_platform::wasm::audio::WebAudio>,
+    /// C `vid_gamma`, stepped by F7/F8.
+    vid_gamma: f32,
+    /// Last frame's keys, so a held F7/F8 steps gamma once.
+    last_keys: [bool; 256],
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -85,9 +89,25 @@ impl Engine {
             frames: q2_client::frame::FrameHistory::default(),
             sound: q2_client::sound::SoundSystem::new(q2_server::local::LOCAL_PLAYER as i32),
             audio: None,
+            vid_gamma: 1.0,
+            last_keys: [false; 256],
         };
         engine.register_sounds();
         engine
+    }
+
+    /// Set `vid_gamma` on the renderer and remember it for the keys.
+    fn set_gamma(&mut self, vid_gamma: f32) {
+        self.vid_gamma = vid_gamma;
+        self.renderer.set_gamma(vid_gamma);
+        log(&format!("Gamma: {vid_gamma:.1} (F7 darker, F8 brighter)"));
+    }
+
+    fn step_gamma(&mut self, step: i32) {
+        let vid_gamma = step_vid_gamma(self.vid_gamma, step);
+        if vid_gamma != self.vid_gamma {
+            self.set_gamma(vid_gamma);
+        }
     }
 
     /// C `CL_RegisterSounds`, from the server's `CS_SOUNDS` names.
@@ -285,6 +305,8 @@ impl Engine {
             delta_pitch,
         );
         apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
+        self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
+        self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
         cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
@@ -610,6 +632,42 @@ fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::inpu
     input.keys = *keys;
 }
 
+/// Range of C's video menu brightness slider (`s_brightness_slider`), which
+/// is the only way C sets `vid_gamma` short of the console.
+#[cfg(any(target_arch = "wasm32", test))]
+const VID_GAMMA_MIN: f32 = 0.1;
+#[cfg(any(target_arch = "wasm32", test))]
+const VID_GAMMA_MAX: f32 = 2.0;
+
+/// `vid_gamma` from the page's query string (`?gamma=1.2`), clamped to the
+/// slider range; `None` keeps the default.
+#[cfg(any(target_arch = "wasm32", test))]
+fn vid_gamma_from_query(search: &str) -> Option<f32> {
+    let value = search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("gamma="))?;
+    let vid_gamma = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
+    Some(vid_gamma.clamp(VID_GAMMA_MIN, VID_GAMMA_MAX))
+}
+
+/// Move `vid_gamma` by `step` tenths (the slider's step), on the tenths grid
+/// so repeated presses don't drift.
+#[cfg(any(target_arch = "wasm32", test))]
+fn step_vid_gamma(vid_gamma: f32, step: i32) -> f32 {
+    let tenths = (vid_gamma * 10.0).round() + step as f32;
+    (tenths / 10.0).clamp(VID_GAMMA_MIN, VID_GAMMA_MAX)
+}
+
+/// +1 when F8 (brighter) went down this frame, -1 for F7 (darker). Q2's
+/// default.cfg leaves both unbound; `[`/`]` are invprev/invnext.
+#[cfg(any(target_arch = "wasm32", test))]
+fn gamma_key_step(last_keys: &[bool; 256], keys: &[bool; 256]) -> i32 {
+    use q2_platform::keymap::{K_F7, K_F8};
+    let pressed = |k: u8| i32::from(keys[k as usize] && !last_keys[k as usize]);
+    pressed(K_F8) - pressed(K_F7)
+}
+
 /// Turn the view by mouse movement and the turn keys (C CL_AdjustAngles and
 /// the mouse move), then clamp pitch as C CL_ClampPitch does against the
 /// player's `delta_pitch` (degrees, already in -180..180).
@@ -890,6 +948,10 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     log("World uploaded to GPU");
 
     let mut engine = Engine::new(renderer, local, fs, models, canvas.clone(), view);
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
 
     // 9. Input, last of the fallible steps before the loop: the listeners
     //    are leaked for the page's lifetime, so a failed start that is
@@ -1047,6 +1109,9 @@ mod tests {
         fn draw_pic(&mut self, _: i32, _: i32, _: &str) {}
         fn draw_get_pic_size(&mut self, _: &str) -> Option<(i32, i32)> {
             None
+        }
+        fn set_gamma(&mut self, vid_gamma: f32) {
+            self.calls.push(format!("gamma {vid_gamma}"));
         }
         fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str) {
             self.calls.push(format!("stretch {x} {y} {w} {h} {name}"));
@@ -1277,6 +1342,61 @@ mod tests {
         // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
         assert_eq!(cmd_msec(0.4), 100);
         assert_eq!(cmd_msec(-1.0), 0);
+    }
+
+    #[test]
+    fn vid_gamma_from_query_reads_the_gamma_parameter() {
+        assert_eq!(vid_gamma_from_query("?gamma=1.2"), Some(1.2));
+        assert_eq!(vid_gamma_from_query("?map=demo2&gamma=0.8"), Some(0.8));
+        assert_eq!(vid_gamma_from_query("gamma=1.5"), Some(1.5));
+    }
+
+    #[test]
+    fn vid_gamma_from_query_ignores_a_missing_or_unusable_value() {
+        assert_eq!(vid_gamma_from_query(""), None);
+        assert_eq!(vid_gamma_from_query("?map=demo2"), None);
+        assert_eq!(vid_gamma_from_query("?gamma="), None);
+        assert_eq!(vid_gamma_from_query("?gamma=bright"), None);
+        assert_eq!(vid_gamma_from_query("?gamma=NaN"), None);
+        assert_eq!(vid_gamma_from_query("?gamma=inf"), None);
+        assert_eq!(vid_gamma_from_query("?gammas=1.5"), None);
+    }
+
+    #[test]
+    fn vid_gamma_from_query_clamps_to_the_c_brightness_slider_range() {
+        assert_eq!(vid_gamma_from_query("?gamma=9"), Some(VID_GAMMA_MAX));
+        assert_eq!(vid_gamma_from_query("?gamma=0"), Some(VID_GAMMA_MIN));
+        assert_eq!(vid_gamma_from_query("?gamma=-1"), Some(VID_GAMMA_MIN));
+    }
+
+    #[test]
+    fn step_vid_gamma_moves_a_tenth_and_stays_in_range() {
+        assert_eq!(step_vid_gamma(1.0, 1), 1.1);
+        assert_eq!(step_vid_gamma(1.0, -1), 0.9);
+        assert_eq!(step_vid_gamma(1.0, 0), 1.0);
+        assert_eq!(step_vid_gamma(VID_GAMMA_MAX, 1), VID_GAMMA_MAX);
+        assert_eq!(step_vid_gamma(VID_GAMMA_MIN, -1), VID_GAMMA_MIN);
+        // Ten steps up from 1.0 land on 2.0 exactly, not 1.9999.
+        let stepped = (0..10).fold(1.0, |v, _| step_vid_gamma(v, 1));
+        assert_eq!(stepped, 2.0);
+    }
+
+    #[test]
+    fn gamma_key_step_counts_f8_brighter_and_f7_darker_once_per_press() {
+        use q2_platform::keymap::{K_F7, K_F8};
+        let up = [false; 256];
+        let mut f8 = up;
+        f8[K_F8 as usize] = true;
+        let mut f7 = up;
+        f7[K_F7 as usize] = true;
+        assert_eq!(gamma_key_step(&up, &f8), 1);
+        assert_eq!(gamma_key_step(&up, &f7), -1);
+        // Held from the last frame: no repeat.
+        assert_eq!(gamma_key_step(&f8, &f8), 0);
+        assert_eq!(gamma_key_step(&f8, &up), 0);
+        let mut both = f8;
+        both[K_F7 as usize] = true;
+        assert_eq!(gamma_key_step(&up, &both), 0);
     }
 
     #[test]

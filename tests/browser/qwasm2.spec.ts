@@ -104,6 +104,32 @@ test.describe('Qwasm2 with the demo pak', () => {
     expect(errors.filter(e => !e.url.endsWith('/favicon.ico'))).toEqual([]);
   });
 
+  test('CP-5: Gamma starts from ?gamma= and F8/F7 step it', async ({ page }) => {
+    test.setTimeout(90000);
+    await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
+    const frames = (n: number) => page.evaluate(count => new Promise<void>(resolve => {
+      let seen = 0;
+      const step = () => (++seen >= count ? resolve() : requestAnimationFrame(step));
+      requestAnimationFrame(step);
+    }), n);
+
+    // `serve` redirects qwasm2.html to /qwasm2 without the query string.
+    await page.goto('qwasm2?gamma=1.5');
+    await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
+    await expect(page.locator('#status')).toContainText('Gamma: 1.5');
+
+    // Held across frames so the game loop sees the key go down once.
+    await page.keyboard.down('F8');
+    await frames(5);
+    await page.keyboard.up('F8');
+    await expect(page.locator('#status')).toContainText('Gamma: 1.6');
+    await page.keyboard.down('F7');
+    await frames(5);
+    await page.keyboard.up('F7');
+    await frames(2);
+    await expect(page.locator('#status span').last()).toHaveText(/Gamma: 1\.5/);
+  });
+
   test('CP-5: Audio context runs after a click on the canvas, without errors', async ({ page }) => {
     test.setTimeout(90000);
     const errors: { text: string; url: string }[] = [];
