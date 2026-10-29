@@ -1,7 +1,7 @@
 //! Muzzle flashes: the dynamic light and the gunfire sound a weapon
 //! makes. C ref: `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`
-//! (client/cl_effects.c) and the dlight list of client/cl_lights.c. The
-//! particle and smoke-sprite parts of monster flashes are not drawn yet.
+//! (client/cl_effects.c) and the dlight list of client/cl_lights.c.
+//! Their particles are queued for `fx::ClientFx::flash_particles`.
 
 use q2_shared::constants::*;
 use q2_shared::flash::MONSTER_FLASH_OFFSET;
@@ -46,12 +46,28 @@ pub struct FlashSound {
 #[derive(Debug, Clone)]
 pub struct Effects {
     dlights: [ClientDLight; MAX_DLIGHTS],
+    /// Flashes' particles, for the particle effects to take.
+    flash_particles: Vec<(Vec3f, FlashParticles)>,
+}
+
+/// The particles a flash makes: a monster's at its muzzle (C
+/// `CL_AddMuzzleFlash2`'s `CL_ParticleEffect` and `CL_SmokeAndFlash`), a
+/// player's login at the player (C `CL_AddMuzzleFlash`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashParticles {
+    Smoke,
+    /// 40 sparks of palette colour 0, then the smoke.
+    SparksAndSmoke,
+    /// C `CL_LogoutEffect` for this `MZ_LOGIN`, `MZ_LOGOUT` or
+    /// `MZ_RESPAWN` flash.
+    Logout(i32),
 }
 
 impl Default for Effects {
     fn default() -> Self {
         Self {
             dlights: [ClientDLight::default(); MAX_DLIGHTS],
+            flash_particles: Vec::new(),
         }
     }
 }
@@ -189,6 +205,8 @@ impl Effects {
             }
             MZ_LOGIN | MZ_LOGOUT | MZ_RESPAWN => {
                 self.alloc_dlight(entnum, time).die = time + 1.0;
+                self.flash_particles
+                    .push((player.origin, FlashParticles::Logout(weapon)));
                 sound(CHAN_WEAPON, "weapons/grenlf1a.wav".into(), 0.0);
                 // Full volume even when silenced.
                 if let Some(last) = sounds.last_mut() {
@@ -233,6 +251,9 @@ impl Effects {
         light.radius = radius;
         light.minlight = 32.0;
         light.die = time;
+        if let Some(smoke) = monster_flash_smoke(flash) {
+            self.flash_particles.push((origin, smoke));
+        }
         let Some(def) = monster_flash(flash) else {
             return Vec::new();
         };
@@ -262,6 +283,11 @@ impl Effects {
 }
 
 impl Effects {
+    /// The flash particles queued since the last call.
+    pub fn take_particles(&mut self) -> Vec<(Vec3f, FlashParticles)> {
+        std::mem::take(&mut self.flash_particles)
+    }
+
     /// Run one server message for its effects: a player or monster muzzle
     /// flash against the entity it names (`entity` looks up its current
     /// state, C `cl_entities[n].current`). Other messages, and flashes of
@@ -322,6 +348,104 @@ struct MonsterFlash {
 }
 
 /// C `CL_AddMuzzleFlash2`'s switch, as data.
+/// The base game's machineguns spark and smoke; the soldier's shotgun
+/// only smokes.
+fn monster_flash_smoke(flash: i32) -> Option<FlashParticles> {
+    match flash {
+        MZ2_INFANTRY_MACHINEGUN_1
+        | MZ2_INFANTRY_MACHINEGUN_2
+        | MZ2_INFANTRY_MACHINEGUN_3
+        | MZ2_INFANTRY_MACHINEGUN_4
+        | MZ2_INFANTRY_MACHINEGUN_5
+        | MZ2_INFANTRY_MACHINEGUN_6
+        | MZ2_INFANTRY_MACHINEGUN_7
+        | MZ2_INFANTRY_MACHINEGUN_8
+        | MZ2_INFANTRY_MACHINEGUN_9
+        | MZ2_INFANTRY_MACHINEGUN_10
+        | MZ2_INFANTRY_MACHINEGUN_11
+        | MZ2_INFANTRY_MACHINEGUN_12
+        | MZ2_INFANTRY_MACHINEGUN_13
+        | MZ2_SOLDIER_MACHINEGUN_1
+        | MZ2_SOLDIER_MACHINEGUN_2
+        | MZ2_SOLDIER_MACHINEGUN_3
+        | MZ2_SOLDIER_MACHINEGUN_4
+        | MZ2_SOLDIER_MACHINEGUN_5
+        | MZ2_SOLDIER_MACHINEGUN_6
+        | MZ2_SOLDIER_MACHINEGUN_7
+        | MZ2_SOLDIER_MACHINEGUN_8
+        | MZ2_GUNNER_MACHINEGUN_1
+        | MZ2_GUNNER_MACHINEGUN_2
+        | MZ2_GUNNER_MACHINEGUN_3
+        | MZ2_GUNNER_MACHINEGUN_4
+        | MZ2_GUNNER_MACHINEGUN_5
+        | MZ2_GUNNER_MACHINEGUN_6
+        | MZ2_GUNNER_MACHINEGUN_7
+        | MZ2_GUNNER_MACHINEGUN_8
+        | MZ2_ACTOR_MACHINEGUN_1
+        | MZ2_SUPERTANK_MACHINEGUN_1
+        | MZ2_SUPERTANK_MACHINEGUN_2
+        | MZ2_SUPERTANK_MACHINEGUN_3
+        | MZ2_SUPERTANK_MACHINEGUN_4
+        | MZ2_SUPERTANK_MACHINEGUN_5
+        | MZ2_SUPERTANK_MACHINEGUN_6
+        | MZ2_TURRET_MACHINEGUN
+        | MZ2_BOSS2_MACHINEGUN_L1
+        | MZ2_BOSS2_MACHINEGUN_L2
+        | MZ2_BOSS2_MACHINEGUN_L3
+        | MZ2_BOSS2_MACHINEGUN_L4
+        | MZ2_BOSS2_MACHINEGUN_L5
+        | MZ2_CARRIER_MACHINEGUN_L1
+        | MZ2_CARRIER_MACHINEGUN_L2
+        | MZ2_TANK_MACHINEGUN_1
+        | MZ2_TANK_MACHINEGUN_2
+        | MZ2_TANK_MACHINEGUN_3
+        | MZ2_TANK_MACHINEGUN_4
+        | MZ2_TANK_MACHINEGUN_5
+        | MZ2_TANK_MACHINEGUN_6
+        | MZ2_TANK_MACHINEGUN_7
+        | MZ2_TANK_MACHINEGUN_8
+        | MZ2_TANK_MACHINEGUN_9
+        | MZ2_TANK_MACHINEGUN_10
+        | MZ2_TANK_MACHINEGUN_11
+        | MZ2_TANK_MACHINEGUN_12
+        | MZ2_TANK_MACHINEGUN_13
+        | MZ2_TANK_MACHINEGUN_14
+        | MZ2_TANK_MACHINEGUN_15
+        | MZ2_TANK_MACHINEGUN_16
+        | MZ2_TANK_MACHINEGUN_17
+        | MZ2_TANK_MACHINEGUN_18
+        | MZ2_TANK_MACHINEGUN_19
+        | MZ2_JORG_MACHINEGUN_L1
+        | MZ2_JORG_MACHINEGUN_L2
+        | MZ2_JORG_MACHINEGUN_L3
+        | MZ2_JORG_MACHINEGUN_L4
+        | MZ2_JORG_MACHINEGUN_L5
+        | MZ2_JORG_MACHINEGUN_L6
+        | MZ2_JORG_MACHINEGUN_R1
+        | MZ2_JORG_MACHINEGUN_R2
+        | MZ2_JORG_MACHINEGUN_R3
+        | MZ2_JORG_MACHINEGUN_R4
+        | MZ2_JORG_MACHINEGUN_R5
+        | MZ2_JORG_MACHINEGUN_R6
+        | MZ2_BOSS2_MACHINEGUN_R1
+        | MZ2_BOSS2_MACHINEGUN_R2
+        | MZ2_BOSS2_MACHINEGUN_R3
+        | MZ2_BOSS2_MACHINEGUN_R4
+        | MZ2_BOSS2_MACHINEGUN_R5
+        | MZ2_CARRIER_MACHINEGUN_R1
+        | MZ2_CARRIER_MACHINEGUN_R2 => Some(FlashParticles::SparksAndSmoke),
+        MZ2_SOLDIER_SHOTGUN_1
+        | MZ2_SOLDIER_SHOTGUN_2
+        | MZ2_SOLDIER_SHOTGUN_3
+        | MZ2_SOLDIER_SHOTGUN_4
+        | MZ2_SOLDIER_SHOTGUN_5
+        | MZ2_SOLDIER_SHOTGUN_6
+        | MZ2_SOLDIER_SHOTGUN_7
+        | MZ2_SOLDIER_SHOTGUN_8 => Some(FlashParticles::Smoke),
+        _ => None,
+    }
+}
+
 fn monster_flash(flash: i32) -> Option<MonsterFlash> {
     use FlashSoundName as FlashSound;
     match flash {
@@ -763,6 +887,17 @@ mod tests {
         assert_eq!((light.color, light.die), ([0.0, 1.0, 0.0], 11.0));
         fx.muzzle_flash(&player_at(1, 0.0), MZ_LOGOUT, 10.0, &mut rng(&[0]));
         assert_eq!(fx.dlights().next().unwrap().color, [1.0, 0.0, 0.0]);
+        // C CL_LogoutEffect at the player, by the flash without MZ_SILENCED.
+        let origin = player_at(1, 0.0).origin;
+        assert_eq!(
+            fx.take_particles(),
+            [
+                (origin, FlashParticles::Logout(MZ_LOGIN)),
+                (origin, FlashParticles::Logout(MZ_LOGOUT))
+            ]
+        );
+        fx.muzzle_flash(&player_at(1, 0.0), MZ_ROCKET, 10.0, &mut rng(&[0]));
+        assert!(fx.take_particles().is_empty());
     }
 
     #[test]
@@ -781,6 +916,36 @@ mod tests {
         );
         assert_eq!(names(&sounds), [("soldier/solatck2.wav", CHAN_WEAPON, 0.0)]);
         assert_eq!(sounds[0].entnum, 7);
+    }
+
+    #[test]
+    fn monster_guns_queue_c_smoke_and_sparks_at_their_muzzle() {
+        let mut fx = Effects::default();
+        let soldier = player_at(7, 90.0);
+        fx.muzzle_flash2(&soldier, MZ2_SOLDIER_MACHINEGUN_1, 0.0, &mut rng(&[0]));
+        fx.muzzle_flash2(&soldier, MZ2_SOLDIER_SHOTGUN_1, 0.0, &mut rng(&[0]));
+        fx.muzzle_flash2(&soldier, MZ2_SOLDIER_BLASTER_1, 0.0, &mut rng(&[0]));
+        let muzzle = fx.dlights().next().unwrap().origin;
+        let smoke = fx.take_particles();
+        assert_eq!(
+            smoke,
+            [
+                (muzzle, FlashParticles::SparksAndSmoke),
+                (muzzle, FlashParticles::Smoke)
+            ]
+        );
+        assert!(fx.take_particles().is_empty(), "taken once");
+        for flash in [
+            MZ2_TANK_MACHINEGUN_19,
+            MZ2_JORG_MACHINEGUN_R6,
+            MZ2_TURRET_MACHINEGUN,
+        ] {
+            fx.muzzle_flash2(&soldier, flash, 0.0, &mut rng(&[0]));
+        }
+        assert!(fx
+            .take_particles()
+            .iter()
+            .all(|&(_, kind)| kind == FlashParticles::SparksAndSmoke));
     }
 
     #[test]

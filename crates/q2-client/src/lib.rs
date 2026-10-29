@@ -16,11 +16,14 @@
 pub mod effects;
 pub mod entities;
 pub mod frame;
+pub mod fx;
 pub mod input;
 pub mod layout;
 pub mod lightstyles;
 pub mod notify;
 pub mod parse;
+pub mod particle_fx;
+pub mod particles;
 pub mod sound;
 pub mod state;
 pub mod view;

@@ -50,7 +50,7 @@ fn anglemod(a: f32) -> f32 {
 /// Whether `s` must not be lerped from `prev` (C `CL_ParseEntity` sets
 /// `serverframe = -99`): a model change, a teleport, or a jump of more than
 /// 512 units on an axis.
-fn breaks_lerp(prev: &EntityState, s: &EntityState) -> bool {
+pub(crate) fn breaks_lerp(prev: &EntityState, s: &EntityState) -> bool {
     let jump = (s.origin - prev.origin)
         .to_array()
         .iter()
