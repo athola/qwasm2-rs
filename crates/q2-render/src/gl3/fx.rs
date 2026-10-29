@@ -4,15 +4,14 @@
 
 use glow::HasContext;
 use q2_render_api::{Particle, RefDef, RenderEntity};
-use q2_shared::constants::{RF_BEAM, RF_TRANSLUCENT, RF_VIEWERMODEL};
+use q2_shared::constants::RF_TRANSLUCENT;
 use q2_shared::types::Vec3f;
 
-use super::alias::{angle_vectors, AliasModel};
+use super::alias::angle_vectors;
 use super::draw::{
     create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, StreamBuffer,
 };
 use super::images::{ImageKind, ImageStore};
-use super::model::{Model, ModelRegistry};
 use super::shader::{bind_samplers, link_program};
 use super::texture::FileLoader;
 use crate::files::{palette::Palette, sp2::load_sp2};
@@ -368,114 +367,124 @@ pub fn free_fx(gl: &glow::Context, fx: FxGpu) {
     free_stream_buffer(gl, fx.fx_stream);
 }
 
-/// Everything the effect draws read.
-pub struct FxScene<'a> {
-    pub gl: &'a glow::Context,
-    pub fx: &'a FxGpu,
-    /// 1x1 white, sampled by beams.
-    pub white: glow::Texture,
-    pub models: &'a ModelRegistry<AliasModel>,
-    pub images: &'a ImageStore,
-    pub palette: Option<&'a Palette>,
-    pub refdef: &'a RefDef,
-    pub view_proj: &'a [f32; 16],
-}
-
-/// Draw `RF_BEAM` entities and sprites, then the particles, after every
-/// other entity. C draws beams and sprites inside the entity passes and
-/// the particles before the translucent world; here they go over both.
-/// No program is bound on return.
-pub fn draw_fx(scene: &FxScene, entities: &[RenderEntity], particles: &[Particle]) {
-    let gl = scene.gl;
-    let fx = scene.fx;
-    // SAFETY: the program and its uniforms were made on `gl` by `create_fx`.
+/// Bind the beam and sprite program for `view_proj`, as the entity passes
+/// do before a beam or sprite.
+pub fn bind(gl: &glow::Context, fx: &FxGpu, view_proj: &[f32; 16]) {
+    // SAFETY: the program and its uniform were made on `gl` by `create_fx`.
     unsafe {
         gl.use_program(Some(fx.fx_program));
-        gl.uniform_matrix_4_f32_slice(fx.fx_view_proj.as_ref(), false, scene.view_proj);
+        gl.uniform_matrix_4_f32_slice(fx.fx_view_proj.as_ref(), false, view_proj);
         gl.active_texture(glow::TEXTURE0);
     }
-    let (_, right, up) = angle_vectors(scene.refdef.viewangles.to_array());
-    let (right, up) = (Vec3f::from_array(right), Vec3f::from_array(up));
-    for entity in entities.iter().filter(|e| e.flags & RF_VIEWERMODEL == 0) {
-        if entity.flags & RF_BEAM != 0 {
-            let (Some(palette), Some(vertices)) = (scene.palette, beam_vertices(entity)) else {
-                continue;
-            };
-            fx_draw(
-                scene,
-                &FxDraw {
-                    vertices: &vertices,
-                    mode: glow::TRIANGLE_STRIP,
-                    texture: scene.white,
-                    color: beam_color(entity, palette),
-                    alpha_test: false,
-                },
-            );
-            continue;
-        }
-        let Some(Model::Sprite(sprite)) = scene.models.get(entity.model) else {
-            continue;
-        };
-        let Some(frame) = sprite
-            .frames
-            .get(sprite_frame(entity.frame, sprite.frames.len()))
-        else {
-            continue;
-        };
-        let Some(texture) = frame
-            .image
-            .and_then(|i| scene.images.get(i))
-            .and_then(|image| image.texture)
-        else {
-            continue;
-        };
-        // C: translucent sprites blend at the entity's alpha, the rest are
-        // alpha tested.
-        let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
-            entity.alpha
-        } else {
-            1.0
-        };
+}
+
+/// One `RF_BEAM` entity with the fx program bound, blended without
+/// writing depth. C ref: `GL3_DrawBeam`.
+pub fn draw_beam(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    white: glow::Texture,
+    palette: &Palette,
+    entity: &RenderEntity,
+) {
+    if let Some(vertices) = beam_vertices(entity) {
         fx_draw(
-            scene,
+            gl,
+            fx,
             &FxDraw {
-                vertices: &sprite_vertices(entity.origin, &frame.size, right, up),
-                mode: glow::TRIANGLE_FAN,
-                texture,
-                color: [1.0, 1.0, 1.0, alpha],
-                alpha_test: alpha == 1.0,
+                vertices: &vertices,
+                mode: glow::TRIANGLE_STRIP,
+                texture: white,
+                color: beam_color(entity, palette),
+                alpha_test: false,
+                blend: true,
             },
         );
     }
+}
 
-    if let (Some(palette), false) = (scene.palette, particles.is_empty()) {
-        let vertices = particle_vertices(
-            particles,
-            scene.refdef.vieworg,
-            scene.refdef.height,
-            palette,
-        );
-        fill_stream(gl, &fx.particle_stream, &vertices);
-        // SAFETY: the program, uniform and stream belong to `gl`; the stream
-        // was just filled with one vertex per particle.
-        unsafe {
-            gl.use_program(Some(fx.particle_program));
-            gl.uniform_matrix_4_f32_slice(fx.particle_view_proj.as_ref(), false, scene.view_proj);
-            gl.enable(glow::BLEND);
-            set_alpha_blend(gl);
-            gl.depth_mask(false);
-            gl.draw_arrays(
-                glow::POINTS,
-                0,
-                i32::try_from(particles.len()).unwrap_or(i32::MAX),
-            );
-            gl.depth_mask(true);
-            gl.disable(glow::BLEND);
-            gl.bind_vertex_array(None);
-        }
+/// One sprite facing the view (`right`, `up`) with the fx program bound:
+/// a translucent one blends at the entity's alpha, the rest are alpha
+/// tested. C ref: `GL3_DrawSpriteModel`.
+pub fn draw_sprite(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    images: &ImageStore,
+    sprite: &SpriteModel,
+    entity: &RenderEntity,
+    (right, up): (Vec3f, Vec3f),
+) {
+    let Some(frame) = sprite
+        .frames
+        .get(sprite_frame(entity.frame, sprite.frames.len()))
+    else {
+        return;
+    };
+    let Some(texture) = frame
+        .image
+        .and_then(|i| images.get(i))
+        .and_then(|image| image.texture)
+    else {
+        return;
+    };
+    let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
+        entity.alpha
+    } else {
+        1.0
+    };
+    fx_draw(
+        gl,
+        fx,
+        &FxDraw {
+            vertices: &sprite_vertices(entity.origin, &frame.size, right, up),
+            mode: glow::TRIANGLE_FAN,
+            texture,
+            color: [1.0, 1.0, 1.0, alpha],
+            alpha_test: alpha == 1.0,
+            blend: alpha != 1.0,
+        },
+    );
+}
+
+/// The view's right and up vectors, which sprites face.
+pub fn view_right_up(refdef: &RefDef) -> (Vec3f, Vec3f) {
+    let (_, right, up) = angle_vectors(refdef.viewangles.to_array());
+    (Vec3f::from_array(right), Vec3f::from_array(up))
+}
+
+/// Every particle, blended without writing depth; leaves no program
+/// bound. C ref: `GL3_DrawParticles`.
+pub fn draw_particles(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    palette: &Palette,
+    refdef: &RefDef,
+    view_proj: &[f32; 16],
+    particles: &[Particle],
+) {
+    if particles.is_empty() {
+        return;
     }
-    // SAFETY: unbinding the program is a state-only call.
-    unsafe { gl.use_program(None) };
+    let vertices = particle_vertices(particles, refdef.vieworg, refdef.height, palette);
+    fill_stream(gl, &fx.particle_stream, &vertices);
+    // SAFETY: the program, uniform and stream belong to `gl`; the stream
+    // was just filled with one vertex per particle.
+    unsafe {
+        gl.use_program(Some(fx.particle_program));
+        gl.uniform_matrix_4_f32_slice(fx.particle_view_proj.as_ref(), false, view_proj);
+        gl.enable(glow::BLEND);
+        set_alpha_blend(gl);
+        gl.depth_mask(false);
+        gl.draw_arrays(
+            glow::POINTS,
+            0,
+            i32::try_from(particles.len()).unwrap_or(i32::MAX),
+        );
+        gl.depth_mask(true);
+        gl.disable(glow::BLEND);
+        gl.bind_vertex_array(None);
+        gl.use_program(None);
+    }
 }
 
 struct FxDraw<'a> {
@@ -484,28 +493,26 @@ struct FxDraw<'a> {
     texture: glow::Texture,
     color: [f32; 4],
     alpha_test: bool,
+    /// Blend without writing depth.
+    blend: bool,
 }
 
-/// One beam or sprite with the fx program bound; anything not opaque
-/// blends without writing depth, as C does.
-fn fx_draw(scene: &FxScene, draw: &FxDraw) {
-    let gl = scene.gl;
-    fill_stream(gl, &scene.fx.fx_stream, draw.vertices);
-    let blend = draw.color[3] < 1.0;
+fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
+    fill_stream(gl, &fx.fx_stream, draw.vertices);
     let count = i32::try_from(draw.vertices.len() / FX_FLOATS).unwrap_or(i32::MAX);
     // SAFETY: the texture, stream and uniforms belong to `gl` and the bound
     // fx program; the stream was just filled with `count` vertices.
     unsafe {
-        gl.uniform_4_f32_slice(scene.fx.fx_color.as_ref(), &draw.color);
-        gl.uniform_1_i32(scene.fx.fx_alpha_test.as_ref(), i32::from(draw.alpha_test));
+        gl.uniform_4_f32_slice(fx.fx_color.as_ref(), &draw.color);
+        gl.uniform_1_i32(fx.fx_alpha_test.as_ref(), i32::from(draw.alpha_test));
         gl.bind_texture(glow::TEXTURE_2D, Some(draw.texture));
-        if blend {
+        if draw.blend {
             gl.enable(glow::BLEND);
             set_alpha_blend(gl);
             gl.depth_mask(false);
         }
         gl.draw_arrays(draw.mode, 0, count);
-        if blend {
+        if draw.blend {
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
         }

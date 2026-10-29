@@ -239,6 +239,30 @@ impl Gl3Renderer {
     }
 }
 
+/// One step of a frame's 3D drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Sky,
+    OpaqueWorld,
+    /// Beams, brush models, MD2s and sprites in list order.
+    OpaqueEntities,
+    TranslucentEntities,
+    Particles,
+    /// C `GL3_DrawAlphaSurfaces`.
+    TranslucentWorld,
+}
+
+/// C `GL3_RenderView`: the world, entities, particles, then the world's
+/// translucent surfaces over them.
+const FRAME_PASSES: [Pass; 6] = [
+    Pass::Sky,
+    Pass::OpaqueWorld,
+    Pass::OpaqueEntities,
+    Pass::TranslucentEntities,
+    Pass::Particles,
+    Pass::TranslucentWorld,
+];
+
 impl Drop for Gl3Renderer {
     /// Release GPU objects even if the caller never called `shutdown`.
     fn drop(&mut self) {
@@ -435,8 +459,7 @@ impl Renderer for Gl3Renderer {
         }
     }
 
-    /// Draw order: sky, opaque world, opaque entities, translucent world,
-    /// translucent entities, beams and sprites, particles. 2D draws are queued until `end_frame`.
+    /// Draw order: `FRAME_PASSES`. 2D draws are queued until `end_frame`.
     fn render_frame(
         &mut self,
         fd: &RefDef,
@@ -491,9 +514,6 @@ impl Renderer for Gl3Renderer {
             gl.uniform_1_i32(uniforms.num_dlights.as_ref(), count);
         }
 
-        if let Some(sky) = &self.sky {
-            draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
-        }
         let view_proj = build_view_projection(fd);
         let world_batches = |filter| {
             if let Some(world) = &self.world {
@@ -531,31 +551,33 @@ impl Renderer for Gl3Renderer {
             ),
             gun_view_proj: gun_view_projection(fd),
             view_proj,
+            fx: self.fx.as_ref(),
+            palette: self.palette.as_ref(),
+            view_right_up: fx::view_right_up(fd),
         });
 
-        world_batches(BatchFilter::Opaque);
-        if let Some(scene) = &scene {
-            draw_entities(scene, entities, false);
-        }
-        world_batches(BatchFilter::Translucent);
-        if let Some(scene) = &scene {
-            draw_entities(scene, entities, true);
-        }
-        if let (Some(effects), Some(extra)) = (&self.fx, &self.extra) {
-            fx::draw_fx(
-                &fx::FxScene {
-                    gl,
-                    fx: effects,
-                    white: extra.white,
-                    models: &self.models,
-                    images: &self.images,
-                    palette: self.palette.as_ref(),
-                    refdef: fd,
-                    view_proj: &view_proj,
-                },
-                entities,
-                particles,
-            );
+        for pass in FRAME_PASSES {
+            match pass {
+                Pass::Sky => {
+                    if let Some(sky) = &self.sky {
+                        draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
+                    }
+                }
+                Pass::OpaqueWorld => world_batches(BatchFilter::Opaque),
+                Pass::OpaqueEntities | Pass::TranslucentEntities => {
+                    if let Some(scene) = &scene {
+                        draw_entities(scene, entities, pass == Pass::TranslucentEntities);
+                    }
+                }
+                Pass::Particles => {
+                    if let (Some(effects), Some(palette)) = (&self.fx, &self.palette) {
+                        fx::draw_particles(gl, effects, palette, fd, &view_proj, particles);
+                        // SAFETY: `program` was linked on this `gl` by init.
+                        unsafe { gl.use_program(Some(*program)) };
+                    }
+                }
+                Pass::TranslucentWorld => world_batches(BatchFilter::Translucent),
+            }
         }
 
         // SAFETY: Unbinding the program and reading the error flag are
@@ -907,6 +929,21 @@ mod tests {
         let err = r.init(800, 600).unwrap_err();
         assert!(matches!(err, q2_shared::error::Q2Error::Drop(_)));
         assert!(err.is_recoverable());
+    }
+
+    #[test]
+    fn the_frame_is_drawn_in_c_gl3_renderview_order() {
+        assert_eq!(
+            FRAME_PASSES,
+            [
+                Pass::Sky,
+                Pass::OpaqueWorld,
+                Pass::OpaqueEntities,
+                Pass::TranslucentEntities,
+                Pass::Particles,
+                Pass::TranslucentWorld,
+            ]
+        );
     }
 
     #[test]
