@@ -81,6 +81,9 @@ pub const RF_SHELL_RED: i32 = 1024;
 pub const RF_SHELL_GREEN: i32 = 2048;
 pub const RF_SHELL_BLUE: i32 = 4096;
 pub const RF_IR_VISIBLE: i32 = 0x0000_8000;
+/// Mission-pack shells: yellow (double damage) and grey-green (half damage).
+pub const RF_SHELL_DOUBLE: i32 = 0x0001_0000;
+pub const RF_SHELL_HALF_DAM: i32 = 0x0002_0000;
 /// `rdflags`: the view is under water, slime or lava.
 pub const RDF_UNDERWATER: i32 = 1;
 pub const RF_FRAMELERP: i32 = 64;
@@ -106,6 +109,26 @@ pub const EF_ANIM_ALL: u32 = 0x0000_1000;
 pub const EF_ANIM_ALLFAST: u32 = 0x0000_2000;
 /// Particle fountain.
 pub const EF_TELEPORTER: u32 = 0x0002_0000;
+/// A fly swarm.
+pub const EF_FLIES: u32 = 0x0000_4000;
+/// Mission-pack and CTF effects: flag carriers' trails, the ion ripper,
+/// green gibs, the blue hyperblaster, spinning lights, plasma, traps, the
+/// tracker and its trail, double and half damage, translucent spheres and
+/// the tag carrier's trail.
+pub const EF_FLAG1: u32 = 0x0004_0000;
+pub const EF_FLAG2: u32 = 0x0008_0000;
+pub const EF_IONRIPPER: u32 = 0x0010_0000;
+pub const EF_GREENGIB: u32 = 0x0020_0000;
+pub const EF_BLUEHYPERBLASTER: u32 = 0x0040_0000;
+pub const EF_SPINNINGLIGHTS: u32 = 0x0080_0000;
+pub const EF_PLASMA: u32 = 0x0100_0000;
+pub const EF_TRAP: u32 = 0x0200_0000;
+pub const EF_TRACKER: u32 = 0x0400_0000;
+pub const EF_DOUBLE: u32 = 0x0800_0000;
+pub const EF_SPHERETRANS: u32 = 0x1000_0000;
+pub const EF_TAGTRAIL: u32 = 0x2000_0000;
+pub const EF_HALF_DAMAGE: u32 = 0x4000_0000;
+pub const EF_TRACKERTRAIL: u32 = 0x8000_0000;
 
 // entity_state_t events (shared.h entity_event_t)
 pub const EV_ITEM_RESPAWN: i32 = 1;

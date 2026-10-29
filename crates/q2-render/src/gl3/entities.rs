@@ -6,7 +6,7 @@
 //!
 //! Not modelled relative to C: frustum culling of brush entities, the
 //! `RF_WEAPONMODEL` gun FOV and left-hand mirroring, `RF_DEPTHHACK`,
-//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, the null-model
+//! `RF_IR_VISIBLE`, the null-model
 //! placeholder, entity shadows and dynamic lights on brush models. Beams
 //! and sprites are drawn in the same passes through `fx`. Entities whose model
 //! is none of the above are skipped.
@@ -353,10 +353,15 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
     let Some(vertices) = entity_vertices(model, entity, lit, scene.refdef.time) else {
         return;
     };
-    let texture = entity_skin(entity.skin, entity.skinnum, &model.skins)
-        .and_then(|index| scene.images.get(index))
-        .and_then(|image| image.texture)
-        .unwrap_or(scene.extra.notexture);
+    let shell = super::alias::shell_light(entity.flags).is_some();
+    let texture = if shell {
+        scene.extra.white
+    } else {
+        entity_skin(entity.skin, entity.skinnum, &model.skins)
+            .and_then(|index| scene.images.get(index))
+            .and_then(|image| image.texture)
+            .unwrap_or(scene.extra.notexture)
+    };
     let matrix = alias_matrix(origin, vec3(entity.angles));
     let view_proj = if weapon {
         &scene.gun_view_proj
@@ -379,6 +384,7 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
             texture: Some(texture),
             mvp: &mvp,
             blend: translucent,
+            color_only: shell,
         },
     );
     if (near, far) != (0.0, 1.0) {

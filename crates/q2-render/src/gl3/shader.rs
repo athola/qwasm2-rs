@@ -298,8 +298,14 @@ in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
 uniform float u_gamma;
+uniform int u_color_only;
 const float INTENSITY = 1.5;
 void main() {
+    if (u_color_only != 0) {
+        // C fragmentSrcAliasColor: colour shells.
+        o_color = vec4(pow(v_color.rgb, vec3(u_gamma)), v_color.a);
+        return;
+    }
     vec4 texel = texture(u_texture, v_uv);
     texel.rgb *= INTENSITY;
     texel *= min(vec4(1.5), v_color);
@@ -310,15 +316,21 @@ void main() {
 /// Uniform locations of the alias (MD2) program.
 pub struct AliasUniforms {
     pub mvp: Option<glow::UniformLocation>,
+    pub color_only: Option<glow::UniformLocation>,
 }
 
 /// Link the alias program; `u_texture` is unit 0.
 pub fn compile_alias_program(gl: &glow::Context) -> Result<(glow::Program, AliasUniforms), String> {
     let program = link_program(gl, ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC)?;
     bind_samplers(gl, program, &["u_texture"]);
-    // SAFETY: `program` is the linked program above; the lookup only reads it.
-    let mvp = unsafe { gl.get_uniform_location(program, "u_mvp") };
-    Ok((program, AliasUniforms { mvp }))
+    // SAFETY: `program` is the linked program above; the lookups only read it.
+    let (mvp, color_only) = unsafe {
+        (
+            gl.get_uniform_location(program, "u_mvp"),
+            gl.get_uniform_location(program, "u_color_only"),
+        )
+    };
+    Ok((program, AliasUniforms { mvp, color_only }))
 }
 
 // C `vertexSrc2D` / `fragmentSrc2D` / `fragmentSrc2Dcolor` in one program:
@@ -403,6 +415,13 @@ mod tests {
         let lights = FRAGMENT_SRC.find("light += u_dlight_color").unwrap();
         let overbright = FRAGMENT_SRC.find("light *= OVERBRIGHT").unwrap();
         assert!(lights < overbright);
+    }
+
+    #[test]
+    fn colour_only_alias_draws_skip_the_texture_and_intensity_like_c() {
+        // C fragmentSrcAliasColor: the vertex colour through gamma.
+        assert!(ALIAS_FRAGMENT_SRC.contains("uniform int u_color_only;"));
+        assert!(ALIAS_FRAGMENT_SRC.contains("if (u_color_only != 0) {"));
     }
 
     #[test]

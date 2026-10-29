@@ -456,6 +456,8 @@ pub struct MeshDraw<'a> {
     pub texture: Option<glow::Texture>,
     pub mvp: &'a [f32; 16],
     pub blend: bool,
+    /// Draw the vertex colour alone (colour shells).
+    pub color_only: bool,
 }
 
 /// Draw one MD2 mesh under the world's cull state: MD2 triangles wind like
@@ -472,6 +474,7 @@ pub fn draw_mesh(
     // location belongs to the currently bound MD2 program.
     unsafe {
         gl.uniform_matrix_4_f32_slice(uniforms.mvp.as_ref(), false, draw.mvp);
+        gl.uniform_1_i32(uniforms.color_only.as_ref(), i32::from(draw.color_only));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, draw.texture);
         if draw.blend {
