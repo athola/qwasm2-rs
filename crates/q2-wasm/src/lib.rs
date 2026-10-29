@@ -69,6 +69,8 @@ struct Engine {
     effects: q2_client::effects::Effects,
     /// The client's random numbers (C `randk`) for flash sizes and sounds.
     rng: u32,
+    /// Printed lines, the centre print and the server layout.
+    text: q2_client::notify::ServerText,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -97,6 +99,7 @@ impl Engine {
             last_keys: [false; 256],
             effects: q2_client::effects::Effects::default(),
             rng: 0x1234_5678,
+            text: q2_client::notify::ServerText::default(),
         };
         engine.register_sounds();
         engine
@@ -128,10 +131,17 @@ impl Engine {
         let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
-        let sounds = messages
+        let mut sounds: Vec<q2_client::effects::FlashSound> = messages
             .iter()
             .flat_map(|m| self.effects.message(m, entity, time, &mut randk))
             .collect();
+        // C con.linewidth: the screen in characters less a margin.
+        let linewidth = usize::try_from(self.view.width / 8 - 2).unwrap_or(1);
+        for message in messages {
+            if self.text.message(message, time as i32, linewidth) {
+                sounds.push(talk_sound());
+            }
+        }
         self.effects.run_dlights(time, dt);
         sounds
     }
@@ -270,6 +280,7 @@ impl Engine {
                 self.local.change_map(&request, &[])?;
                 self.frames = q2_client::frame::FrameHistory::default();
                 self.effects.clear();
+                self.text.layout.clear();
                 log(&format!("Picture: pics/{} shown", request.map));
                 return Ok(());
             }
@@ -294,6 +305,7 @@ impl Engine {
         self.register_sounds();
         self.frames = q2_client::frame::FrameHistory::default();
         self.effects.clear();
+        self.text.layout.clear();
         self.input.view_angles = q2_shared::types::Vec3f::ZERO;
         log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
@@ -304,15 +316,25 @@ impl Engine {
         use q2_client::layout::{execute_layout, HudDraw, LayoutInput};
         let local = &self.local;
         let configstring = |i: usize| local.configstring(i);
-        let draws = execute_layout(
+        let input = LayoutInput {
+            width: self.view.width,
+            height: self.view.height,
+            stats,
+            configstrings: &configstring,
+            serverframe: self.frames.serverframe().unwrap_or(0),
+        };
+        // C SCR_DrawStats, SCR_DrawLayout, then the centre print and the
+        // notify lines.
+        let mut draws = execute_layout(
             local.configstring(q2_shared::constants::CS_STATUSBAR),
-            &LayoutInput {
-                width: self.view.width,
-                height: self.view.height,
-                stats,
-                configstrings: &configstring,
-                serverframe: self.frames.serverframe().unwrap_or(0),
-            },
+            &input,
+        );
+        if stats[q2_shared::constants::STAT_LAYOUTS] & 1 != 0 {
+            draws.extend(execute_layout(&self.text.layout, &input));
+        }
+        draws.extend(
+            self.text
+                .draws(self.view.width, self.view.height, self.frames.time()),
         );
         for draw in draws {
             match draw {
@@ -623,6 +645,19 @@ fn render_entities(
         .collect()
 }
 
+/// C `S_StartLocalSound("misc/talk.wav")` for a chat line.
+#[cfg(any(target_arch = "wasm32", test))]
+fn talk_sound() -> q2_client::effects::FlashSound {
+    q2_client::effects::FlashSound {
+        entnum: q2_server::local::LOCAL_PLAYER as i32,
+        channel: 0,
+        name: "misc/talk.wav".into(),
+        volume: 1.0,
+        attenuation: 0.0,
+        timeofs: 0.0,
+    }
+}
+
 /// The lit dynamic lights for the renderer (C `V_AddLight`: the radius
 /// is the intensity).
 #[cfg(any(target_arch = "wasm32", test))]
@@ -734,7 +769,8 @@ fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::inpu
 /// inventory keys. Each fires on the frame the key goes down (C key binds
 /// run on the down event).
 #[cfg(any(target_arch = "wasm32", test))]
-const BINDS: [(u8, &str); 14] = [
+const BINDS: [(u8, &str); 15] = [
+    (q2_platform::keymap::K_F1, "help"),
     (b'1', "use Blaster"),
     (b'2', "use Shotgun"),
     (b'3', "use Super Shotgun"),
@@ -1608,6 +1644,21 @@ mod tests {
         assert_eq!(bound_commands(&none, &pressed(b"1")), ["use Blaster"]);
         assert_eq!(bound_commands(&none, &pressed(b"3")), ["use Super Shotgun"]);
         assert_eq!(bound_commands(&none, &pressed(b"0")), ["use BFG10K"]);
+    }
+
+    #[test]
+    fn f1_opens_the_help_computer_like_q2_default_cfg() {
+        use q2_platform::keymap::K_F1;
+        assert_eq!(bound_commands(&[false; 256], &pressed(&[K_F1])), ["help"]);
+    }
+
+    #[test]
+    fn chat_is_greeted_with_the_talk_sound_heard_everywhere() {
+        let talk = talk_sound();
+        assert_eq!(
+            (talk.name.as_str(), talk.attenuation),
+            ("misc/talk.wav", 0.0)
+        );
     }
 
     #[test]

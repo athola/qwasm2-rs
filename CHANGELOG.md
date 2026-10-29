@@ -116,6 +116,12 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- The browser shows the server's text: printed lines at the top for
+  three seconds (death messages, pickups, chat with its talk sound),
+  centre prints such as door messages, and the server layout over the
+  status bar, so F1 opens the help computer and the scoreboard draws
+  with C's `client` blocks (`q2_client::notify`, prints and unicasts
+  reach `LocalGame::take_messages`)
 - Death messages, scores and the help computer (C `ClientObituary`,
   `DeathmatchScoreboardMessage`, `HelpComputerMessage`, `Cmd_Score_f`,
   `Cmd_Help_f`): every C obituary by means of death and gender, frag

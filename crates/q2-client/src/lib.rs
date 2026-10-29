@@ -19,6 +19,7 @@ pub mod frame;
 pub mod input;
 pub mod layout;
 pub mod lightstyles;
+pub mod notify;
 pub mod parse;
 pub mod sound;
 pub mod state;

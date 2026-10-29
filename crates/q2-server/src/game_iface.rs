@@ -258,6 +258,18 @@ impl ServerGameImport {
         std::mem::take(&mut self.inner.borrow_mut().commands)
     }
 
+    /// Queue an `svc_print` of `msg` at `level` for the local client.
+    fn queue_print(&self, level: i32, msg: &str) {
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::Print as i32);
+        message.write_byte(level);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
+    }
+
     /// The messages the game multicast since the last call, in order.
     pub fn take_messages(&self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.inner.borrow_mut().messages)
@@ -425,20 +437,34 @@ impl Default for ServerGameImport {
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
-    fn bprintf(&self, _printlevel: i32, msg: &str) {
+    /// C SV_BroadcastPrintf: every client gets an `svc_print`.
+    fn bprintf(&self, printlevel: i32, msg: &str) {
         tracing::info!("[bprintf] {}", msg.trim_end());
+        self.queue_print(printlevel, msg);
     }
 
     fn dprintf(&self, msg: &str) {
         tracing::debug!("[dprintf] {}", msg.trim_end());
     }
 
-    fn cprintf(&self, ent_idx: Option<usize>, _printlevel: i32, msg: &str) {
+    /// C PF_cprintf: to a client as `svc_print`, or the console for none.
+    fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
+        if ent_idx.is_some() {
+            self.queue_print(printlevel, msg);
+        }
     }
 
+    /// C PF_centerprintf: an `svc_centerprint` to the client.
     fn centerprintf(&self, ent_idx: Option<usize>, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[centerprintf] {}", msg.trim_end());
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
     }
 
     // -- sound ---------------------------------------------------------------
@@ -818,8 +844,14 @@ impl GameImport for ServerGameImport {
         inner.msg_buf.clear();
     }
 
+    /// C PF_Unicast: the one local client gets the message.
     fn unicast(&self, _ent_idx: usize, _reliable: bool) {
-        self.inner.borrow_mut().msg_buf.clear();
+        let mut inner = self.inner.borrow_mut();
+        if !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     // -- command args --------------------------------------------------------
@@ -875,6 +907,32 @@ mod tests {
             time_ofs: 0.1,
             origin,
         }
+    }
+
+    #[test]
+    fn prints_reach_the_local_client_as_svc_print_and_centerprint() {
+        use q2_shared::protocol::SvcOp;
+        let gi = ServerGameImport::new();
+        gi.bprintf(2, "Ann died.\n");
+        gi.cprintf(Some(1), 1, "No cells.\n");
+        gi.cprintf(None, 1, "console only\n");
+        gi.centerprintf(Some(1), "The door is locked");
+        let mut print = vec![SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"Ann died.\n\0");
+        let mut cprint = vec![SvcOp::Print as u8, 1];
+        cprint.extend_from_slice(b"No cells.\n\0");
+        let mut center = vec![SvcOp::CenterPrint as u8];
+        center.extend_from_slice(b"The door is locked\0");
+        assert_eq!(gi.take_messages(), vec![print, cprint, center]);
+    }
+
+    #[test]
+    fn a_unicast_message_is_queued_for_the_local_client() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(4);
+        gi.write_string("xv 0");
+        gi.unicast(1, true);
+        assert_eq!(gi.take_messages(), vec![vec![4, b'x', b'v', b' ', b'0', 0]]);
     }
 
     #[test]
