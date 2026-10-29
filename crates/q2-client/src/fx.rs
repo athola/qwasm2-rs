@@ -8,8 +8,8 @@
 //!
 //! Per frame the browser calls, in C's order: `temp_entity` for each
 //! svc_temp_entity, `entity_event` once per entity of each new server
-//! frame, `entity_trail` for each drawn entity, then `frame_view` (or
-//! `frame`, which cannot aim the local player's heat beam).
+//! frame, `EntityTrails::run` for the drawn entities' trails, then
+//! `frame_view`.
 //!
 //! Not ported: C's `ex_explosion`, `ex_mflash` and `ex_poly2` explosion
 //! kinds, which nothing in C creates. The lights of TE_FLASHLIGHT and
@@ -26,10 +26,12 @@ use q2_shared::constants::*;
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::{EntityState, Vec3f};
 
-use crate::entities::{breaks_lerp, EntityView};
-use crate::newfx::angle_vectors;
+use crate::entities::{anglemod, breaks_lerp, EntityView};
 use crate::particles::{frandk, vector_normalize, DrawParticle, Particles, Spray};
-use crate::sound::ATTN_STATIC;
+use crate::sound::{
+    ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, CHAN_AUTO, CHAN_BODY, CHAN_WEAPON,
+};
+use q2_common::pmove::angle_vectors;
 
 /// C `MAX_EXPLOSIONS`.
 pub const MAX_EXPLOSIONS: usize = 64;
@@ -39,19 +41,6 @@ pub const MAX_BEAMS: usize = 64;
 pub const MAX_LASERS: usize = 64;
 /// C `MAX_SUSTAINS` (client/header/client.h).
 pub const MAX_SUSTAINS: usize = 32;
-
-/// shared.h values q2-shared does not carry.
-pub const RF_NOSHADOW: i32 = 8192;
-pub const EV_FOOTSTEP: i32 = 2;
-pub const EV_FALLSHORT: i32 = 3;
-pub const EV_FALL: i32 = 4;
-pub const EV_FALLFAR: i32 = 5;
-pub const CHAN_AUTO: i32 = 0;
-pub const CHAN_WEAPON: i32 = 1;
-pub const CHAN_BODY: i32 = 4;
-pub const ATTN_NONE: f32 = 0.0;
-pub const ATTN_NORM: f32 = 1.0;
-pub const ATTN_IDLE: f32 = 2.0;
 
 /// The temp-entity models (C `CL_RegisterTEntModels`).
 pub const MOD_EXPLODE: &str = "models/objects/explode/tris.md2";
@@ -207,7 +196,7 @@ impl FxView {
         (old_gunoffset, gunoffset): (Vec3f, Vec3f),
         hand: i32,
     ) -> Self {
-        let (forward, right, up) = crate::newfx::angle_vectors(viewangles);
+        let (forward, right, up) = angle_vectors(viewangles);
         Self {
             player,
             vieworg,
@@ -500,8 +489,9 @@ impl ClientFx {
     /// client time `time` and server frame time `servertime` (C
     /// `cl.frame.servertime`; explosions start 100 ms before it). Returns
     /// the sounds to start. Other messages, types C does not handle
-    /// (TE_RAILTRAIL2, TE_FLAME) and malformed bodies (C `ERR_DROP`) do
-    /// nothing. C ref: `CL_ParseTEnt`.
+    /// (TE_RAILTRAIL2, TE_FLAME) and malformed bodies do nothing; C drops
+    /// the connection on a malformed one (`ERR_DROP`), so it is logged.
+    /// C ref: `CL_ParseTEnt`.
     pub fn temp_entity(
         &mut self,
         bytes: &[u8],
@@ -509,13 +499,19 @@ impl ClientFx {
         servertime: i32,
         randk: &mut impl FnMut() -> u32,
     ) -> Vec<FxSound> {
-        let mut msg = NetMsg::from_bytes(bytes);
-        msg.begin_reading();
-        if SvcOp::try_from(msg.read_byte() as u8) != Ok(SvcOp::TempEntity) {
+        if bytes.first() != Some(&(SvcOp::TempEntity as u8)) {
             return Vec::new();
         }
-        self.parse_tent(&mut msg, time, servertime, randk)
-            .unwrap_or_default()
+        let mut msg = NetMsg::from_bytes(bytes);
+        msg.begin_reading();
+        msg.read_byte();
+        match self.parse_tent(&mut msg, time, servertime, randk) {
+            Ok(sounds) => sounds,
+            Err(error) => {
+                tracing::warn!("bad svc_temp_entity: {error:?}");
+                Vec::new()
+            }
+        }
     }
 
     fn parse_tent(
@@ -608,7 +604,7 @@ impl ClientFx {
                     ex.ent.flags = RF_BEAM;
                     // C subtracts 0.1 here, not 100.
                     ex.start = servertime as f32 - 0.1;
-                    ex.light = 100.0 + (randk() as i32 % 75) as f32;
+                    ex.light = 100.0 + (randk() % 75) as f32;
                     ex.lightcolor = [1.0, 1.0, 0.3];
                     ex.ent.model = Some(MOD_FLASH);
                     ex.frames = 2;
@@ -1022,14 +1018,14 @@ impl ClientFx {
 
     /// An entity's event, once per server frame it arrives in (C
     /// `CL_FireEntityEvents`): its sound and particles, plus the sparks of
-    /// an `EF_TELEPORTER` pad. Returns the sounds, which follow the
+    /// an `EF_TELEPORTER` pad. Returns its sound, if any, which follows the
     /// entity. C ref: `CL_EntityEvent`, `CL_TeleporterParticles`.
     pub fn entity_event(
         &mut self,
         ent: &EntityState,
         time: i32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Vec<FxSound> {
+    ) -> Option<FxSound> {
         let n = ent.number;
         let sound = match ent.event {
             EV_ITEM_RESPAWN => {
@@ -1053,7 +1049,7 @@ impl ClientFx {
         if ent.effects & EF_TELEPORTER != 0 {
             self.particles.teleporter_particles(ent.origin, time, randk);
         }
-        sound.into_iter().collect()
+        sound
     }
 
     /// The trail `ent`'s effects leave from `lerp_origin` (where it was
@@ -1062,7 +1058,9 @@ impl ClientFx {
     /// frame for every drawn entity except the local player (C skips
     /// that and modelindex 0; see `player_light`). An `EF_TRAP` entity's
     /// light, and the next frame's `lerp_origin`, are 32 units up (see
-    /// `EntityTrails::run`). C ref: `CL_AddPacketEntities`.
+    /// `EntityTrails::run`, which the browser calls). C ref:
+    /// `CL_AddPacketEntities`.
+    #[cfg(test)]
     pub fn entity_trail(
         &mut self,
         ent: &EntityState,
@@ -1143,7 +1141,7 @@ impl ClientFx {
         } else if effects & EF_TRAP != 0 {
             origin.z += 32.0;
             ps.trap_particles(&mut origin, time, randk);
-            let intensity = (randk() as i32 % 100 + 100) as f32;
+            let intensity = (randk() % 100 + 100) as f32;
             light(origin, intensity, [1.0, 0.8, 0.1])
         } else if effects & EF_FLAG1 != 0 {
             ps.flag_trail(lerp_origin, origin, 242, time, randk);
@@ -1184,7 +1182,9 @@ impl ClientFx {
     /// Advance everything to client time `time` and return what to draw,
     /// without the local view: the local player's heat beam draws nothing
     /// (use `frame_view`). `player` is C `cl.playernum + 1`; a beam from it
-    /// starts 22 units below `vieworg`.
+    /// starts 22 units below `vieworg`. For tests; the browser calls
+    /// `frame_view`.
+    #[cfg(test)]
     pub fn frame(
         &mut self,
         time: i32,
@@ -1470,7 +1470,7 @@ fn beam_angles(dist: Vec3f) -> (f32, f32) {
         return (if dist.z > 0.0 { 90.0 } else { 270.0 }, 0.0);
     }
     let mut yaw = if dist.x != 0.0 {
-        (f64::from(f64::from(dist.y).atan2(f64::from(dist.x)) as f32 * 180.0) / PI) as f32
+        crate::newfx::atan2_degrees(dist.y, dist.x)
     } else if dist.y > 0.0 {
         90.0
     } else {
@@ -1480,17 +1480,13 @@ fn beam_angles(dist: Vec3f) -> (f32, f32) {
         yaw += 360.0;
     }
     let forward = (dist.x * dist.x + dist.y * dist.y).sqrt();
+    // Unlike `vectoangles2`, C multiplies the pitch by -180.0 in double.
     let mut pitch =
         (f64::from(f64::from(dist.z).atan2(f64::from(forward)) as f32) * -180.0 / PI) as f32;
     if pitch < 0.0 {
         pitch += 360.0;
     }
     (pitch, yaw)
-}
-
-/// C `anglemod`, through 16-bit angle units, scaled in double.
-fn anglemod(a: f32) -> f32 {
-    (360.0 / 65536.0) * (((f64::from(a) * (65536.0 / 360.0)) as i32) & 65535) as f32
 }
 
 /// The light the local player's own effects make at `origin` (C adds it
@@ -1585,11 +1581,9 @@ impl EntityTrails {
     /// Take a new server frame (C `CL_DeltaEntity`): an entity that is new
     /// or does not lerp from `previous` starts a fresh trail at its
     /// `old_origin`, or at its origin after `EV_OTHER_TELEPORT`; the rest
-    /// lerp from their previous origin. Entities gone from `current` are
-    /// forgotten.
+    /// lerp from their previous origin. Like C's `cl_entities`, an entry
+    /// outlives its entity leaving, and a fresh trail keeps `fly_stoptime`.
     pub fn server_frame(&mut self, current: &[EntityState], previous: &[EntityState]) {
-        self.entities
-            .retain(|n, _| current.binary_search_by_key(n, |s| s.number).is_ok());
         for s in current {
             let prev = previous
                 .binary_search_by_key(&s.number, |p| p.number)
@@ -1604,16 +1598,20 @@ impl EntityTrails {
                     } else {
                         s.old_origin
                     };
-                    self.entities
-                        .insert(s.number, (TrailState::default(), start, start));
+                    let fly_stoptime = self.entities.get(&s.number).map_or(0, |e| e.0.fly_stoptime);
+                    let trail = TrailState {
+                        fly_stoptime,
+                        ..TrailState::default()
+                    };
+                    self.entities.insert(s.number, (trail, start, start));
                 }
             }
         }
     }
 
     /// Each rendered frame (C `CL_AddPacketEntities`): every entity's trail
-    /// from where it was drawn last frame to where it is drawn now, lerped
-    /// by `lerpfrac`, and the lights they add, spinning lights first. The
+    /// from where it was drawn last frame to where its model is drawn now,
+    /// and the lights they add, spinning lights first. The
     /// local `player` (C `cl.playernum + 1`) only lights its own effects
     /// (`player_light`); entities without a model have no trail.
     pub fn run(
@@ -1630,7 +1628,7 @@ impl EntityTrails {
             let Some((trail, prev_origin, lerp_origin)) = self.entities.get_mut(&s.number) else {
                 continue;
             };
-            let origin = *prev_origin + (s.origin - *prev_origin) * lerpfrac;
+            let origin = crate::entities::drawn_origin(*prev_origin, s, lerpfrac);
             lights.extend(spinning_light(s, origin, time));
             if s.number == player {
                 lights.extend(player_light(s.effects, origin));
@@ -2171,7 +2169,8 @@ mod tests {
     #[test]
     fn item_respawns_and_teleports_sound_on_the_entity_and_sparkle() {
         let mut fx = ClientFx::default();
-        let sounds = fx.entity_event(&event(3, EV_ITEM_RESPAWN), 1000, &mut rng(&[0]));
+        let sounds =
+            Vec::from_iter(fx.entity_event(&event(3, EV_ITEM_RESPAWN), 1000, &mut rng(&[0])));
         assert_eq!(names(&sounds), ["items/respawn1.wav"]);
         let s = &sounds[0];
         assert_eq!(
@@ -2180,7 +2179,8 @@ mod tests {
         );
         assert_eq!(fx.particles.len(), 64);
         fx.clear();
-        let sounds = fx.entity_event(&event(3, EV_PLAYER_TELEPORT), 1000, &mut rng(&[0]));
+        let sounds =
+            Vec::from_iter(fx.entity_event(&event(3, EV_PLAYER_TELEPORT), 1000, &mut rng(&[0])));
         assert_eq!(names(&sounds), ["misc/tele1.wav"]);
         assert_eq!(fx.particles.len(), 1053);
     }
@@ -2188,25 +2188,25 @@ mod tests {
     #[test]
     fn footsteps_follow_cl_footsteps_and_falls_thud() {
         let mut fx = ClientFx::default();
-        let sounds = fx.entity_event(&event(1, EV_FOOTSTEP), 1000, &mut rng(&[2]));
+        let sounds = Vec::from_iter(fx.entity_event(&event(1, EV_FOOTSTEP), 1000, &mut rng(&[2])));
         assert_eq!(names(&sounds), ["player/step3.wav"]);
         assert_eq!(sounds[0].channel, CHAN_BODY);
         fx.footsteps = false;
         assert!(fx
             .entity_event(&event(1, EV_FOOTSTEP), 1000, &mut rng(&[2]))
-            .is_empty());
+            .is_none());
         for (ev, name) in [
             (EV_FALLSHORT, "player/land1.wav"),
             (EV_FALL, "*fall2.wav"),
             (EV_FALLFAR, "*fall1.wav"),
         ] {
-            let sounds = fx.entity_event(&event(1, ev), 1000, &mut rng(&[0]));
+            let sounds = Vec::from_iter(fx.entity_event(&event(1, ev), 1000, &mut rng(&[0])));
             assert_eq!(names(&sounds), [name]);
             assert_eq!(sounds[0].channel, CHAN_AUTO);
         }
         assert!(fx
             .entity_event(&event(1, EV_OTHER_TELEPORT), 1000, &mut rng(&[0]))
-            .is_empty());
+            .is_none());
         assert_eq!(fx.particles.len(), 0);
     }
 
@@ -2217,7 +2217,7 @@ mod tests {
             effects: EF_TELEPORTER,
             ..event(9, 0)
         };
-        assert!(fx.entity_event(&pad, 1000, &mut rng(&[0])).is_empty());
+        assert!(fx.entity_event(&pad, 1000, &mut rng(&[0])).is_none());
         assert_eq!(fx.particles.len(), 8);
     }
 
@@ -2436,10 +2436,47 @@ mod tests {
         assert_eq!(trails.entities[&7], (TrailState::default(), far, far));
         // Gone for a frame, then back: a fresh trail from its old_origin.
         trails.server_frame(&[], &teleported);
-        assert!(trails.entities.is_empty());
         let back = [rocket_at(7, FROM, TO)];
         trails.server_frame(&back, &[]);
         assert_eq!(trails.entities[&7], (TrailState::default(), FROM, FROM));
+    }
+
+    #[test]
+    fn a_fly_swarm_outlasts_the_entity_leaving_like_c_centity_t() {
+        // C CL_DeltaEntity resets only trailcount; fly_stoptime stays in
+        // cl_entities while the entity is away.
+        let mut fx = ClientFx::default();
+        let mut trails = EntityTrails::default();
+        let corpse = [EntityState {
+            effects: EF_FLIES,
+            ..rocket_at(7, FROM, FROM)
+        }];
+        trails.server_frame(&corpse, &[]);
+        trails.run(&mut fx, &corpse, 1.0, 1, 1000, &mut rng(&[0]));
+        let swarm = trails.entities[&7].0.fly_stoptime;
+        assert!(swarm > 1000);
+        trails.server_frame(&[], &corpse);
+        trails.server_frame(&corpse, &[]);
+        assert_eq!(trails.entities[&7].0.fly_stoptime, swarm);
+        assert_eq!(trails.entities[&7].0.trailcount, 1024);
+    }
+
+    #[test]
+    fn frame_lerped_and_beam_entities_trail_from_where_they_are_drawn() {
+        // C steps their origin (the frames animate the move), as the model.
+        for renderfx in [RF_FRAMELERP, RF_BEAM] {
+            let mut fx = ClientFx::default();
+            let mut trails = EntityTrails::default();
+            let before = [rocket_at(7, FROM, FROM)];
+            let after = [EntityState {
+                renderfx,
+                ..rocket_at(7, FROM, TO)
+            }];
+            trails.server_frame(&before, &[]);
+            trails.server_frame(&after, &before);
+            let lights = trails.run(&mut fx, &after, 0.5, 1, 1000, &mut rng(&[0]));
+            assert_eq!(lights[0].origin, TO, "{renderfx}");
+        }
     }
 
     #[test]
@@ -2630,6 +2667,27 @@ mod tests {
             .frame(1100, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]))
             .entities
             .is_empty());
+    }
+
+    #[test]
+    fn welding_and_trap_lights_stay_in_c_ranges_for_any_random_number() {
+        let mut fx = ClientFx::default();
+        let msg = tent(TE_WELDING_SPARKS, |m| {
+            m.write_byte(1);
+            m.write_position(P);
+            m.write_dir(Vec3f::Z);
+            m.write_byte(0xe0);
+        });
+        fx.temp_entity(&msg, 1000, 1000, &mut rng(&[u32::MAX]));
+        let light = fx.frame(1099, 1.0, 1, Vec3f::ZERO, &mut rng(&[0])).lights[0];
+        assert!(
+            (100.0..175.0).contains(&light.intensity),
+            "{}",
+            light.intensity
+        );
+        let (light, _) = trail_light(EF_TRAP, &[u32::MAX]);
+        let intensity = light.unwrap().intensity;
+        assert!((100.0..200.0).contains(&intensity), "{intensity}");
     }
 
     #[test]

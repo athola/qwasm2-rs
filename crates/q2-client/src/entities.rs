@@ -48,7 +48,7 @@ pub(crate) fn lerp_angle(a2: f32, a1: f32, frac: f32) -> f32 {
 
 /// C `anglemod`, through 16-bit angle units like the original, scaled in
 /// double as C promotes it.
-fn anglemod(a: f32) -> f32 {
+pub(crate) fn anglemod(a: f32) -> f32 {
     (360.0 / 65536.0) * (((f64::from(a) * (65536.0 / 360.0)) as i32) & 65535) as f32
 }
 
@@ -145,13 +145,11 @@ pub fn entity_views(
                     lerp_angle(prev.angles.z, s.angles.z, lerpfrac),
                 )
             };
-            // Frame-lerped models and beams step their origin: the frames
-            // animate the move.
-            let (origin, oldorigin) = if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
-                (s.origin, s.old_origin)
+            let origin = drawn_origin(prev.origin, s, lerpfrac);
+            let oldorigin = if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
+                s.old_origin
             } else {
-                let origin = prev.origin + (s.origin - prev.origin) * lerpfrac;
-                (origin, origin)
+                origin
             };
             // C: "only used for black hole model right now".
             let mut alpha = if renderfx & RF_TRANSLUCENT != 0 && renderfx & RF_BEAM == 0 {
@@ -187,6 +185,17 @@ pub fn entity_views(
             std::iter::once(view).chain(shell)
         })
         .collect()
+}
+
+/// Where C `CL_AddPacketEntities` draws `s` between `prev_origin` and its
+/// origin: frame-lerped models and beams step to the new origin (the
+/// frames animate the move), the rest lerp by `lerpfrac`.
+pub(crate) fn drawn_origin(prev_origin: Vec3f, s: &EntityState, lerpfrac: f32) -> Vec3f {
+    if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
+        s.origin
+    } else {
+        prev_origin + (s.origin - prev_origin) * lerpfrac
+    }
 }
 
 /// C's "quad and pent can do different things on client": `EF_PENT`,

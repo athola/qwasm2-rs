@@ -80,6 +80,8 @@ pub const RF_GLOW: i32 = 512;
 pub const RF_SHELL_RED: i32 = 1024;
 pub const RF_SHELL_GREEN: i32 = 2048;
 pub const RF_SHELL_BLUE: i32 = 4096;
+/// Don't draw a shadow.
+pub const RF_NOSHADOW: i32 = 8192;
 pub const RF_IR_VISIBLE: i32 = 0x0000_8000;
 /// Mission-pack shells: yellow (double damage) and grey-green (half damage).
 pub const RF_SHELL_DOUBLE: i32 = 0x0001_0000;
@@ -132,6 +134,10 @@ pub const EF_TRACKERTRAIL: u32 = 0x8000_0000;
 
 // entity_state_t events (shared.h entity_event_t)
 pub const EV_ITEM_RESPAWN: i32 = 1;
+pub const EV_FOOTSTEP: i32 = 2;
+pub const EV_FALLSHORT: i32 = 3;
+pub const EV_FALL: i32 = 4;
+pub const EV_FALLFAR: i32 = 5;
 pub const EV_PLAYER_TELEPORT: i32 = 6;
 pub const EV_OTHER_TELEPORT: i32 = 7;
 

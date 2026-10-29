@@ -1,7 +1,9 @@
 //! The mission packs' particle effects (rogue, xatrix, CTF): their trails,
 //! steam and smoke, the heat beam's rings and the tracker's dark shells.
-//! C ref: the cl_newfx.c part of client/cl_effects.c, plus `CL_QuadTrail`,
-//! `CL_FlagTrail`, `CL_IonripperTrail` and `CL_TrapParticles`.
+//! C ref: the cl_newfx.c part of client/cl_effects.c, plus `CL_FlagTrail`,
+//! `CL_IonripperTrail` and `CL_TrapParticles`. C's `CL_QuadTrail`,
+//! `CL_SmokeTrail` and `CL_Tracker_Explode`, which nothing calls, are not
+//! ported.
 //!
 //! Where C leaves a particle field unset it keeps whatever the particle
 //! held when it was last freed; here such a field is 0 (each function
@@ -22,39 +24,11 @@ const WIDOW_COLORS: [i32; 4] = [2 * 8, 13 * 8, 21 * 8, 18 * 8];
 /// C `colortable` of `CL_Nukeblast`.
 const NUKE_COLORS: [i32; 4] = [110, 112, 114, 116];
 
-/// The look of a smoke trail: colours `color_start + randk % color_run`,
-/// one particle every `spacing` units. C ref: `CL_SmokeTrail`'s
-/// `colorStart`, `colorRun` and `spacing`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SmokeTrail {
-    pub color_start: i32,
-    pub color_run: i32,
-    pub spacing: i32,
-}
-
-/// C `AngleVectors` at C precision: the radian conversion is stored to
-/// float, sin and cos run in double.
-pub(crate) fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let sin_cos = |degrees: f32| {
-        let radians = f64::from((f64::from(degrees) * (PI * 2.0 / 360.0)) as f32);
-        (radians.sin() as f32, radians.cos() as f32)
-    };
-    let (sp, cp) = sin_cos(angles.x);
-    let (sy, cy) = sin_cos(angles.y);
-    let (sr, cr) = sin_cos(angles.z);
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(
-        -(sr * sp * cy) + (cr * sy),
-        -(sr * sp * sy) + -(cr * cy),
-        -sr * cp,
-    );
-    let up = Vec3f::new(cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp);
-    (forward, right, up)
-}
+use q2_common::pmove::angle_vectors;
 
 /// C `(float)atan2(y, x) * 180 / M_PI`: degrees, the product in float and
 /// the division in double.
-fn atan2_degrees(y: f32, x: f32) -> f32 {
+pub(crate) fn atan2_degrees(y: f32, x: f32) -> f32 {
     (f64::from(f64::from(y).atan2(f64::from(x)) as f32 * 180.0) / PI) as f32
 }
 
@@ -109,29 +83,35 @@ impl Particles {
         let (mut mv, vec) = (start, vec * 5.0);
         while len > 0 {
             len -= 5;
-            let Some(p) = self.alloc() else { return };
-            p.accel = Vec3f::ZERO;
-            p.time = time as f32;
-            p.alpha = 1.0;
-            p.alphavel = -1.0 / (0.8 + frandk(randk) * 0.2);
-            p.color = color;
-            for j in 0..3 {
-                p.org[j] = mv[j] + crandk(randk) * 16.0;
-                p.vel[j] = crandk(randk) * 5.0;
+            if !self.flag_particle(mv, color, time, randk) {
+                return;
             }
             mv += vec;
         }
     }
 
-    /// `flag_trail` in blue. Nothing in C calls it. C ref: `CL_QuadTrail`.
-    pub fn quad_trail(
+    /// One wide, slow-fading flag or tag trail particle at `mv`; false
+    /// when the pool is full.
+    fn flag_particle(
         &mut self,
-        start: Vec3f,
-        end: Vec3f,
+        mv: Vec3f,
+        color: i32,
         time: i32,
         randk: &mut impl FnMut() -> u32,
-    ) {
-        self.flag_trail(start, end, 115, time, randk);
+    ) -> bool {
+        let Some(p) = self.alloc() else {
+            return false;
+        };
+        p.accel = Vec3f::ZERO;
+        p.time = time as f32;
+        p.alpha = 1.0;
+        p.alphavel = -1.0 / (0.8 + frandk(randk) * 0.2);
+        p.color = color;
+        for j in 0..3 {
+            p.org[j] = mv[j] + crandk(randk) * 16.0;
+            p.vel[j] = crandk(randk) * 5.0;
+        }
+        true
     }
 
     /// The "tag" carrier's trail (rogue deathmatch): `flag_trail` with a
@@ -150,15 +130,8 @@ impl Particles {
         let (mut mv, vec) = (start, vec * 5.0);
         while len >= 0.0 {
             len -= 5.0;
-            let Some(p) = self.alloc() else { return };
-            p.accel = Vec3f::ZERO;
-            p.time = time as f32;
-            p.alpha = 1.0;
-            p.alphavel = -1.0 / (0.8 + frandk(randk) * 0.2);
-            p.color = color;
-            for j in 0..3 {
-                p.org[j] = mv[j] + crandk(randk) * 16.0;
-                p.vel[j] = crandk(randk) * 5.0;
+            if !self.flag_particle(mv, color, time, randk) {
+                return;
             }
             mv += vec;
         }
@@ -270,40 +243,6 @@ impl Particles {
             p.alphavel = -0.1;
             p.color = 0x74 + (randk() & 7) as i32;
             p.org = mv;
-            mv += vec;
-        }
-    }
-
-    /// Rising smoke along a line. Nothing in C calls it. C leaves the
-    /// x and y velocity unset (0 here); a zero colour run divides by zero
-    /// in C and makes nothing here. C ref: `CL_SmokeTrail`.
-    pub fn smoke_trail(
-        &mut self,
-        start: Vec3f,
-        end: Vec3f,
-        style: SmokeTrail,
-        time: i32,
-        randk: &mut impl FnMut() -> u32,
-    ) {
-        if style.color_run == 0 {
-            return;
-        }
-        let spacing = style.spacing as f32;
-        let mut vec = end - start;
-        let mut len = vector_normalize(&mut vec);
-        let (mut mv, vec) = (start, vec * spacing);
-        while len > 0.0 {
-            len -= spacing;
-            let Some(p) = self.alloc() else { return };
-            p.accel = Vec3f::ZERO;
-            p.time = time as f32;
-            p.alpha = 1.0;
-            p.alphavel = -1.0 / (1.0 + frandk(randk) * 0.5);
-            p.color = style.color_start + randk() as i32 % style.color_run;
-            for j in 0..3 {
-                p.org[j] = mv[j] + crandk(randk) * 3.0;
-            }
-            p.vel = Vec3f::new(0.0, 0.0, 20.0 + crandk(randk) * 5.0);
             mv += vec;
         }
     }
@@ -641,22 +580,6 @@ impl Particles {
         }
     }
 
-    /// 300 dark particles falling in on `origin` from 64 units out.
-    /// Nothing in C calls it. C ref: `CL_Tracker_Explode`.
-    pub fn tracker_explode(&mut self, origin: Vec3f, time: i32, randk: &mut impl FnMut() -> u32) {
-        for _ in 0..300 {
-            let Some(p) = self.alloc() else { return };
-            p.accel = Vec3f::ZERO;
-            p.time = time as f32;
-            p.alpha = 1.0;
-            p.alphavel = -1.0;
-            p.color = 0;
-            let dir = random_dir(randk);
-            p.org = origin + dir * 64.0;
-            p.vel = dir * -1.0 * 64.0;
-        }
-    }
-
     /// 128 particles in colours `color + randk % run` bursting from `org`.
     /// A `run` of 0 divides by zero in C and makes nothing here.
     /// C ref: `CL_ColorExplosionParticles`.
@@ -674,10 +597,11 @@ impl Particles {
         for _ in 0..128 {
             let Some(p) = self.alloc() else { return };
             p.time = time as f32;
-            p.color = color + randk() as i32 % run;
+            // `run` is positive here; C's randk is never negative.
+            p.color = color + (randk() % run.unsigned_abs()) as i32;
             for j in 0..3 {
-                p.org[j] = org[j] + (randk() as i32 % 32 - 16) as f32;
-                p.vel[j] = (randk() as i32 % 256 - 128) as f32;
+                p.org[j] = org[j] + ((randk() % 32) as i32 - 16) as f32;
+                p.vel[j] = ((randk() % 256) as i32 - 128) as f32;
             }
             p.accel = Vec3f::new(0.0, 0.0, -PARTICLE_GRAVITY);
             p.alpha = 1.0;
@@ -758,7 +682,21 @@ mod tests {
     const X100: Vec3f = Vec3f::new(100.0, 0.0, 0.0);
 
     #[test]
-    fn flag_and_quad_trails_drop_a_wide_particle_every_five_units() {
+    fn a_colour_explosion_stays_in_c_ranges_for_any_random_number() {
+        // C randk is never negative; the high bit must not flip signs.
+        let mut ps = Particles::default();
+        ps.color_explosion_particles(Vec3f::ZERO, 0x10, 4, 0, &mut rng(&[u32::MAX, 0x8000_0001]));
+        for p in &ps.active {
+            assert!((0x10..0x14).contains(&p.color), "{}", p.color);
+            for j in 0..3 {
+                assert!((-16.0..16.0).contains(&p.org[j]), "{:?}", p.org);
+                assert!((-128.0..128.0).contains(&p.vel[j]), "{:?}", p.vel);
+            }
+        }
+    }
+
+    #[test]
+    fn a_flag_trail_drops_a_wide_particle_every_five_units() {
         let mut ps = Particles::default();
         ps.flag_trail(Vec3f::ZERO, X100, 242, 0, &mut rng(&[0]));
         assert_eq!(ps.len(), 20);
@@ -769,9 +707,6 @@ mod tests {
             (242, Vec3f::splat(-16.0), Vec3f::splat(-5.0))
         );
         assert_eq!(p.alphavel, -1.0 / 0.8);
-        ps.clear();
-        ps.quad_trail(Vec3f::ZERO, X100, 0, &mut rng(&[0]));
-        assert_eq!((ps.len(), ps.active[0].color), (20, 115));
     }
 
     #[test]
@@ -837,29 +772,6 @@ mod tests {
         assert_eq!(xs, [0.0, 3.0, 6.0]);
         let p = ps.active[0];
         assert_eq!((p.color, p.vel, p.alphavel), (0x77, Vec3f::ZERO, -0.1));
-    }
-
-    #[test]
-    fn a_smoke_trail_rises_in_its_colour_run() {
-        let mut ps = Particles::default();
-        let style = SmokeTrail {
-            color_start: 0x10,
-            color_run: 4,
-            spacing: 10,
-        };
-        ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[6]));
-        assert_eq!(ps.len(), 10);
-        let p = ps.active[0];
-        assert_eq!(p.color, 0x12, "0x10 + 6 % 4");
-        assert_eq!((p.vel.x, p.vel.y), (0.0, 0.0));
-        // C divides by zero for an empty colour run.
-        ps.clear();
-        let style = SmokeTrail {
-            color_run: 0,
-            ..style
-        };
-        ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[6]));
-        assert!(ps.is_empty());
     }
 
     #[test]
@@ -982,13 +894,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tracker_explosion_collapses_inwards() {
+    fn a_colour_explosion_bursts_128_particles() {
         let mut ps = Particles::default();
-        ps.tracker_explode(Vec3f::ZERO, 0, &mut rng(&[32767]));
-        assert_eq!(ps.len(), 300);
-        let p = ps.active[0];
-        assert_eq!(p.vel, p.org * -1.0);
-        ps.clear();
         ps.color_explosion_particles(Vec3f::ZERO, 0, 1, 0, &mut rng(&[300]));
         assert_eq!(ps.len(), 128);
         let p = ps.active[0];

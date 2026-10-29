@@ -20,6 +20,14 @@ use wav::Sound;
 
 /// C `MAX_CHANNELS`.
 pub const MAX_CHANNELS: usize = 32;
+/// Sound channels (C `CHAN_*`).
+pub const CHAN_AUTO: i32 = 0;
+pub const CHAN_WEAPON: i32 = 1;
+pub const CHAN_BODY: i32 = 4;
+/// Attenuations (C `ATTN_*`).
+pub const ATTN_NONE: f32 = 0.0;
+pub const ATTN_NORM: f32 = 1.0;
+pub const ATTN_IDLE: f32 = 2.0;
 /// C `ATTN_STATIC`: attenuates twice as fast as the other attenuations.
 pub const ATTN_STATIC: f32 = 3.0;
 /// C `SDL_FULLVOLUME`: closer than this is full volume.

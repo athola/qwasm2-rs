@@ -892,8 +892,8 @@ fn flash_named_sound(sound: &q2_client::effects::FlashSound) -> q2_client::sound
     }
 }
 
-/// A xorshift32 step: the client's `randk`. C's generator differs, but
-/// only flash sizes and which shot sound plays depend on it.
+/// A xorshift32 step: the client's `randk`, 31 bits like C's. C's
+/// generator (KISS) differs, so the effects' random spreads do too.
 #[cfg(any(target_arch = "wasm32", test))]
 fn xorshift(state: &mut u32) -> u32 {
     let mut x = *state;
@@ -901,7 +901,8 @@ fn xorshift(state: &mut u32) -> u32 {
     x ^= x >> 17;
     x ^= x << 5;
     *state = x;
-    x
+    // C randk is never negative (it takes the absolute value).
+    x & 0x7fff_ffff
 }
 
 /// The first-person gun as a render entity (C `CL_AddViewWeapon`'s
@@ -2101,6 +2102,12 @@ mod tests {
         let draws: Vec<u32> = (0..4).map(|_| xorshift(&mut state)).collect();
         assert!(draws.iter().all(|&d| d != 0));
         assert_ne!(draws[0], draws[1]);
+    }
+
+    #[test]
+    fn randk_is_never_negative_like_c() {
+        let mut state = 0x8000_0000;
+        assert!((0..1000).all(|_| xorshift(&mut state) <= i32::MAX as u32));
     }
 
     #[test]

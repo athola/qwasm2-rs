@@ -10,11 +10,7 @@ use q2_shared::types::{EntityState, Vec3f};
 /// C `MAX_DLIGHTS`.
 pub const MAX_DLIGHTS: usize = 32;
 
-/// Sound channels (C `CHAN_*`).
-const CHAN_AUTO: i32 = 0;
-const CHAN_WEAPON: i32 = 1;
-const ATTN_NONE: f32 = 0.0;
-const ATTN_NORM: f32 = 1.0;
+use crate::sound::{ATTN_NONE, ATTN_NORM, CHAN_AUTO, CHAN_WEAPON};
 
 /// A client dynamic light (C `cdlight_t`). `die` is in client
 /// milliseconds; a light shows until 32 ms after it (yquake2).
