@@ -91,6 +91,12 @@ impl Effects {
         light
     }
 
+    /// Light `light` in its key's slot, else one that died, else the
+    /// first, as the effects' `CL_AllocDlight` calls do.
+    pub fn add_dlight(&mut self, light: ClientDLight, time: f32) {
+        *self.alloc_dlight(light.key, time) = light;
+    }
+
     /// Shrink lights by their decay over `frametime` seconds and put out
     /// the ones past their time. C ref: `CL_RunDLights`.
     pub fn run_dlights(&mut self, time: f32, frametime: f32) {
@@ -916,6 +922,24 @@ mod tests {
         );
         assert_eq!(names(&sounds), [("soldier/solatck2.wav", CHAN_WEAPON, 0.0)]);
         assert_eq!(sounds[0].entnum, 7);
+    }
+
+    #[test]
+    fn an_effect_light_takes_its_entitys_slot_like_cl_allocdlight() {
+        let mut fx = Effects::default();
+        let light = |origin, die| ClientDLight {
+            key: 3,
+            color: [1.0; 3],
+            origin,
+            radius: 400.0,
+            die,
+            decay: 0.0,
+            minlight: 250.0,
+        };
+        fx.add_dlight(light(Vec3f::ZERO, 100.0), 0.0);
+        fx.add_dlight(light(Vec3f::X, 110.0), 10.0);
+        let lit: Vec<_> = fx.dlights().copied().collect();
+        assert_eq!(lit, [light(Vec3f::X, 110.0)]);
     }
 
     #[test]

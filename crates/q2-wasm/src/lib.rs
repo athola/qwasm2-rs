@@ -163,6 +163,10 @@ impl Engine {
                     .temp_entity(message, time_ms, servertime, &mut randk),
             );
         }
+        // C allocates these in cl_dlights while it parses the temp entity.
+        for light in self.fx.take_dlights() {
+            self.effects.add_dlight(light, time);
+        }
         for (origin, kind) in self.effects.take_particles() {
             self.fx
                 .flash_particles(origin, kind, time_ms, servertime, &mut randk);

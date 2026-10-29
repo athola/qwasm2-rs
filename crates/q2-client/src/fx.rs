@@ -13,9 +13,8 @@
 //!
 //! Not ported: C's `ex_explosion`, `ex_mflash` and `ex_poly2` explosion
 //! kinds, which nothing in C creates. The lights of TE_FLASHLIGHT and
-//! TE_TRACKER_EXPLOSION (C `CL_AllocDlight`) live here rather than in
-//! `effects::Effects`' dlights, so they do not share its 32 slots, and
-//! they have no `minlight`.
+//! TE_TRACKER_EXPLOSION go to `effects::Effects`' dlights through
+//! `take_dlights`, as C's share `cl_dlights`.
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -40,8 +39,6 @@ pub const MAX_BEAMS: usize = 64;
 pub const MAX_LASERS: usize = 64;
 /// C `MAX_SUSTAINS` (client/header/client.h).
 pub const MAX_SUSTAINS: usize = 32;
-/// C `MAX_DLIGHTS`: the most timed lights a temp entity keeps.
-const MAX_TIMED_LIGHTS: usize = 32;
 
 /// shared.h values q2-shared does not carry.
 pub const RF_NOSHADOW: i32 = 8192;
@@ -313,15 +310,6 @@ struct Sustain {
     think: SustainThink,
 }
 
-/// A temp entity's light (C `CL_Flashlight`, `CL_ColorFlash`): lit until
-/// 32 ms after `die`, as `CL_RunDLights` keeps it.
-#[derive(Debug, Clone, Copy)]
-struct TimedLight {
-    key: i32,
-    light: FxLight,
-    die: i32,
-}
-
 /// The client's effects: particles, explosions, beams, lasers and
 /// sustains.
 #[derive(Debug, Clone)]
@@ -333,7 +321,8 @@ pub struct ClientFx {
     player_beams: [Beam; MAX_BEAMS],
     lasers: [Laser; MAX_LASERS],
     sustains: [Sustain; MAX_SUSTAINS],
-    timed_lights: Vec<TimedLight>,
+    /// Lights for `effects::Effects`' `cl_dlights` (C `CL_AllocDlight`).
+    dlights: Vec<crate::effects::ClientDLight>,
     /// C `cl_footsteps` (default 1).
     pub footsteps: bool,
 }
@@ -347,7 +336,7 @@ impl Default for ClientFx {
             player_beams: [Beam::default(); MAX_BEAMS],
             lasers: [Laser::default(); MAX_LASERS],
             sustains: [Sustain::default(); MAX_SUSTAINS],
-            timed_lights: Vec::new(),
+            dlights: Vec::new(),
             footsteps: true,
         }
     }
@@ -393,7 +382,7 @@ impl ClientFx {
         self.player_beams = [Beam::default(); MAX_BEAMS];
         self.lasers = [Laser::default(); MAX_LASERS];
         self.sustains = [Sustain::default(); MAX_SUSTAINS];
-        self.timed_lights.clear();
+        self.dlights.clear();
     }
 
     /// A free explosion slot, else the oldest. C ref: `CL_AllocExplosion`.
@@ -986,30 +975,24 @@ impl ClientFx {
         }
     }
 
-    /// A 100 ms light keyed by entity `key` (a later one for the same
-    /// non-zero key replaces it): its own slot, else one that died, else a
-    /// new one, else the first. C ref: `CL_Flashlight`, `CL_ColorFlash`,
-    /// `CL_AllocDlight`.
+    /// A 100 ms light at `origin` for `cl_dlights` (C `CL_Flashlight`,
+    /// `CL_ColorFlash`): minlight 250, keyed by `key` (0 for none).
     fn timed_light(&mut self, key: i32, origin: Vec3f, radius: f32, color: [f32; 3], time: i32) {
-        let light = TimedLight {
+        self.dlights.push(crate::effects::ClientDLight {
             key,
-            light: FxLight {
-                origin,
-                intensity: radius,
-                color,
-            },
-            die: time + 100,
-        };
-        let lights = &mut self.timed_lights;
-        let slot = (key != 0)
-            .then(|| lights.iter().position(|l| l.key == key))
-            .flatten()
-            .or_else(|| lights.iter().position(|l| l.die < time));
-        match slot {
-            Some(i) => lights[i] = light,
-            None if lights.len() < MAX_TIMED_LIGHTS => lights.push(light),
-            None => lights[0] = light,
-        }
+            color,
+            origin,
+            radius,
+            die: (time + 100) as f32,
+            decay: 0.0,
+            minlight: 250.0,
+        });
+    }
+
+    /// The lights queued since the last call, for `effects::Effects`'
+    /// `add_dlight`.
+    pub fn take_dlights(&mut self) -> Vec<crate::effects::ClientDLight> {
+        std::mem::take(&mut self.dlights)
     }
 
     /// A 100 ms translucent laser in one of the four palette bytes of
@@ -1220,8 +1203,8 @@ impl ClientFx {
 
     /// Advance everything to client time `time` and return what to draw:
     /// beams, player beams, explosions, lasers and sustains as
-    /// `CL_AddTEnts` adds them, then particles (`CL_AddParticles`), then
-    /// the temp entities' timed lights (`CL_AddDLights`). `lerpfrac` is C
+    /// `CL_AddTEnts` adds them, then particles (`CL_AddParticles`).
+    /// `lerpfrac` is C
     /// `cl.lerpfrac`.
     pub fn frame_view(
         &mut self,
@@ -1242,12 +1225,6 @@ impl ClientFx {
         );
         self.process_sustains(time, randk);
         out.particles = self.particles.add_particles(time);
-        out.lights.extend(
-            self.timed_lights
-                .iter()
-                .filter(|l| l.die >= time - 32)
-                .map(|l| l.light),
-        );
         out
     }
 
@@ -2907,29 +2884,29 @@ mod tests {
     }
 
     #[test]
-    fn a_flashlight_lights_white_for_100_ms_and_follows_its_entity() {
+    fn a_flashlight_queues_c_s_white_dlight_for_its_entity() {
         let mut fx = ClientFx::default();
-        let flashlight = |at: Vec3f| {
-            tent(TE_FLASHLIGHT, |m| {
-                m.write_position(at);
-                m.write_short(3);
-            })
-        };
-        fx.temp_entity(&flashlight(P), 1000, 1000, &mut rng(&[0]));
-        let moved = P + Vec3f::X;
-        fx.temp_entity(&flashlight(moved), 1000, 1000, &mut rng(&[0]));
+        let flashlight = tent(TE_FLASHLIGHT, |m| {
+            m.write_position(P);
+            m.write_short(3);
+        });
+        fx.temp_entity(&flashlight, 1000, 1000, &mut rng(&[0]));
+        // C CL_Flashlight: a cl_dlights slot keyed by the entity.
+        assert_eq!(
+            fx.take_dlights(),
+            [crate::effects::ClientDLight {
+                key: 3,
+                color: [1.0, 1.0, 1.0],
+                origin: P,
+                radius: 400.0,
+                die: 1100.0,
+                decay: 0.0,
+                minlight: 250.0,
+            }]
+        );
+        assert!(fx.take_dlights().is_empty(), "taken once");
         let frame = fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
-        let white = FxLight {
-            origin: moved,
-            intensity: 400.0,
-            color: [1.0, 1.0, 1.0],
-        };
-        assert_eq!(frame.lights, [white]);
-        // Lit until 32 ms past its die time, as CL_RunDLights keeps it.
-        let frame = fx.frame(1132, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
-        assert_eq!(frame.lights.len(), 1);
-        let frame = fx.frame(1133, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
-        assert!(frame.lights.is_empty());
+        assert!(frame.lights.is_empty(), "lit through cl_dlights, not here");
     }
 
     #[test]
@@ -2939,9 +2916,10 @@ mod tests {
         let sounds = fx.temp_entity(&msg, 1000, 1000, &mut rng(&[0]));
         assert_eq!(names(&sounds), ["weapons/disrupthit.wav"]);
         assert_eq!((fx.particles.len(), colour_of(&fx)), (128, 0));
-        let frame = fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
-        assert_eq!(frame.lights[0].intensity, 150.0);
-        assert_eq!(frame.lights[0].color, [-1.0, -1.0, -1.0]);
+        let lights = fx.take_dlights();
+        assert_eq!((lights[0].key, lights[0].radius), (0, 150.0));
+        assert_eq!(lights[0].color, [-1.0, -1.0, -1.0]);
+        assert_eq!(lights[0].minlight, 250.0);
     }
 
     #[test]
@@ -2953,6 +2931,7 @@ mod tests {
         let end = Vec3f::new(64.0, 0.0, 0.0);
         fx.temp_entity(&beam(TE_HEATBEAM, 5, Vec3f::ZERO, end), 1000, 1000, &mut r);
         fx.clear();
+        assert!(fx.take_dlights().is_empty());
         assert_eq!(
             fx.frame_view(1000, 1.0, &view(0), &mut r),
             FxFrame::default()
