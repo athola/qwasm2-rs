@@ -125,6 +125,15 @@ All notable changes to qwasm2-rs are documented here.
   the sky, rockets knock debris off walls, and monsters see players'
   blaster, rocket and BFG shots coming (`check_dodge`); the constants live in
   `q2_shared::constants` (`TE_*`, `SPLASH_*`, `SURF_*`)
+- The browser draws the game's effects (C `cl_tempentities.c`,
+  `cl_particles.c`, `cl_effects.c`): blood, sparks and bullet puffs,
+  splashes, explosions with their lights, rail and bubble trails, BFG
+  lasers and blasts, rocket, blaster, grenade and gib trails, flies,
+  teleport and respawn sparkles, footsteps and landing sounds, and the
+  smoke of monster machineguns and shotguns (`q2_client::fx`). The GL3
+  renderer gains C's particle, beam and sprite (`.sp2`) drawing, and
+  client sounds can play at a fixed origin or as a player's sexed sound
+  (`sound::NamedSound`)
 - The browser shows the server's text: printed lines at the top for
   three seconds (death messages, pickups, chat with its talk sound),
   centre prints such as door messages, and the server layout over the

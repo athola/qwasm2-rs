@@ -142,10 +142,11 @@ effects, and the deathmatch rules end matches through C's intermission.
   `CheckNeedPass` has nothing to do (it publishes password cvars, and
   there are none); the player model's animation (`G_SetClientFrame`,
   seen only by other players) is not run, though the weapon code sets
-  its frames (#32). The game writes no temp entities
-  for impacts, explosions or trails, and the renderer draws no
-  particles, so those are invisible; monster flash particles and smoke
-  likewise. Brush models moved by doors take dlights at their rest
+  its frames (#32). Temp entities, entity events, trails and flash
+  smoke are drawn by the browser client (`q2_client::fx`, C
+  `cl_tempentities.c`, `cl_particles.c`, `cl_effects.c`) through the
+  renderer's particles, beams and sprites; mission-pack temp entities
+  and effect flags are not ported. Brush models moved by doors take dlights at their rest
   position.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends

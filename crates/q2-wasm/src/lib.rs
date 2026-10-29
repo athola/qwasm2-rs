@@ -67,6 +67,11 @@ struct Engine {
     last_keys: [bool; 256],
     /// Muzzle flash lights (C `cl_dlights`).
     effects: q2_client::effects::Effects,
+    /// Particles, explosions, beams and lasers (C `cl_particles.c`,
+    /// `cl_tempentities.c`).
+    fx: q2_client::fx::ClientFx,
+    /// Each entity's trail state (C `centity_t`).
+    trails: q2_client::fx::EntityTrails,
     /// The client's random numbers (C `randk`) for flash sizes and sounds.
     rng: u32,
     /// Printed lines, the centre print and the server layout.
@@ -98,6 +103,8 @@ impl Engine {
             vid_gamma: 1.0,
             last_keys: [false; 256],
             effects: q2_client::effects::Effects::default(),
+            fx: q2_client::fx::ClientFx::default(),
+            trails: q2_client::fx::EntityTrails::default(),
             rng: 0x1234_5678,
             text: q2_client::notify::ServerText::default(),
         };
@@ -119,22 +126,47 @@ impl Engine {
         }
     }
 
-    /// Run this frame's multicast messages for muzzle flashes, then age
-    /// the lights (C `CL_RunDLights`). Returns the flash sounds.
+    /// Run a new server frame's entity events (C `CL_FireEntityEvents`)
+    /// and this frame's messages for muzzle flashes, temp entities and
+    /// text, then age the lights (C `CL_RunDLights`). Returns the flash
+    /// and effect sounds.
     fn run_effects(
         &mut self,
         messages: &[Vec<u8>],
         dt: f32,
-    ) -> Vec<q2_client::effects::FlashSound> {
-        let time = self.frames.time() as f32;
+        new_frame: bool,
+    ) -> (
+        Vec<q2_client::effects::FlashSound>,
+        Vec<q2_client::fx::FxSound>,
+    ) {
+        let time_ms = self.frames.time();
+        let time = time_ms as f32;
+        // C cl.frame.servertime.
+        let servertime = self.frames.serverframe().unwrap_or(0).wrapping_mul(100);
         let current = &self.frames.current;
         let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
+        let mut fx_sounds = Vec::new();
+        if new_frame {
+            for state in current {
+                fx_sounds.extend(self.fx.entity_event(state, time_ms, &mut randk));
+            }
+        }
         let mut sounds: Vec<q2_client::effects::FlashSound> = messages
             .iter()
             .flat_map(|m| self.effects.message(m, entity, time, &mut randk))
             .collect();
+        for message in messages {
+            fx_sounds.extend(
+                self.fx
+                    .temp_entity(message, time_ms, servertime, &mut randk),
+            );
+        }
+        for (origin, kind) in self.effects.take_particles() {
+            self.fx
+                .flash_particles(origin, kind, time_ms, servertime, &mut randk);
+        }
         // C con.linewidth: the screen in characters less a margin.
         let linewidth = usize::try_from(self.view.width / 8 - 2).unwrap_or(1);
         for message in messages {
@@ -143,7 +175,7 @@ impl Engine {
             }
         }
         self.effects.run_dlights(time, dt);
-        sounds
+        (sounds, fx_sounds)
     }
 
     /// C `CL_RegisterSounds`, from the server's `CS_SOUNDS` names.
@@ -161,6 +193,7 @@ impl Engine {
         &mut self,
         sounds: &[q2_server::game_iface::SoundEvent],
         flash_sounds: &[q2_client::effects::FlashSound],
+        fx_sounds: &[q2_client::fx::FxSound],
         vieworg: q2_shared::types::Vec3f,
         viewangles: q2_shared::types::Vec3f,
         lerpfrac: f32,
@@ -187,14 +220,15 @@ impl Engine {
                 |path| fs.load_file(path).ok(),
             );
         }
-        for flash in flash_sounds {
+        let named = flash_sounds.iter().map(flash_named_sound).chain(
+            fx_sounds
+                .iter()
+                .map(|sound| -> q2_client::sound::NamedSound<'_> { fx_named_sound(sound) }),
+        );
+        for sound in named {
             self.sound.start_named_sound(
-                flash.entnum,
-                flash.channel,
-                &flash.name,
-                flash.volume,
-                flash.attenuation,
-                flash.timeofs,
+                &sound,
+                |i| local.configstring(i),
                 |path| fs.load_file(path).ok(),
             );
         }
@@ -245,22 +279,26 @@ impl Engine {
     /// Take the server's entities and player state when a new 10 Hz frame
     /// has run (C CL_ParseFrame keeps the previous one for interpolation),
     /// and keep the renderer's models in step with the model configstrings.
-    fn sync_frame(&mut self) {
+    /// Returns whether a new frame arrived.
+    fn sync_frame(&mut self) -> bool {
         let framenum = self.local.framenum();
         if self.frames.serverframe() == Some(framenum) {
-            return;
+            return false;
         }
         let Some((_, ps)) = self.local.player() else {
-            return;
+            return false;
         };
         self.frames
             .receive(framenum, self.local.entity_states(), ps);
+        self.trails
+            .server_frame(&self.frames.current, &self.frames.previous);
         let local = &self.local;
         let renderer = &mut self.renderer;
         self.models.sync(
             |i| local.configstring(i),
             |name| renderer.register_model(name),
         );
+        true
     }
 
     /// Follow a level exit (C `gamemap`): the server loads the next map
@@ -280,6 +318,8 @@ impl Engine {
                 self.local.change_map(&request, &[])?;
                 self.frames = q2_client::frame::FrameHistory::default();
                 self.effects.clear();
+                self.fx.clear();
+                self.trails = q2_client::fx::EntityTrails::default();
                 self.text.layout.clear();
                 log(&format!("Picture: pics/{} shown", request.map));
                 return Ok(());
@@ -305,6 +345,8 @@ impl Engine {
         self.register_sounds();
         self.frames = q2_client::frame::FrameHistory::default();
         self.effects.clear();
+        self.fx.clear();
+        self.trails = q2_client::fx::EntityTrails::default();
         self.text.layout.clear();
         self.input.view_angles = q2_shared::types::Vec3f::ZERO;
         log(&format!("Map: maps/{}.bsp loaded", request.map));
@@ -388,8 +430,8 @@ impl Engine {
             }
         }
         self.frames.advance(elapsed_us);
-        self.sync_frame();
-        let flash_sounds = self.run_effects(&messages, dt);
+        let new_frame = self.sync_frame();
+        let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -422,7 +464,14 @@ impl Engine {
         };
         let (vieworg, viewangles) = self.frames.view(origin, ps, lerpfrac);
         let (stats, blend, rdflags) = (ps.stats, ps.blend, ps.rdflags);
-        self.mix_sounds(&sounds, &flash_sounds, vieworg, viewangles, lerpfrac);
+        self.mix_sounds(
+            &sounds,
+            &flash_sounds,
+            &fx_sounds,
+            vieworg,
+            viewangles,
+            lerpfrac,
+        );
         let fd = RefDef {
             x: 0,
             y: 0,
@@ -456,9 +505,29 @@ impl Engine {
         let mut entities = render_entities(&views, &self.models);
         let gun = self.frames.view_weapon(vieworg, viewangles, lerpfrac);
         entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
+        // C CL_AddPacketEntities' trails, then CL_AddTEnts and
+        // CL_AddParticles; C cl.playernum + 1 is the local player.
+        let player = q2_server::local::LOCAL_PLAYER as i32;
+        let rng = &mut self.rng;
+        let mut randk = || xorshift(rng);
+        let mut lights = self.trails.run(
+            &mut self.fx,
+            &self.frames.current,
+            lerpfrac,
+            player,
+            cl_time,
+            &mut randk,
+        );
+        let effects = self
+            .fx
+            .frame(cl_time, lerpfrac, player, vieworg, &mut randk);
+        entities.extend(fx_render_entities(&effects.entities, &self.models));
+        lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
-        let dlights = render_dlights(&self.effects);
-        self.renderer.render_frame(&fd, &entities, &dlights, &[]);
+        let mut dlights = render_dlights(&self.effects);
+        dlights.extend(fx_dlights(&lights));
+        self.renderer
+            .render_frame(&fd, &entities, &dlights, &fx_particles(&effects.particles));
         self.draw_hud(&stats);
         self.renderer.end_frame();
     }
@@ -492,6 +561,8 @@ fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
 struct ModelTable {
     names: Vec<String>,
     handles: Vec<q2_render_api::ModelHandle>,
+    /// The effects' models (C `cl_mod_explode` and the rest).
+    fx: Vec<(&'static str, q2_render_api::ModelHandle)>,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -518,6 +589,21 @@ impl ModelTable {
                 };
             }
         }
+    }
+
+    /// C `CL_RegisterTEntModels`.
+    fn register_fx(&mut self, mut register: impl FnMut(&str) -> q2_render_api::ModelHandle) {
+        self.fx = q2_client::fx::FX_MODELS
+            .iter()
+            .map(|&name| (name, register(name)))
+            .collect();
+    }
+
+    fn fx_handle(&self, name: &str) -> q2_render_api::ModelHandle {
+        self.fx
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(q2_render_api::ModelHandle::NONE, |&(_, handle)| handle)
     }
 
     fn handle(&self, modelindex: i32) -> q2_render_api::ModelHandle {
@@ -552,6 +638,7 @@ fn prep_refresh<'a>(
     let map = world.strip_prefix("maps/").unwrap_or(world);
     renderer.begin_registration(map.strip_suffix(".bsp").unwrap_or(map))?;
     *models = ModelTable::default();
+    models.register_fx(|name| renderer.register_model(name));
     models.sync(&configstring, |name| renderer.register_model(name));
     // C keeps these in `cl.image_precache`, which nothing draws from: the
     // status bar draws pics by name.
@@ -670,6 +757,91 @@ fn render_dlights(effects: &q2_client::effects::Effects) -> Vec<q2_render_api::D
             intensity: light.radius,
         })
         .collect()
+}
+
+/// The effects' models for the renderer (C `V_AddEntity` in
+/// `CL_AddTEnts`): a beam needs no model, the rest are left out when
+/// theirs did not register.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_render_entities(
+    entities: &[q2_client::fx::FxEntity],
+    models: &ModelTable,
+) -> Vec<q2_render_api::RenderEntity> {
+    entities
+        .iter()
+        .filter_map(|e| {
+            let model = e.model.map_or(q2_render_api::ModelHandle::NONE, |name| {
+                models.fx_handle(name)
+            });
+            let drawable = e.flags & q2_shared::constants::RF_BEAM != 0
+                || model != q2_render_api::ModelHandle::NONE;
+            drawable.then(|| q2_render_api::RenderEntity {
+                model,
+                frame: e.frame,
+                oldframe: e.oldframe,
+                backlerp: e.backlerp,
+                origin: e.origin,
+                oldorigin: e.oldorigin,
+                angles: e.angles,
+                alpha: e.alpha,
+                flags: e.flags,
+                skinnum: e.skinnum,
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// C `V_AddParticle` for each live particle.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_particles(particles: &[q2_client::particles::DrawParticle]) -> Vec<q2_render_api::Particle> {
+    particles
+        .iter()
+        .map(|p| q2_render_api::Particle {
+            origin: p.origin,
+            color: i32::from(p.color),
+            alpha: p.alpha,
+        })
+        .collect()
+}
+
+/// C `V_AddLight` for the effects' lights.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_dlights(lights: &[q2_client::fx::FxLight]) -> Vec<q2_render_api::DLight> {
+    lights
+        .iter()
+        .map(|l| q2_render_api::DLight {
+            origin: l.origin,
+            color: q2_shared::types::Vec3f::from_array(l.color),
+            intensity: l.intensity,
+        })
+        .collect()
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_named_sound(sound: &q2_client::fx::FxSound) -> q2_client::sound::NamedSound<'static> {
+    q2_client::sound::NamedSound {
+        name: sound.name,
+        entnum: sound.entnum,
+        entchannel: sound.channel,
+        volume: sound.volume,
+        attenuation: sound.attenuation,
+        timeofs: sound.timeofs,
+        origin: sound.origin,
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn flash_named_sound(sound: &q2_client::effects::FlashSound) -> q2_client::sound::NamedSound<'_> {
+    q2_client::sound::NamedSound {
+        name: &sound.name,
+        entnum: sound.entnum,
+        entchannel: sound.channel,
+        volume: sound.volume,
+        attenuation: sound.attenuation,
+        timeofs: sound.timeofs,
+        origin: None,
+    }
 }
 
 /// A xorshift32 step: the client's `randk`. C's generator differs, but
@@ -1322,6 +1494,13 @@ mod tests {
             renderer.calls,
             [
                 "begin demo2",
+                // C CL_RegisterTEntModels, before the configstring models.
+                "model models/objects/explode/tris.md2",
+                "model models/objects/smoke/tris.md2",
+                "model models/objects/flash/tris.md2",
+                "model models/monsters/parasite/segment/tris.md2",
+                "model models/objects/r_explode/tris.md2",
+                "model sprites/s_bfg2.sp2",
                 "model *1",
                 "model models/items/armor/jacket/tris.md2",
                 // C stops at the first empty image configstring.
@@ -1332,6 +1511,14 @@ mod tests {
             ]
         );
         assert_ne!(models.handle(3), q2_render_api::ModelHandle::NONE);
+        assert_ne!(
+            models.fx_handle("sprites/s_bfg2.sp2"),
+            q2_render_api::ModelHandle::NONE
+        );
+        assert_eq!(
+            models.fx_handle("models/unknown.md2"),
+            q2_render_api::ModelHandle::NONE
+        );
     }
 
     #[test]
@@ -1611,6 +1798,92 @@ mod tests {
             ..gun
         };
         assert!(gun_entity(&unknown, &table).is_none());
+    }
+
+    #[test]
+    fn effect_entities_need_their_model_except_beams() {
+        use q2_client::fx::{FxEntity, MOD_FLASH, MOD_SMOKE};
+        use q2_shared::types::Vec3f;
+        let mut table = ModelTable::default();
+        table.register_fx(|name| {
+            if name == MOD_SMOKE {
+                q2_render_api::ModelHandle::new(5)
+            } else {
+                q2_render_api::ModelHandle::NONE
+            }
+        });
+        let laser = FxEntity {
+            origin: Vec3f::ONE,
+            oldorigin: Vec3f::ZERO,
+            frame: 4,
+            skinnum: 0xd0,
+            alpha: 0.3,
+            flags: q2_shared::constants::RF_BEAM | q2_shared::constants::RF_TRANSLUCENT,
+            ..FxEntity::default()
+        };
+        let smoke = FxEntity {
+            model: Some(MOD_SMOKE),
+            frame: 2,
+            alpha: 0.5,
+            ..FxEntity::default()
+        };
+        let unloaded = FxEntity {
+            model: Some(MOD_FLASH),
+            ..FxEntity::default()
+        };
+        let ents = fx_render_entities(&[laser, smoke, unloaded], &table);
+        assert_eq!(ents.len(), 2);
+        assert_eq!(ents[0].model, q2_render_api::ModelHandle::NONE);
+        assert_eq!(
+            (
+                ents[0].oldorigin,
+                ents[0].frame,
+                ents[0].skinnum,
+                ents[0].alpha
+            ),
+            (Vec3f::ZERO, 4, 0xd0, 0.3)
+        );
+        assert_eq!(ents[1].model, q2_render_api::ModelHandle::new(5));
+        assert_eq!((ents[1].frame, ents[1].alpha), (2, 0.5));
+    }
+
+    #[test]
+    fn effect_particles_lights_and_sounds_reach_the_renderer_and_mixer() {
+        use q2_client::fx::{FxLight, FxSound};
+        use q2_client::particles::DrawParticle;
+        use q2_shared::types::Vec3f;
+        let particles = fx_particles(&[DrawParticle {
+            origin: Vec3f::ONE,
+            color: 0xe0,
+            alpha: 0.25,
+        }]);
+        assert_eq!(particles.len(), 1);
+        let p = &particles[0];
+        assert_eq!((p.origin, p.color, p.alpha), (Vec3f::ONE, 0xe0, 0.25));
+        let lights = fx_dlights(&[FxLight {
+            origin: Vec3f::ONE,
+            intensity: 200.0,
+            color: [1.0, 1.0, 0.0],
+        }]);
+        assert_eq!(lights[0].intensity, 200.0);
+        assert_eq!(lights[0].color, Vec3f::new(1.0, 1.0, 0.0));
+        let sound = FxSound {
+            name: "weapons/rocklx1a.wav",
+            origin: Some(Vec3f::ONE),
+            entnum: 0,
+            channel: 0,
+            volume: 1.0,
+            attenuation: 1.0,
+            timeofs: 0.0,
+        };
+        let named = fx_named_sound(&sound);
+        assert_eq!((named.name, named.origin), (sound.name, sound.origin));
+        let talk = talk_sound();
+        let named = flash_named_sound(&talk);
+        assert_eq!(
+            (named.name, named.origin, named.entnum),
+            ("misc/talk.wav", None, talk.entnum)
+        );
     }
 
     #[test]

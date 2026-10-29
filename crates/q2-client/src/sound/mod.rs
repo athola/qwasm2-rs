@@ -121,6 +121,19 @@ pub fn entity_origin(
     Some(before + (now - before) * lerpfrac)
 }
 
+/// A sound the client starts by name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NamedSound<'a> {
+    pub name: &'a str,
+    pub entnum: i32,
+    pub entchannel: i32,
+    pub volume: f32,
+    pub attenuation: f32,
+    pub timeofs: f32,
+    /// A fixed origin, or `None` to follow the entity.
+    pub origin: Option<Vec3f>,
+}
+
 /// A sound the server started (C `CL_ParseStartSoundPacket`'s fields).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StartSound {
@@ -383,31 +396,31 @@ impl SoundSystem {
         });
     }
 
-    /// C `S_RegisterSound(name)` then `S_StartSound`: a sound the client
-    /// starts itself (muzzle flashes), following entity `entnum`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn start_named_sound(
+    /// C `S_RegisterSound(name)` (or `S_RegisterSexedSound` for a `*`
+    /// name) then `S_StartSound`: a sound the client starts itself, such
+    /// as a muzzle flash or a temp entity's.
+    pub fn start_named_sound<'a>(
         &mut self,
-        entnum: i32,
-        entchannel: i32,
-        name: &str,
-        volume: f32,
-        attenuation: f32,
-        timeofs: f32,
+        sound: &NamedSound,
+        configstring: impl Fn(usize) -> &'a str,
         mut load: impl FnMut(&str) -> Option<Vec<u8>>,
     ) {
-        let id = self.find_or_add(name);
+        let id = if sound.name.starts_with('*') {
+            self.sexed_sound(sound.entnum, sound.name, &configstring, &mut load)
+        } else {
+            self.find_or_add(sound.name)
+        };
         if !self.load(id, &mut load) {
             return;
         }
         self.pending.push(PlaySound {
             sfx: id,
-            entnum,
-            entchannel,
-            origin: None,
-            volume,
-            attenuation,
-            timeofs,
+            entnum: sound.entnum,
+            entchannel: sound.entchannel,
+            origin: sound.origin,
+            volume: sound.volume,
+            attenuation: sound.attenuation,
+            timeofs: sound.timeofs,
         });
     }
 
