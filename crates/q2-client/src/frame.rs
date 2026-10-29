@@ -128,6 +128,12 @@ impl FrameHistory {
     /// and turned by the player state's lerped `gunoffset`/`gunangles`.
     /// None without a gun model, or above 90 degrees fov (C `cl_gun` 1).
     /// C ref: `CL_AddViewWeapon` (client/cl_entities.c).
+    /// The gun offsets of the previous and newest frames (C `ops` and `ps`
+    /// `gunoffset` in `CL_AddViewWeapon`).
+    pub fn gun_offsets(&self) -> (Vec3f, Vec3f) {
+        (self.old_ps.gunoffset, self.ps.gunoffset)
+    }
+
     pub fn view_weapon(&self, vieworg: Vec3f, viewangles: Vec3f, lerp: f32) -> Option<ViewWeapon> {
         let (ps, ops) = (&self.ps, &self.old_ps);
         if ps.fov > 90.0 || ps.gunindex == 0 {
@@ -191,6 +197,15 @@ mod tests {
         assert_eq!(gun.angles, Vec3f::new(0.0, 92.5, 0.0));
         assert_eq!((gun.frame, gun.oldframe), (7, 6));
         assert_eq!(gun.backlerp, 0.75);
+    }
+
+    #[test]
+    fn the_gun_offsets_are_the_previous_and_newest_frames() {
+        let history = two_frames(&gun_ps(5, 6, 1.0, 0.0), &gun_ps(5, 7, 2.0, 0.0));
+        assert_eq!(
+            history.gun_offsets(),
+            (Vec3f::new(1.0, 0.0, 0.0), Vec3f::new(2.0, 0.0, 0.0))
+        );
     }
 
     #[test]

@@ -520,9 +520,11 @@ impl Engine {
             cl_time,
             &mut randk,
         );
-        let effects = self
-            .fx
-            .frame(cl_time, lerpfrac, player, vieworg, &mut randk);
+        // Right-handed: there is no `hand` cvar.
+        let view =
+            q2_client::fx::FxView::new(player, vieworg, viewangles, self.frames.gun_offsets(), 0);
+        let mut effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
+        effects.entities.extend(power_screens(&views));
         entities.extend(fx_render_entities(&effects.entities, &self.models));
         lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
@@ -793,6 +795,20 @@ fn fx_render_entities(
                 ..Default::default()
             })
         })
+        .collect()
+}
+
+/// C `CL_AddPacketEntities`' `EF_POWERSCREEN` model over every entity
+/// but the viewer, whom C skips before it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn power_screens(views: &[q2_client::entities::EntityView]) -> Vec<q2_client::fx::FxEntity> {
+    views
+        .iter()
+        .filter(|v| {
+            v.effects & q2_shared::constants::EF_POWERSCREEN != 0
+                && v.flags & q2_shared::constants::RF_VIEWERMODEL == 0
+        })
+        .map(q2_client::fx::powerscreen_entity)
         .collect()
 }
 
@@ -1503,8 +1519,15 @@ mod tests {
                 "model models/objects/smoke/tris.md2",
                 "model models/objects/flash/tris.md2",
                 "model models/monsters/parasite/segment/tris.md2",
+                "model models/ctf/segment/tris.md2",
+                "model models/monsters/parasite/tip/tris.md2",
                 "model models/objects/r_explode/tris.md2",
                 "model sprites/s_bfg2.sp2",
+                "model models/items/armor/effect/tris.md2",
+                "model models/objects/r_explode2/tris.md2",
+                "model models/proj/lightning/tris.md2",
+                "model models/proj/beam/tris.md2",
+                "model models/proj/widowbeam/tris.md2",
                 "model *1",
                 "model models/items/armor/jacket/tris.md2",
                 // C stops at the first empty image configstring.
@@ -1658,6 +1681,8 @@ mod tests {
             |_| q2_render_api::ModelHandle::new(7),
         );
         let view = |modelindex| EntityView {
+            number: 0,
+            effects: 0,
             modelindex,
             frame: 3,
             oldframe: 2,
@@ -1854,6 +1879,37 @@ mod tests {
         );
         assert_eq!(ents[1].model, q2_render_api::ModelHandle::new(5));
         assert_eq!((ents[1].frame, ents[1].alpha), (2, 0.5));
+    }
+
+    #[test]
+    fn power_screens_cover_other_entities_but_not_the_viewer() {
+        use q2_client::entities::EntityView;
+        use q2_shared::constants::{EF_POWERSCREEN, RF_VIEWERMODEL};
+        let view = |effects, flags| EntityView {
+            number: 3,
+            effects,
+            modelindex: 2,
+            frame: 5,
+            oldframe: 4,
+            backlerp: 0.5,
+            origin: q2_shared::types::Vec3f::ONE,
+            oldorigin: q2_shared::types::Vec3f::ONE,
+            angles: q2_shared::types::Vec3f::ZERO,
+            skinnum: 0,
+            flags,
+            alpha: 1.0,
+        };
+        let screens = power_screens(&[
+            view(EF_POWERSCREEN, 0),
+            view(0, 0),
+            view(EF_POWERSCREEN, RF_VIEWERMODEL),
+        ]);
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].model, Some(q2_client::fx::MOD_POWERSCREEN));
+        assert_eq!(
+            (screens[0].frame, screens[0].origin),
+            (0, q2_shared::types::Vec3f::ONE)
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub mod fx;
 pub mod input;
 pub mod layout;
 pub mod lightstyles;
+pub mod newfx;
 pub mod notify;
 pub mod parse;
 pub mod particle_fx;

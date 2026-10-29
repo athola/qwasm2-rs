@@ -145,8 +145,12 @@ effects, and the deathmatch rules end matches through C's intermission.
   its frames (#32). Temp entities, entity events, trails and flash
   smoke are drawn by the browser client (`q2_client::fx`, C
   `cl_tempentities.c`, `cl_particles.c`, `cl_effects.c`) through the
-  renderer's particles, beams and sprites; mission-pack temp entities
-  and effect flags are not ported. Brush models moved by doors take dlights at their rest
+  renderer's particles, beams and sprites, mission-pack ones (rogue,
+  xatrix, CTF: `q2_client::newfx`, sustains, player beams, lightning)
+  included; colour shells and power screens draw as C's colour-only
+  models. The rogue shell combinations apply only with game `rogue`,
+  which this port never runs, and there is no `hand` cvar (heat beams
+  start right-handed). Brush models moved by doors take dlights at their rest
   position.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends

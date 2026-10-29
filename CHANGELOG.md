@@ -137,6 +137,14 @@ All notable changes to qwasm2-rs are documented here.
 - The GL3 renderer draws in C `GL3_RenderView` order: beams and sprites
   inside the opaque and translucent entity passes in list order, then
   particles, then the world's translucent surfaces over everything
+- Mission-pack client effects (C `cl_newfx.c` and the rogue, xatrix and
+  CTF cases of `CL_ParseTEnt`): every non-base temp entity, steam, widow
+  and nuke sustains, heat beams from the player's gun, lightning, the
+  grapple cable, and the trails and lights of every effect flag;
+  translucent BFG balls, plasma and spheres, spinning lights
+- Colour shells: quad, pentagram, double and half damage and the power
+  shield draw C's second, colour-only model pushed out along the vertex
+  normals, and power screens their armour shell (`RF_SHELL_*`)
 - Map lasers (C `target_laser`): beams aimed along their angles or at a
   target, in the five spawnflag colours, burning what they cross, with
   sparks where they land when they move; the browser draws a beam in one

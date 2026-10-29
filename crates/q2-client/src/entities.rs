@@ -1,11 +1,13 @@
 //! Entities to draw between two server frames. C ref: `CL_AddPacketEntities`
 //! (client/cl_entities.c) and the no-lerp rules of `CL_ParseEntity`
-//! (client/cl_parse.c). Not done: particle and light effects, shells
-//! (EF_QUAD and friends), beams' colour and player skins.
+//! (client/cl_parse.c). Particle trails and lights are `fx`'s; player
+//! skins are not done.
 
 use q2_shared::constants::{
-    EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_ROTATE, EV_OTHER_TELEPORT,
-    EV_PLAYER_TELEPORT, RF_BEAM, RF_FRAMELERP, RF_TRANSLUCENT, RF_VIEWERMODEL,
+    EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_COLOR_SHELL, EF_DOUBLE, EF_HALF_DAMAGE,
+    EF_PENT, EF_QUAD, EF_ROTATE, EF_SPINNINGLIGHTS, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT, RF_BEAM,
+    RF_FRAMELERP, RF_SHELL_BLUE, RF_SHELL_DOUBLE, RF_SHELL_GREEN, RF_SHELL_HALF_DAM, RF_SHELL_RED,
+    RF_TRANSLUCENT, RF_VIEWERMODEL,
 };
 use q2_shared::types::{EntityState, Vec3f};
 
@@ -13,6 +15,9 @@ use q2_shared::types::{EntityState, Vec3f};
 /// model still as its `CS_MODELS` index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityView {
+    /// The entity's number and `EF_*` effects, for what the effects add.
+    pub number: i32,
+    pub effects: u32,
     pub modelindex: i32,
     pub frame: i32,
     pub oldframe: i32,
@@ -100,7 +105,7 @@ pub fn entity_views(
     current
         .iter()
         .filter(|s| s.modelindex != 0)
-        .map(|s| {
+        .flat_map(|s| {
             let reset;
             let prev = match previous
                 .binary_search_by_key(&s.number, |p| p.number)
@@ -121,12 +126,17 @@ pub fn entity_views(
                     &reset
                 }
             };
-            let mut flags = s.renderfx;
-            if s.number == playernum + 1 {
+            let (shelled, renderfx) = shell_effects(s.effects, s.renderfx);
+            // C: the renderfx go on the colour shell entity.
+            let mut flags = if shelled { 0 } else { renderfx };
+            let viewer = s.number == playernum + 1;
+            if viewer {
                 flags |= RF_VIEWERMODEL; // only seen in mirrors / third person
             }
             let angles = if s.effects & EF_ROTATE != 0 {
                 Vec3f::new(0.0, autorotate, 0.0)
+            } else if s.effects & EF_SPINNINGLIGHTS != 0 {
+                Vec3f::new(0.0, anglemod((time_ms / 2) as f32) + s.angles.y, 180.0)
             } else {
                 Vec3f::new(
                     lerp_angle(prev.angles.x, s.angles.x, lerpfrac),
@@ -142,7 +152,19 @@ pub fn entity_views(
                 let origin = prev.origin + (s.origin - prev.origin) * lerpfrac;
                 (origin, origin)
             };
-            EntityView {
+            // C: "only used for black hole model right now".
+            let mut alpha = if renderfx & RF_TRANSLUCENT != 0 && renderfx & RF_BEAM == 0 {
+                0.70
+            } else {
+                1.0
+            };
+            if let Some(effect_alpha) = crate::fx::effect_alpha(s.effects) {
+                flags |= RF_TRANSLUCENT;
+                alpha = effect_alpha;
+            }
+            let view = EntityView {
+                number: s.number,
+                effects: s.effects,
                 modelindex: s.modelindex,
                 frame: anim_frame(s, time_ms),
                 oldframe: prev.frame,
@@ -152,14 +174,69 @@ pub fn entity_views(
                 angles,
                 skinnum: s.skinnum,
                 flags,
-                alpha: if flags & RF_TRANSLUCENT != 0 {
-                    0.70
-                } else {
-                    1.0
-                },
-            }
+                alpha,
+            };
+            // C skips the viewer before adding its entities; its own model is
+            // kept here, flagged, for the renderer to leave out.
+            let shell = (shelled && !viewer).then(|| EntityView {
+                flags: shell_combinations(renderfx, false) | RF_TRANSLUCENT,
+                alpha: 0.30,
+                ..view.clone()
+            });
+            std::iter::once(view).chain(shell)
         })
         .collect()
+}
+
+/// C's "quad and pent can do different things on client": `EF_PENT`,
+/// `EF_QUAD`, `EF_DOUBLE` and `EF_HALF_DAMAGE` become a red, blue, yellow
+/// or grey shell. Whether the entity has a colour shell, and its renderfx
+/// with the shell colours.
+fn shell_effects(effects: u32, renderfx: i32) -> (bool, i32) {
+    let mut renderfx = renderfx;
+    for (effect, shell) in [
+        (EF_PENT, RF_SHELL_RED),
+        (EF_QUAD, RF_SHELL_BLUE),
+        (EF_DOUBLE, RF_SHELL_DOUBLE),
+        (EF_HALF_DAMAGE, RF_SHELL_HALF_DAM),
+    ] {
+        if effects & effect != 0 {
+            renderfx |= shell;
+        }
+    }
+    let shelled = effects & (EF_COLOR_SHELL | EF_PENT | EF_QUAD | EF_DOUBLE | EF_HALF_DAMAGE) != 0;
+    (shelled, renderfx)
+}
+
+/// C's fix-ups of clashing shells, which it makes only when the game
+/// directory is `rogue` (this port always runs `baseq2`): half damage gives
+/// way to any other shell, and double damage turns red purple and blue
+/// cyan, or green if green is on too.
+pub fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
+    let mut renderfx = renderfx;
+    if !rogue {
+        return renderfx;
+    }
+    if renderfx & RF_SHELL_HALF_DAM != 0
+        && renderfx & (RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_DOUBLE) != 0
+    {
+        renderfx &= !RF_SHELL_HALF_DAM;
+    }
+    if renderfx & RF_SHELL_DOUBLE != 0 {
+        if renderfx & (RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_GREEN) != 0 {
+            renderfx &= !RF_SHELL_DOUBLE;
+        }
+        if renderfx & RF_SHELL_RED != 0 {
+            renderfx |= RF_SHELL_BLUE;
+        } else if renderfx & RF_SHELL_BLUE != 0 {
+            if renderfx & RF_SHELL_GREEN != 0 {
+                renderfx &= !RF_SHELL_BLUE;
+            } else {
+                renderfx |= RF_SHELL_GREEN;
+            }
+        }
+    }
+    renderfx
 }
 
 /// C `CL_AddPacketEntities` for `RF_BEAM`: the four colours are packed in
@@ -177,6 +254,9 @@ pub fn pick_beam_colours(views: &mut [EntityView], randk: &mut impl FnMut() -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use q2_shared::constants::{
+        EF_BFG, EF_PLASMA, EF_POWERSCREEN, EF_SPHERETRANS, EF_TRACKERTRAIL,
+    };
 
     /// A state as the server sends it: `old_origin` is where the entity
     /// was when the frame began, here where it is.
@@ -281,6 +361,113 @@ mod tests {
 
     fn plain_modelindex() -> i32 {
         state(5, Vec3f::ZERO, 0).modelindex
+    }
+
+    #[test]
+    fn spinning_lights_spin_on_client_time_upside_down() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_SPINNINGLIGHTS;
+        s.angles = Vec3f::new(10.0, 30.0, 0.0);
+        let view = &entity_views(&[s], &[], 1.0, 200, 0)[0];
+        // C: (0, anglemod(cl.time / 2) + angles[1], 180).
+        assert!(
+            (view.angles - Vec3f::new(0.0, 130.0, 180.0)).length() < 0.01,
+            "{:?}",
+            view.angles
+        );
+    }
+
+    #[test]
+    fn bfg_plasma_and_sphere_effects_draw_translucent_at_their_alpha() {
+        for (effects, alpha) in [
+            (EF_BFG, 0.30),
+            (EF_PLASMA, 0.6),
+            (EF_SPHERETRANS, 0.3),
+            (EF_SPHERETRANS | EF_TRACKERTRAIL, 0.6),
+        ] {
+            let mut s = state(4, Vec3f::ZERO, 0);
+            s.effects = effects;
+            let view = &entity_views(&[s], &[], 1.0, 0, 0)[0];
+            assert_ne!(view.flags & RF_TRANSLUCENT, 0);
+            assert_eq!(view.alpha, alpha, "{effects:#x}");
+        }
+    }
+
+    #[test]
+    fn a_view_keeps_its_entity_number_and_effects() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_POWERSCREEN;
+        let view = &entity_views(&[s], &[], 1.0, 0, 0)[0];
+        assert_eq!((view.number, view.effects), (4, EF_POWERSCREEN));
+    }
+
+    #[test]
+    fn a_quad_entity_draws_plain_then_again_as_a_blue_shell() {
+        let mut s = state(4, Vec3f::ZERO, 3);
+        s.effects = EF_QUAD;
+        s.renderfx = RF_TRANSLUCENT;
+        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 2);
+        // C: the renderfx go on the shell; the model keeps C's 0.70 alpha.
+        assert_eq!(views[0].flags, 0);
+        assert_eq!(
+            views[1].flags,
+            RF_SHELL_BLUE | RF_TRANSLUCENT,
+            "{:#x}",
+            views[1].flags
+        );
+        assert_eq!(views[1].alpha, 0.30);
+        assert_eq!(
+            (views[1].modelindex, views[1].frame),
+            (views[0].modelindex, views[0].frame)
+        );
+    }
+
+    #[test]
+    fn pent_double_half_damage_and_server_shells_each_pick_their_colour() {
+        for (effects, renderfx, shell) in [
+            (EF_PENT, 0, RF_SHELL_RED),
+            (EF_DOUBLE, 0, RF_SHELL_DOUBLE),
+            (EF_HALF_DAMAGE, 0, RF_SHELL_HALF_DAM),
+            (EF_COLOR_SHELL, RF_SHELL_GREEN, RF_SHELL_GREEN),
+        ] {
+            let mut s = state(4, Vec3f::ZERO, 0);
+            s.effects = effects;
+            s.renderfx = renderfx;
+            let views = entity_views(&[s], &[], 1.0, 0, 0);
+            assert_eq!(views[1].flags, shell | RF_TRANSLUCENT, "{effects:#x}");
+        }
+    }
+
+    #[test]
+    fn the_viewer_gets_no_shell() {
+        let mut s = state(1, Vec3f::ZERO, 0);
+        s.effects = EF_QUAD;
+        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].flags, RF_VIEWERMODEL);
+    }
+
+    #[test]
+    fn rogue_turns_clashing_shells_into_c_colours() {
+        let rogue = |fx| shell_combinations(fx, true);
+        assert_eq!(
+            rogue(RF_SHELL_RED | RF_SHELL_DOUBLE),
+            RF_SHELL_RED | RF_SHELL_BLUE
+        );
+        assert_eq!(
+            rogue(RF_SHELL_BLUE | RF_SHELL_DOUBLE),
+            RF_SHELL_BLUE | RF_SHELL_GREEN
+        );
+        assert_eq!(
+            rogue(RF_SHELL_BLUE | RF_SHELL_GREEN | RF_SHELL_DOUBLE),
+            RF_SHELL_GREEN
+        );
+        assert_eq!(rogue(RF_SHELL_HALF_DAM | RF_SHELL_RED), RF_SHELL_RED);
+        assert_eq!(rogue(RF_SHELL_DOUBLE), RF_SHELL_DOUBLE);
+        // Only the rogue game dir recombines them.
+        let mixed = RF_SHELL_RED | RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM;
+        assert_eq!(shell_combinations(mixed, false), mixed);
     }
 
     #[test]

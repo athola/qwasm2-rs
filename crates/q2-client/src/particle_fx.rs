@@ -4,11 +4,11 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use q2_shared::constants::{EF_GIB, EF_ROCKET, MZ_LOGIN, MZ_LOGOUT};
+use q2_shared::constants::{EF_GIB, EF_GREENGIB, EF_ROCKET, MZ_LOGIN, MZ_LOGOUT};
 use q2_shared::types::Vec3f;
 
 use crate::particles::{
-    crandk, frandk, jitter, vector_normalize, Particles, MAX_PARTICLES, PARTICLE_GRAVITY,
+    crandk, frandk, vector_normalize, Particles, MAX_PARTICLES, PARTICLE_GRAVITY,
 };
 
 /// C `NUMVERTEXNORMALS`.
@@ -29,14 +29,14 @@ fn bytedirs() -> &'static [Vec3f; NUM_VERTEX_NORMALS] {
 
 /// C `(int)VectorNormalize(vec)`: the unit direction and the truncated
 /// length the trail loops count down.
-fn trail_dir(start: Vec3f, end: Vec3f) -> (Vec3f, i32) {
+pub(crate) fn trail_dir(start: Vec3f, end: Vec3f) -> (Vec3f, i32) {
     let mut vec = end - start;
     let len = vector_normalize(&mut vec) as i32;
     (vec, len)
 }
 
 /// C `MakeNormalVectors`: two unit vectors square to `forward`.
-fn make_normal_vectors(forward: Vec3f) -> (Vec3f, Vec3f) {
+pub(crate) fn make_normal_vectors(forward: Vec3f) -> (Vec3f, Vec3f) {
     // This rotate and negate guarantees a vector not colinear with forward.
     let mut right = Vec3f::new(forward.z, -forward.x, forward.y);
     let d = right.dot(forward);
@@ -185,7 +185,8 @@ impl Particles {
         }
     }
 
-    /// A blaster bolt's wall impact. C ref: `CL_BlasterParticles`.
+    /// A blaster bolt's wall impact: `blaster_particles2` in 0xe0.
+    /// C ref: `CL_BlasterParticles`.
     pub fn blaster_particles(
         &mut self,
         org: Vec3f,
@@ -193,19 +194,7 @@ impl Particles {
         time: i32,
         randk: &mut impl FnMut() -> u32,
     ) {
-        for _ in 0..40 {
-            let Some(p) = self.alloc() else { return };
-            p.time = time as f32;
-            p.color = 0xe0 + (randk() & 7) as i32;
-            let d = (randk() & 15) as f32;
-            for j in 0..3 {
-                p.org[j] = org[j] + jitter(randk) + d * dir[j];
-                p.vel[j] = dir[j] * 30.0 + crandk(randk) * 40.0;
-            }
-            p.accel = Vec3f::new(0.0, 0.0, -PARTICLE_GRAVITY);
-            p.alpha = 1.0;
-            p.alphavel = -1.0 / (0.5 + frandk(randk) * 0.3);
-        }
+        self.blaster_particles2(org, dir, 0xe0, time, randk);
     }
 
     /// C ref: `CL_BlasterTrail`.
@@ -234,9 +223,9 @@ impl Particles {
         }
     }
 
-    /// Blood behind a gib (`EF_GIB` in `flags`) or smoke behind a grenade
-    /// or rocket, thinning as `trailcount` (C `centity_t.trailcount`)
-    /// runs down. C's int `len -= 0.5` drops a whole unit per half-unit
+    /// Blood behind a gib (`EF_GIB` in `flags`, green for `EF_GREENGIB`)
+    /// or smoke behind a grenade or rocket, thinning as `trailcount` (C
+    /// `centity_t.trailcount`) runs down. C's int `len -= 0.5` drops a whole unit per half-unit
     /// step; kept. C ref: `CL_DiminishingTrail`.
     pub fn diminishing_trail(
         &mut self,
@@ -269,6 +258,14 @@ impl Particles {
                 if flags & EF_GIB != 0 {
                     p.alphavel = -1.0 / (1.0 + frandk(randk) * 0.4);
                     p.color = 0xe8 + (randk() & 7) as i32;
+                    for j in 0..3 {
+                        p.org[j] = mv[j] + crandk(randk) * orgscale;
+                        p.vel[j] = crandk(randk) * velscale;
+                    }
+                    p.vel.z -= PARTICLE_GRAVITY;
+                } else if flags & EF_GREENGIB != 0 {
+                    p.alphavel = -1.0 / (1.0 + frandk(randk) * 0.4);
+                    p.color = 0xdb + (randk() & 7) as i32;
                     for j in 0..3 {
                         p.org[j] = mv[j] + crandk(randk) * orgscale;
                         p.vel[j] = crandk(randk) * velscale;
@@ -526,7 +523,7 @@ impl Particles {
 mod tests {
     use super::*;
     use crate::particles::Particles;
-    use q2_shared::constants::{EF_GIB, EF_GRENADE, MZ_LOGIN, MZ_LOGOUT, MZ_RESPAWN};
+    use q2_shared::constants::{EF_GIB, EF_GREENGIB, EF_GRENADE, MZ_LOGIN, MZ_LOGOUT, MZ_RESPAWN};
 
     fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
         let mut i = 0;
@@ -655,6 +652,22 @@ mod tests {
         assert_eq!(p.accel, Vec3f::ZERO);
         // velscale 5: crandk(0) * 5 - gravity.
         assert_eq!(p.vel.z, -5.0 - PARTICLE_GRAVITY);
+    }
+
+    #[test]
+    fn green_gibs_bleed_green_unless_they_are_also_red_gibs() {
+        let mut ps = Particles::default();
+        let end = Vec3f::new(3.0, 0.0, 0.0);
+        let mut trailcount = 1024;
+        let green = EF_GRENADE | EF_GREENGIB;
+        ps.diminishing_trail(Vec3f::ZERO, end, &mut trailcount, green, 0, &mut rng(&[0]));
+        let p = ps.active[0];
+        assert_eq!((p.color, p.accel), (0xdb, Vec3f::ZERO));
+        assert_eq!(p.vel.z, -15.0 - PARTICLE_GRAVITY);
+        ps.clear();
+        let both = EF_GIB | EF_GREENGIB;
+        ps.diminishing_trail(Vec3f::ZERO, end, &mut 1024, both, 0, &mut rng(&[0]));
+        assert_eq!(ps.active[0].color, 0xe8);
     }
 
     #[test]
