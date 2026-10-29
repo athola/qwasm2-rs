@@ -341,6 +341,8 @@ pub const DF_MODELTEAMS: i32 = 0x0000_0080;
 pub const DF_NO_FRIENDLY_FIRE: i32 = 0x0000_0100;
 pub const DF_FORCE_RESPAWN: i32 = 0x0000_0400;
 pub const DF_ALLOW_EXIT: i32 = 0x0000_1000;
+/// `dmflags` bit: a dying player drops a running quad (C `DF_QUAD_DROP`).
+pub const DF_QUAD_DROP: i32 = 0x0000_4000;
 
 /// `dmflags` bit: deathmatch powerups are used when picked up (C
 /// `DF_INSTANT_ITEMS`).

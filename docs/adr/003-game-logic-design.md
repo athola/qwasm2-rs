@@ -137,8 +137,13 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
-- **Weapons.** Right-handed only (no userinfo `hand`), `aimfix` and
-  `g_swap_speed` at their C defaults. The game writes no temp entities
+- **Weapons.** Right-handed only (no userinfo `hand`), `aimfix`,
+  `g_swap_speed` and `coop_pickup_weapons` at their yquake2 defaults.
+  `CheckNeedPass` has nothing to do (it publishes password cvars, and
+  there are none); items register their models and sounds when first
+  used rather than through `PrecacheItem`; the player model's animation
+  (`G_SetClientFrame`, seen only by other players) is not run, though
+  the weapon code sets its frames. The game writes no temp entities
   for impacts, explosions or trails, and the renderer draws no
   particles, so those are invisible; monster flash particles and smoke
   likewise. Brush models moved by doors take dlights at their rest

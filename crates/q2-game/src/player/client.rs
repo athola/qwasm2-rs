@@ -737,13 +737,16 @@ impl GameWorld {
 
         for key in keys {
             self.world_effects(key);
+            let bob = self.calc_bob(key);
             self.update_player_view(key);
+            self.calc_gun_offset(key, &bob);
             // After the view offset, so eye contents are right.
             self.calc_blend(key);
             self.update_player_stats(key);
             self.set_client_effects(key);
             self.set_client_sound(key);
             if let Some(client) = self.client_mut(key) {
+                client.oldviewangles = client.ps.viewangles;
                 client.kick_origin = Vec3f::ZERO;
                 client.kick_angles = Vec3f::ZERO;
             }
@@ -841,6 +844,12 @@ pub fn player_die(
     ent.svflags |= SvFlags::DEADMONSTER.bits();
     let first_death = ent.game.deadflag == DeadFlag::No;
     let time = world.level.time;
+    if first_death {
+        world.toss_client_weapon(key);
+    }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
     if let Some(client) = ent
         .client
         .and_then(|slot| world.clients.get_mut(slot))
@@ -863,6 +872,61 @@ pub fn player_die(
     }
     ent.game.deadflag = DeadFlag::Dead;
     world.link_entity(key);
+}
+
+impl GameWorld {
+    /// A deathmatch death drops the weapon in hand if it has ammo (never
+    /// the blaster) and, with `DF_QUAD_DROP`, a quad with more than a
+    /// second left, which vanishes when its time would have run out; the
+    /// two go 22.5 degrees either side of the aim. C ref:
+    /// `TossClientWeapon` (player/client.c).
+    pub fn toss_client_weapon(&mut self, key: EntityKey) {
+        if !self.game.deathmatch {
+            return;
+        }
+        let framenum = self.level.framenum;
+        let quad_drop = self.game.dmflags & crate::constants::DF_QUAD_DROP != 0;
+        let blaster = self.find_item_by_name("Blaster");
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        let item = client
+            .pers
+            .weapon
+            .filter(|_| client.pers.inventory[client.ammo_index] != 0)
+            .filter(|&w| Some(w) != blaster);
+        let quad_left = client.quad_framenum - framenum;
+        let quad = quad_drop && client.quad_framenum > framenum + 10;
+        let spread = if item.is_some() && quad { 22.5 } else { 0.0 };
+        let turn = |world: &mut GameWorld, degrees: f32| {
+            if let Some(client) = world.client_mut(key) {
+                client.v_angle.y += degrees;
+            }
+        };
+        if let Some(item) = item {
+            turn(self, -spread);
+            let drop = self.drop_item(key, item);
+            turn(self, spread);
+            if let Some(e) = drop.and_then(|d| self.entities.get_mut(d)) {
+                e.game.spawnflags = crate::items::DROPPED_PLAYER_ITEM;
+            }
+        }
+        if quad {
+            let Some(quad_item) = self.find_item("item_quad") else {
+                return;
+            };
+            turn(self, spread);
+            let drop = self.drop_item(key, quad_item);
+            turn(self, -spread);
+            let time = self.level.time;
+            if let Some(e) = drop.and_then(|d| self.entities.get_mut(d)) {
+                e.game.spawnflags |= crate::items::DROPPED_PLAYER_ITEM;
+                e.touch = Some(crate::items::touch_item);
+                e.game.nextthink = time + quad_left as f32 * FRAMETIME;
+                e.think = Some(crate::items::free_drop);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1365,6 +1429,91 @@ mod tests {
         world.client_mut(key).unwrap().latched_buttons = BUTTON_USE;
         world.client_begin_server_frame(key);
         assert_eq!(*gi.commands.borrow(), ["menu_loadgame\n"]);
+    }
+
+    /// A deathmatch player holding `weapon` with `ammo` rounds, about to die.
+    fn armed_for_death(weapon: &str, ammo: (&str, i32)) -> (GameWorld, EntityKey) {
+        let (mut world, _) = crate::world::test_world_recording();
+        world.init_items();
+        world.game.deathmatch = true;
+        world.level.framenum = 100;
+        world.level.time = 10.0;
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let weapon = world.find_item_by_name(weapon).unwrap();
+        let ammo_item = world.find_item_by_name(ammo.0).unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.weapon = Some(weapon);
+        client.pers.inventory[weapon] = 1;
+        client.ammo_index = ammo_item;
+        client.pers.inventory[ammo_item] = ammo.1;
+        (world, key)
+    }
+
+    fn dropped(world: &GameWorld, classname: &str) -> Option<EntityKey> {
+        world.find_by_classname(None, classname)
+    }
+
+    #[test]
+    fn a_deathmatch_death_drops_the_loaded_weapon() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let gun = dropped(&world, "weapon_shotgun").expect("dropped");
+        assert_eq!(
+            world.entities.get(gun).unwrap().game.spawnflags,
+            crate::items::DROPPED_PLAYER_ITEM
+        );
+    }
+
+    #[test]
+    fn no_drop_for_the_blaster_an_empty_gun_or_single_player() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 0));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_shotgun").is_none(), "no ammo");
+
+        let (mut world, key) = armed_for_death("Blaster", ("Shells", 5));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_blaster").is_none());
+
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.deathmatch = false;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_shotgun").is_none());
+    }
+
+    #[test]
+    fn quad_drop_throws_the_quad_with_its_time_left_beside_the_gun() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.dmflags = crate::constants::DF_QUAD_DROP;
+        world.client_mut(key).unwrap().quad_framenum = 150;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let quad = dropped(&world, "item_quad").expect("quad dropped");
+        let e = world.entities.get(quad).unwrap();
+        assert_eq!(
+            e.game.spawnflags,
+            crate::items::DROPPED_ITEM | crate::items::DROPPED_PLAYER_ITEM
+        );
+        assert_eq!(e.game.nextthink, 15.0, "50 frames left");
+        assert!(std::ptr::fn_addr_eq(
+            e.touch.unwrap(),
+            crate::items::touch_item as crate::entity::TouchFn
+        ));
+        // The gun and the quad go 22.5 degrees either side.
+        let gun = world
+            .entities
+            .get(dropped(&world, "weapon_shotgun").unwrap())
+            .unwrap();
+        assert!((gun.velocity.normalize() - e.velocity.normalize()).length() > 0.1);
+        assert_eq!(world.client(key).unwrap().v_angle.y, 0.0, "aim restored");
+    }
+
+    #[test]
+    fn a_nearly_spent_quad_is_not_dropped() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.dmflags = crate::constants::DF_QUAD_DROP;
+        world.client_mut(key).unwrap().quad_framenum = 110;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "item_quad").is_none(), "10 frames or less");
     }
 
     #[test]

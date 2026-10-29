@@ -1045,37 +1045,66 @@ fn pickup_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -
 
 /// Pickup handler for ammo items.
 /// C ref: `Pickup_Ammo` (g_items.c:714-764)
+/// C `Add_Ammo`: up to the cap for its kind; false when already full.
+fn add_ammo(world: &mut GameWorld, player: EntityKey, ammo: usize, count: i32) -> bool {
+    let tag = world.items[ammo].tag;
+    let Some(client) = world.client_mut(player) else {
+        return false;
+    };
+    let max = client.pers.ammo_max.for_tag(tag);
+    if max == 0 || client.pers.inventory[ammo] >= max {
+        return false;
+    }
+    client.pers.inventory[ammo] = (client.pers.inventory[ammo] + count).min(max);
+    true
+}
+
+/// Whether an item entity was dropped rather than placed by the map.
+fn dropped(world: &GameWorld, item_ent: EntityKey) -> bool {
+    world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.spawnflags & (DROPPED_ITEM | DROPPED_PLAYER_ITEM) != 0)
+}
+
+/// Take a box of ammo (a dropped one holds what was dropped); grenades
+/// picked up for the first time become the next weapon like a new gun,
+/// and deathmatch map ammo comes back after 30 seconds. C ref:
+/// `Pickup_Ammo`.
 fn pickup_ammo(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
-    let item_idx = world.entities.get(item_ent).and_then(|e| e.game.item);
-    let item_idx = match item_idx {
-        Some(i) => i,
-        None => return false,
-    };
-
-    let (quantity, tag) = match world.items.get(item_idx) {
-        Some(item) => (item.quantity, item.tag),
-        None => return false,
-    };
-
-    // C ITEM_INDEX: ammo counts live at the ammo item's own index.
-    let inv_slot = item_idx;
-    let Some(pers) = world.client(player).map(|c| &c.pers) else {
+    let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
         return false;
     };
-    let max = pers.ammo_max.for_tag(tag);
-    if max == 0 {
+    let item = &world.items[item_idx];
+    let weapon = item.flags.contains(ItemFlags::WEAPON);
+    let ent_count = world.entities.get(item_ent).map_or(0, |e| e.game.count);
+    let count = if weapon && world.game.dmflags & DF_INFINITE_AMMO != 0 {
+        1000
+    } else if ent_count != 0 {
+        ent_count
+    } else {
+        item.quantity
+    };
+    let oldcount = world
+        .client(player)
+        .map_or(0, |c| c.pers.inventory[item_idx]);
+    if !add_ammo(world, player, item_idx, count) {
         return false;
     }
-    let current = pers.inventory[inv_slot];
-
-    if current >= max {
-        return false; // Already at max.
+    if weapon && oldcount == 0 {
+        let blaster = world.find_item_by_name("Blaster");
+        let deathmatch = world.game.deathmatch;
+        if let Some(client) = world.client_mut(player) {
+            if client.pers.weapon != Some(item_idx)
+                && (!deathmatch || client.pers.weapon == blaster)
+            {
+                client.newweapon = Some(item_idx);
+            }
+        }
     }
-
-    if let Some(client) = world.client_mut(player) {
-        client.pers.inventory[inv_slot] = (current + quantity).min(max);
+    if !dropped(world, item_ent) && world.game.deathmatch {
+        set_respawn(world, item_ent, 30.0);
     }
-
     true
 }
 
@@ -1124,29 +1153,64 @@ fn pickup_pack(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -
 
 /// Pickup handler for weapon items.
 /// C ref: `Pickup_Weapon` (player/weapon.c:268-336)
+/// Take a weapon and a load of its ammo (none from a dropped one). With
+/// weapons stay or in coop, a player who has it leaves a map weapon for
+/// the others; deathmatch map weapons respawn after 30 seconds. A new
+/// weapon is switched to (deathmatch: only from the blaster). C ref:
+/// `Pickup_Weapon` (player/weapon.c), with `coop_pickup_weapons` 1.
 fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
-    let item_idx = world.entities.get(item_ent).and_then(|e| e.game.item);
-    let item_idx = match item_idx {
-        Some(i) => i,
-        None => return false,
+    let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
+        return false;
     };
-
-    // Add weapon to inventory.
+    let (dmflags, deathmatch, coop) = (world.game.dmflags, world.game.deathmatch, world.game.coop);
+    let has = world
+        .client(player)
+        .is_some_and(|c| c.pers.inventory[item_idx] > 0);
+    let coop_taken = world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.flags.contains(EntityFlags::COOP_TAKEN));
+    // yquake2: with coop_pickup_weapons 1 a weapon is left only once a
+    // coop player took it (id's original left it whenever owned).
+    if (dmflags & DF_WEAPONS_STAY != 0 || coop) && has && !dropped(world, item_ent) && coop_taken {
+        return false; // leave the weapon for others to pick up
+    }
     if let Some(client) = world.client_mut(player) {
         client.pers.inventory[item_idx] += 1;
     }
 
-    // Give some starting ammo.
-    if let Some(item) = world.items.get(item_idx) {
-        if !item.ammo.is_empty() {
-            if let Some(ammo_idx) = find_item_index_by_name(&world.items, item.ammo) {
-                if let Some(ammo_item) = world.items.get(ammo_idx) {
-                    let slot = world.entities.get(player).and_then(|e| e.client);
-                    if let Some(client) = slot.and_then(|s| world.clients.get_mut(s)) {
-                        let max = client.pers.ammo_max.for_tag(ammo_item.tag);
-                        let current = client.pers.inventory[ammo_idx];
-                        client.pers.inventory[ammo_idx] = (current + ammo_item.quantity).min(max);
+    let only_dropped = world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
+    if !only_dropped {
+        // Give them some ammo with it.
+        let ammo = find_item_index_by_name(&world.items, world.items[item_idx].ammo);
+        if let Some(ammo) = ammo {
+            let count = if dmflags & DF_INFINITE_AMMO != 0 {
+                1000
+            } else {
+                world.items[ammo].quantity
+            };
+            add_ammo(world, player, ammo, count);
+        }
+        let player_drop = world
+            .entities
+            .get(item_ent)
+            .is_some_and(|e| e.game.spawnflags & DROPPED_PLAYER_ITEM != 0);
+        if !player_drop {
+            if deathmatch {
+                if dmflags & DF_WEAPONS_STAY != 0 {
+                    if let Some(e) = world.entities.get_mut(item_ent) {
+                        e.game.flags |= EntityFlags::RESPAWN;
                     }
+                } else {
+                    set_respawn(world, item_ent, 30.0);
+                }
+            }
+            if coop {
+                if let Some(e) = world.entities.get_mut(item_ent) {
+                    e.game.flags |= EntityFlags::RESPAWN | EntityFlags::COOP_TAKEN;
                 }
             }
         }
@@ -1154,7 +1218,6 @@ fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
 
     // Switch to a newly owned weapon; deathmatch only from the blaster.
     let blaster = world.find_item_by_name("Blaster");
-    let deathmatch = world.game.deathmatch;
     if let Some(client) = world.client_mut(player) {
         if client.pers.weapon != Some(item_idx)
             && client.pers.inventory[item_idx] == 1
@@ -1163,7 +1226,6 @@ fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
             client.newweapon = Some(item_idx);
         }
     }
-
     true
 }
 
@@ -1781,6 +1843,16 @@ pub fn touch_item(
     if !taken {
         return;
     }
+    // Coop leaves stay-put items in the map unless they were dropped.
+    let stays = world.game.coop
+        && world
+            .entities
+            .get(key)
+            .and_then(|e| e.game.item)
+            .is_some_and(|i| world.items[i].flags.contains(ItemFlags::STAY_COOP));
+    if stays && !dropped(world, key) {
+        return;
+    }
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -1794,9 +1866,7 @@ pub fn touch_item(
 impl GameWorld {
     /// Throw `item` out of `owner`: from its origin along its facing, or
     /// for a client from 24 units ahead of its view, clipped by solids.
-    /// The owner cannot pick it up for the first second. C ref: `Drop_Item`
-    /// (the client view is `ps.viewangles`, which ClientThink keeps equal
-    /// to C `v_angle` while alive).
+    /// The owner cannot pick it up for the first second. C ref: `Drop_Item`.
     pub fn drop_item(&mut self, owner: EntityKey, item: usize) -> Option<EntityKey> {
         let (classname, world_model, effects) = {
             let it = self.items.get(item)?;
@@ -1804,7 +1874,7 @@ impl GameWorld {
         };
         let owner_ent = self.entities.get(owner)?;
         let origin = owner_ent.state.origin;
-        let view = self.client(owner).map(|c| c.ps.viewangles);
+        let view = self.client(owner).map(|c| c.v_angle);
         let angles = owner_ent.state.angles;
         let owner_number = self.number_of(owner);
 
@@ -2125,7 +2195,7 @@ mod tests {
             let ent = world.entities.get_mut(p).unwrap();
             ent.state.origin = Vec3f::new(100.0, 0.0, 50.0);
         }
-        world.client_mut(p).unwrap().ps.viewangles = Vec3f::new(0.0, 90.0, 0.0);
+        world.client_mut(p).unwrap().v_angle = Vec3f::new(0.0, 90.0, 0.0);
         let shells = world.find_item("ammo_shells").unwrap();
 
         // The mock trace reaches its end point unobstructed.
@@ -3129,5 +3199,176 @@ mod tests {
         e.game.nextthink = 15.0;
         touch_item(&mut world, quad, key, None, None);
         assert_eq!(world.client(key).unwrap().quad_framenum, 150);
+    }
+
+    // ---- #16 close-out: Pickup_Ammo / Pickup_Weapon / Drop_Item ----
+
+    fn on_floor(world: &mut GameWorld, classname: &str, spawnflags: i32, count: i32) -> EntityKey {
+        let item = world.find_item(classname).unwrap();
+        let ent = world.spawn().unwrap();
+        let e = world.entities.get_mut(ent).unwrap();
+        e.game.item = Some(item);
+        e.game.classname = classname.into();
+        e.game.spawnflags = spawnflags;
+        e.game.count = count;
+        ent
+    }
+
+    fn pick(world: &mut GameWorld, ent: EntityKey, player: EntityKey) -> bool {
+        let item = world.entities.get(ent).unwrap().game.item.unwrap();
+        let pickup = world.items[item].pickup.unwrap();
+        pickup(world, ent, player)
+    }
+
+    #[test]
+    fn dropped_ammo_gives_back_what_was_dropped() {
+        let (mut world, key, _) = powered();
+        let shells = on_floor(&mut world, "ammo_shells", DROPPED_ITEM, 5);
+        assert!(pick(&mut world, shells, key));
+        assert_eq!(
+            world.client(key).unwrap().pers.inventory[world.find_item("ammo_shells").unwrap()],
+            5
+        );
+    }
+
+    #[test]
+    fn the_first_grenades_are_switched_to_like_a_new_weapon() {
+        let (mut world, key, _) = powered();
+        let grenades = world.find_item("ammo_grenades").unwrap();
+        let ent = on_floor(&mut world, "ammo_grenades", 0, 0);
+        assert!(pick(&mut world, ent, key));
+        assert_eq!(world.client(key).unwrap().newweapon, Some(grenades));
+
+        world.client_mut(key).unwrap().newweapon = None;
+        let more = on_floor(&mut world, "ammo_grenades", 0, 0);
+        assert!(pick(&mut world, more, key));
+        assert_eq!(
+            world.client(key).unwrap().newweapon,
+            None,
+            "already had some"
+        );
+
+        let shells = on_floor(&mut world, "ammo_shells", 0, 0);
+        assert!(pick(&mut world, shells, key));
+        assert_eq!(world.client(key).unwrap().newweapon, None, "not a weapon");
+    }
+
+    #[test]
+    fn deathmatch_grenades_switch_only_from_the_blaster() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.client_mut(key).unwrap().pers.weapon = world.find_item_by_name("Shotgun");
+        let ent = on_floor(&mut world, "ammo_grenades", 0, 0);
+        assert!(pick(&mut world, ent, key));
+        assert_eq!(world.client(key).unwrap().newweapon, None);
+    }
+
+    #[test]
+    fn deathmatch_map_ammo_respawns_after_30_seconds() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 5.0;
+        let ent = on_floor(&mut world, "ammo_shells", 0, 0);
+        assert!(pick(&mut world, ent, key));
+        let e = world.entities.get(ent).unwrap();
+        assert!(e.game.flags.contains(EntityFlags::RESPAWN));
+        assert_eq!(e.game.nextthink, 35.0);
+
+        let dropped = on_floor(&mut world, "ammo_shells", DROPPED_ITEM, 10);
+        assert!(pick(&mut world, dropped, key));
+        assert!(!world
+            .entities
+            .get(dropped)
+            .unwrap()
+            .game
+            .flags
+            .contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn infinite_ammo_fills_weapon_ammo_to_the_cap() {
+        let (mut world, key, _) = powered();
+        world.game.dmflags = DF_INFINITE_AMMO;
+        let ent = on_floor(&mut world, "ammo_grenades", 0, 0);
+        assert!(pick(&mut world, ent, key));
+        let grenades = world.find_item("ammo_grenades").unwrap();
+        assert_eq!(
+            world.client(key).unwrap().pers.inventory[grenades],
+            50,
+            "1000, capped"
+        );
+    }
+
+    #[test]
+    fn a_dropped_weapon_comes_without_ammo() {
+        let (mut world, key, _) = powered();
+        let gun = on_floor(&mut world, "weapon_shotgun", DROPPED_ITEM, 0);
+        assert!(pick(&mut world, gun, key));
+        let shells = world.find_item("ammo_shells").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.inventory[shells], 0);
+    }
+
+    #[test]
+    fn infinite_ammo_weapons_come_with_a_full_load() {
+        let (mut world, key, _) = powered();
+        world.game.dmflags = DF_INFINITE_AMMO;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        assert!(pick(&mut world, gun, key));
+        let shells = world.find_item("ammo_shells").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.inventory[shells], 100);
+    }
+
+    #[test]
+    fn deathmatch_weapons_respawn_or_stay_put() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 5.0;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        assert!(pick(&mut world, gun, key));
+        assert_eq!(world.entities.get(gun).unwrap().game.nextthink, 35.0);
+
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.game.dmflags = DF_WEAPONS_STAY;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        assert!(pick(&mut world, gun, key));
+        let e = world.entities.get(gun).unwrap();
+        assert!(
+            e.game.flags.contains(EntityFlags::RESPAWN),
+            "stays for the next player"
+        );
+        assert_eq!(e.game.nextthink, 0.0, "not hidden for a respawn");
+        // yquake2's coop_pickup_weapons 1: owning it does not block a
+        // deathmatch pickup; only a coop-taken weapon is left alone.
+        assert!(pick(&mut world, gun, key));
+    }
+
+    #[test]
+    fn coop_weapons_stay_for_the_other_players() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        touch_item(&mut world, gun, key, None, None);
+        let e = world.entities.get(gun).unwrap();
+        assert!(e.in_use, "stays in the map");
+        assert!(e.game.flags.contains(EntityFlags::COOP_TAKEN));
+        // Taken once, a player who has it already leaves it.
+        assert!(!pick(&mut world, gun, key));
+    }
+
+    #[test]
+    fn a_player_drop_is_thrown_along_the_aim_not_the_tilted_view() {
+        let mut world = test_world();
+        world.init_items();
+        let p = player(&mut world, 100);
+        let client = world.client_mut(p).unwrap();
+        client.v_angle = Vec3f::new(0.0, 90.0, 0.0);
+        client.ps.viewangles = Vec3f::new(-15.0, 0.0, 40.0);
+        let shells = world.find_item("ammo_shells").unwrap();
+        let dropped = world.drop_item(p, shells).unwrap();
+        assert_near(
+            world.entities.get(dropped).unwrap().velocity,
+            Vec3f::new(0.0, 100.0, 300.0),
+        );
     }
 }

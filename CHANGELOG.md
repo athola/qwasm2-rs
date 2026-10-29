@@ -116,6 +116,14 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- Item pickups match C for weapons and ammo: dropped ammo gives back
+  what was dropped and a dropped weapon brings no ammo (both were free
+  ammo through `drop`), the first grenades are switched to, infinite
+  ammo fills to the cap, and deathmatch and coop items respawn or stay
+  put as in `Pickup_Weapon`/`Pickup_Ammo`/`Touch_Item`; a deathmatch death
+  drops the loaded weapon and, with `DF_QUAD_DROP`, the quad
+  (`TossClientWeapon`); drops follow the aim (`v_angle`); the gun sways
+  with the walk bob and lags behind turns (`SV_CalcGunOffset`)
 - Water, slime and lava act on the player (C `P_WorldEffects`): splash,
   submerge and gasp sounds, drowning once the air runs out (harder each
   second up to 15), the rebreather and envirosuit giving air, lava

@@ -275,6 +275,10 @@ pub struct ClientData {
     pub grenade_blew_up: bool,
     /// Looping sound of the current weapon (C `weapon_sound`).
     pub weapon_sound: i32,
+    /// The walk bob's phase (C `bobtime`) and last frame's view angles
+    /// (C `oldviewangles`), for the gun's sway and turn lag.
+    pub bobtime: f32,
+    pub oldviewangles: Vec3f,
     /// When a dead player may respawn (C `respawn_time`).
     pub respawn_time: f32,
     /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).

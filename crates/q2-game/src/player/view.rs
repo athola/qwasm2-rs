@@ -62,6 +62,17 @@ impl GameWorld {
     }
 }
 
+/// This frame's walk bob (C `ClientEndServerFrame`'s file statics).
+#[derive(Debug, Clone, Copy)]
+pub struct Bob {
+    /// Horizontal speed.
+    pub xyspeed: f32,
+    /// Whole bob cycles; odd ones swing the other way.
+    pub cycle: i32,
+    /// `|sin(bobtime * pi)|`.
+    pub fracsin: f32,
+}
+
 /// Mix `rgb` at alpha `a` over `blend`. C ref: `SV_AddBlend`.
 pub fn add_blend(rgb: [f32; 3], a: f32, blend: &mut [f32; 4]) {
     if a <= 0.0 {
@@ -318,6 +329,81 @@ impl GameWorld {
                 MeansOfDeath::Slime,
             );
         }
+    }
+
+    /// Advance the walk bob: a quicker step at higher speed on the ground,
+    /// none in the air, back to the start when nearly still; ducked steps
+    /// cycle four times as fast. C ref: `ClientEndServerFrame`'s bob part.
+    pub fn calc_bob(&mut self, key: EntityKey) -> Bob {
+        let Some(ent) = self.entities.get(key) else {
+            return Bob {
+                xyspeed: 0.0,
+                cycle: 0,
+                fracsin: 0.0,
+            };
+        };
+        let xyspeed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
+        let on_ground = ent.game.ground_entity.is_some();
+        let Some(client) = self.client_mut(key) else {
+            return Bob {
+                xyspeed,
+                cycle: 0,
+                fracsin: 0.0,
+            };
+        };
+        let bobmove = if xyspeed < 5.0 {
+            client.bobtime = 0.0; // start at beginning of cycle again
+            0.0
+        } else if on_ground {
+            if xyspeed > 210.0 {
+                0.25
+            } else if xyspeed > 100.0 {
+                0.125
+            } else {
+                0.0625
+            }
+        } else {
+            0.0
+        };
+        client.bobtime += bobmove;
+        let mut bobtime = client.bobtime;
+        if client.ps.pmove.pm_flags & q2_common::pmove::PMF_DUCKED != 0 {
+            bobtime *= 4.0;
+        }
+        Bob {
+            xyspeed,
+            cycle: bobtime as i32,
+            fracsin: (bobtime * std::f32::consts::PI).sin().abs(),
+        }
+    }
+
+    /// Sway the gun with the walk bob and lag it behind turns. The
+    /// `gun_x/y/z` development offsets are 0, so `gunoffset` stays zero.
+    /// C ref: `SV_CalcGunOffset` (player/view.c).
+    pub fn calc_gun_offset(&mut self, key: EntityKey, bob: &Bob) {
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        let sway = bob.xyspeed * bob.fracsin;
+        let side = if bob.cycle & 1 != 0 { -1.0 } else { 1.0 };
+        let mut angles = Vec3f::new(sway * 0.005, side * sway * 0.01, side * sway * 0.005);
+        // Gun angles from delta movement.
+        for i in 0..3 {
+            let mut delta = client.oldviewangles[i] - client.ps.viewangles[i];
+            if delta > 180.0 {
+                delta -= 360.0;
+            }
+            if delta < -180.0 {
+                delta += 360.0;
+            }
+            let delta = delta.clamp(-45.0, 45.0);
+            if i == 1 {
+                angles.z += 0.1 * delta;
+            }
+            angles[i] += 0.2 * delta;
+        }
+        client.ps.gunangles = angles;
+        client.ps.gunoffset = Vec3f::ZERO;
     }
 
     /// The player's glows: power armor while it absorbs, quad and
@@ -597,6 +683,108 @@ mod tests {
             world.client(key).unwrap().bonus_alpha,
             0.0,
             "not below zero"
+        );
+    }
+
+    // ---- SV_CalcGunOffset ----
+
+    fn gun_world() -> (GameWorld, EntityKey) {
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        (world, key)
+    }
+
+    fn run_gun(world: &mut GameWorld, key: EntityKey) -> (Vec3f, Vec3f) {
+        let bob = world.calc_bob(key);
+        world.calc_gun_offset(key, &bob);
+        let ps = &world.client(key).unwrap().ps;
+        (ps.gunangles, ps.gunoffset)
+    }
+
+    fn close(a: Vec3f, b: Vec3f) -> bool {
+        (a - b).length() < 1e-4
+    }
+
+    #[test]
+    fn a_still_player_holds_the_gun_level() {
+        let (mut world, key) = gun_world();
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
+        assert_eq!(run_gun(&mut world, key), (Vec3f::ZERO, Vec3f::ZERO));
+    }
+
+    #[test]
+    fn turning_lags_the_gun_behind_the_view() {
+        let (mut world, key) = gun_world();
+        let client = world.client_mut(key).unwrap();
+        client.oldviewangles = Vec3f::new(0.0, 10.0, 0.0);
+        client.ps.viewangles = Vec3f::ZERO;
+        let (angles, _) = run_gun(&mut world, key);
+        assert!(close(angles, Vec3f::new(0.0, 2.0, 1.0)), "{angles:?}");
+
+        // Clamped to 45 degrees and wrapped across 0/360.
+        let client = world.client_mut(key).unwrap();
+        client.oldviewangles = Vec3f::new(100.0, 350.0, 0.0);
+        client.ps.viewangles = Vec3f::new(0.0, 10.0, 0.0);
+        let (angles, _) = run_gun(&mut world, key);
+        assert!(close(angles, Vec3f::new(9.0, -4.0, -2.0)), "{angles:?}");
+    }
+
+    #[test]
+    fn running_on_the_ground_sways_the_gun_with_the_bob() {
+        let (mut world, key) = gun_world();
+        let ground = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.velocity = Vec3f::new(300.0, 0.0, 0.0);
+        ent.game.ground_entity = Some(ground);
+        let (angles, _) = run_gun(&mut world, key);
+        // bobmove 0.25 above 210 u/s: bobtime 0.25, |sin(pi/4)|.
+        let s = (0.25f32 * std::f32::consts::PI).sin() * 300.0;
+        assert!(
+            close(angles, Vec3f::new(s * 0.005, s * 0.01, s * 0.005)),
+            "{angles:?}"
+        );
+        assert_eq!(world.client(key).unwrap().bobtime, 0.25);
+
+        // An odd bob cycle swings yaw and roll the other way.
+        world.client_mut(key).unwrap().bobtime = 1.0;
+        let (angles, _) = run_gun(&mut world, key);
+        assert!(
+            angles.y < 0.0 && angles.z < 0.0 && angles.x > 0.0,
+            "{angles:?}"
+        );
+    }
+
+    #[test]
+    fn the_bob_waits_in_the_air_resets_when_still_and_quickens_ducked() {
+        let (mut world, key) = gun_world();
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(300.0, 0.0, 0.0);
+        world.client_mut(key).unwrap().bobtime = 0.5;
+        world.calc_bob(key);
+        assert_eq!(world.client(key).unwrap().bobtime, 0.5, "airborne");
+
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(2.0, 0.0, 0.0);
+        world.calc_bob(key);
+        assert_eq!(world.client(key).unwrap().bobtime, 0.0, "still");
+
+        let ground = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.velocity = Vec3f::new(150.0, 0.0, 0.0);
+        ent.game.ground_entity = Some(ground);
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        let bob = world.calc_bob(key);
+        assert_eq!(world.client(key).unwrap().bobtime, 0.125);
+        assert_eq!(bob.cycle, 0, "0.125 * 4 = 0.5");
+        assert!((bob.fracsin - 1.0).abs() < 1e-5, "|sin(pi/2)|");
+    }
+
+    #[test]
+    fn the_frame_ends_by_remembering_the_view_angles() {
+        let (mut world, key) = gun_world();
+        world.client_mut(key).unwrap().ps.viewangles = Vec3f::new(5.0, 6.0, 0.0);
+        world.client_end_server_frames();
+        assert_eq!(
+            world.client(key).unwrap().oldviewangles,
+            Vec3f::new(5.0, 6.0, 0.0)
         );
     }
 
