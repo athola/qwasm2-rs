@@ -80,6 +80,9 @@ struct Engine {
     game: String,
     /// C cvar `hand` (`?hand=`): 0 right, 1 left, 2 centre.
     hand: i32,
+    /// C cvar `cl_gun` (`?cl_gun=`): 0 no gun, 1 none in a wide view, 2
+    /// always.
+    cl_gun: f32,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -113,6 +116,7 @@ impl Engine {
             text: q2_client::notify::ServerText::default(),
             game: String::new(),
             hand: 0,
+            cl_gun: 2.0,
         };
         engine.register_sounds();
         engine
@@ -523,7 +527,9 @@ impl Engine {
         let rng = &mut self.rng;
         q2_client::entities::pick_beam_colours(&mut views, &mut || xorshift(rng));
         let mut entities = render_entities(&views, &self.models);
-        let gun = self.frames.view_weapon(vieworg, viewangles, lerpfrac);
+        let gun = self
+            .frames
+            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
         entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
         // C CL_AddPacketEntities' trails, then CL_AddTEnts and
         // CL_AddParticles; C cl.playernum + 1 is the local player.
@@ -1061,6 +1067,12 @@ fn local_userinfo(hand: i32) -> String {
     format!("\\hand\\{hand}")
 }
 
+/// C cvar `cl_gun` from `?cl_gun=`, as text for the game; C's default 2.
+#[cfg(any(target_arch = "wasm32", test))]
+fn cl_gun_from_query(search: &str) -> &str {
+    query_value(search, "cl_gun").unwrap_or("2")
+}
+
 /// C cvar `game` (the game directory) from `?game=`; empty is baseq2.
 #[cfg(any(target_arch = "wasm32", test))]
 fn game_from_query(search: &str) -> &str {
@@ -1385,6 +1397,9 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
     engine.set_hand(hand);
     engine.game = game_from_query(&search).to_string();
+    let cl_gun = cl_gun_from_query(&search);
+    engine.cl_gun = q2_common::cvar::parse_value(cl_gun);
+    engine.local.set_cvar("cl_gun", cl_gun);
 
     // 9. Input, last of the fallible steps before the loop: the listeners
     //    are leaked for the page's lifetime, so a failed start that is
@@ -1839,6 +1854,9 @@ mod tests {
         assert_eq!(hand_from_query(""), 0);
         assert_eq!(local_userinfo(1), "\\hand\\1");
         assert_eq!(game_from_query("?game=rogue"), "rogue");
+        // C cl_gun: 0 no gun, 1 none in a wide view, 2 (default) always.
+        assert_eq!(cl_gun_from_query("?cl_gun=0"), "0");
+        assert_eq!(cl_gun_from_query(""), "2");
         assert_eq!(game_from_query(""), "");
     }
 

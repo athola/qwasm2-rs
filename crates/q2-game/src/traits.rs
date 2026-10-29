@@ -270,6 +270,12 @@ pub trait GameImport {
 
     /// Insert a command string into the server's command buffer.
     fn add_command_string(&self, text: &str);
+
+    /// The value of cvar `name`, or `default` when it is unset (C
+    /// `gi.cvar(name, default, flags)->string`).
+    fn cvar(&self, _name: &str, default: &str) -> String {
+        default.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------

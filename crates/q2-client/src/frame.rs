@@ -126,17 +126,18 @@ pub struct ViewWeapon {
 impl FrameHistory {
     /// The gun at the eye (`vieworg`, `viewangles` of the view), offset
     /// and turned by the player state's lerped `gunoffset`/`gunangles`.
-    /// None without a gun model, or above 90 degrees fov (C `cl_gun` 1).
+    /// None without a gun model, with C cvar `cl_gun` 0, or above 90
+    /// degrees fov unless `cl_gun` is 2 (C's default).
     /// C ref: `CL_AddViewWeapon` (client/cl_entities.c).
-    /// The gun offsets of the previous and newest frames (C `ops` and `ps`
-    /// `gunoffset` in `CL_AddViewWeapon`).
-    pub fn gun_offsets(&self) -> (Vec3f, Vec3f) {
-        (self.old_ps.gunoffset, self.ps.gunoffset)
-    }
-
-    pub fn view_weapon(&self, vieworg: Vec3f, viewangles: Vec3f, lerp: f32) -> Option<ViewWeapon> {
+    pub fn view_weapon(
+        &self,
+        vieworg: Vec3f,
+        viewangles: Vec3f,
+        lerp: f32,
+        cl_gun: f32,
+    ) -> Option<ViewWeapon> {
         let (ps, ops) = (&self.ps, &self.old_ps);
-        if ps.fov > 90.0 || ps.gunindex == 0 {
+        if cl_gun == 0.0 || (ps.fov > 90.0 && cl_gun < 2.0) || ps.gunindex == 0 {
             return None;
         }
         let angles = Vec3f::new(
@@ -153,6 +154,12 @@ impl FrameHistory {
             oldframe: if ps.gunframe == 0 { 0 } else { ops.gunframe },
             backlerp: 1.0 - lerp,
         })
+    }
+
+    /// The gun offsets of the previous and newest frames (C `ops` and `ps`
+    /// `gunoffset` in `CL_AddViewWeapon`).
+    pub fn gun_offsets(&self) -> (Vec3f, Vec3f) {
+        (self.old_ps.gunoffset, self.ps.gunoffset)
     }
 }
 
@@ -191,7 +198,7 @@ mod tests {
         let history = two_frames(&gun_ps(5, 6, 0.0, 0.0), &gun_ps(5, 7, 2.0, 10.0));
         let vieworg = Vec3f::new(100.0, 0.0, 22.0);
         let viewangles = Vec3f::new(0.0, 90.0, 0.0);
-        let gun = history.view_weapon(vieworg, viewangles, 0.25).unwrap();
+        let gun = history.view_weapon(vieworg, viewangles, 0.25, 2.0).unwrap();
         assert_eq!(gun.modelindex, 5);
         assert_eq!(gun.origin, Vec3f::new(100.5, 0.0, 22.0));
         assert_eq!(gun.angles, Vec3f::new(0.0, 92.5, 0.0));
@@ -211,18 +218,39 @@ mod tests {
     #[test]
     fn a_just_raised_weapon_does_not_lerp_from_the_old_frame() {
         let history = two_frames(&gun_ps(5, 40, 0.0, 0.0), &gun_ps(6, 0, 0.0, 0.0));
-        let gun = history.view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5).unwrap();
+        let gun = history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 2.0)
+            .unwrap();
         assert_eq!((gun.modelindex, gun.frame, gun.oldframe), (6, 0, 0));
     }
 
     #[test]
-    fn no_gun_without_a_model_or_in_a_wide_view() {
+    fn no_gun_without_a_model_or_with_cl_gun_0() {
         let history = two_frames(&gun_ps(0, 3, 0.0, 0.0), &gun_ps(0, 4, 0.0, 0.0));
-        assert!(history.view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5).is_none());
+        assert!(history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 2.0)
+            .is_none());
+        let gun = gun_ps(5, 4, 0.0, 0.0);
+        let history = two_frames(&gun, &gun);
+        assert!(history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 0.0)
+            .is_none());
+        assert!(history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 1.0)
+            .is_some());
+    }
+
+    #[test]
+    fn a_wide_view_hides_the_gun_unless_cl_gun_forces_it_like_c_default_2() {
         let mut wide = gun_ps(5, 4, 0.0, 0.0);
         wide.fov = 110.0;
         let history = two_frames(&wide, &wide);
-        assert!(history.view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5).is_none());
+        assert!(history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 1.0)
+            .is_none());
+        assert!(history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.5, 2.0)
+            .is_some());
     }
 
     #[test]

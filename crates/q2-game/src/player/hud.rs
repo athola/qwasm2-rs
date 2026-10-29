@@ -62,18 +62,26 @@ impl GameWorld {
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
         let power_icon = self.gi.image_index("i_powershield");
-        // Help icon blinks on new help; else the weapon icon when the gun
-        // is not drawn: centre-handed or with a wide view (id's rule; C's
-        // yquake2 also asks cl_gun, which the game cannot read here).
+        // Help icon blinks on new help; else, centre-handed or with a wide
+        // view, the weapon icon unless cl_gun 2 (C's default) draws the
+        // gun anyway.
         let helpicon = match self.client(key) {
             Some(c) if c.pers.helpchanged != 0 && framenum & 8 != 0 => {
                 self.gi.image_index("i_help")
             }
-            Some(c) if c.pers.hand == CENTER_HANDED || c.ps.fov > 91.0 => c
-                .pers
-                .weapon
-                .and_then(|w| self.items.get(w))
-                .map_or(0, |it| self.gi.image_index(it.icon)),
+            Some(c)
+                if (c.pers.hand == CENTER_HANDED || c.ps.fov > 91.0) && c.pers.weapon.is_some() =>
+            {
+                let gun = q2_common::cvar::parse_value(&self.gi.cvar("cl_gun", "2"));
+                if gun != 2.0 {
+                    c.pers
+                        .weapon
+                        .and_then(|w| self.items.get(w))
+                        .map_or(0, |it| self.gi.image_index(it.icon))
+                } else {
+                    0
+                }
+            }
             _ => 0,
         };
         let (deathmatch, intermission) =
@@ -930,15 +938,23 @@ mod tests {
     }
 
     #[test]
-    fn a_centre_handed_player_sees_the_weapon_icon_instead_of_the_gun() {
-        let (mut world, key, _) = armed_player();
-        world.update_player_stats(key);
-        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], 0);
-        world.client_mut(key).unwrap().pers.hand = CENTER_HANDED;
-        world.update_player_stats(key);
+    fn without_a_drawn_gun_the_weapon_icon_shows_unless_cl_gun_is_2() {
+        let (mut world, key, gi) = armed_player();
+        let helpicon = |world: &mut GameWorld| {
+            world.update_player_stats(key);
+            world.client(key).unwrap().ps.stats[STAT_HELPICON]
+        };
         let weapon = world.client(key).unwrap().pers.weapon.unwrap();
         let icon = world.gi.image_index(world.items[weapon].icon) as i16;
-        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], icon);
+        assert_eq!(helpicon(&mut world), 0, "right-handed, normal fov");
+        world.client_mut(key).unwrap().pers.hand = CENTER_HANDED;
+        // C's cl_gun default 2 still draws the gun: no icon.
+        assert_eq!(helpicon(&mut world), 0);
+        gi.cvars.borrow_mut().insert("cl_gun".into(), "1".into());
+        assert_eq!(helpicon(&mut world), icon);
+        world.client_mut(key).unwrap().pers.hand = crate::constants::RIGHT_HANDED;
+        world.client_mut(key).unwrap().ps.fov = 110.0;
+        assert_eq!(helpicon(&mut world), icon, "wide view");
     }
 
     #[test]

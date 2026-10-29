@@ -88,6 +88,12 @@ impl LocalGame {
         self.game.client_command(LOCAL_PLAYER);
     }
 
+    /// Set a cvar the game reads (C shares one cvar table between the
+    /// client and the game in a listen server).
+    pub fn set_cvar(&self, name: &str, value: &str) {
+        self.gi.set_cvar(name, value);
+    }
+
     /// Apply one user command to the local player (C ClientThink).
     pub fn think(&mut self, cmd: &UserCmd) {
         self.game.client_think(LOCAL_PLAYER, cmd);

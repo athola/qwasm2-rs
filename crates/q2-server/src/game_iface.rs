@@ -61,6 +61,8 @@ struct GiInner {
     /// Console text the game queued (C `gi.AddCommandString` ->
     /// `Cbuf_AddText`), for the server loop to run.
     commands: String,
+    /// Cvars set for the game to read (C's shared cvar table).
+    cvars: std::collections::HashMap<String, String>,
     /// Sounds the game started since the last `take_sounds`.
     sounds: Vec<SoundEvent>,
     /// The client command being run (C `Cmd_TokenizeString`'s `cmd_argv`
@@ -112,6 +114,7 @@ impl GiInner {
             clusters: vec![EntityClusters::List(Vec::new()); MAX_EDICTS],
             areas: vec![(0, 0); MAX_EDICTS],
             commands: String::new(),
+            cvars: std::collections::HashMap::new(),
             sounds: Vec::new(),
             command_argv: Vec::new(),
             command_args: String::new(),
@@ -251,6 +254,14 @@ impl ServerGameImport {
         let mut inner = self.inner.borrow_mut();
         inner.command_argv = q2_common::cmd::tokenize(text);
         inner.command_args = args.to_string();
+    }
+
+    /// Set cvar `name` for the game (C `Cvar_Set` on the shared table).
+    pub fn set_cvar(&self, name: &str, value: &str) {
+        self.inner
+            .borrow_mut()
+            .cvars
+            .insert(name.to_string(), value.to_string());
     }
 
     /// The console text queued by `add_command_string` since the last call.
@@ -875,6 +886,15 @@ impl GameImport for ServerGameImport {
     fn add_command_string(&self, text: &str) {
         self.inner.borrow_mut().commands.push_str(text);
     }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.inner
+            .borrow()
+            .cvars
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,6 +1074,14 @@ mod tests {
         // The limits themselves are allowed.
         gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
         assert_eq!(gi.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn the_game_reads_a_set_cvar_and_otherwise_its_default() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.cvar("cl_gun", "2"), "2");
+        gi.set_cvar("cl_gun", "0");
+        assert_eq!(gi.cvar("cl_gun", "2"), "0");
     }
 
     #[test]

@@ -139,7 +139,8 @@ effects, and the deathmatch rules end matches through C's intermission.
   underwater filter are not ported.
 - **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
   2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
-  drawn) and heat beams; `aimfix`,
+  drawn) and heat beams; the game reads cvars such as `cl_gun` through
+  `GameImport::cvar`, which `LocalGame::set_cvar` fills; `aimfix`,
   `g_swap_speed` and `coop_pickup_weapons` at their yquake2 defaults.
   `CheckNeedPass` has nothing to do (it publishes password cvars, and
   there are none); the player model's animation (`G_SetClientFrame`,

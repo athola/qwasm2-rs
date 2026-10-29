@@ -944,6 +944,8 @@ pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
+    /// Cvars `cvar` answers; others give their default.
+    pub cvars: RefCell<HashMap<String, String>>,
     /// What `point_contents` answers everywhere.
     pub contents: std::cell::Cell<i32>,
     pub links: RefCell<Vec<EntityLink>>,
@@ -1168,6 +1170,14 @@ impl GameImport for MockGameImport {
     }
     fn add_command_string(&self, text: &str) {
         self.commands.borrow_mut().push(text.to_string());
+    }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.cvars
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
