@@ -116,6 +116,9 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- Items precache like C `PrecacheItem` (models, view models, icons,
+  pickup sounds, their ammo and the `precaches` list) when spawned, and
+  worldspawn precaches the blaster; `ItemDef` gains `precaches`
 - Item pickups match C for weapons and ammo: dropped ammo gives back
   what was dropped and a dropped weapon brings no ammo (both were free
   ammo through `drop`), the first grenades are switched to, infinite

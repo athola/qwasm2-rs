@@ -1155,8 +1155,7 @@ impl GameWorld {
     }
 
     /// The body queue, configstrings, images, sounds and models C
-    /// SP_worldspawn sets up. `sv_gravity`, `snd_fry` and
-    /// `PrecacheItem(Blaster)` are not ported.
+    /// SP_worldspawn sets up. `sv_gravity` and `snd_fry` are not ported.
     pub(crate) fn worldspawn_configstrings(
         &mut self,
         _key: EntityKey,
@@ -1206,8 +1205,14 @@ impl GameWorld {
         self.level.pic_health = self.gi.image_index("i_health");
         self.gi.image_index("help");
         self.gi.image_index("field_3");
-        for sound in WORLDSPAWN_SOUNDS {
+        for (i, sound) in WORLDSPAWN_SOUNDS.into_iter().enumerate() {
             self.gi.sound_index(sound);
+            if i == 0 {
+                // After snd_fry, as C does.
+                if let Some(blaster) = self.find_item_by_name("Blaster") {
+                    self.precache_item(blaster);
+                }
+            }
         }
         // Only coop and deathmatch show other players' weapons.
         if self.game.coop || self.game.deathmatch {
@@ -2020,6 +2025,24 @@ mod tests {
         world.game.coop = coop;
         world.spawn_entities("base1", entstring, "");
         (world, gi)
+    }
+
+    #[test]
+    fn worldspawn_precaches_the_blaster_after_the_lava_fry_sound() {
+        let (_, gi) = world_in_mode(false, false, "{ \"classname\" \"worldspawn\" }");
+        let sounds = gi.sounds.borrow();
+        let fry = sounds.iter().position(|s| s == "player/fry.wav").unwrap();
+        assert_eq!(
+            sounds[fry + 1],
+            "misc/w_pkup.wav",
+            "the blaster's pickup sound"
+        );
+        assert!(sounds.iter().any(|s| s == "weapons/blastf1a.wav"));
+        assert!(gi
+            .models
+            .borrow()
+            .iter()
+            .any(|m| m == "models/weapons/v_blast/tris.md2"));
     }
 
     #[test]

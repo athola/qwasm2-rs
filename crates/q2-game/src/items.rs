@@ -181,6 +181,9 @@ pub struct ItemDef {
     /// Runs the gun every frame while it is the current weapon (C
     /// `weaponthink`).
     pub weaponthink: Option<WeaponThinkFn>,
+    /// Space-separated models (`.md2`, `.sp2`), sounds (`.wav`) and
+    /// images (`.pcx`) to register with the item (C `precaches`).
+    pub precaches: &'static str,
 }
 
 impl std::fmt::Debug for ItemDef {
@@ -246,6 +249,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
         drop_fn: None,
         view_model: "",
         weaponthink: None,
+        precaches: "",
     };
 
     vec![
@@ -268,6 +272,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [2] Combat Armor
         ItemDef {
@@ -286,6 +291,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [3] Jacket Armor
         ItemDef {
@@ -304,6 +310,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [4] Armor Shard
         ItemDef {
@@ -322,6 +329,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [5] Power Screen
         ItemDef {
@@ -340,6 +348,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_power_armor),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [6] Power Shield
         ItemDef {
@@ -358,6 +367,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_power_armor),
             view_model: "",
             weaponthink: None,
+            precaches: "misc/power2.wav misc/power1.wav",
         },
         // [7] Blaster
         ItemDef {
@@ -376,6 +386,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "models/weapons/v_blast/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_blaster),
+            precaches: "weapons/blastf1a.wav misc/lasfly.wav",
         },
         // [8] Shotgun
         ItemDef {
@@ -394,6 +405,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_shotgun),
+            precaches: "weapons/shotgf1b.wav weapons/shotgr1b.wav",
         },
         // [9] Super Shotgun
         ItemDef {
@@ -412,6 +424,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg2/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_supershotgun),
+            precaches: "weapons/sshotf1b.wav",
         },
         // [10] Machinegun
         ItemDef {
@@ -430,6 +443,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_machn/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_machinegun),
+            precaches: "weapons/machgf1b.wav weapons/machgf2b.wav weapons/machgf3b.wav weapons/machgf4b.wav weapons/machgf5b.wav",
         },
         // [11] Chaingun
         ItemDef {
@@ -448,6 +462,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_chain/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_chaingun),
+            precaches: "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav` weapons/chngnd1a.wav",
         },
         // [12] Grenades (ammo + weapon combo)
         ItemDef {
@@ -466,6 +481,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "models/weapons/v_handgr/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenade),
+            precaches: "weapons/hgrent1a.wav weapons/hgrena1b.wav weapons/hgrenc1b.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav ",
         },
         // [13] Grenade Launcher
         ItemDef {
@@ -484,6 +500,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_launch/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenadelauncher),
+            precaches: "models/objects/grenade/tris.md2 weapons/grenlf1a.wav weapons/grenlr1b.wav weapons/grenlb1b.wav",
         },
         // [14] Rocket Launcher
         ItemDef {
@@ -502,6 +519,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rocket/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_rocketlauncher),
+            precaches: "models/objects/rocket/tris.md2 weapons/rockfly.wav weapons/rocklf1a.wav weapons/rocklr1b.wav models/objects/debris2/tris.md2",
         },
         // [15] HyperBlaster
         ItemDef {
@@ -520,6 +538,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_hyperb/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_hyperblaster),
+            precaches: "weapons/hyprbu1a.wav weapons/hyprbl1a.wav weapons/hyprbf1a.wav weapons/hyprbd1a.wav misc/lasfly.wav",
         },
         // [16] Railgun
         ItemDef {
@@ -538,6 +557,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rail/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_railgun),
+            precaches: "weapons/rg_hum.wav",
         },
         // [17] BFG10K
         ItemDef {
@@ -556,6 +576,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_bfg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_bfg),
+            precaches: "sprites/s_bfg1.sp2 sprites/s_bfg2.sp2 sprites/s_bfg3.sp2 weapons/bfg__f1y.wav weapons/bfg__l1a.wav weapons/bfg__x1b.wav weapons/bfg_hum.wav",
         },
         // [18] Shells
         ItemDef {
@@ -574,6 +595,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [19] Bullets
         ItemDef {
@@ -592,6 +614,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [20] Cells
         ItemDef {
@@ -610,6 +633,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [21] Rockets
         ItemDef {
@@ -628,6 +652,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [22] Slugs
         ItemDef {
@@ -646,6 +671,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_ammo),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [23] Quad Damage
         ItemDef {
@@ -664,6 +690,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
+            precaches: "items/damage.wav items/damage2.wav items/damage3.wav",
         },
         // [24] Invulnerability
         ItemDef {
@@ -682,6 +709,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
+            precaches: "items/protect.wav items/protect2.wav items/protect4.wav",
         },
         // [25] Silencer
         ItemDef {
@@ -700,6 +728,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [26] Rebreather
         ItemDef {
@@ -718,6 +747,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
+            precaches: "items/airout.wav",
         },
         // [27] Environment Suit
         ItemDef {
@@ -736,6 +766,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
+            precaches: "items/airout.wav",
         },
         // [28] Ancient Head
         ItemDef {
@@ -754,6 +785,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [29] Adrenaline
         ItemDef {
@@ -772,6 +804,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [30] Bandolier
         ItemDef {
@@ -790,6 +823,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [31] Ammo Pack
         ItemDef {
@@ -808,6 +842,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [32-40] Keys — 9 key items
         ItemDef {
@@ -826,6 +861,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_power_cube",
@@ -843,6 +879,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_pyramid",
@@ -860,6 +897,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_data_spinner",
@@ -877,6 +915,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_pass",
@@ -894,6 +933,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_blue_key",
@@ -911,6 +951,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_red_key",
@@ -928,6 +969,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_commander_head",
@@ -945,6 +987,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         ItemDef {
             classname: "key_airstrike_target",
@@ -962,6 +1005,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
         // [41] Health (generic — not spawned directly, used for health pickups)
         ItemDef {
@@ -980,6 +1024,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             drop_fn: None,
             view_model: "",
             weaponthink: None,
+            precaches: "",
         },
     ]
 }
@@ -1588,6 +1633,63 @@ pub fn find_item_index_by_name(items: &[ItemDef], name: &str) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 impl GameWorld {
+    /// Register everything an item shows or plays, and its ammo's, so
+    /// nothing loads mid-game. Bad (too short or long) precache names are
+    /// skipped; C stops the server. C ref: `PrecacheItem`.
+    pub fn precache_item(&mut self, item: usize) {
+        let Some(it) = self.items.get(item) else {
+            return;
+        };
+        let (pickup_sound, world_model, view_model, icon, ammo, precaches) = (
+            it.pickup_sound,
+            it.world_model,
+            it.view_model,
+            it.icon,
+            it.ammo,
+            it.precaches,
+        );
+        if !pickup_sound.is_empty() {
+            self.gi.sound_index(pickup_sound);
+        }
+        if !world_model.is_empty() {
+            self.gi.model_index(world_model);
+        }
+        if !view_model.is_empty() {
+            self.gi.model_index(view_model);
+        }
+        if !icon.is_empty() {
+            self.gi.image_index(icon);
+        }
+        // Parse everything for its ammo.
+        if let Some(ammo) = (!ammo.is_empty())
+            .then(|| self.find_item_by_name(ammo))
+            .flatten()
+        {
+            if ammo != item {
+                self.precache_item(ammo);
+            }
+        }
+        for name in precaches.split(' ').filter(|n| !n.is_empty()) {
+            if name.len() < 5 || name.len() >= q2_shared::constants::MAX_QPATH {
+                tracing::error!("PrecacheItem: bad precache string {name:?}");
+                continue;
+            }
+            // Determine the type by extension.
+            match &name[name.len() - 3..] {
+                "md2" | "sp2" => {
+                    self.gi.model_index(name);
+                }
+                "wav" => {
+                    self.gi.sound_index(name);
+                }
+                "pcx" => {
+                    self.gi.image_index(name);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Initialize the item list on the game world.
     pub fn init_items(&mut self) {
         self.items = build_item_list();
@@ -1644,6 +1746,7 @@ impl GameWorld {
     /// Make `key` a world item that drops to the floor once the other
     /// solids are in. C ref: `SpawnItem`.
     pub fn spawn_item(&mut self, key: EntityKey, item: usize) {
+        self.precache_item(item);
         let flags = self.items.get(item).map_or(0, world_model_flags);
         let time = self.level.time;
         let Some(ent) = self.entities.get_mut(key) else {
@@ -3370,5 +3473,64 @@ mod tests {
             world.entities.get(dropped).unwrap().velocity,
             Vec3f::new(0.0, 100.0, 300.0),
         );
+    }
+
+    // ---- PrecacheItem ----
+
+    #[test]
+    fn precaching_a_weapon_registers_its_models_icon_sounds_and_ammo() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let launcher = world.find_item("weapon_grenadelauncher").unwrap();
+        world.precache_item(launcher);
+        let models = gi.models.borrow().clone();
+        let sounds = gi.sounds.borrow().clone();
+        let images = gi.images.borrow().clone();
+        for model in [
+            "models/weapons/g_launch/tris.md2",
+            "models/weapons/v_launch/tris.md2",
+            "models/objects/grenade/tris.md2",
+            // The ammo item, grenades, is precached too.
+            "models/items/ammo/grenades/medium/tris.md2",
+            "models/weapons/v_handgr/tris.md2",
+        ] {
+            assert!(models.iter().any(|m| m == model), "{model}");
+        }
+        for sound in [
+            "misc/w_pkup.wav",
+            "weapons/grenlf1a.wav",
+            "weapons/hgrent1a.wav",
+        ] {
+            assert!(sounds.iter().any(|m| m == sound), "{sound}");
+        }
+        assert!(images.iter().any(|i| i == "w_glauncher"));
+    }
+
+    #[test]
+    fn precache_strings_register_sprites_and_skip_unknown_extensions() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let bfg = world.find_item("weapon_bfg").unwrap();
+        world.precache_item(bfg);
+        assert!(gi.models.borrow().iter().any(|m| m == "sprites/s_bfg1.sp2"));
+        let chaingun = world.find_item("weapon_chaingun").unwrap();
+        world.precache_item(chaingun);
+        let sounds = gi.sounds.borrow();
+        assert!(sounds.iter().any(|s| s == "weapons/chngnd1a.wav"));
+        // C's table has a stray backtick: `.wav`` ends in "av`", no type.
+        assert!(!sounds.iter().any(|s| s.ends_with('`')));
+    }
+
+    #[test]
+    fn spawning_an_item_precaches_it() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        item_entity(&mut world, "weapon_railgun", 0);
+        assert!(gi.sounds.borrow().iter().any(|s| s == "weapons/rg_hum.wav"));
+        assert!(gi
+            .models
+            .borrow()
+            .iter()
+            .any(|m| m == "models/weapons/v_rail/tris.md2"));
     }
 }
