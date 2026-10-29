@@ -4,12 +4,10 @@
 //!
 //! MD2 models outside the view frustum are skipped (C `CullAliasModel`).
 //!
-//! Not modelled relative to C: frustum culling of brush entities, the
-//! `RF_WEAPONMODEL` gun FOV and left-hand mirroring, `RF_DEPTHHACK`,
-//! `RF_IR_VISIBLE`, the null-model
-//! placeholder, entity shadows and dynamic lights on brush models. Beams
-//! and sprites are drawn in the same passes through `fx`. Entities whose model
-//! is none of the above are skipped.
+//! Not modelled relative to C: frustum culling of brush entities,
+//! `RF_IR_VISIBLE`, the null-model placeholder, entity shadows and dynamic
+//! lights on brush models. Beams and sprites are drawn in the same passes
+//! through `fx`. Entities whose model is none of the above are skipped.
 
 use glow::HasContext;
 use q2_render_api::{DLight, RefDef, RenderEntity};
@@ -183,6 +181,8 @@ pub struct EntityScene<'a> {
     pub view_proj: [f32; 16],
     /// `view_proj` with the gun's fov, for `RF_WEAPONMODEL`.
     pub gun_view_proj: [f32; 16],
+    /// C cvar `hand`: 1 mirrors the gun, 2 hides it.
+    pub hand: i32,
     /// Beam and sprite programs; without them neither is drawn.
     pub fx: Option<&'a super::fx::FxGpu>,
     /// Beam colours.
@@ -324,6 +324,10 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
     let origin = vec3(entity.origin);
     let frame_count = model.md2.frames.len();
     let weapon = entity.flags & RF_WEAPONMODEL != 0;
+    let gun_cull = super::gun_cull_face(scene.hand);
+    if weapon && gun_cull.is_none() {
+        return;
+    }
     // C culls every MD2 but the gun, and the cull writes each frame
     // reset on its own back into the entity before the draw sees it.
     let (frame, oldframe) = if weapon {
@@ -374,6 +378,11 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
         // SAFETY: state-only call on the live context.
         unsafe { scene.gl.depth_range_f32(near, far) };
     }
+    let mirrored = weapon && gun_cull != Some(super::CULL_FACE);
+    if let (true, Some(face)) = (mirrored, gun_cull) {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.cull_face(face) };
+    }
     draw_mesh(
         scene.gl,
         &scene.extra.alias_uniforms,
@@ -390,6 +399,10 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
     if (near, far) != (0.0, 1.0) {
         // SAFETY: state-only call on the live context.
         unsafe { scene.gl.depth_range_f32(0.0, 1.0) };
+    }
+    if mirrored {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.cull_face(super::CULL_FACE) };
     }
 }
 

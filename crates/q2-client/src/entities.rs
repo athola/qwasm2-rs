@@ -95,6 +95,7 @@ fn anim_frame(s: &EntityState, time_ms: i32) -> i32 {
 /// `EF_ROTATE` and `EF_ANIM*`; `playernum` is the local client's slot (its
 /// entity is `playernum + 1`).
 pub fn entity_views(
+    game: &str,
     current: &[EntityState],
     previous: &[EntityState],
     lerpfrac: f32,
@@ -179,7 +180,7 @@ pub fn entity_views(
             // C skips the viewer before adding its entities; its own model is
             // kept here, flagged, for the renderer to leave out.
             let shell = (shelled && !viewer).then(|| EntityView {
-                flags: shell_combinations(renderfx, false) | RF_TRANSLUCENT,
+                flags: shell_combinations(renderfx, game == "rogue") | RF_TRANSLUCENT,
                 alpha: 0.30,
                 ..view.clone()
             });
@@ -209,7 +210,7 @@ fn shell_effects(effects: u32, renderfx: i32) -> (bool, i32) {
 }
 
 /// C's fix-ups of clashing shells, which it makes only when the game
-/// directory is `rogue` (this port always runs `baseq2`): half damage gives
+/// directory (C cvar `game`) is `rogue`: half damage gives
 /// way to any other shell, and double damage turns red purple and blue
 /// cyan, or green if green is on too.
 pub fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
@@ -275,7 +276,7 @@ mod tests {
     fn moving_entity_is_drawn_between_frames_with_frame_lerp() {
         let prev = [state(5, Vec3f::ZERO, 1)];
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &prev, 0.25, 0, 0);
+        let views = entity_views("baseq2", &cur, &prev, 0.25, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(2.5, 0.0, 0.0));
         assert_eq!((views[0].frame, views[0].oldframe), (2, 1));
         assert_eq!(views[0].backlerp, 0.75);
@@ -284,7 +285,7 @@ mod tests {
     #[test]
     fn new_entity_is_drawn_where_it_is_now() {
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &[], 0.5, 0, 0);
+        let views = entity_views("baseq2", &cur, &[], 0.5, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(10.0, 0.0, 0.0));
         assert_eq!(views[0].oldframe, 2);
     }
@@ -294,7 +295,7 @@ mod tests {
         // C CL_DeltaEntity: prev.origin = state->old_origin.
         let mut cur = state(5, Vec3f::new(10.0, 0.0, 0.0), 2);
         cur.old_origin = Vec3f::new(2.0, 0.0, 0.0);
-        let views = entity_views(&[cur], &[], 0.5, 0, 0);
+        let views = entity_views("baseq2", &[cur], &[], 0.5, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(6.0, 0.0, 0.0));
     }
 
@@ -315,7 +316,7 @@ mod tests {
         a.angles.y = 350.0;
         let mut b = a.clone();
         b.angles.y = 10.0;
-        let views = entity_views(&[b], &[a], 0.5, 0, 0);
+        let views = entity_views("baseq2", &[b], &[a], 0.5, 0, 0);
         assert_eq!(views[0].angles.y, 360.0);
     }
 
@@ -324,7 +325,7 @@ mod tests {
         let mut item = state(9, Vec3f::ZERO, 0);
         item.effects = EF_ROTATE;
         let player = state(1, Vec3f::ZERO, 0);
-        let views = entity_views(&[player, item], &[], 1.0, 900, 0);
+        let views = entity_views("baseq2", &[player, item], &[], 1.0, 900, 0);
         assert_ne!(views[0].flags & RF_VIEWERMODEL, 0);
         assert!(
             (views[1].angles.y - 90.0).abs() < 0.01,
@@ -338,7 +339,7 @@ mod tests {
     fn entities_without_a_model_are_not_drawn() {
         let mut sound_only = state(4, Vec3f::ZERO, 0);
         sound_only.modelindex = 0;
-        assert!(entity_views(&[sound_only], &[], 1.0, 0, 0).is_empty());
+        assert!(entity_views("baseq2", &[sound_only], &[], 1.0, 0, 0).is_empty());
     }
 
     #[test]
@@ -348,7 +349,7 @@ mod tests {
         laser.modelindex = 1;
         laser.skinnum = 0xf2f2_f0f0_u32 as i32;
         let plain = state(5, Vec3f::ZERO, 0);
-        let mut views = entity_views(&[laser, plain], &[], 1.0, 0, 0);
+        let mut views = entity_views("baseq2", &[laser, plain], &[], 1.0, 0, 0);
         // randk() % 4 picks the byte: 2 is bits 16..24.
         pick_beam_colours(&mut views, &mut || 6);
         assert_eq!(
@@ -368,7 +369,7 @@ mod tests {
         let mut s = state(4, Vec3f::ZERO, 0);
         s.effects = EF_SPINNINGLIGHTS;
         s.angles = Vec3f::new(10.0, 30.0, 0.0);
-        let view = &entity_views(&[s], &[], 1.0, 200, 0)[0];
+        let view = &entity_views("baseq2", &[s], &[], 1.0, 200, 0)[0];
         // C: (0, anglemod(cl.time / 2) + angles[1], 180).
         assert!(
             (view.angles - Vec3f::new(0.0, 130.0, 180.0)).length() < 0.01,
@@ -387,7 +388,7 @@ mod tests {
         ] {
             let mut s = state(4, Vec3f::ZERO, 0);
             s.effects = effects;
-            let view = &entity_views(&[s], &[], 1.0, 0, 0)[0];
+            let view = &entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0];
             assert_ne!(view.flags & RF_TRANSLUCENT, 0);
             assert_eq!(view.alpha, alpha, "{effects:#x}");
         }
@@ -397,7 +398,7 @@ mod tests {
     fn a_view_keeps_its_entity_number_and_effects() {
         let mut s = state(4, Vec3f::ZERO, 0);
         s.effects = EF_POWERSCREEN;
-        let view = &entity_views(&[s], &[], 1.0, 0, 0)[0];
+        let view = &entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0];
         assert_eq!((view.number, view.effects), (4, EF_POWERSCREEN));
     }
 
@@ -406,7 +407,7 @@ mod tests {
         let mut s = state(4, Vec3f::ZERO, 3);
         s.effects = EF_QUAD;
         s.renderfx = RF_TRANSLUCENT;
-        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
         assert_eq!(views.len(), 2);
         // C: the renderfx go on the shell; the model keeps C's 0.70 alpha.
         assert_eq!(views[0].flags, 0);
@@ -434,7 +435,7 @@ mod tests {
             let mut s = state(4, Vec3f::ZERO, 0);
             s.effects = effects;
             s.renderfx = renderfx;
-            let views = entity_views(&[s], &[], 1.0, 0, 0);
+            let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
             assert_eq!(views[1].flags, shell | RF_TRANSLUCENT, "{effects:#x}");
         }
     }
@@ -443,9 +444,24 @@ mod tests {
     fn the_viewer_gets_no_shell() {
         let mut s = state(1, Vec3f::ZERO, 0);
         s.effects = EF_QUAD;
-        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].flags, RF_VIEWERMODEL);
+    }
+
+    #[test]
+    fn under_the_rogue_game_a_quad_double_shell_turns_cyan() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_QUAD | EF_DOUBLE;
+        let shell = |game| entity_views(game, std::slice::from_ref(&s), &[], 1.0, 0, 0)[1].flags;
+        assert_eq!(
+            shell("rogue"),
+            RF_SHELL_BLUE | RF_SHELL_GREEN | RF_TRANSLUCENT
+        );
+        assert_eq!(
+            shell("baseq2"),
+            RF_SHELL_BLUE | RF_SHELL_DOUBLE | RF_TRANSLUCENT
+        );
     }
 
     #[test]
@@ -474,7 +490,7 @@ mod tests {
     fn translucent_entities_draw_at_c_alpha() {
         let mut s = state(4, Vec3f::ZERO, 0);
         s.renderfx = RF_TRANSLUCENT;
-        assert_eq!(entity_views(&[s], &[], 1.0, 0, 0)[0].alpha, 0.70);
+        assert_eq!(entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0].alpha, 0.70);
     }
 
     #[test]
@@ -485,7 +501,7 @@ mod tests {
             let mut cur = state(5, Vec3f::new(10.0, 0.0, 0.0), 2);
             cur.renderfx = renderfx;
             cur.old_origin = Vec3f::new(4.0, 0.0, 0.0);
-            let views = entity_views(&[cur], &prev, 0.25, 0, 0);
+            let views = entity_views("baseq2", &[cur], &prev, 0.25, 0, 0);
             assert_eq!(views[0].origin, Vec3f::new(10.0, 0.0, 0.0));
             assert_eq!(views[0].oldorigin, Vec3f::new(4.0, 0.0, 0.0));
             assert_eq!((views[0].oldframe, views[0].backlerp), (1, 0.75));
@@ -496,13 +512,13 @@ mod tests {
     fn lerped_entity_oldorigin_is_its_drawn_origin() {
         let prev = [state(5, Vec3f::ZERO, 1)];
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &prev, 0.5, 0, 0);
+        let views = entity_views("baseq2", &cur, &prev, 0.5, 0, 0);
         assert_eq!(views[0].oldorigin, views[0].origin);
     }
 
     /// The view of `cur` after `prev`, half way between them.
     fn half_way(prev: EntityState, cur: EntityState) -> EntityView {
-        entity_views(&[cur], &[prev], 0.5, 0, 0).remove(0)
+        entity_views("baseq2", &[cur], &[prev], 0.5, 0, 0).remove(0)
     }
 
     #[test]
@@ -547,7 +563,7 @@ mod tests {
         let frame = |effects: u32, time_ms: i32| {
             let mut s = state(5, Vec3f::ZERO, 9);
             s.effects = effects;
-            entity_views(&[s], &[], 1.0, time_ms, 0)[0].frame
+            entity_views("baseq2", &[s], &[], 1.0, time_ms, 0)[0].frame
         };
         assert_eq!((frame(EF_ANIM01, 400), frame(EF_ANIM01, 500)), (0, 1));
         assert_eq!((frame(EF_ANIM23, 400), frame(EF_ANIM23, 500)), (2, 3));

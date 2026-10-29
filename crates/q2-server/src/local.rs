@@ -46,6 +46,11 @@ impl LocalGame {
     /// Load `bsp` as `maps/<map_name>.bsp`, spawn it, and put the local
     /// client in the game at the player start.
     pub fn start(map_name: &str, bsp: &[u8]) -> Q2Result<Self> {
+        Self::start_with_userinfo(map_name, bsp, "")
+    }
+
+    /// `start` with the local client's `userinfo` (C `hand` and the like).
+    pub fn start_with_userinfo(map_name: &str, bsp: &[u8], userinfo: &str) -> Q2Result<Self> {
         let gi = Rc::new(ServerGameImport::new());
         let mut world = GameWorld::new(gi.clone(), MAX_EDICTS);
         world.set_max_clients(1);
@@ -55,7 +60,7 @@ impl LocalGame {
         svs.init_game(1);
         let mut sv = Server::default();
         sv.map(&mut svs, map_name, bsp, "", &gi, game.as_mut())?;
-        svs.connect_local_client(game.as_mut())?;
+        svs.connect_local_client(game.as_mut(), userinfo)?;
         let next_map = Rc::new(RefCell::new(None));
         let mut cmd = CmdSystem::new();
         let requested = next_map.clone();

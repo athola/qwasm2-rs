@@ -137,7 +137,9 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
-- **Weapons.** Right-handed only (no userinfo `hand`), `aimfix`,
+- **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
+  2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
+  drawn) and heat beams; `aimfix`,
   `g_swap_speed` and `coop_pickup_weapons` at their yquake2 defaults.
   `CheckNeedPass` has nothing to do (it publishes password cvars, and
   there are none); the player model's animation (`G_SetClientFrame`,
@@ -148,9 +150,11 @@ effects, and the deathmatch rules end matches through C's intermission.
   renderer's particles, beams and sprites, mission-pack ones (rogue,
   xatrix, CTF: `q2_client::newfx`, sustains, player beams, lightning)
   included; colour shells and power screens draw as C's colour-only
-  models. The rogue shell combinations apply only with game `rogue`,
-  which this port never runs, and there is no `hand` cvar (heat beams
-  start right-handed). Brush models moved by doors take dlights at their rest
+  models; their lights share the client's 32 dlights as in C. The
+  rogue shell combinations apply with C's `game` set to `rogue`
+  (`?game=rogue`), which only the client reads: no rogue game code or
+  data is loaded. The page starts on `?map=` (else demo1). Brush models
+  moved by doors take dlights at their rest
   position.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends

@@ -177,6 +177,9 @@ pub struct ClientPersistent {
     pub health: i32,
     pub max_health: i32,
     pub selected_item: i32,
+    /// Which hand the weapon is in (userinfo `hand`: `RIGHT_HANDED`,
+    /// `LEFT_HANDED` or `CENTER_HANDED`).
+    pub hand: i32,
     pub inventory: [i32; crate::constants::MAX_ITEMS],
     /// C `max_bullets`..`max_slugs`; Bandolier and Ammo Pack raise them.
     pub ammo_max: crate::items::AmmoMax,
@@ -205,6 +208,7 @@ impl Default for ClientPersistent {
             health: 0,
             max_health: 0,
             selected_item: 0,
+            hand: crate::constants::RIGHT_HANDED,
             inventory: [0; crate::constants::MAX_ITEMS],
             // C InitClientPersistant.
             ammo_max: crate::items::AMMO_MAX_DEFAULT,

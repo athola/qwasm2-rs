@@ -834,10 +834,13 @@ const SAVED_FLAGS: EntityFlags = EntityFlags::GODMODE
     .union(EntityFlags::NOTARGET)
     .union(EntityFlags::POWER_ARMOR);
 
-/// Keep the userinfo and take the player's name from it. The skin, hand
-/// and fov parts are not ported. C ref: `ClientUserinfoChanged`.
+/// Keep the userinfo and take the player's name and handedness from it.
+/// The skin and fov parts are not ported. C ref: `ClientUserinfoChanged`.
 fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
     pers.netname = extract_info_value(userinfo, "name").unwrap_or_else(|| "player".to_string());
+    if let Some(hand) = extract_info_value(userinfo, "hand").filter(|h| !h.is_empty()) {
+        pers.hand = crate::spawn::strtol(&hand);
+    }
     pers.userinfo = userinfo.to_string();
 }
 
@@ -1123,6 +1126,18 @@ mod tests {
     use crate::traits::GameExport;
     use crate::world::test_world;
     use q2_shared::constants::EF_GIB;
+
+    #[test]
+    fn the_userinfo_sets_the_players_hand_and_an_absent_one_keeps_it() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\Ann\\hand\\1").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.hand, LEFT_HANDED);
+        let pers = &mut world.client_mut(key).unwrap().pers;
+        client_userinfo_changed(pers, "\\name\\Ann");
+        assert_eq!(pers.hand, LEFT_HANDED, "C only sets it when present");
+        client_userinfo_changed(pers, "\\hand\\2");
+        assert_eq!(pers.hand, CENTER_HANDED);
+    }
 
     #[test]
     fn client_connect_creates_player() {

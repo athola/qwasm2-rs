@@ -253,16 +253,38 @@ impl GameWorld {
     }
 
     /// Where a shot leaves the player: `offset` forward/right/up from the
-    /// origin along `v_angle`, right-handed. Returns (start, forward,
-    /// right). C ref: `P_ProjectSource` with `aimfix` 0.
+    /// origin along `v_angle`, from the player's hand. Returns (start,
+    /// forward, right). C ref: `P_ProjectSource` with `aimfix` 0.
     fn shot_source(&self, key: EntityKey, offset: [f32; 3]) -> (Vec3f, Vec3f, Vec3f) {
-        let (origin, v_angle) = match (self.entities.get(key), self.client(key)) {
-            (Some(ent), Some(client)) => (ent.state.origin, client.v_angle),
-            _ => (Vec3f::ZERO, Vec3f::ZERO),
-        };
+        let v_angle = self.client(key).map_or(Vec3f::ZERO, |c| c.v_angle);
         let (forward, right, _) = crate::physics::angle_vectors(v_angle);
-        let start = crate::monster::flash::project_source(origin, offset, forward, right);
-        (start, forward, right)
+        (
+            self.player_project_source(key, offset, forward, right),
+            forward,
+            right,
+        )
+    }
+
+    /// C `P_ProjectSource`: `offset` from the player's origin, its right
+    /// part mirrored for a left hand and dropped for a centre one.
+    fn player_project_source(
+        &self,
+        key: EntityKey,
+        offset: [f32; 3],
+        forward: Vec3f,
+        right: Vec3f,
+    ) -> Vec3f {
+        let origin = self
+            .entities
+            .get(key)
+            .map_or(Vec3f::ZERO, |e| e.state.origin);
+        let mut offset = offset;
+        match self.client(key).map_or(RIGHT_HANDED, |c| c.pers.hand) {
+            LEFT_HANDED => offset[1] = -offset[1],
+            CENTER_HANDED => offset[1] = 0.0,
+            _ => {}
+        }
+        crate::monster::flash::project_source(origin, offset, forward, right)
     }
 
     /// C ref: `PlayerNoise_Spawn` (player/weapon.c).
@@ -752,12 +774,8 @@ pub fn machinegun_fire(world: &mut GameWorld, key: EntityKey) {
     }
     let angles = client.v_angle + client.kick_angles;
     let (forward, right, _) = crate::physics::angle_vectors(angles);
-    let origin = world
-        .entities
-        .get(key)
-        .map_or(Vec3f::ZERO, |e| e.state.origin);
     let offset = [0.0, 8.0, viewheight(world, key) - 8.0];
-    let start = crate::monster::flash::project_source(origin, offset, forward, right);
+    let start = world.player_project_source(key, offset, forward, right);
     world.fire_bullet(
         key,
         start,
@@ -1265,6 +1283,20 @@ mod tests {
         world.level.sound_entity_framenum = -10;
         world.level.sound2_entity_framenum = -10;
         world
+    }
+
+    #[test]
+    fn shots_leave_from_the_players_hand_like_p_projectsource() {
+        let mut world = test_world();
+        let key = player(&mut world);
+        // v_angle 0: forward +x, right -y.
+        let start = |world: &mut GameWorld, hand| {
+            world.client_mut(key).unwrap().pers.hand = hand;
+            world.shot_source(key, [8.0, 8.0, 0.0]).0
+        };
+        assert_eq!(start(&mut world, RIGHT_HANDED), Vec3f::new(8.0, -8.0, 24.0));
+        assert_eq!(start(&mut world, LEFT_HANDED), Vec3f::new(8.0, 8.0, 24.0));
+        assert_eq!(start(&mut world, CENTER_HANDED), Vec3f::new(8.0, 0.0, 24.0));
     }
 
     #[test]

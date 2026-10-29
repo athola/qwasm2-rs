@@ -335,7 +335,7 @@ impl ServerWorld {
         let mut sv = q2_server::state::Server::default();
         sv.map(&mut svs, name, bsp, "", &gi, &mut game)
             .expect("map loads");
-        svs.connect_local_client(&mut game)
+        svs.connect_local_client(&mut game, "")
             .expect("client accepted");
         Self { sv, svs, gi, game }
     }

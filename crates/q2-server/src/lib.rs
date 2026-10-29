@@ -32,6 +32,8 @@ pub(crate) mod test_support {
         /// Spawnpoint of the last `spawn_entities`.
         pub(crate) spawnpoint: String,
         pub(crate) connects: u32,
+        /// The userinfo of the last `client_connect`.
+        pub(crate) userinfo: String,
         /// Entity numbers `client_begin` was called with, in order.
         pub(crate) begun: Vec<usize>,
     }
@@ -42,8 +44,9 @@ pub(crate) mod test_support {
         fn spawn_entities(&mut self, _: &str, _: &str, spawnpoint: &str) {
             self.spawnpoint = spawnpoint.to_string();
         }
-        fn client_connect(&mut self, _: usize, _: &str) -> bool {
+        fn client_connect(&mut self, _: usize, userinfo: &str) -> bool {
             self.connects += 1;
+            self.userinfo = userinfo.to_string();
             !self.refuse_connect
         }
         fn client_begin(&mut self, number: usize) {

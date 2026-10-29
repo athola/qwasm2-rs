@@ -2,8 +2,8 @@
 //! C ref: `player/hud.c` (657 lines)
 
 use crate::constants::{
-    EntityFlags, ItemFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE, SKILL_EASY, SKILL_HARD,
-    SKILL_MEDIUM,
+    EntityFlags, ItemFlags, ATTN_NORM, CENTER_HANDED, CHAN_ITEM, POWER_ARMOR_NONE, SKILL_EASY,
+    SKILL_HARD, SKILL_MEDIUM,
 };
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
@@ -62,13 +62,14 @@ impl GameWorld {
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
         let power_icon = self.gi.image_index("i_powershield");
-        // Help icon blinks on new help; else the weapon icon with a wide
-        // view (C pers.hand CENTER_HANDED is not ported).
+        // Help icon blinks on new help; else the weapon icon when the gun
+        // is not drawn: centre-handed or with a wide view (id's rule; C's
+        // yquake2 also asks cl_gun, which the game cannot read here).
         let helpicon = match self.client(key) {
             Some(c) if c.pers.helpchanged != 0 && framenum & 8 != 0 => {
                 self.gi.image_index("i_help")
             }
-            Some(c) if c.ps.fov > 91.0 => c
+            Some(c) if c.pers.hand == CENTER_HANDED || c.ps.fov > 91.0 => c
                 .pers
                 .weapon
                 .and_then(|w| self.items.get(w))
@@ -926,6 +927,18 @@ mod tests {
         world.level.framenum = 64;
         world.update_player_stats(key);
         assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], 0);
+    }
+
+    #[test]
+    fn a_centre_handed_player_sees_the_weapon_icon_instead_of_the_gun() {
+        let (mut world, key, _) = armed_player();
+        world.update_player_stats(key);
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], 0);
+        world.client_mut(key).unwrap().pers.hand = CENTER_HANDED;
+        world.update_player_stats(key);
+        let weapon = world.client(key).unwrap().pers.weapon.unwrap();
+        let icon = world.gi.image_index(world.items[weapon].icon) as i16;
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], icon);
     }
 
     #[test]

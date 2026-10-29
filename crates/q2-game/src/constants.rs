@@ -313,6 +313,10 @@ pub const ATTN_IDLE: f32 = 2.0;
 pub const ATTN_STATIC: f32 = 3.0;
 
 pub const SKILL_EASY: i32 = 0;
+/// C `pers.hand` (userinfo `hand`).
+pub const RIGHT_HANDED: i32 = 0;
+pub const LEFT_HANDED: i32 = 1;
+pub const CENTER_HANDED: i32 = 2;
 pub const SKILL_MEDIUM: i32 = 1;
 pub const SKILL_HARD: i32 = 2;
 pub const SKILL_HARDPLUS: i32 = 3;

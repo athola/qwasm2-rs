@@ -118,6 +118,8 @@ pub struct Gl3Renderer {
     canvas: (i32, i32),
     /// C `vid_gamma`; every program's `u_gamma` is `1/vid_gamma`.
     vid_gamma: f32,
+    /// C cvar `hand`, which the renderer reads too (`gl_lefthand`).
+    hand: i32,
 }
 
 impl Gl3Renderer {
@@ -165,6 +167,7 @@ impl Gl3Renderer {
             ui_queue: Vec::new(),
             canvas: (0, 0),
             vid_gamma: 1.0,
+            hand: 0,
         }
     }
 
@@ -549,7 +552,8 @@ impl Renderer for Gl3Renderer {
                 fd.fov_x,
                 fd.fov_y,
             ),
-            gun_view_proj: gun_view_projection(fd),
+            gun_view_proj: gun_view_projection(fd, self.hand),
+            hand: self.hand,
             view_proj,
             fx: self.fx.as_ref(),
             palette: self.palette.as_ref(),
@@ -668,6 +672,10 @@ impl Renderer for Gl3Renderer {
         self.apply_gamma();
     }
 
+    fn set_hand(&mut self, hand: i32) {
+        self.hand = hand;
+    }
+
     fn end_frame(&mut self) {
         let queue = std::mem::take(&mut self.ui_queue);
         let (Some(gl), Some(extra)) = (&self.gl, &self.extra) else {
@@ -767,13 +775,31 @@ fn dlight_uniforms(dlights: &[DLight]) -> (Vec<f32>, Vec<f32>, i32) {
 const R_GUNFOV: f32 = 80.0;
 
 /// The view-projection the gun is drawn with: the view's, but with
-/// `R_GUNFOV` as the vertical fov. C ref: `GL3_DrawAliasModel`'s
-/// `RF_WEAPONMODEL` projection (right-handed only).
-pub(crate) fn gun_view_projection(fd: &RefDef) -> [f32; 16] {
-    build_view_projection(&RefDef {
+/// `R_GUNFOV` as the vertical fov, and for C cvar `hand` 1 mirrored by
+/// negating the projection's x column. C ref: `GL3_DrawAliasModel`'s
+/// `RF_WEAPONMODEL` projection.
+pub(crate) fn gun_view_projection(fd: &RefDef, hand: i32) -> [f32; 16] {
+    let fd = RefDef {
         fov_y: R_GUNFOV,
         ..fd.clone()
-    })
+    };
+    let mut proj = perspective_matrix(&fd);
+    if hand == 1 {
+        for value in &mut proj[0..4] {
+            *value = -*value;
+        }
+    }
+    mat4_mul(&proj, &view_matrix(&fd))
+}
+
+/// The face culled while drawing the gun: C culls the back of a mirrored
+/// (left-handed) gun and draws none for `hand` 2.
+pub(crate) fn gun_cull_face(hand: i32) -> Option<u32> {
+    match hand {
+        2 => None,
+        1 => Some(glow::BACK),
+        _ => Some(CULL_FACE),
+    }
 }
 
 /// Depth range for an alias draw: `RF_DEPTHHACK` keeps the gun in the
@@ -1095,6 +1121,30 @@ mod tests {
     }
 
     #[test]
+    fn a_left_handed_gun_is_mirrored_across_the_view_like_c_hand_1() {
+        let fd = RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y: 73.74,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        let point = [40.0, 20.0, 10.0, 1.0];
+        let right = mat4_mul_vec4(&gun_view_projection(&fd, 0), point);
+        let left = mat4_mul_vec4(&gun_view_projection(&fd, 1), point);
+        assert!((left[0] + right[0]).abs() < 1e-4, "{left:?} {right:?}");
+        for i in 1..4 {
+            assert!((left[i] - right[i]).abs() < 1e-4);
+        }
+        // Centre-handed draws no gun; left-handed culls the mirrored side.
+        assert_eq!(gun_cull_face(0), Some(CULL_FACE));
+        assert_eq!(gun_cull_face(1), Some(glow::BACK));
+        assert_eq!(gun_cull_face(2), None);
+    }
+
+    #[test]
     fn the_gun_is_projected_with_r_gunfov_80_whatever_the_view_fov() {
         let fd = |fov_y: f32| RefDef {
             width: 800,
@@ -1106,12 +1156,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            gun_view_projection(&fd(73.74)),
+            gun_view_projection(&fd(73.74), 0),
             build_view_projection(&fd(80.0))
         );
         assert_eq!(
-            gun_view_projection(&fd(100.0)),
-            gun_view_projection(&fd(60.0))
+            gun_view_projection(&fd(100.0), 0),
+            gun_view_projection(&fd(60.0), 0)
         );
     }
 

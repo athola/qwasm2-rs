@@ -76,6 +76,10 @@ struct Engine {
     rng: u32,
     /// Printed lines, the centre print and the server layout.
     text: q2_client::notify::ServerText,
+    /// C cvar `game`, the game directory (`?game=`; empty is baseq2).
+    game: String,
+    /// C cvar `hand` (`?hand=`): 0 right, 1 left, 2 centre.
+    hand: i32,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -107,6 +111,8 @@ impl Engine {
             trails: q2_client::fx::EntityTrails::default(),
             rng: 0x1234_5678,
             text: q2_client::notify::ServerText::default(),
+            game: String::new(),
+            hand: 0,
         };
         engine.register_sounds();
         engine
@@ -117,6 +123,13 @@ impl Engine {
         self.vid_gamma = vid_gamma;
         self.renderer.set_gamma(vid_gamma);
         log(&format!("Gamma: {vid_gamma:.1} (F7 darker, F8 brighter)"));
+    }
+
+    /// C cvar `hand`: the renderer mirrors or hides the gun, and heat
+    /// beams leave from that side. The game reads it from the userinfo.
+    fn set_hand(&mut self, hand: i32) {
+        self.hand = hand;
+        self.renderer.set_hand(hand);
     }
 
     fn step_gamma(&mut self, step: i32) {
@@ -500,6 +513,7 @@ impl Engine {
         };
 
         let mut views = q2_client::entities::entity_views(
+            &self.game,
             &self.frames.current,
             &self.frames.previous,
             lerpfrac,
@@ -524,9 +538,13 @@ impl Engine {
             cl_time,
             &mut randk,
         );
-        // Right-handed: there is no `hand` cvar.
-        let view =
-            q2_client::fx::FxView::new(player, vieworg, viewangles, self.frames.gun_offsets(), 0);
+        let view = q2_client::fx::FxView::new(
+            player,
+            vieworg,
+            viewangles,
+            self.frames.gun_offsets(),
+            self.hand,
+        );
         let mut effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
         effects.entities.extend(power_screens(&views));
         entities.extend(fx_render_entities(&effects.entities, &self.models));
@@ -1003,14 +1021,57 @@ const VID_GAMMA_MIN: f32 = 0.1;
 #[cfg(any(target_arch = "wasm32", test))]
 const VID_GAMMA_MAX: f32 = 2.0;
 
+/// The value of `key` in the page's query string (`?map=demo3&hand=1`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn query_value<'a>(search: &'a str, key: &str) -> Option<&'a str> {
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// The map to start on: `?map=` (`demo3` or `maps/demo3.bsp`) when the pak
+/// has it, else demo1, else the first map.
+#[cfg(any(target_arch = "wasm32", test))]
+fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<&'a str> {
+    let wanted = requested.map(|name| {
+        let name = name.strip_prefix("maps/").unwrap_or(name);
+        format!("maps/{}.bsp", name.strip_suffix(".bsp").unwrap_or(name))
+    });
+    wanted
+        .and_then(|wanted| maps.iter().find(|&&m| m == wanted))
+        .or_else(|| maps.iter().find(|&&m| m == "maps/demo1.bsp"))
+        .or_else(|| maps.first())
+        .copied()
+}
+
+/// C cvar `hand` (0 right, 1 left, 2 centre) from `?hand=`; 0 when unset
+/// or not a number.
+#[cfg(any(target_arch = "wasm32", test))]
+fn hand_from_query(search: &str) -> i32 {
+    query_value(search, "hand")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The local client's userinfo: C sends its `CVAR_USERINFO` cvars, of
+/// which this port has only `hand`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn local_userinfo(hand: i32) -> String {
+    format!("\\hand\\{hand}")
+}
+
+/// C cvar `game` (the game directory) from `?game=`; empty is baseq2.
+#[cfg(any(target_arch = "wasm32", test))]
+fn game_from_query(search: &str) -> &str {
+    query_value(search, "game").unwrap_or("")
+}
+
 /// `vid_gamma` from the page's query string (`?gamma=1.2`), clamped to the
 /// slider range; `None` keeps the default.
 #[cfg(any(target_arch = "wasm32", test))]
 fn vid_gamma_from_query(search: &str) -> Option<f32> {
-    let value = search
-        .trim_start_matches('?')
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("gamma="))?;
+    let value = query_value(search, "gamma")?;
     let vid_gamma = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
     Some(vid_gamma.clamp(VID_GAMMA_MIN, VID_GAMMA_MAX))
 }
@@ -1268,14 +1329,17 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         log(&format!("  {}", m));
     }
 
-    // 6. Load first map's BSP
-    let map_name = if map_list.contains(&"maps/demo1.bsp") {
-        "maps/demo1.bsp"
-    } else if let Some(first) = map_list.first() {
-        first
-    } else {
+    // 6. Load the first map's BSP: `?map=`, else demo1.
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let requested = query_value(&search, "map");
+    let Some(map_name) = start_map(requested, &map_list) else {
         return Err(JsValue::from_str("No maps found in pak0.pak"));
     };
+    if let Some(requested) = requested.filter(|r| !map_name.contains(*r)) {
+        log(&format!("?map={requested} is not in the pak"));
+    }
 
     log(&format!("Loading {}...", map_name));
     let bsp_data = fs.load_file(map_name).map_err(q2err_to_js)?;
@@ -1297,7 +1361,13 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
 
     // 8. Server and game: load collision, spawn the map's entities, and put
     //    the local player in at the player start.
-    let local = q2_server::local::LocalGame::start(short_name, &bsp_data).map_err(q2err_to_js)?;
+    let hand = hand_from_query(&search);
+    let local = q2_server::local::LocalGame::start_with_userinfo(
+        short_name,
+        &bsp_data,
+        &local_userinfo(hand),
+    )
+    .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
     if let Some((origin, ps)) = local.player() {
         log(&format!(
@@ -1312,10 +1382,9 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     log("World uploaded to GPU");
 
     let mut engine = Engine::new(renderer, local, fs, models, canvas.clone(), view);
-    let search = web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .unwrap_or_default();
     engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
+    engine.set_hand(hand);
+    engine.game = game_from_query(&search).to_string();
 
     // 9. Input, last of the fallible steps before the loop: the listeners
     //    are leaked for the page's lifetime, so a failed start that is
@@ -1476,6 +1545,9 @@ mod tests {
         }
         fn set_gamma(&mut self, vid_gamma: f32) {
             self.calls.push(format!("gamma {vid_gamma}"));
+        }
+        fn set_hand(&mut self, hand: i32) {
+            self.calls.push(format!("hand {hand}"));
         }
         fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str) {
             self.calls.push(format!("stretch {x} {y} {w} {h} {name}"));
@@ -1735,6 +1807,39 @@ mod tests {
         // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
         assert_eq!(cmd_msec(0.4), 100);
         assert_eq!(cmd_msec(-1.0), 0);
+    }
+
+    #[test]
+    fn query_values_are_found_by_their_exact_key() {
+        assert_eq!(query_value("?map=demo3&hand=1", "map"), Some("demo3"));
+        assert_eq!(query_value("?map=demo3&hand=1", "hand"), Some("1"));
+        assert_eq!(query_value("?maps=x", "map"), None);
+        assert_eq!(query_value("", "map"), None);
+    }
+
+    #[test]
+    fn the_first_map_is_the_requested_one_else_demo1_else_the_first() {
+        let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
+        assert_eq!(start_map(Some("demo3"), &maps), Some("maps/demo3.bsp"));
+        assert_eq!(
+            start_map(Some("maps/demo3.bsp"), &maps),
+            Some("maps/demo3.bsp")
+        );
+        assert_eq!(start_map(Some("base1"), &maps), Some("maps/demo1.bsp"));
+        assert_eq!(start_map(None, &maps), Some("maps/demo1.bsp"));
+        assert_eq!(start_map(None, &["maps/q2dm1.bsp"]), Some("maps/q2dm1.bsp"));
+        assert_eq!(start_map(Some("demo3"), &[]), None);
+    }
+
+    #[test]
+    fn hand_and_game_come_from_the_query_with_c_defaults() {
+        assert_eq!(hand_from_query("?hand=1"), 1);
+        assert_eq!(hand_from_query("?hand=2"), 2);
+        assert_eq!(hand_from_query("?hand=left"), 0);
+        assert_eq!(hand_from_query(""), 0);
+        assert_eq!(local_userinfo(1), "\\hand\\1");
+        assert_eq!(game_from_query("?game=rogue"), "rogue");
+        assert_eq!(game_from_query(""), "");
     }
 
     #[test]

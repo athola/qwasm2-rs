@@ -145,6 +145,12 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- The page reads C's `hand` (`?hand=1` left, `2` centre), `game`
+  (`?game=rogue`) and a start map (`?map=demo3`): shots leave from the
+  player's hand, the gun is mirrored or hidden (with the weapon icon on
+  the status bar), heat beams follow the hand, and rogue's shell colours
+  apply; flashlight and tracker lights take slots in the client's
+  dlights like C's
 - Map lasers (C `target_laser`): beams aimed along their angles or at a
   target, in the five spawnflag colours, burning what they cross, with
   sparks where they land when they move; the browser draws a beam in one
