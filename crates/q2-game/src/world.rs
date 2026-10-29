@@ -101,6 +101,11 @@ pub struct GameLocals {
     pub fraglimit: i32,
     pub timelimit: f32,
     pub maplist: String,
+    /// The help computer's objectives and how often they changed (C
+    /// `helpmessage1`, `helpmessage2`, `helpchanged`).
+    pub helpmessage1: String,
+    pub helpmessage2: String,
+    pub helpchanged: i32,
 }
 
 impl Default for GameLocals {
@@ -118,6 +123,9 @@ impl Default for GameLocals {
             fraglimit: 0,
             timelimit: 0.0,
             maplist: String::new(),
+            helpmessage1: String::new(),
+            helpmessage2: String::new(),
+            helpchanged: 0,
         }
     }
 }
@@ -143,6 +151,9 @@ pub struct GameWorld {
     /// What the last `t_damage` was from, for obituaries (C global
     /// `meansOfDeath`).
     pub means_of_death: crate::constants::MeansOfDeath,
+    /// Whether that damage came from a teammate (C `meansOfDeath`'s
+    /// `MOD_FRIENDLY_FIRE` bit).
+    pub friendly_fire: bool,
     /// Frames left on a player-dropped quad being picked up, for
     /// `use_quad` (C `quad_drop_timeout_hack`); 0 for a fresh one.
     pub quad_drop_timeout_hack: i32,
@@ -177,6 +188,7 @@ impl GameWorld {
             clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
             means_of_death: crate::constants::MeansOfDeath::Unknown,
+            friendly_fire: false,
             quad_drop_timeout_hack: 0,
             pain_anim_cycle: 0,
             spawn_table: SpawnTable::new(),
@@ -977,6 +989,9 @@ pub struct MockGameImport {
     pub writes: RefCell<Vec<i32>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
+    /// Every `write_string`, and every `unicast` (entity, reliable).
+    pub strings: RefCell<Vec<String>>,
+    pub unicasts: RefCell<Vec<(usize, bool)>>,
     /// `entity_areas` by entity number; unlisted numbers are in no area.
     pub areas: RefCell<HashMap<usize, (i32, i32)>>,
     /// Area pairs `areas_connected` reports as cut off (either order).
@@ -1119,14 +1134,18 @@ impl GameImport for MockGameImport {
     }
     fn write_long(&self, _: i32) {}
     fn write_float(&self, _: f32) {}
-    fn write_string(&self, _: &str) {}
+    fn write_string(&self, s: &str) {
+        self.strings.borrow_mut().push(s.to_string());
+    }
     fn write_position(&self, _: Vec3f) {}
     fn write_dir(&self, _: Vec3f) {}
     fn write_angle(&self, _: f32) {}
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));
     }
-    fn unicast(&self, _: usize, _: bool) {}
+    fn unicast(&self, ent: usize, reliable: bool) {
+        self.unicasts.borrow_mut().push((ent, reliable));
+    }
 
     fn argc(&self) -> i32 {
         self.command.borrow().len() as i32

@@ -116,6 +116,14 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- Death messages, scores and the help computer (C `ClientObituary`,
+  `DeathmatchScoreboardMessage`, `HelpComputerMessage`, `Cmd_Score_f`,
+  `Cmd_Help_f`): every C obituary by means of death and gender, frag
+  scoring with the friendly-fire penalty (`GameWorld::friendly_fire`),
+  the scoreboard layout (on death, at intermission and with `score`,
+  refreshed every 32 frames), `target_help` objectives with the help
+  icon and three beeps, the `help` command, `STAT_LAYOUTS`/
+  `STAT_HELPICON`, and each player's name and skin in `CS_PLAYERSKINS`
 - Taking damage shows like C `P_DamageFeedback`: a tint mixed red,
   white and green by what absorbed the hit, the status-number flashes,
   pain sounds by health and a view kick away from the hit; dying plays

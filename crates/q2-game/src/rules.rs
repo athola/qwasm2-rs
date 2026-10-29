@@ -258,4 +258,107 @@ mod tests {
         world.game.dmflags = DF_MODELTEAMS;
         assert_eq!(hit(&mut world, other, me), 80, "friendly fire allowed");
     }
+
+    // ---- ClientObituary ----
+
+    fn die(world: &mut GameWorld, victim: EntityKey, attacker: EntityKey, mod_: MeansOfDeath) {
+        world.means_of_death = mod_;
+        world.client_obituary(victim, attacker, attacker);
+    }
+
+    #[test]
+    fn deathmatch_kills_name_both_players_and_score_a_frag() {
+        let (mut world, me, gi) = match_world();
+        let other = rival(&mut world, "male/grunt");
+        die(&mut world, other, me, MeansOfDeath::Rocket);
+        assert_eq!(printed(&gi), ["P2 ate P1's rocket\n"]);
+        assert_eq!(world.client(me).unwrap().resp.score, 1);
+        assert_eq!(world.entities.get(other).unwrap().game.enemy, Some(me));
+    }
+
+    #[test]
+    fn each_weapon_has_its_c_death_message() {
+        for (mod_, text) in [
+            (MeansOfDeath::Blaster, "P2 was blasted by P1\n"),
+            (
+                MeansOfDeath::SShotgun,
+                "P2 was blown away by P1's super shotgun\n",
+            ),
+            (MeansOfDeath::Railgun, "P2 was railed by P1\n"),
+            (MeansOfDeath::HeldGrenade, "P2 feels P1's pain\n"),
+            (
+                MeansOfDeath::Telefrag,
+                "P2 tried to invade P1's personal space\n",
+            ),
+        ] {
+            let (mut world, me, gi) = match_world();
+            let other = rival(&mut world, "male/grunt");
+            die(&mut world, other, me, mod_);
+            assert_eq!(printed(&gi), [text]);
+        }
+    }
+
+    #[test]
+    fn world_deaths_and_suicides_cost_a_frag() {
+        let (mut world, me, gi) = match_world();
+        let worldspawn = world.entities.spawn_numbered(0).unwrap();
+        die(&mut world, me, worldspawn, MeansOfDeath::Lava);
+        assert_eq!(printed(&gi), ["P1 does a back flip into the lava.\n"]);
+        assert_eq!(world.client(me).unwrap().resp.score, -1);
+        assert_eq!(world.entities.get(me).unwrap().game.enemy, None);
+
+        die(&mut world, me, me, MeansOfDeath::RocketSplash);
+        // No gender in the userinfo: C's IsNeutral.
+        assert_eq!(printed(&gi)[1], "P1 blew itself up.\n");
+    }
+
+    #[test]
+    fn self_kill_messages_follow_the_userinfo_gender() {
+        let (mut world, gi) = test_world_recording();
+        world.init_items();
+        world.game.deathmatch = true;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
+        let her = world
+            .connect_client(1, "\\name\\Ann\\gender\\female")
+            .unwrap();
+        world.begin_client(her);
+        die(&mut world, her, her, MeansOfDeath::GrenadeSplash);
+        assert_eq!(printed(&gi), ["Ann tripped on her own grenade.\n"]);
+    }
+
+    #[test]
+    fn a_teamkill_costs_the_killer_a_frag() {
+        let (mut world, me, _) = match_world();
+        let other = rival(&mut world, "male/grunt");
+        world.game.dmflags = DF_MODELTEAMS;
+        world.t_damage(
+            other,
+            me,
+            me,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            500,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Shotgun,
+        );
+        assert!(world.friendly_fire);
+        assert_eq!(world.client(me).unwrap().resp.score, -1);
+    }
+
+    #[test]
+    fn a_single_player_death_just_says_died() {
+        let (mut world, me, gi) = match_world();
+        world.game.deathmatch = false;
+        let monster = world.spawn().unwrap();
+        die(&mut world, me, monster, MeansOfDeath::Blaster);
+        assert_eq!(printed(&gi), ["P1 died.\n"]);
+        assert_eq!(
+            world.client(me).unwrap().resp.score,
+            0,
+            "no frags outside deathmatch"
+        );
+    }
 }

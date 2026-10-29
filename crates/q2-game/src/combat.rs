@@ -348,16 +348,16 @@ impl GameWorld {
             return;
         }
         // Friendly fire avoidance: teammates can't hurt each other (but
-        // can hurt themselves); knockback still occurs. C also ORs
-        // MOD_FRIENDLY_FIRE into the obituary's means of death, which is
-        // not kept here.
+        // can hurt themselves), or the hit is marked friendly fire for
+        // the obituary; knockback still occurs.
         let teams = self.game.dmflags & (DF_MODELTEAMS | DF_SKINTEAMS) != 0;
-        let spared = target != attacker
+        let teammates = target != attacker
             && ((self.game.deathmatch && teams) || self.game.coop)
-            && self.on_same_team(target, attacker)
-            && self.game.dmflags & DF_NO_FRIENDLY_FIRE != 0;
+            && self.on_same_team(target, attacker);
+        let spared = teammates && self.game.dmflags & DF_NO_FRIENDLY_FIRE != 0;
         let damage = if spared { 0 } else { damage };
         self.means_of_death = means_of_death;
+        self.friendly_fire = teammates && !spared;
 
         let mut damage = damage;
         let mut knockback = knockback as f32;

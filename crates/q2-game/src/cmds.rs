@@ -30,6 +30,8 @@ impl GameWorld {
             "weapprev" => self.cmd_weap_cycle(key, 1),
             "weapnext" => self.cmd_weap_cycle(key, MAX_ITEMS - 1),
             "weaplast" => self.cmd_weap_last(key),
+            "help" => self.cmd_help(key),
+            "score" => self.cmd_score(key),
             _ => {}
         }
     }
@@ -514,6 +516,15 @@ mod tests {
         let other = world.spawn().unwrap();
         run(&mut world, &gi, other, "use Thing");
         assert!(printed(&gi).is_empty());
+    }
+
+    #[test]
+    fn help_and_score_are_client_commands() {
+        let (mut world, key, gi) = player();
+        run(&mut world, &gi, key, "help");
+        assert!(world.client(key).unwrap().showhelp);
+        run(&mut world, &gi, key, "score");
+        assert!(!world.client(key).unwrap().showhelp, "score hides help");
     }
 
     #[test]

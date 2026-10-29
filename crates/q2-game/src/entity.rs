@@ -189,6 +189,11 @@ pub struct ClientPersistent {
     pub saved_flags: crate::constants::EntityFlags,
     /// C `pers.score`: a coop score carried across levels.
     pub score: i32,
+    /// Unseen help: counts the help beeps, 0 once the help computer was
+    /// read (C `helpchanged`), and the game's help count it last saw (C
+    /// `game_helpchanged`).
+    pub helpchanged: i32,
+    pub game_helpchanged: i32,
 }
 
 impl Default for ClientPersistent {
@@ -207,6 +212,8 @@ impl Default for ClientPersistent {
             last_weapon: None,
             saved_flags: crate::constants::EntityFlags::empty(),
             score: 0,
+            helpchanged: 0,
+            game_helpchanged: 0,
         }
     }
 }
@@ -294,6 +301,11 @@ pub struct ClientData {
     /// Death or gib sound to play at the end of the frame (C the player
     /// edict's `sounds`).
     pub death_sound: i32,
+    /// Which layout the player has up: the scoreboard, the help computer
+    /// or the inventory (C `showscores`, `showhelp`, `showinventory`).
+    pub showscores: bool,
+    pub showhelp: bool,
+    pub showinventory: bool,
     /// When a dead player may respawn (C `respawn_time`).
     pub respawn_time: f32,
     /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).

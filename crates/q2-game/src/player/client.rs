@@ -67,6 +67,7 @@ impl GameWorld {
         ent.die = Some(player_die);
         ent.game.health = PLAYER_MAX_HEALTH;
         ent.game.max_health = PLAYER_MAX_HEALTH;
+        self.player_skin_configstring(key);
 
         Some(key)
     }
@@ -159,6 +160,8 @@ impl GameWorld {
         }
 
         self.link_entity(key);
+
+        self.player_skin_configstring(key);
 
         // Force the current weapon up.
         if let Some(client) = self.client_mut(key) {
@@ -714,6 +717,30 @@ impl GameWorld {
     /// weapon's hum. C ref: `G_SetClientSound` (player/view.c), without
     /// the help-computer beep.
     fn set_client_sound(&mut self, key: EntityKey) {
+        // New help: flag it, and beep (no more than three times).
+        let (game_helpchanged, framenum) = (self.game.helpchanged, self.level.framenum);
+        let beep = self.client_mut(key).is_some_and(|c| {
+            if c.pers.game_helpchanged != game_helpchanged {
+                c.pers.game_helpchanged = game_helpchanged;
+                c.pers.helpchanged = 1;
+            }
+            let due = c.pers.helpchanged != 0 && c.pers.helpchanged <= 3 && framenum & 63 == 0;
+            if due {
+                c.pers.helpchanged += 1;
+            }
+            due
+        });
+        if beep {
+            let pc_up = self.gi.sound_index("misc/pc_up.wav");
+            self.gi.sound(
+                self.number_of(key),
+                CHAN_VOICE,
+                pc_up,
+                1.0,
+                ATTN_STATIC,
+                0.0,
+            );
+        }
         let fry = self.gi.sound_index("player/fry.wav");
         let Some((ent, client)) = self.entity_and_client_mut(key) else {
             return;
@@ -746,6 +773,15 @@ impl GameWorld {
             self.update_player_stats(key);
             self.set_client_effects(key);
             self.set_client_sound(key);
+            // If the scoreboard is up, update it.
+            let showscores = self.client(key).is_some_and(|c| c.showscores);
+            if showscores && self.level.framenum & 31 == 0 {
+                let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
+                self.deathmatch_scoreboard_message(key, enemy);
+                if let Some(number) = self.number_of(key) {
+                    self.gi.unicast(number, false);
+                }
+            }
             if let Some(client) = self.client_mut(key) {
                 client.oldviewangles = client.ps.viewangles;
                 client.kick_origin = Vec3f::ZERO;
@@ -826,8 +862,8 @@ pub(crate) fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
 pub fn player_die(
     world: &mut GameWorld,
     key: EntityKey,
-    _inflictor: EntityKey,
-    _attacker: EntityKey,
+    inflictor: EntityKey,
+    attacker: EntityKey,
     damage: i32,
     _point: Vec3f,
 ) {
@@ -846,7 +882,11 @@ pub fn player_die(
     let first_death = ent.game.deadflag == DeadFlag::No;
     let time = world.level.time;
     if first_death {
+        world.client_obituary(key, inflictor, attacker);
         world.toss_client_weapon(key);
+        if world.game.deathmatch {
+            world.cmd_help(key); // show scores
+        }
     }
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -903,6 +943,123 @@ pub fn player_die(
     };
     ent.game.deadflag = DeadFlag::Dead;
     world.link_entity(key);
+}
+
+/// What a self-kill message calls the player (C `IsFemale`, `IsNeutral`
+/// on the userinfo `gender`).
+fn pronoun(userinfo: &str) -> (&'static str, &'static str) {
+    let gender = extract_info_value(userinfo, "gender").unwrap_or_default();
+    match gender.chars().next() {
+        Some('f' | 'F') => ("her", "herself"),
+        Some('m' | 'M') => ("his", "himself"),
+        _ => ("its", "itself"),
+    }
+}
+
+impl GameWorld {
+    /// Say how a player died and keep score: a world death or suicide
+    /// costs a deathmatch frag, a kill earns the killer one (or costs one
+    /// for a teammate). Single player only says "died". C ref:
+    /// `ClientObituary` (player/client.c).
+    pub fn client_obituary(&mut self, key: EntityKey, _inflictor: EntityKey, attacker: EntityKey) {
+        use crate::constants::MeansOfDeath as M;
+        use q2_shared::constants::PRINT_MEDIUM;
+        let (deathmatch, coop) = (self.game.deathmatch, self.game.coop);
+        let attacker_client = self.client(attacker).map(|c| c.pers.netname.clone());
+        if coop && attacker_client.is_some() {
+            self.friendly_fire = true;
+        }
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        let name = client.pers.netname.clone();
+        let (his, himself) = pronoun(&client.pers.userinfo);
+        if deathmatch || coop {
+            let (ff, mod_) = (self.friendly_fire, self.means_of_death);
+            let mut message: Option<String> = match mod_ {
+                M::Suicide => Some("suicides".into()),
+                M::Falling => Some("cratered".into()),
+                M::Crush => Some("was squished".into()),
+                M::Water => Some("sank like a rock".into()),
+                M::Slime => Some("melted".into()),
+                M::Lava => Some("does a back flip into the lava".into()),
+                M::Explosive | M::Barrel => Some("blew up".into()),
+                M::Exit => Some("found a way out".into()),
+                M::TargetLaser => Some("saw the light".into()),
+                M::TargetBlaster => Some("got blasted".into()),
+                M::Bomb | M::Splash | M::TriggerHurt => Some("was in the wrong place".into()),
+                _ => None,
+            };
+            if attacker == key {
+                message = Some(match mod_ {
+                    M::HeldGrenade => "tried to put the pin back in".into(),
+                    M::HandgrenadeSplash | M::GrenadeSplash => {
+                        format!("tripped on {his} own grenade")
+                    }
+                    M::RocketSplash => format!("blew {himself} up"),
+                    M::BfgBlast => "should have used a smaller gun".into(),
+                    _ => format!("killed {himself}"),
+                });
+            }
+            if let Some(message) = message {
+                self.gi
+                    .bprintf(PRINT_MEDIUM, &format!("{name} {message}.\n"));
+                if deathmatch {
+                    if let Some(client) = self.client_mut(key) {
+                        client.resp.score -= 1;
+                    }
+                }
+                if let Some(ent) = self.entities.get_mut(key) {
+                    ent.game.enemy = None;
+                }
+                return;
+            }
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.enemy = Some(attacker);
+            }
+            if let Some(killer) = attacker_client {
+                let words = match mod_ {
+                    M::Blaster => Some(("was blasted by", "")),
+                    M::Shotgun => Some(("was gunned down by", "")),
+                    M::SShotgun => Some(("was blown away by", "'s super shotgun")),
+                    M::Machinegun => Some(("was machinegunned by", "")),
+                    M::Chaingun => Some(("was cut in half by", "'s chaingun")),
+                    M::Grenade => Some(("was popped by", "'s grenade")),
+                    M::GrenadeSplash => Some(("was shredded by", "'s shrapnel")),
+                    M::Rocket => Some(("ate", "'s rocket")),
+                    M::RocketSplash => Some(("almost dodged", "'s rocket")),
+                    M::Hyperblaster => Some(("was melted by", "'s hyperblaster")),
+                    M::Railgun => Some(("was railed by", "")),
+                    M::BfgLaser => Some(("saw the pretty lights from", "'s BFG")),
+                    M::BfgBlast => Some(("was disintegrated by", "'s BFG blast")),
+                    M::BfgEffect => Some(("couldn't hide from", "'s BFG")),
+                    M::Handgrenade => Some(("caught", "'s handgrenade")),
+                    M::HandgrenadeSplash => Some(("didn't see", "'s handgrenade")),
+                    M::HeldGrenade => Some(("feels", "'s pain")),
+                    M::Telefrag => Some(("tried to invade", "'s personal space")),
+                    _ => None,
+                };
+                if let Some((message, message2)) = words {
+                    self.gi.bprintf(
+                        PRINT_MEDIUM,
+                        &format!("{name} {message} {killer}{message2}\n"),
+                    );
+                    if deathmatch {
+                        if let Some(client) = self.client_mut(attacker) {
+                            client.resp.score += if ff { -1 } else { 1 };
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        self.gi.bprintf(PRINT_MEDIUM, &format!("{name} died.\n"));
+        if deathmatch {
+            if let Some(client) = self.client_mut(key) {
+                client.resp.score -= 1;
+            }
+        }
+    }
 }
 
 impl GameWorld {

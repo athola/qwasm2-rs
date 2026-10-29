@@ -145,6 +145,48 @@ fn target_changelevel_use(
     world.begin_intermission(self_key);
 }
 
+/// target_help: set the help computer's first (spawnflags 1) or second
+/// objective and flag new help. Not in deathmatch, and none without a
+/// message. C ref: `SP_target_help`, `Use_Target_Help` (g_target.c).
+pub fn finish_target_help(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let has_message = world
+        .entities
+        .get(key)
+        .is_some_and(|e| !e.game.message.is_empty());
+    if world.game.deathmatch || !has_message {
+        if !has_message {
+            world.gi.dprintf("target_help with no message\n");
+        }
+        world.free_entity(key);
+        return;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.use_fn = Some(target_help_use);
+    }
+}
+
+fn target_help_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let message = ent.game.message.clone();
+    if ent.game.spawnflags & 1 != 0 {
+        world.game.helpmessage1 = message;
+    } else {
+        world.game.helpmessage2 = message;
+    }
+    world.game.helpchanged += 1;
+}
+
 /// Looping speakers toggle; others play their sound once.
 /// C ref: `Use_Target_Speaker`. The one-shot sound is positioned at the
 /// speaker, which is invisible and so never sent to clients.

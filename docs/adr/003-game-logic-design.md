@@ -149,8 +149,9 @@ effects, and the deathmatch rules end matches through C's intermission.
   position.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
-  `menu_loadgame`, which nothing handles), the scoreboard, obituaries (no
-  `MOD_FRIENDLY_FIRE` bit), the random pick in an item team's respawn,
+  `menu_loadgame`, which nothing handles), the random pick in an item
+  team's respawn, the inventory layout, the `hand`/`fov`/`spectator`
+  userinfo,
   `SP_FixCoopSpots`, and power-armor sparks.
 
 ## Consequences

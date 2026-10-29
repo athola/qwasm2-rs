@@ -1,15 +1,19 @@
 //! Player HUD — stat calculations for health, ammo, armor, weapon icon.
 //! C ref: `player/hud.c` (657 lines)
 
-use crate::constants::{EntityFlags, ItemFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE};
+use crate::constants::{
+    EntityFlags, ItemFlags, ATTN_NORM, CHAN_ITEM, POWER_ARMOR_NONE, SKILL_EASY, SKILL_HARD,
+    SKILL_MEDIUM,
+};
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
+use q2_shared::protocol::SvcOp;
 use q2_shared::types::{PmType, Solid};
 
 use q2_shared::constants::{
     STAT_AMMO, STAT_AMMO_ICON, STAT_ARMOR, STAT_ARMOR_ICON, STAT_FRAGS, STAT_HEALTH,
-    STAT_HEALTH_ICON, STAT_LAYOUTS, STAT_PICKUP_ICON, STAT_PICKUP_STRING, STAT_SELECTED_ICON,
-    STAT_SELECTED_ITEM, STAT_TIMER, STAT_TIMER_ICON,
+    STAT_HEALTH_ICON, STAT_HELPICON, STAT_LAYOUTS, STAT_PICKUP_ICON, STAT_PICKUP_STRING,
+    STAT_SELECTED_ICON, STAT_SELECTED_ITEM, STAT_TIMER, STAT_TIMER_ICON,
 };
 
 impl GameWorld {
@@ -58,6 +62,21 @@ impl GameWorld {
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
         let power_icon = self.gi.image_index("i_powershield");
+        // Help icon blinks on new help; else the weapon icon with a wide
+        // view (C pers.hand CENTER_HANDED is not ported).
+        let helpicon = match self.client(key) {
+            Some(c) if c.pers.helpchanged != 0 && framenum & 8 != 0 => {
+                self.gi.image_index("i_help")
+            }
+            Some(c) if c.ps.fov > 91.0 => c
+                .pers
+                .weapon
+                .and_then(|w| self.items.get(w))
+                .map_or(0, |it| self.gi.image_index(it.icon)),
+            _ => 0,
+        };
+        let (deathmatch, intermission) =
+            (self.game.deathmatch, self.level.intermission_time != 0.0);
         let armor = self.armor_index(key).map(|i| {
             let icon = self.items[i].icon;
             (self.gi.image_index(icon), i)
@@ -105,12 +124,174 @@ impl GameWorld {
         stats[STAT_TIMER] = timer_left as i16;
         stats[STAT_SELECTED_ICON] = selected_icon as i16;
         stats[STAT_SELECTED_ITEM] = selected as i16;
-        stats[STAT_LAYOUTS] = 0;
+        let mut layouts = 0;
+        let alive = client.pers.health > 0;
+        if deathmatch {
+            if !alive || intermission || client.showscores {
+                layouts |= 1;
+            }
+        } else if client.showscores || client.showhelp {
+            layouts |= 1;
+        }
+        if client.showinventory && alive {
+            layouts |= 2;
+        }
+        stats[STAT_LAYOUTS] = layouts;
         stats[STAT_FRAGS] = client.resp.score as i16;
+        stats[STAT_HELPICON] = helpicon as i16;
     }
 }
 
 impl GameWorld {
+    /// Publish the player's name and skin for scoreboards and other
+    /// players (C `ClientUserinfoChanged`'s `CS_PLAYERSKINS`; its fov,
+    /// hand and spectator parts are not ported).
+    pub fn player_skin_configstring(&mut self, key: EntityKey) {
+        let (Some(number), Some(client)) = (self.number_of(key), self.client(key)) else {
+            return;
+        };
+        let skin = crate::player::client::extract_info_value(&client.pers.userinfo, "skin")
+            .unwrap_or_default();
+        let index = q2_shared::constants::CS_PLAYERSKINS + number - 1;
+        let value = format!("{}\\{skin}", client.pers.netname);
+        self.gi.configstring(index as i32, &value);
+    }
+
+    /// Write the scoreboard layout for `key`: up to twelve players by
+    /// score in two columns, the viewer tagged `tag1` and its killer
+    /// `tag2`. The caller unicasts it. C ref:
+    /// `DeathmatchScoreboardMessage` (player/hud.c).
+    pub fn deathmatch_scoreboard_message(&mut self, key: EntityKey, killer: Option<EntityKey>) {
+        let framenum = self.level.framenum;
+        // Sort the clients by score (earlier slots first on ties).
+        let mut sorted: Vec<(usize, EntityKey, i32)> = Vec::new();
+        for i in 0..self.game.maxclients.max(0) as usize {
+            let Some(cl_ent) = self.entities.key_for_number(i + 1) else {
+                continue;
+            };
+            let in_use = self.entities.get(cl_ent).is_some_and(|e| e.in_use);
+            let Some(client) = self.clients.get(i).filter(|c| in_use && !c.resp.spectator) else {
+                continue;
+            };
+            let score = client.resp.score;
+            let at = sorted
+                .iter()
+                .position(|&(_, _, s)| score > s)
+                .unwrap_or(sorted.len());
+            sorted.insert(at, (i, cl_ent, score));
+        }
+        let mut string = String::new();
+        for (n, &(i, cl_ent, score)) in sorted.iter().take(12).enumerate() {
+            let x = if n >= 6 { 160 } else { 0 };
+            let y = 32 + 32 * (n as i32 % 6);
+            // Add a dogtag.
+            let tag = if cl_ent == key {
+                Some("tag1")
+            } else if Some(cl_ent) == killer {
+                Some("tag2")
+            } else {
+                None
+            };
+            if let Some(tag) = tag {
+                let entry = format!("xv {} yv {y} picn {tag} ", x + 32);
+                if string.len() + entry.len() > 1024 {
+                    break;
+                }
+                string.push_str(&entry);
+            }
+            let client = &self.clients[i];
+            let minutes = (framenum - client.resp.enter_frame) / 600;
+            let entry = format!("client {x} {y} {i} {score} {} {minutes} ", client.ping);
+            if string.len() + entry.len() > 1024 {
+                break;
+            }
+            string.push_str(&entry);
+        }
+        self.gi.write_byte(SvcOp::Layout as i32);
+        self.gi.write_string(&string);
+    }
+
+    /// Write the help computer layout: skill, level name, objectives and
+    /// kill, goal and secret counts. The caller unicasts it. C ref:
+    /// `HelpComputerMessage` (player/hud.c).
+    pub fn help_computer_message(&mut self) {
+        let sk = match self.game.skill {
+            SKILL_EASY => "easy",
+            SKILL_MEDIUM => "medium",
+            SKILL_HARD => "hard",
+            _ => "hard+",
+        };
+        let level = &self.level;
+        let string = format!(
+            "xv 32 yv 8 picn help \
+             xv 202 yv 12 string2 \"{sk}\" \
+             xv 0 yv 24 cstring2 \"{}\" \
+             xv 0 yv 54 cstring2 \"{}\" \
+             xv 0 yv 110 cstring2 \"{}\" \
+             xv 50 yv 164 string2 \" kills     goals    secrets\" \
+             xv 50 yv 172 string2 \"{:3}/{:3}     {}/{}       {}/{}\" ",
+            level.level_name,
+            self.game.helpmessage1,
+            self.game.helpmessage2,
+            level.killed_monsters,
+            level.total_monsters,
+            level.found_goals,
+            level.total_goals,
+            level.found_secrets,
+            level.total_secrets,
+        );
+        self.gi.write_byte(SvcOp::Layout as i32);
+        self.gi.write_string(&string);
+    }
+
+    /// Toggle the scoreboard (deathmatch and coop only), hiding help and
+    /// inventory. C ref: `Cmd_Score_f` (g_cmds.c).
+    pub fn cmd_score(&mut self, key: EntityKey) {
+        let multiplayer = self.game.deathmatch || self.game.coop;
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        client.showinventory = false;
+        client.showhelp = false;
+        if !multiplayer {
+            return;
+        }
+        if client.showscores {
+            client.showscores = false;
+            return;
+        }
+        client.showscores = true;
+        let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
+        self.deathmatch_scoreboard_message(key, enemy);
+        if let Some(number) = self.number_of(key) {
+            self.gi.unicast(number, true);
+        }
+    }
+
+    /// Toggle the help computer; in deathmatch, the scoreboard. Reading
+    /// it clears the new-help flag. C ref: `Cmd_Help_f` (g_cmds.c).
+    pub fn cmd_help(&mut self, key: EntityKey) {
+        if self.game.deathmatch {
+            self.cmd_score(key); // for backwards compatibility
+            return;
+        }
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        client.showinventory = false;
+        client.showscores = false;
+        if client.showhelp {
+            client.showhelp = false;
+            return;
+        }
+        client.showhelp = true;
+        client.pers.helpchanged = 0;
+        self.help_computer_message();
+        if let Some(number) = self.number_of(key) {
+            self.gi.unicast(number, true);
+        }
+    }
+
     /// End the level through `targ` (a changelevel): respawn the dead,
     /// note the next map, and in single player go straight on; otherwise
     /// move everyone to an intermission spot until a button is pressed
@@ -181,10 +362,16 @@ impl GameWorld {
         }
     }
 
-    /// Freeze a player at the intermission spot with nothing showing.
-    /// C ref: `MoveClientToIntermission` (player/hud.c), without the
-    /// scoreboard.
+    /// Freeze a player at the intermission spot with nothing showing but,
+    /// in multiplayer, the scoreboard. C ref: `MoveClientToIntermission`
+    /// (player/hud.c).
     pub fn move_client_to_intermission(&mut self, key: EntityKey) {
+        let multiplayer = self.game.deathmatch || self.game.coop;
+        if multiplayer {
+            if let Some(client) = self.client_mut(key) {
+                client.showscores = true;
+            }
+        }
         let (origin, angles) = (
             self.level.intermission_origin,
             self.level.intermission_angle,
@@ -216,6 +403,13 @@ impl GameWorld {
         ent.state.sound = 0;
         ent.solid = Solid::Not;
         self.link_entity(key);
+        // Add the layout.
+        if multiplayer {
+            self.deathmatch_scoreboard_message(key, None);
+            if let Some(number) = self.number_of(key) {
+                self.gi.unicast(number, true);
+            }
+        }
     }
 }
 
@@ -521,6 +715,7 @@ mod tests {
             (client.ps.gunindex, client.ps.blend[3], client.quad_framenum),
             (0, 0.0, 0)
         );
+        assert!(client.showscores, "the scoreboard comes up");
 
         // Already in intermission: a second exit changes nothing.
         let other = exit_to(&mut world, "q2dm3");
@@ -585,5 +780,172 @@ mod tests {
         world.level.time = 15.5;
         world.think_client(key, &press);
         assert!(world.level.exitintermission);
+    }
+
+    // ---- Scoreboard, help computer and layouts ----
+
+    use q2_shared::constants::{STAT_HELPICON, STAT_LAYOUTS};
+
+    fn dm_pair() -> (
+        GameWorld,
+        EntityKey,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        world.set_max_clients(2);
+        world.game.deathmatch = true;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
+        let a = world
+            .connect_client(1, "\\name\\Ann\\skin\\female/athena")
+            .unwrap();
+        world.begin_client(a);
+        let b = world
+            .connect_client(2, "\\name\\Bob\\skin\\male/grunt")
+            .unwrap();
+        world.begin_client(b);
+        (world, a, b, gi)
+    }
+
+    #[test]
+    fn a_players_name_and_skin_go_in_the_player_skins_configstring() {
+        let (_, _, _, gi) = dm_pair();
+        let skins = q2_shared::constants::CS_PLAYERSKINS as i32;
+        let set = gi.configstrings.borrow();
+        assert!(set.contains(&(skins, "Ann\\female/athena".to_string())));
+        assert!(set.contains(&(skins + 1, "Bob\\male/grunt".to_string())));
+    }
+
+    #[test]
+    fn the_scoreboard_lists_players_by_score_and_tags_you_and_your_killer() {
+        let (mut world, a, b, gi) = dm_pair();
+        world.client_mut(a).unwrap().resp.score = 2;
+        world.client_mut(b).unwrap().resp.score = 5;
+        world.level.framenum = 1200;
+        world.deathmatch_scoreboard_message(a, Some(b));
+        assert_eq!(*gi.writes.borrow(), [SvcOp::Layout as i32]);
+        assert_eq!(
+            gi.strings.borrow().last().unwrap(),
+            "xv 32 yv 32 picn tag2 client 0 32 1 5 0 2 \
+             xv 32 yv 64 picn tag1 client 0 64 0 2 0 2 "
+        );
+    }
+
+    #[test]
+    fn the_score_command_toggles_the_scoreboard_in_deathmatch_only() {
+        let (mut world, a, _, gi) = dm_pair();
+        world.cmd_score(a);
+        assert!(world.client(a).unwrap().showscores);
+        assert_eq!(*gi.unicasts.borrow(), [(1, true)]);
+        world.update_player_stats(a);
+        assert_eq!(world.client(a).unwrap().ps.stats[STAT_LAYOUTS], 1);
+        world.cmd_score(a);
+        assert!(!world.client(a).unwrap().showscores);
+
+        let (mut world, key, _) = armed_player();
+        world.cmd_score(key);
+        assert!(!world.client(key).unwrap().showscores, "single player");
+    }
+
+    #[test]
+    fn help_shows_the_help_computer_in_single_player_and_scores_in_deathmatch() {
+        let (mut world, key, gi) = armed_player();
+        world.game.skill = 2;
+        world.level.level_name = "Outer Base".into();
+        world.game.helpmessage1 = "Find the exit".into();
+        world.level.total_monsters = 9;
+        world.level.killed_monsters = 4;
+        world.client_mut(key).unwrap().pers.helpchanged = 2;
+        world.cmd_help(key);
+        let client = world.client(key).unwrap();
+        assert!(client.showhelp);
+        assert_eq!(client.pers.helpchanged, 0, "seen");
+        assert_eq!(
+            gi.strings.borrow().last().unwrap(),
+            "xv 32 yv 8 picn help \
+             xv 202 yv 12 string2 \"hard\" \
+             xv 0 yv 24 cstring2 \"Outer Base\" \
+             xv 0 yv 54 cstring2 \"Find the exit\" \
+             xv 0 yv 110 cstring2 \"\" \
+             xv 50 yv 164 string2 \" kills     goals    secrets\" \
+             xv 50 yv 172 string2 \"  4/  9     0/0       0/0\" "
+        );
+        world.update_player_stats(key);
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_LAYOUTS], 1);
+        world.cmd_help(key);
+        assert!(!world.client(key).unwrap().showhelp, "toggles off");
+
+        let (mut world, a, _, _) = dm_pair();
+        world.cmd_help(a);
+        assert!(world.client(a).unwrap().showscores);
+    }
+
+    #[test]
+    fn a_dead_deathmatch_player_or_the_intermission_shows_the_scores() {
+        let (mut world, a, _, _) = dm_pair();
+        world.client_mut(a).unwrap().pers.health = 0;
+        world.update_player_stats(a);
+        assert_eq!(world.client(a).unwrap().ps.stats[STAT_LAYOUTS], 1);
+    }
+
+    #[test]
+    fn the_scoreboard_refreshes_every_32_frames_while_shown() {
+        let (mut world, a, _, gi) = dm_pair();
+        world.client_mut(a).unwrap().showscores = true;
+        world.level.framenum = 33;
+        world.client_end_server_frames();
+        assert!(gi.unicasts.borrow().is_empty());
+        world.level.framenum = 64;
+        world.client_end_server_frames();
+        assert_eq!(*gi.unicasts.borrow(), [(1, false)]);
+    }
+
+    #[test]
+    fn new_help_blinks_the_help_icon_and_beeps_three_times() {
+        let (mut world, key, gi) = armed_player();
+        world.game.helpchanged = 1;
+        let beep = world.gi.sound_index("misc/pc_up.wav");
+        let beeps = |gi: &crate::world::MockGameImport| {
+            gi.sound_calls
+                .borrow()
+                .iter()
+                .filter(|c| c.2 == beep)
+                .count()
+        };
+        for frame in [64, 72, 128, 192, 256] {
+            world.level.framenum = frame;
+            world.client_end_server_frames();
+        }
+        assert_eq!(beeps(&gi), 3);
+        world.level.framenum = 72; // & 8
+        world.update_player_stats(key);
+        let icon = world.gi.image_index("i_help") as i16;
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], icon);
+        world.level.framenum = 64;
+        world.update_player_stats(key);
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_HELPICON], 0);
+    }
+
+    #[test]
+    fn target_help_sets_the_objectives_and_flags_new_help() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let _ = gi;
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" }\n\
+             { \"classname\" \"target_help\" \"targetname\" \"h\" \"message\" \"Primary\" \"spawnflags\" \"1\" }\n\
+             { \"classname\" \"target_help\" \"targetname\" \"h2\" \"message\" \"Secondary\" }",
+            "",
+        );
+        for name in ["h", "h2"] {
+            let target = world.find_by_targetname(None, name).unwrap();
+            let use_fn = world.entities.get(target).unwrap().use_fn.unwrap();
+            use_fn(&mut world, target, target, target);
+        }
+        assert_eq!(world.game.helpmessage1, "Primary");
+        assert_eq!(world.game.helpmessage2, "Secondary");
+        assert_eq!(world.game.helpchanged, 2);
     }
 }
