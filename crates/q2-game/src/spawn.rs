@@ -209,7 +209,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("target_blaster", targets::sp_target_generic, None, None),
     ("target_crosslevel_trigger", targets::sp_target_generic, None, None),
     ("target_crosslevel_target", targets::sp_target_generic, None, None),
-    ("target_laser", targets::sp_target_generic, None, None),
+    ("target_laser", targets::sp_target_generic, None, Some(targets::finish_target_laser)),
     ("target_help", targets::sp_target_generic, None, Some(targets::finish_target_help)),
     ("target_lightramp", targets::sp_target_generic, None, None),
     ("target_earthquake", targets::sp_target_generic, None, None),

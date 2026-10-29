@@ -162,6 +162,18 @@ pub fn entity_views(
         .collect()
 }
 
+/// C `CL_AddPacketEntities` for `RF_BEAM`: the four colours are packed in
+/// `skinnum`, and each frame draws one, picked by `randk`, at alpha 0.30
+/// with no model.
+pub fn pick_beam_colours(views: &mut [EntityView], randk: &mut impl FnMut() -> u32) {
+    for view in views.iter_mut().filter(|v| v.flags & RF_BEAM != 0) {
+        let shift = (randk() % 4) * 8;
+        view.skinnum = ((view.skinnum as u32 >> shift) & 0xff) as i32;
+        view.alpha = 0.30;
+        view.modelindex = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +259,28 @@ mod tests {
         let mut sound_only = state(4, Vec3f::ZERO, 0);
         sound_only.modelindex = 0;
         assert!(entity_views(&[sound_only], &[], 1.0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn a_beam_draws_one_of_its_four_colours_at_0_30_without_a_model() {
+        let mut laser = state(4, Vec3f::ZERO, 0);
+        laser.renderfx = RF_BEAM | RF_TRANSLUCENT;
+        laser.modelindex = 1;
+        laser.skinnum = 0xf2f2_f0f0_u32 as i32;
+        let plain = state(5, Vec3f::ZERO, 0);
+        let mut views = entity_views(&[laser, plain], &[], 1.0, 0, 0);
+        // randk() % 4 picks the byte: 2 is bits 16..24.
+        pick_beam_colours(&mut views, &mut || 6);
+        assert_eq!(
+            (views[0].skinnum, views[0].alpha, views[0].modelindex),
+            (0xf2, 0.30, 0)
+        );
+        assert_eq!(views[1].skinnum, 0, "only beams");
+        assert_eq!(views[1].modelindex, plain_modelindex());
+    }
+
+    fn plain_modelindex() -> i32 {
+        state(5, Vec3f::ZERO, 0).modelindex
     }
 
     #[test]

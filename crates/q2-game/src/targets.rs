@@ -2,9 +2,10 @@
 //!
 //! Port of `g_target.c`. Each target has a `use` callback that fires when
 //! the entity is triggered. Ported: target_explosion, target_speaker,
-//! target_changelevel (without intermission), target_secret, target_goal.
+//! target_changelevel (without intermission), target_secret, target_goal,
+//! target_help, target_laser.
 //! The other C target classes (temp_entity, splash, spawner, blaster,
-//! crosslevel_*, laser, help, lightramp, earthquake) are registered as
+//! crosslevel_*, lightramp, earthquake) are registered as
 //! relays that only fire their own targets until they are ported.
 //!
 //! # C source reference
@@ -13,7 +14,7 @@
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::world::GameWorld;
-use q2_shared::types::Vec3f;
+use q2_shared::types::{Multicast, Solid, Vec3f};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -250,6 +251,229 @@ fn target_goal_use(
     world.use_targets(self_key, activator);
 }
 
+/// C's `0x80000000` spawnflag: the beam moved, so its end sparks.
+const LASER_MOVED: i32 = i32::MIN;
+const LASER_ON: i32 = 1;
+
+/// Burn along the beam: hurt everything it crosses until something that
+/// is neither a monster nor a player, spark there when the beam moved,
+/// and end the beam (`old_origin`) where it stopped. A laser with a
+/// target aims at its centre. C ref: `target_laser_think`.
+fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
+    let enemy_point = world
+        .entities
+        .get(self_key)
+        .and_then(|e| e.game.enemy)
+        .and_then(|enemy| world.entities.get(enemy))
+        .map(|enemy| enemy.absmin + enemy.size * 0.5);
+    let Some(ent) = world.entities.get_mut(self_key) else {
+        return;
+    };
+    let count = if ent.game.spawnflags & LASER_MOVED != 0 {
+        8
+    } else {
+        4
+    };
+    if let Some(point) = enemy_point {
+        let last = ent.game.movedir;
+        ent.game.movedir = (point - ent.state.origin).normalize_or_zero();
+        if ent.game.movedir != last {
+            ent.game.spawnflags |= LASER_MOVED;
+        }
+    }
+    let (origin, dir, dmg, skinnum) = (
+        ent.state.origin,
+        ent.game.movedir,
+        ent.game.dmg,
+        ent.state.skinnum,
+    );
+    let activator = ent.game.activator.unwrap_or(self_key);
+    let end = origin + dir * 2048.0;
+    let mask = q2_shared::constants::CONTENTS_SOLID
+        | q2_shared::constants::CONTENTS_MONSTER
+        | q2_shared::constants::CONTENTS_DEADMONSTER;
+    let mut start = origin;
+    let mut ignore = world.number_of(self_key);
+    let tr = loop {
+        let tr = world
+            .gi
+            .trace(start, Vec3f::ZERO, Vec3f::ZERO, end, ignore, mask);
+        let Some(hit) = tr.ent_index.and_then(|n| world.entities.key_for_number(n)) else {
+            break tr;
+        };
+        let Some(h) = world.entities.get(hit) else {
+            break tr;
+        };
+        let hurtable = h.game.takedamage != TakeDamage::No
+            && !h.game.flags.contains(EntityFlags::IMMUNE_LASER);
+        let body = h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some();
+        if hurtable {
+            world.t_damage(
+                hit,
+                self_key,
+                activator,
+                dir,
+                tr.endpos,
+                Vec3f::ZERO,
+                dmg,
+                1,
+                DamageFlags::ENERGY,
+                MeansOfDeath::TargetLaser,
+            );
+        }
+        if !body {
+            let moved = world
+                .entities
+                .get(self_key)
+                .is_some_and(|e| e.game.spawnflags & LASER_MOVED != 0);
+            if moved {
+                if let Some(ent) = world.entities.get_mut(self_key) {
+                    ent.game.spawnflags &= !LASER_MOVED;
+                }
+                world
+                    .gi
+                    .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+                world.gi.write_byte(q2_shared::constants::TE_LASER_SPARKS);
+                world.gi.write_byte(count);
+                world.gi.write_position(tr.endpos);
+                world.gi.write_dir(tr.plane.normal);
+                world.gi.write_byte(skinnum);
+                world.gi.multicast(tr.endpos, Multicast::PVS);
+            }
+            break tr;
+        }
+        ignore = tr.ent_index;
+        start = tr.endpos;
+    };
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(self_key) {
+        ent.state.old_origin = tr.endpos;
+        ent.game.nextthink = time + FRAMETIME;
+    }
+}
+
+/// C ref: `target_laser_on`.
+fn target_laser_on(world: &mut GameWorld, self_key: EntityKey) {
+    let Some(ent) = world.entities.get_mut(self_key) else {
+        return;
+    };
+    ent.game.activator.get_or_insert(self_key);
+    ent.game.spawnflags |= LASER_MOVED | LASER_ON;
+    ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
+    target_laser_think(world, self_key);
+}
+
+/// C ref: `target_laser_off`.
+fn target_laser_off(world: &mut GameWorld, self_key: EntityKey) {
+    if let Some(ent) = world.entities.get_mut(self_key) {
+        ent.game.spawnflags &= !LASER_ON;
+        ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
+        ent.game.nextthink = 0.0;
+    }
+}
+
+/// Toggle the laser for `activator`. C ref: `target_laser_use`.
+fn target_laser_use(
+    world: &mut GameWorld,
+    self_key: EntityKey,
+    _other: EntityKey,
+    activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get_mut(self_key) else {
+        return;
+    };
+    ent.game.activator = Some(activator);
+    if ent.game.spawnflags & LASER_ON != 0 {
+        target_laser_off(world, self_key);
+    } else {
+        target_laser_on(world, self_key);
+    }
+}
+
+/// A beam (`RF_BEAM`, 4 or with spawnflag 64 16 wide) in the colour its
+/// spawnflags pick (2 red, 4 green, 8 blue, 16 yellow, 32 orange; four
+/// palette indices packed in `skinnum`), aimed at its target or along its
+/// angles, on when spawnflag 1 is set. C ref: `target_laser_start`.
+fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
+    let target_name = world
+        .entities
+        .get(self_key)
+        .filter(|e| e.game.enemy.is_none() && !e.game.target.is_empty())
+        .map(|e| e.game.target.clone());
+    let target = target_name
+        .as_deref()
+        .map(|name| (name, world.find_by_targetname(None, name)));
+    let Some(ent) = world.entities.get_mut(self_key) else {
+        return;
+    };
+    ent.game.movetype = MoveType::None;
+    ent.solid = Solid::Not;
+    ent.state.renderfx |= q2_shared::constants::RF_BEAM | q2_shared::constants::RF_TRANSLUCENT;
+    ent.state.modelindex = 1; // must be non-zero
+    ent.state.frame = if ent.game.spawnflags & 64 != 0 { 16 } else { 4 };
+    let flags = ent.game.spawnflags;
+    let colour: Option<u32> = if flags & 2 != 0 {
+        Some(0xf2f2_f0f0)
+    } else if flags & 4 != 0 {
+        Some(0xd0d1_d2d3)
+    } else if flags & 8 != 0 {
+        Some(0xf3f3_f1f1)
+    } else if flags & 16 != 0 {
+        Some(0xdcdd_dedf)
+    } else if flags & 32 != 0 {
+        Some(0xe0e1_e2e3)
+    } else {
+        None
+    };
+    if let Some(colour) = colour {
+        ent.state.skinnum = colour as i32;
+    }
+    let mut bad_target = None;
+    if ent.game.enemy.is_none() {
+        match target {
+            Some((name, found)) => {
+                if found.is_none() {
+                    bad_target = Some((ent.state.origin, name.to_string()));
+                }
+                ent.game.enemy = found;
+            }
+            None => ent.game.movedir = GameWorld::set_movedir(ent.state.angles),
+        }
+    }
+    ent.use_fn = Some(target_laser_use);
+    ent.think = Some(target_laser_think);
+    if ent.game.dmg == 0 {
+        ent.game.dmg = 1;
+    }
+    ent.mins = Vec3f::splat(-8.0);
+    ent.maxs = Vec3f::splat(8.0);
+    let on = ent.game.spawnflags & LASER_ON != 0;
+    if let Some((origin, name)) = bad_target {
+        world.gi.dprintf(&format!(
+            "target_laser at {origin:?}: {name} is a bad target\n"
+        ));
+    }
+    world.link_entity(self_key);
+    if on {
+        target_laser_on(world, self_key);
+    } else {
+        target_laser_off(world, self_key);
+    }
+}
+
+/// Start once everything else has spawned. C ref: `SP_target_laser`.
+pub fn finish_target_laser(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.think = Some(target_laser_start);
+        ent.game.nextthink = time + 1.0;
+    }
+}
+
 /// Generic target use — just fires its own targets (relay behavior).
 fn target_generic_use(
     world: &mut GameWorld,
@@ -430,6 +654,159 @@ mod tests {
         assert_eq!(world.level.intermission_time, 3.0);
         assert_eq!(world.level.changemap, "q2dm2");
         assert!(!world.level.exitintermission, "shows the intermission");
+    }
+
+    fn laser_world(
+        spawnflags: i32,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.entities.spawn_numbered(0).unwrap();
+        let laser = world.spawn().unwrap();
+        let ent = world.entities.get_mut(laser).unwrap();
+        ent.game.classname = "target_laser".into();
+        ent.game.spawnflags = spawnflags;
+        ent.state.angles = Vec3f::ZERO;
+        world.level.time = 2.0;
+        finish_target_laser(&mut world, laser, &HashMap::new());
+        (world, laser, gi)
+    }
+
+    fn wall(endpos: Vec3f) -> q2_shared::types::Trace {
+        q2_shared::types::Trace {
+            fraction: 0.5,
+            endpos,
+            plane: q2_shared::types::Plane {
+                normal: Vec3f::new(-1.0, 0.0, 0.0),
+                ..Default::default()
+            },
+            ent_index: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn laser_sparks(gi: &crate::world::MockGameImport) -> usize {
+        let writes = gi.writes.borrow();
+        writes
+            .windows(2)
+            .filter(|w| {
+                w[0] == q2_shared::protocol::SvcOp::TempEntity as i32
+                    && w[1] == q2_shared::constants::TE_LASER_SPARKS
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_target_laser_starts_a_second_after_spawning_as_a_coloured_beam() {
+        let (mut world, laser, gi) = laser_world(1 | 2 | 64);
+        let ent = world.entities.get(laser).unwrap();
+        assert_eq!(ent.game.nextthink, 3.0, "C: level.time + 1");
+        let start = ent.think.unwrap();
+        let hit = Vec3f::new(300.0, 0.0, 0.0);
+        gi.queued_traces.borrow_mut().push_back(wall(hit));
+        start(&mut world, laser);
+        let ent = world.entities.get(laser).unwrap();
+        assert_eq!(
+            ent.state.renderfx,
+            q2_shared::constants::RF_BEAM | q2_shared::constants::RF_TRANSLUCENT
+        );
+        assert_eq!(ent.state.modelindex, 1);
+        assert_eq!(ent.state.frame, 16, "spawnflag 64 is the fat beam");
+        assert_eq!(ent.state.skinnum, 0xf2f2_f0f0_u32 as i32, "red");
+        assert_eq!(ent.game.dmg, 1);
+        assert_eq!(
+            (ent.mins, ent.maxs),
+            (Vec3f::splat(-8.0), Vec3f::splat(8.0))
+        );
+        // Started on: visible, fired once, ends at the wall with sparks.
+        assert_eq!(ent.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert_eq!(ent.state.old_origin, hit);
+        assert_eq!(laser_sparks(&gi), 1);
+        // Facing angles 0: along +x, 2048 units.
+        assert_eq!(ent.game.movedir, Vec3f::X);
+    }
+
+    #[test]
+    fn a_target_laser_burns_what_it_crosses_and_sparks_only_when_it_moves() {
+        let (mut world, laser, gi) = laser_world(1);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        let monster = world.spawn().unwrap();
+        let m = world.entities.get_mut(monster).unwrap();
+        m.svflags |= SvFlags::MONSTER.bits();
+        m.game.takedamage = TakeDamage::Yes;
+        m.game.health = 100;
+        let through = q2_shared::types::Trace {
+            fraction: 0.2,
+            endpos: Vec3f::new(100.0, 0.0, 0.0),
+            ent_index: world.number_of(monster),
+            ..Default::default()
+        };
+        let hit = Vec3f::new(300.0, 0.0, 0.0);
+        gi.queued_traces
+            .borrow_mut()
+            .extend([through.clone(), wall(hit)]);
+        start(&mut world, laser);
+        assert_eq!(world.entities.get(monster).unwrap().game.health, 99);
+        assert_eq!(world.means_of_death, MeansOfDeath::TargetLaser);
+        // The second trace starts at the monster and ignores it.
+        let passes = gi.trace_pass_ents.borrow().clone();
+        assert_eq!(passes.last(), Some(&world.number_of(monster)));
+        assert_eq!(laser_sparks(&gi), 1);
+        let think = world.entities.get(laser).unwrap().think.unwrap();
+        gi.queued_traces.borrow_mut().push_back(wall(hit));
+        think(&mut world, laser);
+        assert_eq!(laser_sparks(&gi), 1, "same aim: no new sparks");
+        assert_eq!(world.entities.get(laser).unwrap().game.nextthink, 2.1);
+    }
+
+    #[test]
+    fn a_target_laser_follows_its_target_and_sparks_when_the_aim_changes() {
+        let (mut world, laser, gi) = laser_world(1);
+        let target = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.targetname = "spot".into();
+        t.absmin = Vec3f::new(0.0, 100.0, -10.0);
+        t.size = Vec3f::new(0.0, 0.0, 20.0);
+        world.entities.get_mut(laser).unwrap().game.target = "spot".into();
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        start(&mut world, laser);
+        assert_eq!(world.entities.get(laser).unwrap().game.enemy, Some(target));
+        assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::Y);
+        let before = laser_sparks(&gi);
+        world.entities.get_mut(target).unwrap().absmin = Vec3f::new(100.0, 0.0, -10.0);
+        gi.queued_traces.borrow_mut().push_back(wall(Vec3f::X));
+        let think = world.entities.get(laser).unwrap().think.unwrap();
+        think(&mut world, laser);
+        assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::X);
+        assert_eq!(laser_sparks(&gi), before + 1);
+    }
+
+    #[test]
+    fn using_a_target_laser_toggles_it_and_off_hides_it() {
+        let (mut world, laser, _) = laser_world(0);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        start(&mut world, laser);
+        let ent = world.entities.get(laser).unwrap();
+        assert_ne!(
+            ent.svflags & q2_shared::constants::SVF_NOCLIENT,
+            0,
+            "starts off"
+        );
+        assert_eq!(ent.game.nextthink, 0.0);
+        let use_fn = ent.use_fn.unwrap();
+        let player = world.spawn().unwrap();
+        use_fn(&mut world, laser, player, player);
+        let ent = world.entities.get(laser).unwrap();
+        assert_eq!(ent.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert_eq!(ent.game.activator, Some(player));
+        assert_eq!(ent.game.spawnflags & 1, 1);
+        use_fn(&mut world, laser, player, player);
+        let ent = world.entities.get(laser).unwrap();
+        assert_ne!(ent.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert_eq!(ent.game.nextthink, 0.0);
     }
 
     #[test]

@@ -134,6 +134,13 @@ All notable changes to qwasm2-rs are documented here.
   renderer gains C's particle, beam and sprite (`.sp2`) drawing, and
   client sounds can play at a fixed origin or as a player's sexed sound
   (`sound::NamedSound`)
+- The GL3 renderer draws in C `GL3_RenderView` order: beams and sprites
+  inside the opaque and translucent entity passes in list order, then
+  particles, then the world's translucent surfaces over everything
+- Map lasers (C `target_laser`): beams aimed along their angles or at a
+  target, in the five spawnflag colours, burning what they cross, with
+  sparks where they land when they move; the browser draws a beam in one
+  of its four packed colours at alpha 0.30 each frame
 - The browser shows the server's text: printed lines at the top for
   three seconds (death messages, pickups, chat with its talk sound),
   centre prints such as door messages, and the server layout over the

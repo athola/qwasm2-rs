@@ -495,13 +495,15 @@ impl Engine {
             rdflags,
         };
 
-        let views = q2_client::entities::entity_views(
+        let mut views = q2_client::entities::entity_views(
             &self.frames.current,
             &self.frames.previous,
             lerpfrac,
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
+        let rng = &mut self.rng;
+        q2_client::entities::pick_beam_colours(&mut views, &mut || xorshift(rng));
         let mut entities = render_entities(&views, &self.models);
         let gun = self.frames.view_weapon(vieworg, viewangles, lerpfrac);
         entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
@@ -705,7 +707,7 @@ fn sky_axis(text: &str) -> q2_shared::types::Vec3f {
 }
 
 /// The renderer's entity list for `views`; models it could not register
-/// are left out.
+/// are left out, except beams, which have none.
 #[cfg(any(target_arch = "wasm32", test))]
 fn render_entities(
     views: &[q2_client::entities::EntityView],
@@ -715,7 +717,9 @@ fn render_entities(
         .iter()
         .filter_map(|v| {
             let model = models.handle(v.modelindex);
-            (model != q2_render_api::ModelHandle::NONE).then(|| q2_render_api::RenderEntity {
+            let drawable = model != q2_render_api::ModelHandle::NONE
+                || v.flags & q2_shared::constants::RF_BEAM != 0;
+            drawable.then(|| q2_render_api::RenderEntity {
                 model,
                 frame: v.frame,
                 oldframe: v.oldframe,
@@ -1665,8 +1669,13 @@ mod tests {
             flags: 0,
             alpha: 1.0,
         };
-        let ents = render_entities(&[view(2), view(9)], &table);
-        assert_eq!(ents.len(), 1);
+        let beam = EntityView {
+            flags: q2_shared::constants::RF_BEAM,
+            ..view(0)
+        };
+        let ents = render_entities(&[view(2), view(9), beam], &table);
+        assert_eq!(ents.len(), 2, "a beam needs no model");
+        assert_eq!(ents[1].model, q2_render_api::ModelHandle::NONE);
         assert_eq!(ents[0].model, q2_render_api::ModelHandle::new(7));
         assert_eq!(
             (ents[0].frame, ents[0].oldframe, ents[0].skinnum),
