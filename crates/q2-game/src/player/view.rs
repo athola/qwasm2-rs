@@ -6,13 +6,23 @@ use q2_shared::types::*;
 use q2_shared::constants::{
     CONTENTS_LAVA, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER, EF_COLOR_SHELL, EF_PENT,
     EF_POWERSCREEN, EF_QUAD, RDF_UNDERWATER, RF_IR_VISIBLE, RF_SHELL_BLUE, RF_SHELL_GREEN,
-    RF_SHELL_RED,
+    RF_SHELL_RED, STAT_FLASHES,
 };
 
 use crate::constants::{
-    DamageFlags, EntityFlags, MeansOfDeath, ATTN_NORM, CHAN_AUTO, CHAN_BODY, CHAN_ITEM, CHAN_VOICE,
-    DAMAGE_TIME, POWER_ARMOR_SCREEN, POWER_ARMOR_SHIELD,
+    DamageFlags, EntityFlags, MeansOfDeath, ANIM_PAIN, ATTN_NORM, CHAN_AUTO, CHAN_BODY, CHAN_ITEM,
+    CHAN_VOICE, DAMAGE_TIME, POWER_ARMOR_SCREEN, POWER_ARMOR_SHIELD,
 };
+
+// Player pain frames (C `player.h`).
+const FRAME_PAIN101: i32 = 54;
+const FRAME_PAIN104: i32 = 57;
+const FRAME_PAIN201: i32 = 58;
+const FRAME_PAIN204: i32 = 61;
+const FRAME_PAIN301: i32 = 62;
+const FRAME_PAIN304: i32 = 65;
+const FRAME_CRPAIN1: i32 = 169;
+const FRAME_CRPAIN4: i32 = 172;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
@@ -89,8 +99,7 @@ pub fn add_blend(rgb: [f32; 3], a: f32, blend: &mut [f32; 4]) {
 impl GameWorld {
     /// The full-screen tint: what the eye is in, the running powerup
     /// (with its warning sound three seconds before it runs out) and the
-    /// pickup flash. C ref: `SV_CalcBlend` (player/view.c); the damage
-    /// flash waits on `P_DamageFeedback`.
+    /// damage and pickup flashes. C ref: `SV_CalcBlend` (player/view.c).
     pub fn calc_blend(&mut self, key: EntityKey) {
         let Some(ent) = self.entities.get(key) else {
             return;
@@ -160,9 +169,13 @@ impl GameWorld {
                 add_blend(rgb, alpha, blend);
             }
         }
+        if client.damage_alpha > 0.0 {
+            add_blend(client.damage_blend, client.damage_alpha, blend);
+        }
         if client.bonus_alpha > 0.0 {
             add_blend([0.85, 0.7, 0.3], client.bonus_alpha, blend);
         }
+        client.damage_alpha = (client.damage_alpha - 0.06).max(0.0);
         client.bonus_alpha = (client.bonus_alpha - 0.1).max(0.0);
     }
 
@@ -329,6 +342,138 @@ impl GameWorld {
                 MeansOfDeath::Slime,
             );
         }
+    }
+
+    /// Turn this frame's damage into feedback: the death or gib sound, the
+    /// status-number flashes, a pain animation and sound (by health, at
+    /// most every 0.7 s, none in god mode or invulnerable), the damage
+    /// tint mixed by what absorbed the hit, and a view kick away from
+    /// where it came from. C ref: `P_DamageFeedback` (player/view.c).
+    pub fn damage_feedback(&mut self, key: EntityKey) {
+        const POWER_COLOR: [f32; 3] = [0.0, 1.0, 0.0];
+        const ARMOR_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
+        const BLOOD_COLOR: [f32; 3] = [1.0, 0.0, 0.0];
+        let (time, framenum) = (self.level.time, self.level.framenum);
+        let number = self.number_of(key);
+        // Death/gib sound is aggregated and played here.
+        let death_sound = self
+            .client_mut(key)
+            .map_or(0, |c| std::mem::take(&mut c.death_sound));
+        if death_sound != 0 {
+            self.gi
+                .sound(number, CHAN_VOICE, death_sound, 1.0, ATTN_NORM, 0.0);
+        }
+        let Some(ent) = self.entities.get(key) else {
+            return;
+        };
+        let godmode = ent.game.flags.contains(EntityFlags::GODMODE);
+        let (health, origin, modelindex, pain_debounce) = (
+            ent.game.health,
+            ent.state.origin,
+            ent.state.modelindex,
+            ent.game.pain_debounce_time,
+        );
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        let invincible = client.invincible_framenum > framenum;
+        // Flash the backgrounds behind the status numbers.
+        let mut flashes = 0;
+        if client.damage_blood != 0 {
+            flashes |= 1;
+        }
+        if client.damage_armor != 0 && !godmode && !invincible {
+            flashes |= 2;
+        }
+        client.ps.stats[STAT_FLASHES] = flashes;
+        // Total points of damage shot at the player this frame.
+        let count = client.damage_blood + client.damage_armor + client.damage_parmor;
+        if count == 0 {
+            return; // didn't take any damage
+        }
+        let (blood, armor, parmor, knockback, from) = (
+            client.damage_blood,
+            client.damage_armor,
+            client.damage_parmor,
+            client.damage_knockback,
+            client.damage_from,
+        );
+        let ducked = client.ps.pmove.pm_flags & q2_common::pmove::PMF_DUCKED != 0;
+        let v_angle = client.v_angle;
+
+        // Start a pain animation if still in the player model.
+        if client.anim_priority < ANIM_PAIN && modelindex == 255 {
+            self.pain_anim_cycle = (self.pain_anim_cycle + 1) % 3;
+            let (first, last) = if ducked {
+                (FRAME_CRPAIN1, FRAME_CRPAIN4)
+            } else {
+                [
+                    (FRAME_PAIN101, FRAME_PAIN104),
+                    (FRAME_PAIN201, FRAME_PAIN204),
+                    (FRAME_PAIN301, FRAME_PAIN304),
+                ][self.pain_anim_cycle as usize]
+            };
+            if let Some((ent, client)) = self.entity_and_client_mut(key) {
+                client.anim_priority = ANIM_PAIN;
+                ent.state.frame = first - 1;
+                client.anim_end = last;
+            }
+        }
+
+        let realcount = count as f32;
+        let count = (count as f32).max(10.0); // always make a visible effect
+
+        // Play an appropriate pain sound.
+        if time > pain_debounce && !godmode && !invincible && health > 0 {
+            let r = 1 + (self.random_u32() & 1);
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.pain_debounce_time = time + 0.7;
+            }
+            let level = match health {
+                ..25 => 25,
+                25..50 => 50,
+                50..75 => 75,
+                _ => 100,
+            };
+            let pain = self.gi.sound_index(&format!("*pain{level}_{r}.wav"));
+            self.gi.sound(number, CHAN_VOICE, pain, 1.0, ATTN_NORM, 0.0);
+        }
+
+        let Some(client) = self.client_mut(key) else {
+            return;
+        };
+        // The total alpha of the blend is always proportional to count.
+        client.damage_alpha = (client.damage_alpha.max(0.0) + count * 0.01).clamp(0.2, 0.6);
+        // The colour varies with how much each armor absorbed.
+        let mut blend = [0.0; 3];
+        for (amount, color) in [
+            (parmor, POWER_COLOR),
+            (armor, ARMOR_COLOR),
+            (blood, BLOOD_COLOR),
+        ] {
+            if amount != 0 {
+                let share = amount as f32 / realcount;
+                (0..3).for_each(|i| blend[i] += share * color[i]);
+            }
+        }
+        client.damage_blend = blend;
+
+        // View angle kicks; a kick of 0 means no view adjust at all.
+        let kick = knockback.abs() as f32;
+        if kick != 0.0 && health > 0 {
+            let kick = (kick * 100.0 / health as f32).max(count * 0.5).min(50.0);
+            let v = (from - origin).normalize_or_zero();
+            let (forward, right, _) = crate::physics::angle_vectors(v_angle);
+            client.v_dmg_roll = kick * v.dot(right) * 0.3;
+            client.v_dmg_pitch = kick * -v.dot(forward) * 0.3;
+            client.v_dmg_time = time + DAMAGE_TIME;
+        }
+
+        // Clear totals.
+        client.damage_blood = 0;
+        client.damage_armor = 0;
+        client.damage_parmor = 0;
+        client.damage_knockback = 0;
     }
 
     /// Advance the walk bob: a quicker step at higher speed on the ground,
@@ -684,6 +829,193 @@ mod tests {
             0.0,
             "not below zero"
         );
+    }
+
+    // ---- P_DamageFeedback ----
+
+    fn hurt_player() -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = player_in(&mut world);
+        world.level.time = 10.0;
+        (world, key, gi)
+    }
+
+    fn hit(
+        world: &mut GameWorld,
+        key: EntityKey,
+        blood: i32,
+        armor: i32,
+        parmor: i32,
+        knockback: i32,
+    ) {
+        let client = world.client_mut(key).unwrap();
+        client.damage_blood = blood;
+        client.damage_armor = armor;
+        client.damage_parmor = parmor;
+        client.damage_knockback = knockback;
+    }
+
+    #[test]
+    fn no_damage_this_frame_clears_the_flashes_and_does_nothing_else() {
+        let (mut world, key, gi) = hurt_player();
+        world.client_mut(key).unwrap().ps.stats[STAT_FLASHES] = 3;
+        world.damage_feedback(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(
+            (client.ps.stats[STAT_FLASHES], client.damage_alpha),
+            (0, 0.0)
+        );
+        assert!(gi.sound_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn blood_and_armor_flash_their_status_numbers() {
+        let (mut world, key, _) = hurt_player();
+        hit(&mut world, key, 5, 5, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.client(key).unwrap().ps.stats[STAT_FLASHES], 3);
+        hit(&mut world, key, 0, 5, 0, 0);
+        world.client_mut(key).unwrap().invincible_framenum = 200;
+        world.damage_feedback(key);
+        assert_eq!(
+            world.client(key).unwrap().ps.stats[STAT_FLASHES],
+            0,
+            "armor not hit"
+        );
+    }
+
+    #[test]
+    fn a_hit_plays_a_pain_sound_by_health_at_most_every_0_7_seconds() {
+        for (health, level) in [(10, 25), (30, 50), (60, 75), (90, 100)] {
+            let (mut world, key, gi) = hurt_player();
+            world.entities.get_mut(key).unwrap().game.health = health;
+            hit(&mut world, key, 5, 0, 0, 0);
+            world.damage_feedback(key);
+            let names = gi.sounds.borrow().clone();
+            let played: Vec<String> = gi
+                .sound_calls
+                .borrow()
+                .iter()
+                .map(|c| names[c.2 as usize - 1].clone())
+                .collect();
+            assert_eq!(played.len(), 1);
+            let want = [format!("*pain{level}_1.wav"), format!("*pain{level}_2.wav")];
+            assert!(want.contains(&played[0]), "{played:?}");
+            assert_eq!(
+                world.entities.get(key).unwrap().game.pain_debounce_time,
+                10.7
+            );
+            hit(&mut world, key, 5, 0, 0, 0);
+            world.damage_feedback(key);
+            assert_eq!(gi.sound_calls.borrow().len(), 1, "debounced");
+        }
+    }
+
+    #[test]
+    fn god_mode_and_invulnerability_hurt_silently() {
+        let (mut world, key, gi) = hurt_player();
+        world.entities.get_mut(key).unwrap().game.flags |= crate::constants::EntityFlags::GODMODE;
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        assert!(gi.sound_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_damage_tint_grows_with_damage_and_mixes_by_what_absorbed_it() {
+        let (mut world, key, _) = hurt_player();
+        hit(&mut world, key, 2, 0, 0, 0);
+        world.damage_feedback(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.damage_alpha, 0.2, "at least 0.2");
+        assert_eq!(client.damage_blend, [1.0, 0.0, 0.0]);
+
+        hit(&mut world, key, 50, 25, 25, 0);
+        world.damage_feedback(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.damage_alpha, 0.6, "at most 0.6");
+        // Half blood (red), a quarter armor (white), a quarter power (green).
+        assert_eq!(client.damage_blend, [0.75, 0.5, 0.25]);
+        assert_eq!(
+            (
+                client.damage_blood,
+                client.damage_armor,
+                client.damage_parmor
+            ),
+            (0, 0, 0),
+            "totals cleared"
+        );
+    }
+
+    #[test]
+    fn knockback_kicks_the_view_away_from_where_the_hit_came_from() {
+        let (mut world, key, _) = hurt_player();
+        world.client_mut(key).unwrap().v_angle = Vec3f::ZERO;
+        let origin = world.entities.get(key).unwrap().state.origin;
+        // From straight ahead (+x): pitch kicks back, no roll.
+        world.client_mut(key).unwrap().damage_from = origin + Vec3f::new(100.0, 0.0, 0.0);
+        hit(&mut world, key, 20, 0, 0, 10);
+        world.damage_feedback(key);
+        let client = world.client(key).unwrap();
+        // kick = 10 * 100 / 100 = 10, at least count/2 = 10.
+        assert!(
+            (client.v_dmg_pitch + 3.0).abs() < 1e-4,
+            "{}",
+            client.v_dmg_pitch
+        );
+        assert!(client.v_dmg_roll.abs() < 1e-4);
+        assert_eq!(client.v_dmg_time, 10.0 + DAMAGE_TIME);
+
+        // From the right (-y): roll.
+        world.client_mut(key).unwrap().damage_from = origin + Vec3f::new(0.0, -100.0, 0.0);
+        hit(&mut world, key, 20, 0, 0, 500);
+        world.damage_feedback(key);
+        assert!(
+            (world.client(key).unwrap().v_dmg_roll - 15.0).abs() < 1e-4,
+            "capped at 50"
+        );
+    }
+
+    #[test]
+    fn no_knockback_means_no_view_kick() {
+        let (mut world, key, _) = hurt_player();
+        hit(&mut world, key, 20, 0, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.client(key).unwrap().v_dmg_time, 0.0);
+    }
+
+    #[test]
+    fn a_hit_starts_the_pain_animation() {
+        let (mut world, key, _) = hurt_player();
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.anim_priority, crate::constants::ANIM_PAIN);
+        assert!([53, 57, 61].contains(&world.entities.get(key).unwrap().state.frame));
+    }
+
+    #[test]
+    fn the_death_sound_waits_for_the_end_of_the_frame() {
+        let (mut world, key, gi) = hurt_player();
+        world.client_mut(key).unwrap().death_sound = world.gi.sound_index("*death2.wav");
+        world.damage_feedback(key);
+        let death = world.gi.sound_index("*death2.wav");
+        assert!(gi.sound_calls.borrow().iter().any(|c| c.2 == death));
+        assert_eq!(world.client(key).unwrap().death_sound, 0);
+    }
+
+    #[test]
+    fn the_damage_tint_fades_six_hundredths_a_frame() {
+        let (mut world, key, _) = hurt_player();
+        let client = world.client_mut(key).unwrap();
+        client.damage_alpha = 0.3;
+        client.damage_blend = [1.0, 0.0, 0.0];
+        world.calc_blend(key);
+        assert_eq!(world.client(key).unwrap().ps.blend, [1.0, 0.0, 0.0, 0.3]);
+        assert!((world.client(key).unwrap().damage_alpha - 0.24).abs() < 1e-6);
     }
 
     // ---- SV_CalcGunOffset ----

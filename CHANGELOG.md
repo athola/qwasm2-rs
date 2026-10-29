@@ -116,6 +116,11 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- Taking damage shows like C `P_DamageFeedback`: a tint mixed red,
+  white and green by what absorbed the hit, the status-number flashes,
+  pain sounds by health and a view kick away from the hit; dying plays
+  one of four death screams and a big enough hit gibs the player into
+  meat and a head (C `player_die`)
 - Items precache like C `PrecacheItem` (models, view models, icons,
   pickup sounds, their ammo and the `precaches` list) when spawned, and
   worldspawn precaches the blaster; `ItemDef` gains `precaches`

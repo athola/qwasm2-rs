@@ -738,6 +738,7 @@ impl GameWorld {
         for key in keys {
             self.world_effects(key);
             let bob = self.calc_bob(key);
+            self.damage_feedback(key);
             self.update_player_view(key);
             self.calc_gun_offset(key, &bob);
             // After the view offset, so eye contents are right.
@@ -827,7 +828,7 @@ pub fn player_die(
     key: EntityKey,
     _inflictor: EntityKey,
     _attacker: EntityKey,
-    _damage: i32,
+    damage: i32,
     _point: Vec3f,
 ) {
     let Some(ent) = world.entities.get_mut(key) else {
@@ -867,9 +868,39 @@ pub fn player_die(
         client.enviro_framenum = 0;
     }
     ent.game.flags.remove(EntityFlags::POWER_ARMOR);
-    if ent.game.health < -40 {
-        ent.game.takedamage = TakeDamage::No; // gibbed
+    let gibbed = ent.game.health < -40;
+    let was_dead = ent.game.deadflag != DeadFlag::No;
+    if gibbed {
+        // The sound is played at the end of the server frame.
+        let udeath = world.gi.sound_index("misc/udeath.wav");
+        if let Some(client) = world.client_mut(key) {
+            client.death_sound = udeath;
+        }
+        for _ in 0..4 {
+            crate::misc::throw_gib(
+                world,
+                key,
+                "models/objects/gibs/sm_meat/tris.md2",
+                damage,
+                crate::misc::GibType::Organic,
+            );
+        }
+        crate::misc::throw_client_head(world, key, damage);
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.game.takedamage = TakeDamage::No;
+        }
+    } else if !was_dead && world.client(key).is_some_and(|c| c.death_sound == 0) {
+        // Normal death; the animation is #32. The sound is played at the
+        // end of the server frame.
+        let n = world.random_u32() % 4 + 1;
+        let scream = world.gi.sound_index(&format!("*death{n}.wav"));
+        if let Some(client) = world.client_mut(key) {
+            client.death_sound = scream;
+        }
     }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
     ent.game.deadflag = DeadFlag::Dead;
     world.link_entity(key);
 }
@@ -1517,6 +1548,48 @@ mod tests {
     }
 
     #[test]
+    fn a_dying_player_screams_one_of_four_death_sounds() {
+        let (mut world, _) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.health = -10;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let sound = world.client(key).unwrap().death_sound;
+        let names: Vec<i32> = (1..=4)
+            .map(|n| world.gi.sound_index(&format!("*death{n}.wav")))
+            .collect();
+        assert!(names.contains(&sound), "{sound}");
+    }
+
+    #[test]
+    fn a_gibbed_player_bursts_into_gibs_and_a_head() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.health = -50;
+        player_die(&mut world, key, key, key, 80, Vec3f::ZERO);
+        assert_eq!(
+            world.client(key).unwrap().death_sound,
+            world.gi.sound_index("misc/udeath.wav")
+        );
+        let gibs = world
+            .entities
+            .iter()
+            .filter(|&(k, e)| e.in_use && k != key && e.state.effects & EF_GIB != 0)
+            .count();
+        assert_eq!(gibs, 4);
+        let head = world.entities.get(key).unwrap();
+        let model = gi.models.borrow()[head.state.modelindex as usize - 1].clone();
+        assert!(
+            model.contains("head2") || model.contains("skull"),
+            "{model}"
+        );
+        assert_eq!(head.game.takedamage, TakeDamage::No);
+    }
+
+    #[test]
     fn dying_schedules_the_respawn_a_second_later() {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
@@ -1618,7 +1691,7 @@ mod tests {
             Vec3f::X,
             Vec3f::ZERO,
             Vec3f::ZERO,
-            150,
+            120,
             0,
             DamageFlags::empty(),
             MeansOfDeath::Unknown,

@@ -279,6 +279,21 @@ pub struct ClientData {
     /// (C `oldviewangles`), for the gun's sway and turn lag.
     pub bobtime: f32,
     pub oldviewangles: Vec3f,
+    /// Damage this frame, by what took it, its total knockback and where
+    /// the last hit landed (C `damage_parmor`, `damage_armor`,
+    /// `damage_blood`, `damage_knockback`, `damage_from`), turned into
+    /// the view's damage tint (C `damage_alpha`, `damage_blend`) and kick
+    /// at the end of the frame.
+    pub damage_parmor: i32,
+    pub damage_armor: i32,
+    pub damage_blood: i32,
+    pub damage_knockback: i32,
+    pub damage_from: Vec3f,
+    pub damage_alpha: f32,
+    pub damage_blend: [f32; 3],
+    /// Death or gib sound to play at the end of the frame (C the player
+    /// edict's `sounds`).
+    pub death_sound: i32,
     /// When a dead player may respawn (C `respawn_time`).
     pub respawn_time: f32,
     /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).

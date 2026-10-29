@@ -458,11 +458,15 @@ impl GameWorld {
             take = 0;
         }
 
-        take -= self.check_power_armor(target, point, take, dflags);
+        let psave = self.check_power_armor(target, point, take, dflags);
+        take -= psave;
         // Apply armor (if not god mode).
-        if take > 0 {
-            take -= self.check_armor(target, take, dflags);
-        }
+        let asave = if take > 0 {
+            self.check_armor(target, take, dflags)
+        } else {
+            0
+        };
+        take -= asave;
 
         let is_client = self
             .entities
@@ -483,6 +487,16 @@ impl GameWorld {
                 self.killed(target, inflictor, attacker, take, point);
                 return;
             }
+        }
+
+        // Add to the damage inflicted on a player this frame; the totals
+        // become screen blends and view kicks at the end of the frame.
+        if let Some(client) = self.client_mut(target) {
+            client.damage_parmor += psave;
+            client.damage_armor += asave;
+            client.damage_blood += take;
+            client.damage_knockback += knockback as i32;
+            client.damage_from = point;
         }
 
         // Entity survived — a monster gets angry, then pain. C: not for a
@@ -711,6 +725,32 @@ mod tests {
     use crate::world::test_world;
 
     // -- can_damage tests --
+
+    #[test]
+    fn damage_to_a_player_adds_up_for_the_end_of_frame_feedback() {
+        let mut world = crate::world::test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        let point = Vec3f::new(3.0, 4.0, 5.0);
+        for _ in 0..2 {
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                point,
+                Vec3f::ZERO,
+                10,
+                7,
+                DamageFlags::empty(),
+                MeansOfDeath::Unknown,
+            );
+        }
+        let client = world.client(key).unwrap();
+        assert_eq!((client.damage_blood, client.damage_knockback), (20, 14));
+        assert_eq!((client.damage_armor, client.damage_parmor), (0, 0));
+        assert_eq!(client.damage_from, point);
+    }
 
     #[test]
     fn an_invulnerable_player_takes_nothing_and_hears_protect4_every_2_seconds() {

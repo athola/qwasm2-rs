@@ -146,6 +146,9 @@ pub struct GameWorld {
     /// Frames left on a player-dropped quad being picked up, for
     /// `use_quad` (C `quad_drop_timeout_hack`); 0 for a fresh one.
     pub quad_drop_timeout_hack: i32,
+    /// Which of the three pain animations a hit starts next (C
+    /// `P_DamageFeedback`'s static counter).
+    pub pain_anim_cycle: i32,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -175,6 +178,7 @@ impl GameWorld {
             items: Vec::new(),
             means_of_death: crate::constants::MeansOfDeath::Unknown,
             quad_drop_timeout_hack: 0,
+            pain_anim_cycle: 0,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),

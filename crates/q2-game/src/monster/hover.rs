@@ -892,14 +892,18 @@ mod tests {
         let (mut world, gi) = hit_world(false);
         let key = hover(&mut world);
         let player = hit_player(&mut world, &gi, Vec3f::new(400.0, 0.0, 24.0));
+        // A bolt in flight, or one that already hit the player (a bolt
+        // can spawn and land between two checks).
         let fired = run_until(&mut world, 60, |w| {
             w.find_by_classname(None, "bolt").is_some()
+                || w.means_of_death == crate::constants::MeansOfDeath::Blaster
         });
         assert!(fired.is_some(), "attacked");
         assert_eq!(world.entities.get(key).unwrap().game.enemy, Some(player));
         let played = sounds_of(&world, &gi.floor.inner, key);
         assert!(played.iter().any(|s| s.1 == SOUND_SIGHT));
-        let bolt = world.find_by_classname(None, "bolt").unwrap();
-        assert_eq!(world.entities.get(bolt).unwrap().owner, Some(key));
+        if let Some(bolt) = world.find_by_classname(None, "bolt") {
+            assert_eq!(world.entities.get(bolt).unwrap().owner, Some(key));
+        }
     }
 }
