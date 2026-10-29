@@ -355,13 +355,10 @@ pub const POWER_ARMOR_NONE: i32 = 0;
 pub const POWER_ARMOR_SCREEN: i32 = 1;
 pub const POWER_ARMOR_SHIELD: i32 = 2;
 
-pub const TE_EXPLOSION1: i32 = 5;
-pub const TE_EXPLOSION2: i32 = 6;
-pub const TE_SPLASH: i32 = 10;
-pub const TE_PARASITE_ATTACK: i32 = 16;
-pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
-/// Used as 22 in maps (shared.h: "DON'T RENUMBER").
-pub const TE_BOSSTPORT: i32 = 22;
+pub use q2_shared::constants::{
+    TE_BOSSTPORT, TE_EXPLOSION1, TE_EXPLOSION2, TE_MEDIC_CABLE_ATTACK, TE_PARASITE_ATTACK,
+    TE_SPLASH,
+};
 
 /// C `ANIM_*` (local.h): player animation classes, lowest first.
 pub const ANIM_BASIC: i32 = 0;

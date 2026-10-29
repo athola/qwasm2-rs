@@ -116,6 +116,15 @@ All notable changes to qwasm2-rs are documented here.
   or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
   `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
   as the browser plays single player
+- Weapons and damage send C's temp entities (game side): blood and
+  sparks from `SpawnDamage` (armor, power armor and god mode sparks),
+  bullet and shotgun puffs with water splashes and bubble trails
+  (`fire_lead`), blaster flashes, rocket and grenade explosions (water
+  variants), rail trails, and the BFG's lasers, big explosion and
+  explosion frames (`bfg_think`, `bfg_explode`); projectiles vanish into
+  the sky, rockets knock debris off walls, and monsters see players'
+  blaster, rocket and BFG shots coming (`check_dodge`); the constants live in
+  `q2_shared::constants` (`TE_*`, `SPLASH_*`, `SURF_*`)
 - The browser shows the server's text: printed lines at the top for
   three seconds (death messages, pickups, chat with its talk sound),
   centre prints such as door messages, and the server layout over the

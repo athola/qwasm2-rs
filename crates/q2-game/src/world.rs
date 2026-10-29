@@ -989,6 +989,8 @@ pub struct MockGameImport {
     pub writes: RefCell<Vec<i32>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
+    /// Every `write_position` and `write_dir`, in order.
+    pub vectors: RefCell<Vec<Vec3f>>,
     /// Every `write_string`, and every `unicast` (entity, reliable).
     pub strings: RefCell<Vec<String>>,
     pub unicasts: RefCell<Vec<(usize, bool)>>,
@@ -1137,8 +1139,12 @@ impl GameImport for MockGameImport {
     fn write_string(&self, s: &str) {
         self.strings.borrow_mut().push(s.to_string());
     }
-    fn write_position(&self, _: Vec3f) {}
-    fn write_dir(&self, _: Vec3f) {}
+    fn write_position(&self, pos: Vec3f) {
+        self.vectors.borrow_mut().push(pos);
+    }
+    fn write_dir(&self, dir: Vec3f) {
+        self.vectors.borrow_mut().push(dir);
+    }
     fn write_angle(&self, _: f32) {}
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));

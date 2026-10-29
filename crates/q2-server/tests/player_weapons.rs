@@ -57,12 +57,16 @@ fn holding_attack_fires_blaster_bolts_that_kill_a_soldier() {
             .any(|states| states.iter().any(|s| s.effects & EF_BLASTER != 0)),
         "a blaster bolt is sent"
     );
-    let last = soldier(&game, frames.last().unwrap());
-    assert!(
-        last.frame >= FIRST_DEATH_FRAME,
-        "dead: frame {}",
-        last.frame
-    );
+    // It dies; held fire then gibs the corpse, as in C, so look for the
+    // death frames at any point rather than at the end.
+    let soldier_model = "models/monsters/soldier/tris.md2";
+    let died = frames.iter().any(|states| {
+        states.iter().any(|s| {
+            game.configstring(CS_MODELS + s.modelindex as usize) == soldier_model
+                && s.frame >= FIRST_DEATH_FRAME
+        })
+    });
+    assert!(died, "the soldier reaches its death frames");
 }
 
 #[test]

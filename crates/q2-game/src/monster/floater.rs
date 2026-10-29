@@ -748,6 +748,12 @@ mod tests {
                 format!("dir {:?}", Vec3f::new(50.0, 0.0, 0.0)),
                 "byte 1".to_string(),
                 format!("multicast {origin:?} PVS"),
+                // T_Damage's blood where the zap hit (C SpawnDamage).
+                format!("byte {}", q2_shared::protocol::SvcOp::TempEntity as i32),
+                format!("byte {}", q2_shared::constants::TE_BLOOD),
+                format!("position {:?}", Vec3f::new(50.0, 0.0, 64.0)),
+                format!("dir {:?}", Vec3f::ZERO),
+                format!("multicast {:?} PVS", Vec3f::new(50.0, 0.0, 64.0)),
             ]
         );
 

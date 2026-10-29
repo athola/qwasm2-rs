@@ -112,6 +112,84 @@ pub const EV_ITEM_RESPAWN: i32 = 1;
 pub const EV_PLAYER_TELEPORT: i32 = 6;
 pub const EV_OTHER_TELEPORT: i32 = 7;
 
+// Temp entity types (shared.h temp_event_t), the byte after
+// svc_temp_entity; numbered in order, TE_BOSSTPORT is 22 in maps.
+pub const TE_GUNSHOT: i32 = 0;
+pub const TE_BLOOD: i32 = 1;
+pub const TE_BLASTER: i32 = 2;
+pub const TE_RAILTRAIL: i32 = 3;
+pub const TE_SHOTGUN: i32 = 4;
+pub const TE_EXPLOSION1: i32 = 5;
+pub const TE_EXPLOSION2: i32 = 6;
+pub const TE_ROCKET_EXPLOSION: i32 = 7;
+pub const TE_GRENADE_EXPLOSION: i32 = 8;
+pub const TE_SPARKS: i32 = 9;
+pub const TE_SPLASH: i32 = 10;
+pub const TE_BUBBLETRAIL: i32 = 11;
+pub const TE_SCREEN_SPARKS: i32 = 12;
+pub const TE_SHIELD_SPARKS: i32 = 13;
+pub const TE_BULLET_SPARKS: i32 = 14;
+pub const TE_LASER_SPARKS: i32 = 15;
+pub const TE_PARASITE_ATTACK: i32 = 16;
+pub const TE_ROCKET_EXPLOSION_WATER: i32 = 17;
+pub const TE_GRENADE_EXPLOSION_WATER: i32 = 18;
+pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
+pub const TE_BFG_EXPLOSION: i32 = 20;
+pub const TE_BFG_BIGEXPLOSION: i32 = 21;
+pub const TE_BOSSTPORT: i32 = 22;
+pub const TE_BFG_LASER: i32 = 23;
+pub const TE_GRAPPLE_CABLE: i32 = 24;
+pub const TE_WELDING_SPARKS: i32 = 25;
+pub const TE_GREENBLOOD: i32 = 26;
+pub const TE_BLUEHYPERBLASTER: i32 = 27;
+pub const TE_PLASMA_EXPLOSION: i32 = 28;
+pub const TE_TUNNEL_SPARKS: i32 = 29;
+pub const TE_BLASTER2: i32 = 30;
+pub const TE_RAILTRAIL2: i32 = 31;
+pub const TE_FLAME: i32 = 32;
+pub const TE_LIGHTNING: i32 = 33;
+pub const TE_DEBUGTRAIL: i32 = 34;
+pub const TE_PLAIN_EXPLOSION: i32 = 35;
+pub const TE_FLASHLIGHT: i32 = 36;
+pub const TE_FORCEWALL: i32 = 37;
+pub const TE_HEATBEAM: i32 = 38;
+pub const TE_MONSTER_HEATBEAM: i32 = 39;
+pub const TE_STEAM: i32 = 40;
+pub const TE_BUBBLETRAIL2: i32 = 41;
+pub const TE_MOREBLOOD: i32 = 42;
+pub const TE_HEATBEAM_SPARKS: i32 = 43;
+pub const TE_HEATBEAM_STEAM: i32 = 44;
+pub const TE_CHAINFIST_SMOKE: i32 = 45;
+pub const TE_ELECTRIC_SPARKS: i32 = 46;
+pub const TE_TRACKER_EXPLOSION: i32 = 47;
+pub const TE_TELEPORT_EFFECT: i32 = 48;
+pub const TE_DBALL_GOAL: i32 = 49;
+pub const TE_WIDOWBEAMOUT: i32 = 50;
+pub const TE_NUKEBLAST: i32 = 51;
+pub const TE_WIDOWSPLASH: i32 = 52;
+pub const TE_EXPLOSION1_BIG: i32 = 53;
+pub const TE_EXPLOSION1_NP: i32 = 54;
+pub const TE_FLECHETTE: i32 = 55;
+
+// TE_SPLASH colours (shared.h SPLASH_*).
+pub const SPLASH_UNKNOWN: i32 = 0;
+pub const SPLASH_SPARKS: i32 = 1;
+pub const SPLASH_BLUE_WATER: i32 = 2;
+pub const SPLASH_BROWN_WATER: i32 = 3;
+pub const SPLASH_SLIME: i32 = 4;
+pub const SPLASH_LAVA: i32 = 5;
+pub const SPLASH_BLOOD: i32 = 6;
+
+// Surface flags (shared.h SURF_*).
+pub const SURF_LIGHT: i32 = 0x1;
+pub const SURF_SLICK: i32 = 0x2;
+pub const SURF_SKY: i32 = 0x4;
+pub const SURF_WARP: i32 = 0x8;
+pub const SURF_TRANS33: i32 = 0x10;
+pub const SURF_TRANS66: i32 = 0x20;
+pub const SURF_FLOWING: i32 = 0x40;
+pub const SURF_NODRAW: i32 = 0x80;
+
 // usercmd_t buttons (shared.h BUTTON_*).
 pub const BUTTON_ATTACK: u8 = 1;
 pub const BUTTON_USE: u8 = 2;
