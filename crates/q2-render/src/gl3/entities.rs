@@ -6,9 +6,9 @@
 //!
 //! Not modelled relative to C: frustum culling of brush entities, the
 //! `RF_WEAPONMODEL` gun FOV and left-hand mirroring, `RF_DEPTHHACK`,
-//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, `RF_BEAM` beams, the
-//! null-model placeholder, entity shadows, sprite (`.sp2`) models and
-//! dynamic lights on brush models. Entities whose model
+//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, the null-model
+//! placeholder, entity shadows and dynamic lights on brush models. Beams
+//! and sprites are drawn by `fx`. Entities whose model
 //! is none of the above are skipped.
 
 use glow::HasContext;

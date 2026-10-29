@@ -41,6 +41,7 @@ mod alias;
 mod draw;
 mod entities;
 mod entity;
+mod fx;
 mod images;
 mod light;
 mod lightmap;
@@ -101,6 +102,8 @@ pub struct Gl3Renderer {
     palette: Option<Palette>,
     /// MD2 and 2D programs, stream buffers and fallback textures.
     extra: Option<ExtraGpu>,
+    /// Particle, beam and sprite programs.
+    fx: Option<fx::FxGpu>,
     /// 2D pics and model skins.
     images: ImageStore,
     /// Registered models; handles are valid until the next registration.
@@ -154,6 +157,7 @@ impl Gl3Renderer {
             world_name: None,
             palette,
             extra: None,
+            fx: None,
             images: ImageStore::default(),
             models: ModelRegistry::default(),
             model_count: None,
@@ -275,6 +279,11 @@ impl Renderer for Gl3Renderer {
         if let Some(old) = self.extra.replace(extra) {
             free_extra(gl, old);
         }
+        let effects = fx::create_fx(gl)
+            .map_err(|e| Q2Error::Drop(format!("Failed to set up particles and sprites: {e}")))?;
+        if let Some(old) = self.fx.replace(effects) {
+            fx::free_fx(gl, old);
+        }
         // A repeated init starts the image cache afresh.
         self.images.free(gl);
         self.models.clear();
@@ -307,6 +316,9 @@ impl Renderer for Gl3Renderer {
             }
             if let Some(extra) = self.extra.take() {
                 free_extra(gl, extra);
+            }
+            if let Some(effects) = self.fx.take() {
+                fx::free_fx(gl, effects);
             }
             self.images.free(gl);
             self.models.clear();
@@ -345,8 +357,9 @@ impl Renderer for Gl3Renderer {
         Ok(())
     }
 
-    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` is loaded
-    /// through the file loader with its skins. Anything else, or a failure,
+    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` and `*.sp2`
+    /// are loaded through the file loader with their skins or frame
+    /// images. Anything else, or a failure,
     /// returns `ModelHandle::NONE` (logged once per name). A model found
     /// again has its skins marked as used, like C `Mod_ReLoadSkins`.
     fn register_model(&mut self, name: &str) -> ModelHandle {
@@ -357,16 +370,24 @@ impl Renderer for Gl3Renderer {
         let images = &mut self.images;
         let loader = &self.file_loader;
         let handle = self.models.register(name, || {
-            let is_md2 = name.len() > 4 && name.to_ascii_lowercase().ends_with(".md2");
-            if !is_md2 {
-                return None;
+            let lower = name.to_ascii_lowercase();
+            if name.len() <= 4 {
+                None
+            } else if lower.ends_with(".md2") {
+                entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
+            } else if lower.ends_with(".sp2") {
+                fx::load_sprite_model(gl, loader, palette, images, name).map(Model::Sprite)
+            } else {
+                None
             }
-            entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
         });
-        if let Some(Model::Alias(model)) = self.models.get(handle) {
-            for &skin in model.skins.iter().flatten() {
-                self.images.touch(skin);
-            }
+        let used: Vec<usize> = match self.models.get(handle) {
+            Some(Model::Alias(model)) => model.skins.iter().flatten().copied().collect(),
+            Some(Model::Sprite(sprite)) => sprite.frames.iter().filter_map(|f| f.image).collect(),
+            _ => Vec::new(),
+        };
+        for image in used {
+            self.images.touch(image);
         }
         handle
     }
@@ -415,13 +436,13 @@ impl Renderer for Gl3Renderer {
     }
 
     /// Draw order: sky, opaque world, opaque entities, translucent world,
-    /// translucent entities. 2D draws are queued until `end_frame`.
+    /// translucent entities, beams and sprites, particles. 2D draws are queued until `end_frame`.
     fn render_frame(
         &mut self,
         fd: &RefDef,
         entities: &[RenderEntity],
         dlights: &[DLight],
-        _particles: &[Particle],
+        particles: &[Particle],
     ) {
         // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
         // goes over it.
@@ -519,6 +540,22 @@ impl Renderer for Gl3Renderer {
         world_batches(BatchFilter::Translucent);
         if let Some(scene) = &scene {
             draw_entities(scene, entities, true);
+        }
+        if let (Some(effects), Some(extra)) = (&self.fx, &self.extra) {
+            fx::draw_fx(
+                &fx::FxScene {
+                    gl,
+                    fx: effects,
+                    white: extra.white,
+                    models: &self.models,
+                    images: &self.images,
+                    palette: self.palette.as_ref(),
+                    refdef: fd,
+                    view_proj: &view_proj,
+                },
+                entities,
+                particles,
+            );
         }
 
         // SAFETY: Unbinding the program and reading the error flag are
@@ -641,11 +678,15 @@ impl Gl3Renderer {
             return;
         };
         let extra = self.extra.as_ref();
-        let programs = self.program.into_iter().chain(
-            extra
-                .into_iter()
-                .flat_map(|extra| [extra.alias_program, extra.ui_program]),
-        );
+        let programs = self
+            .program
+            .into_iter()
+            .chain(
+                extra
+                    .into_iter()
+                    .flat_map(|extra| [extra.alias_program, extra.ui_program]),
+            )
+            .chain(self.fx.iter().flat_map(fx::FxGpu::programs));
         for program in programs {
             shader::set_gamma(gl, program, self.vid_gamma);
         }
@@ -1494,6 +1535,61 @@ mod tests {
         assert_eq!(model.skins, vec![None]);
     }
 
+    /// "IDS2" with one frame per `(name, width, height)`, hung from its centre.
+    fn synthetic_sp2(frames: &[(&str, i32, i32)]) -> Vec<u8> {
+        let mut bytes = b"IDS2".to_vec();
+        bytes.extend_from_slice(&2i32.to_le_bytes());
+        bytes.extend_from_slice(&(frames.len() as i32).to_le_bytes());
+        for &(name, width, height) in frames {
+            for value in [width, height, width / 2, height / 2] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let mut field = [0u8; 64];
+            field[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&field);
+        }
+        bytes
+    }
+
+    #[test]
+    fn register_model_loads_an_sp2_with_each_frames_image_like_c_mod_loadsp2() {
+        let pcx = images::tiny_pcx();
+        let mut r = Gl3Renderer::headless(Box::new(move |path| match path {
+            "sprites/s.sp2" => Some(synthetic_sp2(&[
+                ("sprites/a.pcx", 32, 16),
+                ("sprites/gone.pcx", 8, 8),
+            ])),
+            "sprites/a.pcx" => Some(pcx.clone()),
+            _ => None,
+        }));
+        let handle = r.register_model("sprites/s.sp2");
+        assert_ne!(handle, ModelHandle::NONE);
+        assert_eq!(r.register_model("sprites/s.sp2"), handle);
+        let Some(Model::Sprite(sprite)) = r.models.get(handle) else {
+            panic!("expected a sprite");
+        };
+        assert_eq!(sprite.frames.len(), 2);
+        assert_eq!(
+            sprite.frames[0].size,
+            fx::SpriteFrameSize {
+                width: 32,
+                height: 16,
+                origin_x: 16,
+                origin_y: 8
+            }
+        );
+        let image = sprite.frames[0].image.expect("frame image loaded");
+        assert_eq!(r.images.get(image).unwrap().width, 2);
+        // A frame whose image is missing stays empty and is not drawn.
+        assert_eq!(sprite.frames[1].image, None);
+        // Registered again this sequence, its images survive the sweep.
+        r.models.begin_sequence();
+        r.images.begin_sequence();
+        r.register_model("sprites/s.sp2");
+        r.end_registration();
+        assert!(r.images.get(image).is_some());
+    }
+
     #[test]
     fn inline_models_are_valid_only_for_the_loaded_bsp() {
         let (mut r, _) = map_renderer(&[("base1", 3), ("base2", 2)]);
@@ -1731,6 +1827,12 @@ mod tests {
         r.begin_registration("demo1")
             .expect("demo1 loads by its short name");
 
+        let explosion = r.register_model("sprites/s_explod.sp2");
+        let Some(Model::Sprite(sprite)) = r.models.get(explosion) else {
+            panic!("s_explod registers as a sprite");
+        };
+        assert!(!sprite.frames.is_empty());
+        assert!(sprite.frames.iter().all(|frame| frame.image.is_some()));
         let soldier = r.register_model("models/monsters/soldier/tris.md2");
         let Some(Model::Alias(model)) = r.models.get(soldier) else {
             panic!("soldier registers as an MD2 model");

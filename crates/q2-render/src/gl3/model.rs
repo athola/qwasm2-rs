@@ -18,6 +18,8 @@ pub enum Model<A> {
         submodel: usize,
     },
     Alias(A),
+    /// A `.sp2` sprite.
+    Sprite(super::fx::SpriteModel),
 }
 
 struct Slot<A> {

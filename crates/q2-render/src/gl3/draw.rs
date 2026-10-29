@@ -50,7 +50,7 @@ fn float_bytes(floats: &[f32]) -> &[u8] {
 /// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
 /// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
 /// WebGL canvas (alpha, premultiplied) would show the page through it.
-fn set_alpha_blend(gl: &glow::Context) {
+pub(super) fn set_alpha_blend(gl: &glow::Context) {
     // SAFETY: state-only call on the live context `gl`.
     unsafe {
         gl.blend_func_separate(
@@ -437,7 +437,7 @@ pub fn free_stream_buffer(gl: &glow::Context, stream: StreamBuffer) {
 }
 
 /// Replace the stream's contents and leave its VAO bound.
-fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
+pub(super) fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
     let bytes = float_bytes(floats);
     // SAFETY: `stream` objects belong to `gl`; `bytes` borrows `floats` and
     // `buffer_data_u8_slice` copies it before returning.

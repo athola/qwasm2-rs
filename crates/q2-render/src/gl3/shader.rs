@@ -143,7 +143,7 @@ pub struct WorldUniforms {
 
 /// Compile and link one program from vertex and fragment source. Shader
 /// objects never outlive the call; the log is reported on failure.
-fn link_program(
+pub(super) fn link_program(
     gl: &glow::Context,
     vertex_src: &str,
     fragment_src: &str,
@@ -208,7 +208,7 @@ fn link_program(
 }
 
 /// Bind the named samplers of `program` to texture units 0, 1, ...
-fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
+pub(super) fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
     // SAFETY: `program` was linked on `gl` by the caller; this only sets
     // sampler uniforms on it and restores the null program binding.
     unsafe {
