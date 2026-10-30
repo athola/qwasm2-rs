@@ -2344,6 +2344,36 @@ mod tests {
     }
 
     #[test]
+    fn soldier_fire_picks_the_skins_muzzle_flash_by_flash_number() {
+        // C soldier_fire: blaster_flash / shotgun_flash / machinegun_flash
+        // by skin, indexed by the caller's flash number.
+        for (skin, shot, flash) in [
+            (0, soldier_fire1 as ThinkFn, MZ2_SOLDIER_BLASTER_1),
+            (1, soldier_fire6, MZ2_SOLDIER_BLASTER_6),
+            (2, soldier_fire3, MZ2_SOLDIER_SHOTGUN_3),
+            (3, soldier_fire2, MZ2_SOLDIER_SHOTGUN_2),
+            (4, soldier_fire8, MZ2_SOLDIER_MACHINEGUN_8),
+            (5, soldier_fire7, MZ2_SOLDIER_MACHINEGUN_7),
+        ] {
+            let (mut world, gi) = crate::misc::wire::wire_world();
+            let key = world.spawn().unwrap();
+            sp_monster_soldier(&mut world.entities, key, &HashMap::new());
+            let enemy = world.spawn().unwrap();
+            world.entities.get_mut(enemy).unwrap().state.origin = Vec3f::new(300.0, 0.0, 0.0);
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.state.skinnum = skin;
+            ent.game.enemy = Some(enemy);
+            shot(&mut world, key);
+            let wire = gi.wire.borrow();
+            assert_eq!(
+                wire[wire.len() - 2],
+                crate::misc::wire::Wire::Byte(flash),
+                "skin {skin}"
+            );
+        }
+    }
+
+    #[test]
     fn soldier_aimed_shot_without_an_enemy_fires_nothing() {
         let (mut world, _, key, _) = duel(0, 300.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
