@@ -163,6 +163,8 @@ fn real_bounding_box(ent: &crate::entity::Entity) -> (Vec3f, Vec3f) {
 
 impl GameWorld {
     /// Clamp entity velocity to `sv_maxvelocity`.
+    /// Deviation: the game has no cvars, so this is the cvar's default
+    /// (`DEFAULT_MAX_VELOCITY`) even where a server would change it.
     /// C ref: `SV_CheckVelocity` (g_phys.c:87-100)
     pub fn check_velocity(&mut self, key: EntityKey) {
         let Some(ent) = self.entities.get_mut(key) else {
@@ -234,6 +236,9 @@ impl GameWorld {
     }
 
     /// Apply gravity to an entity for one frame.
+    /// Deviation: C reads `sv_gravity`, which SP_worldspawn sets from the
+    /// map's `gravity` key; this uses the default 800 on every map, as the
+    /// player's pmove gravity does (see `worldspawn_configstrings`).
     /// C ref: `SV_AddGravity` (g_phys.c:373-382)
     pub fn add_gravity(&mut self, key: EntityKey) {
         let Some(ent) = self.entities.get_mut(key) else {
@@ -663,6 +668,7 @@ impl GameWorld {
         // are in the water.
         let mut hitsound = false;
         if !was_on_ground && !is_flying && !(is_swimming && waterlevel > 2) {
+            // C: sv_gravity, fixed at its default here (see add_gravity).
             hitsound = ent.velocity.z < DEFAULT_GRAVITY * -0.1;
             if waterlevel == 0 {
                 self.add_gravity(key);
