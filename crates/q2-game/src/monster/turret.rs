@@ -959,6 +959,52 @@ mod tests {
     }
 
     #[test]
+    fn turret_driver_finds_a_player_and_starts_its_reaction_clock() {
+        let mut world = test_world();
+        world.level.time = 4.0;
+        let t = turret(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 42.0));
+        mi_mut(&mut world, t.driver).aiflags |= AiFlags::LOST_SIGHT;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.driver).unwrap().game.enemy,
+            Some(player)
+        );
+        let mi = mi_mut(&mut world, t.driver);
+        assert_eq!(mi.trail_time, 4.0);
+        assert!(!mi.aiflags.contains(AiFlags::LOST_SIGHT));
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.move_angles,
+            crate::weapons::vectoangles(Vec3f::new(300.0, 0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn turret_driver_holds_fire_until_attack_finished() {
+        let mut world = test_world();
+        world.level.time = 10.0;
+        let t = turret(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 42.0));
+        world.entities.get_mut(t.driver).unwrap().game.enemy = Some(player);
+        let mi = mi_mut(&mut world, t.driver);
+        mi.trail_time = 0.0;
+        mi.attack_finished = 10.5;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.spawnflags & SPAWNFLAG_FIRE,
+            0
+        );
+        assert_eq!(mi_mut(&mut world, t.driver).attack_finished, 10.5);
+
+        world.level.time = 10.5;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.spawnflags & SPAWNFLAG_FIRE,
+            SPAWNFLAG_FIRE
+        );
+    }
+
+    #[test]
     fn turret_driver_loses_sight_and_forgets_a_dead_enemy() {
         let (mut world, gi) = test_world_recording();
         world.level.time = 5.0;
