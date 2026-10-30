@@ -145,6 +145,12 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- More of Q2's `default.cfg` binds: `g` hand grenades, `/` next
+  weapon, Backspace drop item, and `q`/`b`/`e`/`i`/`p` for quad,
+  rebreather, environment suit, invulnerability and power shield (`s`,
+  the silencer there, stays free for moving back)
+- The page's log console starts hidden; backquote shows it, and a
+  startup error opens it
 - Barrels (`misc_explobox`) roll away when walked into (C
   `barrel_touch`), settle on the floor and are gone in deathmatch
 - The rest of `g_misc.c`: `func_wall` (triggered, toggled, animated),

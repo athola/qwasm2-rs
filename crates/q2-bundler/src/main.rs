@@ -246,7 +246,7 @@ fn generate_html(inlined_js: &str) -> String {
   <div id="crosshair"></div>
   <div id="hud"></div>
   <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
-  <div id="status-container">
+  <div id="status-container" class="hidden">
     <div id="status-toolbar">
       <button onclick="copyLog()">Copy to clipboard</button>
       <button onclick="saveLog()">Save to file</button>
@@ -330,6 +330,8 @@ try {{
   const line = document.createElement('span');
   line.className = 'fail';
   line.textContent = 'ERROR: ' + e;
+  // The console starts hidden; show it so the error is seen.
+  document.getElementById('status-container').classList.remove('hidden');
   const statusEl = document.getElementById('status');
   statusEl.appendChild(line);
   statusEl.appendChild(document.createTextNode('\n'));
@@ -425,6 +427,30 @@ mod tests {
             .and_then(|r| r.split('}').next())
             .expect("click-prompt rule");
         assert!(rule.contains("pointer-events: none"), "{rule}");
+    }
+
+    #[test]
+    fn the_console_starts_hidden_and_backquote_toggles_it() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<div id="status-container" class="hidden">"#));
+        assert!(html.contains("if (e.code === 'Backquote')"));
+    }
+
+    #[test]
+    fn a_startup_error_opens_the_console() {
+        // Hidden by default, the log would otherwise swallow the error.
+        let html = generate_html("");
+        let catch = html
+            .split("}} catch (e) {{")
+            .nth(1)
+            .or_else(|| html.split("} catch (e) {").nth(1));
+        let catch = catch.expect("startup catch block");
+        assert!(
+            catch.contains(
+                "document.getElementById('status-container').classList.remove('hidden');"
+            ),
+            "{catch}"
+        );
     }
 
     #[test]
