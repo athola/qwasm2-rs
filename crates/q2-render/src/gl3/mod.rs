@@ -61,7 +61,10 @@ use crate::bsp::BspData;
 use crate::files::palette::Palette;
 use alias::AliasModel;
 use draw::{draw_batches, draw_ui, BatchDraw, BatchFilter, SkyGpu, UiTarget, WorldGpu};
-use entities::{create_extra, draw_entities, free_extra, EntityScene, ExtraGpu};
+use entities::{
+    create_extra, draw_brush_alpha_faces, draw_entities, free_extra, EntityScene, ExtraGpu,
+};
+
 use images::ImageStore;
 use light::LightTree;
 use model::{Model, ModelRegistry};
@@ -251,8 +254,11 @@ enum Pass {
     OpaqueEntities,
     TranslucentEntities,
     Particles,
-    /// C `GL3_DrawAlphaSurfaces`.
-    TranslucentWorld,
+    /// Every SURF_TRANS33/66 face (C `GL3_DrawAlphaSurfaces`): the brush
+    /// entities' first, then the world's, as C prepends the entities'
+    /// faces to the chain the world filled. Brush entities leave these
+    /// faces out of the entity passes.
+    AlphaSurfaces,
 }
 
 /// C `GL3_RenderView`: the world, entities, particles, then the world's
@@ -263,7 +269,7 @@ const FRAME_PASSES: [Pass; 6] = [
     Pass::OpaqueEntities,
     Pass::TranslucentEntities,
     Pass::Particles,
-    Pass::TranslucentWorld,
+    Pass::AlphaSurfaces,
 ];
 
 impl Drop for Gl3Renderer {
@@ -486,9 +492,9 @@ impl Renderer for Gl3Renderer {
             Some(gl) => gl,
             None => return,
         };
-        if fd.width > 0 && fd.height > 0 {
-            self.canvas = (fd.width, fd.height);
-        }
+        // Only the 3D viewport follows the refdef; the 2D canvas keeps the
+        // drawable size from `begin_frame`, as C GL3_SetGL2D uses vid.width
+        // and vid.height.
 
         // SAFETY: State-only calls on the live context `gl`; no object
         // handles are passed.
@@ -580,7 +586,12 @@ impl Renderer for Gl3Renderer {
                         unsafe { gl.use_program(Some(*program)) };
                     }
                 }
-                Pass::TranslucentWorld => world_batches(BatchFilter::Translucent),
+                Pass::AlphaSurfaces => {
+                    if let Some(scene) = &scene {
+                        draw_brush_alpha_faces(scene, entities);
+                    }
+                    world_batches(BatchFilter::Translucent);
+                }
             }
         }
 
@@ -957,6 +968,10 @@ mod tests {
         assert!(err.is_recoverable());
     }
 
+    // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
+    // RF_TRANSLUCENT), GL3_DrawParticles, then GL3_DrawAlphaSurfaces for
+    // every SURF_TRANS33/66 face, the brush entities' included, so a
+    // monster behind a window is drawn before the glass.
     #[test]
     fn the_frame_is_drawn_in_c_gl3_renderview_order() {
         assert_eq!(
@@ -967,7 +982,7 @@ mod tests {
                 Pass::OpaqueEntities,
                 Pass::TranslucentEntities,
                 Pass::Particles,
-                Pass::TranslucentWorld,
+                Pass::AlphaSurfaces,
             ]
         );
     }
@@ -1809,7 +1824,7 @@ mod tests {
         let mut r = Gl3Renderer::headless(no_files());
         r.begin_frame(1280, 720);
         assert_eq!(r.canvas, (1280, 720));
-        // An empty drawable keeps the last usable size, as render_frame does.
+        // An empty drawable keeps the last usable size.
         r.begin_frame(0, 720);
         assert_eq!(r.canvas, (1280, 720));
     }

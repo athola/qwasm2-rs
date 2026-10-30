@@ -36,10 +36,10 @@ WebGL2, and runs player movement in the browser.
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | done |
 | CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (no weapons yet) |
-| CP-5c Sound | Sound through Web Audio | — |
-| CP-6 Saves | Saves persist across a browser refresh | — |
-| CP-7 Multiplayer | Two browser tabs connect via Matchbox | — |
-| CP-8 Campaign | Single-player campaign map loads and plays | — |
+| CP-5c Sound | Sound through Web Audio | in progress (game sounds play; no PHS culling) |
+| CP-6 Saves | Saves persist across a browser refresh | not started |
+| CP-7 Multiplayer | Two browser tabs connect via Matchbox | not started |
+| CP-8 Campaign | Single-player campaign map loads and plays | not started |
 
 ## Features
 
@@ -48,15 +48,15 @@ WebGL2, and runs player movement in the browser.
 - BSP map loading and rendering via WebGL2 / GLES3
 - Player movement: C `pmove` in `ClientThink`, tracing through the
   server's map and linked entities
-- `PakReader` trait with lazy WASM backend — avoids copying the full
-  PAK (~100 MB) into linear memory until individual assets are requested
+- `PakReader` trait with lazy WASM backend that copies only the
+  requested assets into linear memory, never the full PAK (~100 MB)
 - Q2 wire-protocol delta machinery: `parse_frame`, player-state delta,
   packet-entity delta
 - Server frame loop with `GameImport`/`GameExport` traits replacing C
   function-pointer tables; the browser runs server and game in one process
   (`q2_server::local::LocalGame`)
-- Single-file HTML bundle (`dist/qwasm2.html`) — no install needed
-  for end users
+- Single-file HTML bundle (`dist/qwasm2.html`); end users install
+  nothing
 - Automatic demo game data download (`make gamedata`)
 - Web-optimized `pak0-web.pak` produced by `make pak-web`, Brotli-compressed
   at level 11 and served with content negotiation; browsers receive ~28 MB
@@ -180,9 +180,11 @@ otherwise or when the `.br` is older than the pak. `make pak-web` only
 reruns when `pak0.pak` or the repacker (including its `Cargo.toml` and
 `Cargo.lock`) changes.
 
-To use the full game, copy your `pak0.pak` (and optionally `pak1.pak`,
-`pak2.pak`) from a Quake 2 installation into `gamedata/baseq2/`, then
-run `make pak-web` to produce the web-optimized variant.
+To use the full game, copy your `pak0.pak` from a Quake 2 installation
+into `gamedata/baseq2/`, then run `make pak-web` to produce the
+web-optimized variant. Only `pak0.pak` is used for now: `make pak-web`
+repacks that one file and the page fetches only `pak0-web.pak`, so the
+contents of `pak1.pak` and `pak2.pak` are not loaded.
 
 ## Development
 
@@ -214,22 +216,22 @@ make check          # type-check native + WASM targets
 ### Reference Implementation
 
 The original C Quake 2 source lives at `~/Qwasm2`. Algorithmic
-modules (collision, pmove) are faithful ports — cross-reference
+modules (collision, pmove) are faithful ports; cross-reference
 against the C source before modifying.
 
 ## Documentation
 
-- [ADR-001: Crate Decomposition](docs/adr/001-crate-decomposition-and-trait-boundaries.md)
-  — workspace structure and trait boundary rationale
-- [ADR-002: Conversion Strategy and Roadmap](docs/adr/002-conversion-strategy-and-roadmap.md)
-  — rewrite approach, playability checkpoints, phase status
-- [ADR-003: Game Logic Design](docs/adr/003-game-logic-design.md) —
+- [ADR-001: Crate Decomposition](docs/adr/001-crate-decomposition-and-trait-boundaries.md):
+  workspace structure and trait boundary rationale
+- [ADR-002: Conversion Strategy and Roadmap](docs/adr/002-conversion-strategy-and-roadmap.md):
+  rewrite approach, playability checkpoints, phase status
+- [ADR-003: Game Logic Design](docs/adr/003-game-logic-design.md):
   `GameWorld`, callbacks, scope of the q2-game port
-- [ADR-004: Web Asset Delivery](docs/adr/004-web-asset-delivery.md) — PAK
+- [ADR-004: Web Asset Delivery](docs/adr/004-web-asset-delivery.md): PAK
   repacking, Brotli serving, lazy reads
-- [ADR-005: C Parity and Quality Gates](docs/adr/005-c-parity-and-quality-gates.md)
-  — protocol and physics parity rules, CI gates
-- [CLAUDE.md](CLAUDE.md) — project-level instructions for AI-assisted
+- [ADR-005: C Parity and Quality Gates](docs/adr/005-c-parity-and-quality-gates.md):
+  protocol and physics parity rules, CI gates
+- [CLAUDE.md](CLAUDE.md): project-level instructions for AI-assisted
   development
 
 ## License

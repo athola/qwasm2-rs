@@ -23,7 +23,7 @@ impl GameWorld {
             return;
         }
         if self.game.fraglimit != 0 {
-            let reached = (1..=self.game.maxclients.max(0) as usize)
+            let reached = (1..=self.game.maxclients().max(0) as usize)
                 .filter_map(|n| self.entities.key_for_number(n))
                 .filter(|&k| self.entities.get(k).is_some_and(|e| e.in_use))
                 .any(|k| {

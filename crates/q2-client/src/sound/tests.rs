@@ -188,6 +188,49 @@ fn registering_a_new_map_drops_the_old_precache_but_keeps_loaded_sounds() {
     assert!(sys.sound(a).is_some());
 }
 
+// C CL_ParseConfigString: a CS_SOUNDS string that changes after the map
+// was prepped is registered then (gi.soundindex during play).
+#[test]
+fn a_sound_index_allocated_during_play_is_registered_by_sync() {
+    let mut sys = system();
+    let later = |i: usize| {
+        if i == CS_SOUNDS + 7 {
+            "b.wav"
+        } else {
+            strings("")(i)
+        }
+    };
+    sys.sync_sounds(later, |p| files().get(p).cloned());
+    assert_eq!(sys.name(sys.precache[7].unwrap()), "b.wav");
+    sys.start_sound(&sound(2, 1, 7), later, |p| files().get(p).cloned());
+    assert_eq!(plays(&update(&mut sys, 0.0)).len(), 1);
+}
+
+#[test]
+fn sync_reregisters_changed_slots_and_clears_emptied_ones() {
+    let mut sys = system();
+    let changed = |i: usize| match i {
+        _ if i == CS_SOUNDS + 1 => "b.wav",
+        _ if i == CS_SOUNDS + 2 => "",
+        _ => strings("")(i),
+    };
+    sys.sync_sounds(changed, |p| files().get(p).cloned());
+    assert_eq!(sys.name(sys.precache[1].unwrap()), "b.wav");
+    assert_eq!(sys.precache[2], None);
+    assert_eq!(sys.name(sys.precache[3].unwrap()), "loop.wav");
+}
+
+#[test]
+fn sync_does_not_reload_unchanged_slots() {
+    let mut sys = system();
+    let mut loads = 0;
+    sys.sync_sounds(strings(""), |_| {
+        loads += 1;
+        None
+    });
+    assert_eq!(loads, 0);
+}
+
 // -- starting sounds (C S_StartSound, S_IssuePlaysound) ----------------------
 
 #[test]
@@ -520,4 +563,37 @@ fn a_sexed_named_sound_resolves_through_the_players_model() {
     );
     let mix = update(&mut sys, 0.0);
     assert_eq!(sys.name(plays(&mix)[0].1), "#players/female/jump1.wav");
+}
+
+/// One update with entity 2 seen at (0, -1000, 0), then a sound started
+/// for it while it is absent; returns that sound's (left, right).
+fn gains_after_entity_left(between: impl FnOnce(&mut SoundSystem)) -> (f32, f32) {
+    let mut sys = system();
+    let seen = [looping(2, 0, Vec3f::new(0.0, -1000.0, 0.0))];
+    let at = |n| entity_origin(&seen, &seen, 1.0, n);
+    sys.update(0.0, &listener(), at, &seen);
+    between(&mut sys);
+    start(&mut sys, sound(2, 1, 1));
+    let mix = sys.update(10.0, &listener(), |_| None, &[]);
+    let MixCommand::Play { left, right, .. } = mix.commands[0] else {
+        panic!("{mix:?}");
+    };
+    (left, right)
+}
+
+// C CL_GetEntitySoundOrigin reads cl_entities[ent].lerp_origin, which keeps
+// the last position after the entity leaves the frame.
+#[test]
+fn a_sound_from_an_entity_gone_from_the_frame_starts_at_its_last_origin() {
+    // All on the right, as at (0, -1000, 0); from (0, 0, 0) it is even.
+    assert_eq!(gains_after_entity_left(|_| {}), (gain(0), gain(137)));
+}
+
+// C CL_ClearState clears cl_entities for the next map.
+#[test]
+fn registering_a_map_forgets_entity_origins() {
+    let (left, right) = gains_after_entity_left(|sys| {
+        sys.register_sounds(strings(""), |p| files().get(p).cloned());
+    });
+    assert_eq!(left, right);
 }

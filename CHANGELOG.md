@@ -2,7 +2,7 @@
 
 All notable changes to qwasm2-rs are documented here.
 
-## [Unreleased]
+## [0.1.2] - Unreleased
 
 ### Changed (breaking)
 - `GameImport::set_model` returns `ModelInfo` (index and inline-model
@@ -65,6 +65,9 @@ All notable changes to qwasm2-rs are documented here.
   `RefDef` gains `areabits`; `ServerState::Pic`, `LocalGame::{picture,
   take_sounds, area_bits, player_area}`; monster constants and
   `gib_health` are shared (`STUB_STAND_FRAMES` removed)
+- `q2_shared::constants::ERR_QUIT` is now `ERR_DISCONNECT`, C's name for
+  code 2; `GameExport` gains `clear_entity_events` (C `SV_PrepWorldFrame`);
+  `q2_common::pmove::angle_vectors` and `BspHeader::records` are public
 
 ### Added
 - The player fires the blaster: `ClientThink` latches the attack button
@@ -300,6 +303,18 @@ All notable changes to qwasm2-rs are documented here.
 - `q2_common::bsp_file` decodes plane, node, leaf, texinfo and model
   records for both the collision and render loaders
 - The wasm engine refits render size and fov when the canvas is resized
+- Q2 wire-protocol delta machinery: `parse_frame`, player-state delta, packet-entity delta (30 tests) — CP-4 client delta
+- `PakReader` trait with lazy WASM backend — avoids copying the full PAK into linear memory until individual assets are requested
+- Server frame loop with `GameImport`/`GameExport` bridge replacing C function-pointer tables — CP-3 complete
+- CI badge in README
+- `q2-pak-repack` crate: CLI tool that repacks a Q2 PAK, optionally filtered
+  by an extension allowlist (`make pak-web` keeps every file), and writes a
+  Brotli-compressed `.br` variant (level 11) for web delivery
+- `make pak-web` target: produces `pak0-web.pak` and `pak0-web.pak.br` from
+  the downloaded demo data; integrated into `make play` and `make play-release`
+- Devserver Brotli content negotiation: `q2-devserver` now serves
+  `pak0-web.pak.br` when the client sends `Accept-Encoding: br`, reducing
+  wire size from ~46 MB to ~26 MB
 
 ### Fixed
 - `BossExplode` ran a ninth explosion before gibbing; the click prompt
@@ -366,6 +381,14 @@ All notable changes to qwasm2-rs are documented here.
   are inserted as text, not HTML
 - Undocumented `unsafe` blocks are denied again (a rustflags entry had
   downgraded the workspace lint to a warning)
+- Review fixes for PR #30 (189 findings): console commands match names
+  without regard to case and split bare words on bytes 0x80-0xFF, as C
+  does; info strings, pak names and texinfo names keep one char per byte;
+  entity events last one frame; sounds go out with C's byte volume and
+  attenuation; blaster bolts check the muzzle and are dead monsters to
+  prediction; bullet spread uses the game RNG; the game rounds
+  AngleVectors in double like C; monster, client and renderer parity
+  fixes listed per finding in the PR's reconciliation comment
 
 ### Changed
 - CI runs `make fmt-check lint check test` with `--locked`, clippy on all
@@ -375,6 +398,11 @@ All notable changes to qwasm2-rs are documented here.
   repacker changes; `make play` no longer requires 7z/curl/python3 when
   `pak0.pak` exists; demo download is checked with `curl --fail` and SHA-256
 - `q2-devserver` no longer sends permissive CORS headers
+- `collision.rs`: major refactor for correctness and clippy compliance
+- `gl3/mod.rs`: renderer improvements
+- `game_iface.rs`: expanded `GameImport` bridge implementation
+- `player_ctrl.rs` / `pmove.rs`: player movement refinements
+- README updated to reflect CP-3 completion and CP-4 in-progress status
 
 ### Removed
 - Unused dependencies: `matchbox_socket` (q2-net), every q2-bin dependency,
@@ -383,29 +411,6 @@ All notable changes to qwasm2-rs are documented here.
 - `q2-pak-repack --all` (never read; keeping every file is the default),
   the unused `PAK_WEB_ALLOW` variable, `make serve`, `make prereq-python3`,
   `make prereq-pak-repack`
-
-## [0.1.2] - 2026-05-01
-
-### Added
-- Q2 wire-protocol delta machinery: `parse_frame`, player-state delta, packet-entity delta (30 tests) — CP-4 client delta
-- `PakReader` trait with lazy WASM backend — avoids copying the full PAK into linear memory until individual assets are requested
-- Server frame loop with `GameImport`/`GameExport` bridge replacing C function-pointer tables — CP-3 complete
-- CI badge in README
-- `q2-pak-repack` crate: CLI tool that repacks a Q2 PAK, optionally filtered
-  by an extension allowlist (`make pak-web` keeps every file), and writes a
-  Brotli-compressed `.br` variant (level 11) for web delivery
-- `make pak-web` target: produces `pak0-web.pak` and `pak0-web.pak.br` from
-  the downloaded demo data; integrated into `make play` and `make play-release`
-- Devserver Brotli content negotiation: `q2-devserver` now serves
-  `pak0-web.pak.br` when the client sends `Accept-Encoding: br`, reducing
-  wire size from ~46 MB to ~26 MB
-
-### Changed
-- `collision.rs`: major refactor for correctness and clippy compliance
-- `gl3/mod.rs`: renderer improvements
-- `game_iface.rs`: expanded `GameImport` bridge implementation
-- `player_ctrl.rs` / `pmove.rs`: player movement refinements
-- README updated to reflect CP-3 completion and CP-4 in-progress status
 
 ## [0.1.1] - 2026-03-26
 

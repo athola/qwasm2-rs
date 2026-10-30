@@ -8,11 +8,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
+use crate::monster::{fire, flash, footstep, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -56,10 +54,6 @@ const MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 const MASS: i32 = 200;
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0"; the game has no
-/// cvar access, so footsteps stay off as in a default C game.
-const G_MONSTERFOOTSTEPS: bool = false;
-
 const SOUND_PAIN1: &str = "infantry/infpain1.wav";
 const SOUND_PAIN2: &str = "infantry/infpain2.wav";
 const SOUND_DIE1: &str = "infantry/infdeth1.wav";
@@ -71,20 +65,12 @@ const SOUND_PUNCH_HIT: &str = "infantry/melee2.wav";
 const SOUND_SIGHT: &str = "infantry/infsght1.wav";
 const SOUND_SEARCH: &str = "infantry/infsrch1.wav";
 const SOUND_IDLE: &str = "infantry/infidle1.wav";
-const SOUND_STEPS: [&str; 2] = ["infantry/step1.wav", "infantry/step2.wav"];
+pub(crate) const SOUND_STEPS: [&str; 2] = ["infantry/step1.wav", "infantry/step2.wav"];
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: infantry.c `infantry_frames_*` / `infantry_move_*`, one
 // entry per model frame in C order.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static INFANTRY_FRAMES_STAND: [MonsterFrame; 22] = [frame(ai::ai_stand, 0.0, None); 22];
 static INFANTRY_MOVE_STAND: MonsterMove = MonsterMove {
@@ -376,22 +362,6 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
 }
 
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`;
-/// the server hands back the index the spawn precached.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
 /// C `AI_HOLD_FRAME` until `pausetime`, then let the move go on.
 fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
@@ -410,11 +380,7 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `infantry_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn infantry_footstep(world: &mut GameWorld, key: EntityKey) {
-    if !G_MONSTERFOOTSTEPS {
-        return;
-    }
-    let step = SOUND_STEPS[(world.random_u32() % 2) as usize];
-    sound(world, key, CHAN_BODY, step, ATTN_NORM);
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `infantry_stand`.
@@ -484,8 +450,9 @@ pub fn infantry_pain(
 // Attacks
 // ---------------------------------------------------------------------------
 
-/// How far (pitch, yaw) below and right of its facing each dying burst
-/// fires, frame by frame from `FRAME_death211`. C ref: `aimangles`.
+/// How far (pitch, yaw) above and right of its facing each dying burst
+/// fires, frame by frame from `FRAME_death211`: C subtracts them from
+/// `s.angles`, and a negative pitch looks up. C ref: `aimangles`.
 const AIMANGLES: [[f32; 3]; 12] = [
     [0.0, 5.0, 0.0],
     [10.0, 15.0, 0.0],
@@ -554,12 +521,17 @@ pub fn infantry_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) 
 }
 
 /// The corpse box, then the flies. C ref: `infantry_dead`.
+/// Unlike `ai::monster_dead` it leaves `nextthink` alone, so a failed
+/// fly check is retried on the next frame.
 pub fn infantry_dead(world: &mut GameWorld, key: EntityKey) {
-    if let Some(ent) = world.entities.get_mut(key) {
-        ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
-        ent.maxs = Vec3f::new(16.0, 16.0, -8.0);
-    }
-    ai::monster_dead(world, key);
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
+    ent.maxs = Vec3f::new(16.0, 16.0, -8.0);
+    ent.game.movetype = MoveType::Toss;
+    ent.svflags |= SvFlags::DEADMONSTER.bits();
+    world.link_entity(key);
     ai::m_fly_check(world, key);
 }
 
@@ -578,34 +550,7 @@ pub fn infantry_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -793,274 +738,47 @@ pub fn finish_infantry(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (infantry_footstep, "infantry_footstep"),
+        (infantry_stand, "infantry_stand"),
+        (infantry_run, "infantry_run"),
+        (infantry_dead, "infantry_dead"),
+        (infantry_machine_gun, "infantry_machine_gun"),
+        (infantry_duck_down, "infantry_duck_down"),
+        (infantry_duck_hold, "infantry_duck_hold"),
+        (infantry_duck_up, "infantry_duck_up"),
+        (infantry_cock_gun, "infantry_cock_gun"),
+        (infantry_fire, "infantry_fire"),
+        (infantry_swing, "infantry_swing"),
+        (infantry_smack, "infantry_smack"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::{
-        check_move, player_arena, seed, sounds, think_for, ArenaImport,
+        assert_moves_match_c, mi, mi_mut, player_arena, playing, seed, sounds, think_for,
+        ArenaImport, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
 
     #[test]
     fn every_infantry_move_matches_c() {
-        check_move(&INFANTRY_MOVE_STAND, (50, 71), ai::ai_stand, &[], &[], None);
-        check_move(
-            &INFANTRY_MOVE_FIDGET,
-            (1, 49),
-            ai::ai_stand,
-            &[
-                (0, 1.0),
-                (2, 1.0),
-                (3, 3.0),
-                (4, 6.0),
-                (5, 3.0),
-                (10, 1.0),
-                (15, 1.0),
-                (17, -1.0),
-                (20, 1.0),
-                (22, -2.0),
-                (23, 1.0),
-                (24, 1.0),
-                (25, 1.0),
-                (26, -1.0),
-                (29, -1.0),
-                (35, -1.0),
-                (38, 1.0),
-                (41, -1.0),
-                (42, -1.0),
-                (44, -3.0),
-                (45, -2.0),
-                (46, -3.0),
-                (47, -3.0),
-                (48, -2.0),
-            ],
-            &[
-                (5, infantry_footstep as ThinkFn),
-                (47, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_stand as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_WALK,
-            (74, 85),
-            ai::ai_walk,
-            &[
-                (0, 5.0),
-                (1, 4.0),
-                (2, 4.0),
-                (3, 5.0),
-                (4, 4.0),
-                (5, 5.0),
-                (6, 6.0),
-                (7, 4.0),
-                (8, 4.0),
-                (9, 4.0),
-                (10, 4.0),
-                (11, 5.0),
-            ],
-            &[
-                (0, infantry_footstep as ThinkFn),
-                (6, infantry_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &INFANTRY_MOVE_RUN,
-            (92, 99),
-            ai::ai_run,
-            &[
-                (0, 10.0),
-                (1, 20.0),
-                (2, 5.0),
-                (3, 7.0),
-                (4, 30.0),
-                (5, 35.0),
-                (6, 2.0),
-                (7, 6.0),
-            ],
-            &[
-                (1, infantry_footstep as ThinkFn),
-                (5, infantry_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &INFANTRY_MOVE_PAIN1,
-            (100, 109),
-            ai::ai_move,
-            &[
-                (0, -3.0),
-                (1, -2.0),
-                (2, -1.0),
-                (3, -2.0),
-                (4, -1.0),
-                (5, 1.0),
-                (6, -1.0),
-                (7, 1.0),
-                (8, 6.0),
-                (9, 2.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (9, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_PAIN2,
-            (110, 119),
-            ai::ai_move,
-            &[
-                (0, -3.0),
-                (1, -3.0),
-                (3, -1.0),
-                (4, -2.0),
-                (7, 2.0),
-                (8, 5.0),
-                (9, 2.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (9, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH1,
-            (125, 144),
-            ai::ai_move,
-            &[
-                (0, -4.0),
-                (3, -1.0),
-                (4, -4.0),
-                (8, -1.0),
-                (9, 3.0),
-                (10, 1.0),
-                (11, 1.0),
-                (12, -2.0),
-                (13, 2.0),
-                (14, 2.0),
-                (15, 9.0),
-                (16, 9.0),
-                (17, 5.0),
-                (18, -3.0),
-                (19, -3.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (8, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH2,
-            (145, 169),
-            ai::ai_move,
-            &[
-                (1, 1.0),
-                (2, 5.0),
-                (3, -1.0),
-                (5, 1.0),
-                (6, 1.0),
-                (7, 4.0),
-                (8, 3.0),
-                (10, -2.0),
-                (11, -2.0),
-                (12, -3.0),
-                (13, -1.0),
-                (14, -2.0),
-                (16, 2.0),
-                (17, 2.0),
-                (18, 3.0),
-                (19, -10.0),
-                (20, -7.0),
-                (21, -8.0),
-                (22, -6.0),
-                (23, 4.0),
-            ],
-            &[
-                (5, infantry_footstep as ThinkFn),
-                (6, infantry_footstep as ThinkFn),
-                (10, infantry_machine_gun as ThinkFn),
-                (11, infantry_machine_gun as ThinkFn),
-                (12, infantry_machine_gun as ThinkFn),
-                (13, infantry_machine_gun as ThinkFn),
-                (14, infantry_machine_gun as ThinkFn),
-                (15, infantry_machine_gun as ThinkFn),
-                (16, infantry_machine_gun as ThinkFn),
-                (17, infantry_machine_gun as ThinkFn),
-                (18, infantry_machine_gun as ThinkFn),
-                (19, infantry_machine_gun as ThinkFn),
-                (20, infantry_machine_gun as ThinkFn),
-                (21, infantry_machine_gun as ThinkFn),
-            ],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH3,
-            (170, 178),
-            ai::ai_move,
-            &[(3, -6.0), (4, -11.0), (5, -3.0), (6, -11.0)],
-            &[],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DUCK,
-            (120, 124),
-            ai::ai_move,
-            &[(0, -2.0), (1, -5.0), (2, 3.0), (3, 4.0)],
-            &[
-                (0, infantry_duck_down as ThinkFn),
-                (1, infantry_duck_hold as ThinkFn),
-                (3, infantry_duck_up as ThinkFn),
-                (4, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_ATTACK1,
-            (184, 198),
-            ai::ai_charge,
-            &[
-                (0, 4.0),
-                (1, -1.0),
-                (2, -1.0),
-                (4, -1.0),
-                (5, 1.0),
-                (6, 1.0),
-                (7, 2.0),
-                (8, -2.0),
-                (9, -3.0),
-                (10, 1.0),
-                (11, 5.0),
-                (12, -1.0),
-                (13, -2.0),
-                (14, -3.0),
-            ],
-            &[
-                (3, infantry_cock_gun as ThinkFn),
-                (10, infantry_fire as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_ATTACK2,
-            (199, 206),
-            ai::ai_charge,
-            &[
-                (0, 3.0),
-                (1, 6.0),
-                (3, 8.0),
-                (4, 5.0),
-                (5, 8.0),
-                (6, 6.0),
-                (7, 3.0),
-            ],
-            &[
-                (2, infantry_swing as ThinkFn),
-                (3, infantry_footstep as ThinkFn),
-                (5, infantry_smack as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&INFANTRY_MOVE_STAND, 50, 71, "-", "stand:0:-*22"),
+            (&INFANTRY_MOVE_FIDGET, 1, 49, "infantry_stand", "stand:1:- stand:0:- stand:1:- stand:3:- stand:6:- stand:3:infantry_footstep stand:0:-*4 stand:1:- stand:0:-*4 stand:1:- stand:0:- stand:-1:- stand:0:-*2 stand:1:- stand:0:- stand:-2:- stand:1:-*3 stand:-1:- stand:0:-*2 stand:-1:- stand:0:-*5 stand:-1:- stand:0:-*2 stand:1:- stand:0:-*2 stand:-1:-*2 stand:0:- stand:-3:- stand:-2:- stand:-3:- stand:-3:infantry_footstep stand:-2:-"),
+            (&INFANTRY_MOVE_WALK, 74, 85, "-", "walk:5:infantry_footstep walk:4:-*2 walk:5:- walk:4:- walk:5:- walk:6:infantry_footstep walk:4:-*4 walk:5:-"),
+            (&INFANTRY_MOVE_RUN, 92, 99, "-", "run:10:- run:20:infantry_footstep run:5:- run:7:- run:30:- run:35:infantry_footstep run:2:- run:6:-"),
+            (&INFANTRY_MOVE_PAIN1, 100, 109, "infantry_run", "move:-3:- move:-2:- move:-1:- move:-2:- move:-1:infantry_footstep move:1:- move:-1:- move:1:- move:6:- move:2:infantry_footstep"),
+            (&INFANTRY_MOVE_PAIN2, 110, 119, "infantry_run", "move:-3:-*2 move:0:- move:-1:- move:-2:infantry_footstep move:0:-*2 move:2:- move:5:- move:2:infantry_footstep"),
+            (&INFANTRY_MOVE_DEATH1, 125, 144, "infantry_dead", "move:-4:- move:0:-*2 move:-1:- move:-4:infantry_footstep move:0:-*3 move:-1:infantry_footstep move:3:- move:1:-*2 move:-2:- move:2:-*2 move:9:-*2 move:5:- move:-3:-*2"),
+            (&INFANTRY_MOVE_DEATH2, 145, 169, "infantry_dead", "move:0:- move:1:- move:5:- move:-1:- move:0:- move:1:infantry_footstep*2 move:4:- move:3:- move:0:- move:-2:infantry_machine_gun*2 move:-3:infantry_machine_gun move:-1:infantry_machine_gun move:-2:infantry_machine_gun move:0:infantry_machine_gun move:2:infantry_machine_gun*2 move:3:infantry_machine_gun move:-10:infantry_machine_gun move:-7:infantry_machine_gun move:-8:infantry_machine_gun move:-6:- move:4:- move:0:-"),
+            (&INFANTRY_MOVE_DEATH3, 170, 178, "infantry_dead", "move:0:-*3 move:-6:- move:-11:- move:-3:- move:-11:- move:0:-*2"),
+            (&INFANTRY_MOVE_DUCK, 120, 124, "infantry_run", "move:-2:infantry_duck_down move:-5:infantry_duck_hold move:3:- move:4:infantry_duck_up move:0:infantry_footstep"),
+            (&INFANTRY_MOVE_ATTACK1, 184, 198, "infantry_run", "charge:4:- charge:-1:-*2 charge:0:infantry_cock_gun charge:-1:- charge:1:-*2 charge:2:- charge:-2:- charge:-3:- charge:1:infantry_fire charge:5:- charge:-1:- charge:-2:- charge:-3:-"),
+            (&INFANTRY_MOVE_ATTACK2, 199, 206, "infantry_run", "charge:3:- charge:6:- charge:0:infantry_swing charge:8:infantry_footstep charge:5:- charge:8:infantry_smack charge:6:- charge:3:-"),
+        ];
+        assert_moves_match_c(c, NAMES);
     }
 
     /// An infantry at the origin facing +X, its live enemy at (x, 0, 0),
@@ -1080,21 +798,6 @@ mod tests {
         (world, gi, key, enemy)
     }
 
-    fn mi(world: &GameWorld, key: EntityKey) -> &MonsterInfo {
-        monsterinfo(world, key).unwrap()
-    }
-
-    fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
-        monsterinfo_mut(world, key).unwrap()
-    }
-
-    fn is(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
-        mi(world, key)
-            .currentmove
-            .as_ref()
-            .is_some_and(|cm| std::ptr::eq(cm.frames, mv.frames))
-    }
-
     fn snd(chan: i32, name: &str, attn: f32) -> (i32, String, f32) {
         (chan, name.to_string(), attn)
     }
@@ -1103,11 +806,11 @@ mod tests {
     fn infantry_stand_walk_and_run_set_their_moves() {
         let (mut world, _, key, _) = duel(300.0);
         infantry_walk(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_WALK));
+        assert!(playing(&world, key, &INFANTRY_MOVE_WALK));
         infantry_run(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_RUN));
+        assert!(playing(&world, key, &INFANTRY_MOVE_RUN));
         infantry_stand(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
@@ -1115,14 +818,14 @@ mod tests {
         let (mut world, _, key, _) = duel(300.0);
         mi_mut(&mut world, key).aiflags = AiFlags::STAND_GROUND;
         infantry_run(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
     fn infantry_fidget_fidgets_and_mutters() {
         let (mut world, gi, key, _) = duel(300.0);
         infantry_fidget(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_FIDGET));
+        assert!(playing(&world, key, &INFANTRY_MOVE_FIDGET));
         assert_eq!(sounds(&gi), [snd(CHAN_VOICE, SOUND_IDLE, ATTN_IDLE)]);
     }
 
@@ -1155,7 +858,7 @@ mod tests {
             let (mut world, gi, key, enemy) = duel(300.0);
             seed(&mut world, |w| w.random_u32() % 2 == n);
             infantry_pain(&mut world, key, enemy, 0.0, 5);
-            assert!(is(&world, key, mv));
+            assert!(playing(&world, key, mv));
             assert_eq!(sounds(&gi), [snd(CHAN_VOICE, cry, ATTN_NORM)]);
             assert_eq!(
                 world.entities.get(key).unwrap().game.pain_debounce_time,
@@ -1165,7 +868,7 @@ mod tests {
             // Within the debounce: nothing.
             infantry_stand(&mut world, key);
             infantry_pain(&mut world, key, enemy, 0.0, 5);
-            assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+            assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
             assert_eq!(sounds(&gi).len(), 1);
         }
     }
@@ -1175,7 +878,7 @@ mod tests {
         let (mut world, gi, key, enemy) = duel(300.0);
         world.game.skill = crate::constants::SKILL_HARDPLUS;
         infantry_pain(&mut world, key, enemy, 0.0, 5);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
         assert!(sounds(&gi).is_empty());
         assert_eq!(
             world.entities.get(key).unwrap().game.pain_debounce_time,
@@ -1237,7 +940,7 @@ mod tests {
 
     #[test]
     fn infantry_dying_machine_gun_sweeps_by_the_c_aim_angles() {
-        // death216 fires flash MACHINEGUN_7, 30 down and 45 right of ahead.
+        // death216 fires flash MACHINEGUN_7, 30 up and 45 right of ahead.
         let (mut world, gi, key, player) = in_arena(200.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
         world.entities.get_mut(key).unwrap().state.frame = FRAME_DEATH211 + 5;
@@ -1300,6 +1003,35 @@ mod tests {
     }
 
     #[test]
+    fn infantry_dead_keeps_thinking_when_the_fly_check_fails() {
+        // C infantry_dead never touches nextthink, so a failed M_FlyCheck
+        // is retried on the next frame of the death move.
+        let (mut world, _, key, _) = duel(300.0);
+        world.level.time = 2.0;
+        world.entities.get_mut(key).unwrap().game.nextthink = 2.1;
+        seed(&mut world, |w| w.random() > 0.5);
+        infantry_dead(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.movetype, MoveType::Toss);
+        assert_eq!(ent.game.nextthink, 2.1);
+    }
+
+    #[test]
+    fn infantry_dead_in_water_gets_no_flies_but_keeps_thinking() {
+        let (mut world, _, key, _) = duel(300.0);
+        world.level.time = 2.0;
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.nextthink = 2.1;
+        ent.game.waterlevel = 1;
+        infantry_dead(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.nextthink, 2.1);
+        assert!(!ent
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, ai::m_flies_on as ThinkFn)));
+    }
+
+    #[test]
     fn infantry_die_gibs_at_minus_40_health() {
         let (mut world, gi, key, enemy) = duel(300.0);
         world.entities.get_mut(key).unwrap().game.health = -40;
@@ -1319,7 +1051,7 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.health = -39;
         infantry_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
         assert!(sounds(&gi).is_empty());
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
@@ -1332,7 +1064,7 @@ mod tests {
             let (mut world, gi, key, enemy) = duel(300.0);
             seed(&mut world, |w| w.random_u32() % 3 == n);
             infantry_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
-            assert!(is(&world, key, mv), "{n}");
+            assert!(playing(&world, key, mv), "{n}");
             assert_eq!(sounds(&gi), [snd(CHAN_VOICE, cry, ATTN_NORM)]);
             let ent = world.entities.get(key).unwrap();
             assert_eq!(ent.state.skinnum, 1);
@@ -1373,12 +1105,12 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() > 0.25);
         infantry_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
         assert_eq!(world.entities.get(key).unwrap().game.enemy, None);
 
         seed(&mut world, |w| w.random() <= 0.25);
         infantry_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &INFANTRY_MOVE_DUCK));
+        assert!(playing(&world, key, &INFANTRY_MOVE_DUCK));
         assert_eq!(world.entities.get(key).unwrap().game.enemy, Some(enemy));
     }
 
@@ -1442,10 +1174,10 @@ mod tests {
     fn infantry_attack_smacks_in_melee_range_else_machineguns() {
         let (mut world, _, key, _) = duel(50.0);
         infantry_attack(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_ATTACK2));
+        assert!(playing(&world, key, &INFANTRY_MOVE_ATTACK2));
         let (mut world, _, key, _) = duel(300.0);
         infantry_attack(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_ATTACK1));
+        assert!(playing(&world, key, &INFANTRY_MOVE_ATTACK1));
     }
 
     #[test]
@@ -1469,7 +1201,7 @@ mod tests {
             .idle
             .is_some_and(|f| std::ptr::fn_addr_eq(f, infantry_fidget as ThinkFn)));
         assert!(mi.melee.is_none() && mi.search.is_none());
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]

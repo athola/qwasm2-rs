@@ -5,10 +5,8 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -68,6 +66,7 @@ const SOUND_SIGHT: &str = "brain/brnsght1.wav";
 const SOUND_SEARCH: &str = "brain/brnsrch1.wav";
 const SOUND_MELEE1: &str = "brain/melee1.wav";
 const SOUND_MELEE2: &str = "brain/melee2.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["brain/step1.wav", "brain/step2.wav"];
 const SOUND_MELEE3: &str = "brain/melee3.wav";
 
 /// The sounds C `SP_monster_brain` precaches, in its order. C never plays
@@ -92,14 +91,6 @@ const PRECACHE: [&str; 14] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: brain.c `brain_frames_*` / `brain_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static BRAIN_FRAMES_STAND: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
@@ -428,22 +419,6 @@ static BRAIN_MOVE_RUN: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world
         .entities
@@ -469,10 +444,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`brain/step1.wav`, `step2.wav`) never play.
-/// C ref: `brain_footstep`.
-pub fn brain_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `brain_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn brain_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `brain_sight`.
 pub fn brain_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
@@ -713,34 +688,7 @@ pub fn brain_die(
     }
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -821,6 +769,7 @@ pub fn sp_monster_brain_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording, MockGameImport};
 
@@ -1161,16 +1110,6 @@ mod tests {
     }
 
     #[test]
-    fn brain_spawns_with_its_c_pain_walk_run_and_melee_callbacks() {
-        let mut world = test_world();
-        let key = spawned(&mut world);
-        let ent = world.entities.get(key).unwrap();
-        let mi = ent.monsterinfo.as_ref().unwrap();
-        assert!(ent.pain.is_some());
-        assert!(mi.walk.is_some() && mi.run.is_some() && mi.melee.is_some());
-    }
-
-    #[test]
     fn brain_spawns_with_the_c_values_callbacks_and_power_screen() {
         let mut world = test_world();
         let key = spawned(&mut world);
@@ -1183,6 +1122,17 @@ mod tests {
             ai::walkmonster_start_go as ThinkFn
         ));
         let mi = ent.monsterinfo.as_ref().unwrap();
+        assert!(std::ptr::fn_addr_eq(
+            ent.pain.unwrap(),
+            brain_pain as crate::entity::PainFn
+        ));
+        for (got, want) in [
+            (mi.walk, brain_walk as ThinkFn),
+            (mi.run, brain_run),
+            (mi.melee, brain_melee),
+        ] {
+            assert!(std::ptr::fn_addr_eq(got.unwrap(), want));
+        }
         assert_eq!(mi.scale, 1.0);
         assert_eq!((mi.power_armor_type, mi.power_armor_power), (1, 100));
         assert!(mi.attack.is_none());
@@ -1281,6 +1231,24 @@ mod tests {
     }
 
     #[test]
+    fn brain_claws_knock_the_enemy_by_40_from_opposite_sides() {
+        // Right claw at maxs[0], left at mins[0]: the push comes from the
+        // brain's right (-y), then its left (+y).
+        for (claw, push_y_positive) in [
+            (brain_hit_right as ThinkFn, true),
+            (brain_hit_left as ThinkFn, false),
+        ] {
+            let (mut world, gi) = test_world_recording();
+            let key = spawned(&mut world);
+            let enemy = enemy_in_reach(&mut world, &gi, key);
+            claw(&mut world, key);
+            let push = world.entities.get(enemy).unwrap().velocity;
+            assert!((push.length() - 40.0).abs() < 0.01, "{push}");
+            assert_eq!(push.y > 0.0, push_y_positive, "{push}");
+        }
+    }
+
+    #[test]
     fn brain_chest_opens_without_its_screen() {
         let (mut world, gi) = test_world_recording();
         let key = spawned(&mut world);
@@ -1304,6 +1272,12 @@ mod tests {
             seed_randk(&mut world, |r| r % 5 == 4);
             brain_tentacle_attack(&mut world, key);
             assert_eq!(world.entities.get(enemy).unwrap().game.health, 86);
+            // Kick -600 pulls the enemy back toward the brain.
+            let pull = world.entities.get(enemy).unwrap().velocity;
+            assert!(
+                (pull.length() - 600.0).abs() < 0.01 && pull.x < 0.0,
+                "{pull}"
+            );
             let grabbed = world.entities.get(key).unwrap().game.spawnflags & SPAWNFLAG_GRABBED;
             assert_eq!(grabbed != 0, grabs);
             assert_eq!(

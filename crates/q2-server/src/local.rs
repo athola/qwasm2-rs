@@ -19,7 +19,7 @@ use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
 use crate::ents::build_client_frame;
 use crate::init::{LevelKind, MapRequest};
-use crate::state::{Server, ServerState, ServerStatic};
+use crate::state::{ClientState, Server, ServerState, ServerStatic};
 use crate::ServerGameImport;
 
 /// Entity number of the local client (client slot 0).
@@ -40,6 +40,9 @@ pub struct LocalGame {
     cmd: CmdSystem,
     /// Map a `gamemap` command asked for, until the caller takes it.
     next_map: Rc<RefCell<Option<String>>>,
+    /// The entities sent to the local client in the last frame (C
+    /// `SV_BuildClientFrame` into `client->frames`).
+    client_frame: Vec<EntityState>,
 }
 
 impl LocalGame {
@@ -69,7 +72,7 @@ impl LocalGame {
                 *requested.borrow_mut() = Some((*map).to_string());
             }
         });
-        Ok(Self {
+        let mut local = Self {
             sv,
             svs,
             gi,
@@ -77,7 +80,10 @@ impl LocalGame {
             pending_us: 0,
             cmd,
             next_map,
-        })
+            client_frame: Vec::new(),
+        };
+        local.send_client_frame();
+        Ok(local)
     }
 
     /// Run a console command as the local player's (C
@@ -100,9 +106,39 @@ impl LocalGame {
         self.gi.set_cvar(name, value);
     }
 
-    /// Apply one user command to the local player (C ClientThink).
+    /// Build the frame the local client is sent, then clear the entity
+    /// events it carries (C `SV_SendClientMessages` then
+    /// `SV_PrepWorldFrame`): an event is sent in one frame only. Events set
+    /// between game frames, by `think`, wait for the next one.
+    ///
+    /// C sends no frame after `SV_SpawnServer`'s settling frames, so their
+    /// events go out in the first game frame; here the frame built at the
+    /// load carries them, so the client still sees each event once.
+    fn send_client_frame(&mut self) {
+        self.client_frame = match player_eye(self.game.as_ref()) {
+            Some(eye) => {
+                let game = self.game.as_ref();
+                let entities = (1..game.num_edicts()).filter_map(|number| game.edict(number));
+                build_client_frame(&self.gi, LOCAL_PLAYER, eye, entities)
+            }
+            None => Vec::new(),
+        };
+        self.game.clear_entity_events();
+    }
+
+    /// Apply one user command to the local player (C ClientThink). Like C
+    /// `SV_ExecuteClientMessage`, the command is dropped unless the client
+    /// is in the game (`cs_spawned`): a picture level or a failed map load
+    /// leaves it only connected.
     pub fn think(&mut self, cmd: &UserCmd) {
-        self.game.client_think(LOCAL_PLAYER, cmd);
+        let spawned = self
+            .svs
+            .clients
+            .first()
+            .is_some_and(|client| client.state == ClientState::Spawned);
+        if spawned {
+            self.game.client_think(LOCAL_PLAYER, cmd);
+        }
     }
 
     /// Advance the server by `frametime_us`; game frames run at 10 Hz.
@@ -115,12 +151,16 @@ impl LocalGame {
     pub fn frame(&mut self, frametime_us: u32) {
         let total = self.pending_us.saturating_add(frametime_us);
         self.pending_us = total % 1000;
+        let framenum = self.sv.framenum;
         self.sv.frame(
             &mut self.svs,
             total - self.pending_us,
             self.game.as_mut(),
             &self.gi,
         );
+        if self.sv.framenum != framenum {
+            self.send_client_frame();
+        }
         let commands = self.gi.take_commands();
         if !commands.is_empty() {
             self.cmd.cbuf_add_text(&commands);
@@ -156,9 +196,15 @@ impl LocalGame {
     ///
     /// A picture level (`.pcx`) needs no `bsp`: the server shows it with no
     /// map and no player (`Server::pic`) until the next map change, and the
-    /// game keeps the player's persistent data meanwhile. Cinematic and
-    /// demo levels cannot be played back and are refused with
-    /// `Q2Error::Drop`, leaving the current map running.
+    /// game keeps the player's persistent data meanwhile.
+    ///
+    /// Cinematic and demo levels cannot be played back. One that names a
+    /// next server (`intro.cin+base1`) goes straight to it: C plays the
+    /// movie and then `SV_Nextserver` runs `gamemap "<next>"`, so the next
+    /// level is handed out by `take_map_change` and the current map runs
+    /// until the caller follows it. One without is refused with
+    /// `Q2Error::Drop`, leaving the current map running where C would end
+    /// the server (`killserver`) after the movie.
     pub fn change_map(&mut self, level: &MapRequest, bsp: &[u8]) -> Q2Result<()> {
         match level.kind {
             LevelKind::Game => self.sv.map(
@@ -177,6 +223,10 @@ impl LocalGame {
                 self.game.as_mut(),
             )?,
             LevelKind::Cinematic | LevelKind::Demo => {
+                if let Some(next) = &level.next_server {
+                    *self.next_map.borrow_mut() = Some(next.clone());
+                    return Ok(());
+                }
                 return Err(Q2Error::Drop(format!(
                     "{}: cinematic and demo playback is not supported",
                     level.map
@@ -189,6 +239,7 @@ impl LocalGame {
         if level.kind == LevelKind::Game {
             self.svs.begin_connected_clients(self.game.as_mut());
         }
+        self.send_client_frame();
         Ok(())
     }
 
@@ -213,28 +264,17 @@ impl LocalGame {
         Some((origin, self.game.client_player_state(LOCAL_PLAYER)?))
     }
 
-    /// The entities the local client is sent this frame, by number (C
-    /// `SV_BuildClientFrame`, see `ents::build_client_frame`). Nothing is
-    /// sent while the player is not in the game.
+    /// The entities the local client was sent in the last game frame (or
+    /// at the map load), by number (C `SV_BuildClientFrame`, see
+    /// `ents::build_client_frame`). Nothing is sent while the player is not
+    /// in the game.
     pub fn entity_states(&self) -> Vec<EntityState> {
-        let Some(eye) = self.eye() else {
-            return Vec::new();
-        };
-        let game = self.game.as_ref();
-        let entities = (1..game.num_edicts()).filter_map(|number| game.edict(number));
-        build_client_frame(&self.gi, LOCAL_PLAYER, eye, entities)
-    }
-
-    /// The local player's eye (C `SV_BuildClientFrame`'s `org`).
-    fn eye(&self) -> Option<Vec3f> {
-        let (_, ps) = self.player()?;
-        let origin = Vec3f::from_array(ps.pmove.origin.map(|c| f32::from(c) * 0.125));
-        Some(origin + ps.viewoffset)
+        self.client_frame.clone()
     }
 
     /// The area holding the local player's eye.
     pub fn player_area(&self) -> Option<i32> {
-        Some(self.gi.point_area(self.eye()?))
+        Some(self.gi.point_area(player_eye(self.game.as_ref())?))
     }
 
     /// Which areas the local player can see this frame, for the renderer's
@@ -253,5 +293,67 @@ impl LocalGame {
     /// `CS_MODELS`).
     pub fn configstring(&self, index: usize) -> &str {
         self.sv.configstrings.get(index).map_or("", String::as_str)
+    }
+}
+
+/// The local player's eye (C `SV_BuildClientFrame`'s `org`), if it is in
+/// the game.
+fn player_eye(game: &dyn GameExport) -> Option<Vec3f> {
+    game.edict(LOCAL_PLAYER)?;
+    let ps = game.client_player_state(LOCAL_PLAYER)?;
+    let origin = Vec3f::from_array(ps.pmove.origin.map(|c| f32::from(c) * 0.125));
+    Some(origin + ps.viewoffset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::NullGame;
+    use std::cell::Cell;
+
+    /// A local game whose client slot is in `client` state, and the count
+    /// of `client_think` calls that reach the game.
+    fn local_with_client(client: ClientState) -> (LocalGame, Rc<Cell<u32>>) {
+        let game = NullGame::default();
+        let thinks = game.thinks.clone();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        svs.clients[0].state = client;
+        let local = LocalGame {
+            sv: Server {
+                state: ServerState::Game,
+                ..Default::default()
+            },
+            svs,
+            gi: Rc::new(ServerGameImport::new()),
+            game: Box::new(game),
+            pending_us: 0,
+            cmd: CmdSystem::new(),
+            next_map: Rc::default(),
+            client_frame: Vec::new(),
+        };
+        (local, thinks)
+    }
+
+    #[test]
+    fn think_runs_client_think_for_a_spawned_client() {
+        let (mut local, thinks) = local_with_client(ClientState::Spawned);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 1);
+    }
+
+    #[test]
+    fn think_is_ignored_while_the_client_is_only_connected() {
+        // A picture level or a failed map load leaves the client Connected.
+        let (mut local, thinks) = local_with_client(ClientState::Connected);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 0);
+    }
+
+    #[test]
+    fn think_is_ignored_for_a_free_client_slot() {
+        let (mut local, thinks) = local_with_client(ClientState::Free);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 0);
     }
 }

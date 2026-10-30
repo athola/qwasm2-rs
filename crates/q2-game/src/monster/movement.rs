@@ -16,9 +16,10 @@ use crate::world::GameWorld;
 /// C `DI_NODIR`.
 const DI_NODIR: f32 = -1.0;
 
-/// C `anglemod`: wrap to [0, 360) on the 16-bit angle grid.
+/// C `anglemod`: wrap to [0, 360) on the 16-bit angle grid. The scale
+/// constants are double literals in C, so both products are double.
 pub fn anglemod(a: f32) -> f32 {
-    (360.0 / 65536.0) * (((a * (65536.0 / 360.0)) as i32 & 65535) as f32)
+    ((360.0 / 65536.0) * f64::from((f64::from(a) * (65536.0 / 360.0)) as i32 & 65535)) as f32
 }
 
 /// C `vectoyaw` (g_utils.c), truncated to whole degrees like C.
@@ -382,7 +383,7 @@ pub fn sv_new_chase_dir(world: &mut GameWorld, key: EntityKey, goal: Vec3f, dist
     }
 
     // Try the other directions: the longer axis first, or at random.
-    if (world.random_u32() & 3) & 1 != 0 || (deltay as i32).abs() > (deltax as i32).abs() {
+    if (world.random_u32() & 3) & 1 != 0 || deltay.abs() > deltax.abs() {
         std::mem::swap(&mut d1, &mut d2);
     }
     for d in [d1, d2] {
@@ -396,11 +397,14 @@ pub fn sv_new_chase_dir(world: &mut GameWorld, key: EntityKey, goal: Vec3f, dist
         return;
     }
     // Search every direction, clockwise or anticlockwise at random.
-    let mut directions: Vec<f32> = (0..=315).step_by(45).map(|d| d as f32).collect();
-    if world.random_u32() & 1 == 0 {
-        directions.reverse();
-    }
-    for tdir in directions {
+    const DIRECTIONS: [f32; 8] = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0];
+    let ascending = world.random_u32() & 1 != 0;
+    for i in 0..DIRECTIONS.len() {
+        let tdir = DIRECTIONS[if ascending {
+            i
+        } else {
+            DIRECTIONS.len() - 1 - i
+        }];
         if tdir != turnaround && sv_step_direction(world, key, tdir, dist) {
             return;
         }
@@ -529,6 +533,155 @@ mod tests {
         assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
     }
 
+    fn floor_world_of(import: FloorImport) -> (GameWorld, EntityKey) {
+        let (mut world, _) = floor_world_with(import);
+        let key = walker(&mut world, 0.0, 0.0);
+        (world, key)
+    }
+
+    fn origin(world: &GameWorld, key: EntityKey) -> Vec3f {
+        world.entities.get(key).unwrap().state.origin
+    }
+
+    #[test]
+    fn walkmove_steps_up_a_stair_no_higher_than_stepsize() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((20.0, 8.0)),
+            ..Default::default()
+        });
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        let at = origin(&world, key);
+        assert!((at - Vec3f::new(10.0, 0.0, 32.0)).length() < 0.01, "{at}");
+    }
+
+    #[test]
+    fn walkmove_with_ai_nostep_will_not_climb_a_stair() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((20.0, 8.0)),
+            ..Default::default()
+        });
+        let mi = world.entities.get_mut(key).unwrap().monsterinfo.as_mut();
+        mi.unwrap().aiflags |= AiFlags::NOSTEP;
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+    }
+
+    #[test]
+    fn walkmove_refuses_to_hang_over_a_ledge_deeper_than_a_step() {
+        let import = || FloorImport {
+            step: Some((20.0, -30.0)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+
+        // A monster already partly off the ground takes the step anyway.
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::PARTIALGROUND;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key).x, 10.0);
+    }
+
+    #[test]
+    fn walkmove_off_the_floor_falls_only_with_partialground() {
+        let import = || FloorImport {
+            step: Some((-1000.0, -100.0)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(
+            !m_walkmove(&mut world, key, 0.0, 10.0),
+            "walked off an edge"
+        );
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::PARTIALGROUND;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(10.0, 0.0, 24.0));
+        assert_eq!(ent.game.ground_entity, None);
+    }
+
+    #[test]
+    fn walkmove_keeps_a_dry_walker_out_of_the_water() {
+        let import = || FloorImport {
+            water: Some((10.0, q2_shared::constants::CONTENTS_WATER)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.waterlevel = 1;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0), "already wet");
+    }
+
+    #[test]
+    fn walkmove_under_a_low_ceiling_retries_from_floor_height() {
+        // The step-raised start is in the ceiling (startsolid, not
+        // allsolid), so C retries a step lower.
+        let (mut world, key) = floor_world_of(FloorImport {
+            ceiling: Some(70.0),
+            ..Default::default()
+        });
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(10.0, 0.0, 24.0));
+
+        // Still in the ceiling a step lower: no move.
+        let (mut world, key) = floor_world_of(FloorImport {
+            ceiling: Some(50.0),
+            ..Default::default()
+        });
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+    }
+
+    #[test]
+    fn step_direction_undoes_the_step_until_turned_within_45_degrees() {
+        let mut world = floor_world(None);
+        let key = walker(&mut world, 0.0, 0.0);
+        world.entities.get_mut(key).unwrap().state.angles.y = 180.0;
+        // Turned to 160 of 90: 70 degrees off, so the step is taken back.
+        assert!(sv_step_direction(&mut world, key, 90.0, 10.0));
+        let ent = world.entities.get(key).unwrap();
+        assert!((ent.state.angles.y - 160.0).abs() < 0.01);
+        assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 24.0));
+
+        world.entities.get_mut(key).unwrap().state.angles.y = 100.0;
+        assert!(sv_step_direction(&mut world, key, 90.0, 10.0));
+        let at = origin(&world, key);
+        assert!((at - Vec3f::new(0.0, 10.0, 24.0)).length() < 0.01, "{at}");
+    }
+
+    #[test]
+    fn new_chase_dir_that_cannot_move_keeps_its_heading_and_marks_partialground() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((-1000.0, -100.0)),
+            ..Default::default()
+        });
+        world.entities.get_mut(key).unwrap().game.ideal_yaw = 100.0;
+        sv_new_chase_dir(&mut world, key, Vec3f::new(300.0, 300.0, 24.0), 10.0);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.ideal_yaw, 90.0, "olddir");
+        assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 24.0));
+        assert!(ent.game.flags.contains(EntityFlags::PARTIALGROUND));
+    }
+
+    #[test]
+    fn new_chase_dir_tries_the_longer_axis_first_by_float_distance() {
+        // Heading 225 makes the 45 diagonal the turnaround, so the axes
+        // are tried. 10.7 and 10.2 truncate to the same int; C compares
+        // fabsf and takes y (90) first.
+        let mut world = floor_world(None);
+        let key = walker(&mut world, 0.0, 0.0);
+        world.entities.get_mut(key).unwrap().game.ideal_yaw = 225.0;
+        seed(&mut world, |w| w.random_u32() & 1 == 0);
+        sv_new_chase_dir(&mut world, key, Vec3f::new(10.2, 10.7, 24.0), 10.0);
+        assert_eq!(world.entities.get(key).unwrap().game.ideal_yaw, 90.0);
+    }
+
     #[test]
     fn change_yaw_turns_by_at_most_yaw_speed_the_short_way() {
         let mut world = floor_world(None);
@@ -584,6 +737,17 @@ mod tests {
 
         let origin = world.entities.get(key).unwrap().state.origin;
         assert!(origin.y > 100.0, "never turned toward the goal: {origin}");
+    }
+
+    #[test]
+    fn anglemod_scales_in_double_like_c() {
+        // Values from C's anglemod compiled on the host; an all-f32 port
+        // lands one 16-bit grid step lower on these.
+        assert_eq!(anglemod(-255.52), 104.48547);
+        assert_eq!(anglemod(-251.51), 108.49548);
+        assert_eq!(anglemod(-247.89), 112.11548);
+        assert_eq!(anglemod(-0.01), 359.9945);
+        assert_eq!(anglemod(704.37), 344.36646);
     }
 
     #[test]

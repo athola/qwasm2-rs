@@ -26,6 +26,7 @@ use q2_shared::types::*;
 
 use crate::constants::*;
 use crate::entity::EntityKey;
+use crate::physics::angle_vectors;
 use crate::player::weapon::PlayerNoise;
 use crate::world::GameWorld;
 
@@ -596,6 +597,12 @@ fn temp_entity(
     world.gi.multicast(at, to);
 }
 
+/// C `8000 / speed`, an int division. C divides by zero on a zero
+/// speed; this port gives that projectile 8000 seconds instead.
+fn projectile_lifetime(speed: i32) -> f32 {
+    8000_i32.checked_div(speed).unwrap_or(8000) as f32
+}
+
 /// Timeout cleanup — remove projectile entities that outlived their duration.
 fn projectile_timeout(world: &mut GameWorld, self_key: EntityKey) {
     world.free_entity(self_key);
@@ -631,11 +638,16 @@ impl GameWorld {
         effect: u32,
         hyper: bool,
     ) {
+        let dir = dir.normalize_or_zero();
         let Some(bolt_key) = self.spawn() else {
             return;
         };
 
         if let Some(bolt) = self.entities.get_mut(bolt_key) {
+            // C: a dead monster, so player prediction does not clip
+            // against bolts.
+            bolt.svflags = q2_shared::constants::SVF_DEADMONSTER;
+            bolt.state.renderfx |= q2_shared::constants::RF_NOSHADOW;
             bolt.game.classname = "bolt".into();
             bolt.game.movetype = MoveType::FlyMissile;
             bolt.solid = Solid::Bbox;
@@ -646,7 +658,7 @@ impl GameWorld {
 
             bolt.state.origin = start;
             bolt.state.old_origin = start;
-            bolt.velocity = dir.normalize_or_zero() * speed as f32;
+            bolt.velocity = dir * speed as f32;
 
             bolt.touch = Some(blaster_touch);
             bolt.think = Some(projectile_timeout);
@@ -657,6 +669,29 @@ impl GameWorld {
 
         self.link_entity(bolt_key);
         self.player_noise(owner, start, PlayerNoise::Weapon);
+
+        // A muzzle behind a wall or inside a target hits it at once.
+        let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
+            return;
+        };
+        let trace = self.gi.trace(
+            owner_origin,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            start,
+            self.number_of(bolt_key),
+            MASK_SHOT,
+        );
+        if trace.fraction < 1.0 {
+            if let Some(bolt) = self.entities.get_mut(bolt_key) {
+                bolt.state.origin -= dir * 10.0;
+            }
+            // C passes tr.ent, which is the world when no entity was hit.
+            let other = trace.ent_index.unwrap_or(0);
+            if let Some(other) = self.entities.key_for_number(other) {
+                blaster_touch(self, bolt_key, other, None, None);
+            }
+        }
     }
 
     /// Fire a single bullet (machinegun/chaingun round).
@@ -685,7 +720,6 @@ impl GameWorld {
             hspread,
             vspread,
             means_of_death,
-            0,
         );
         self.player_noise(owner, start, PlayerNoise::Weapon);
     }
@@ -693,8 +727,8 @@ impl GameWorld {
     /// One bullet: traced from the muzzle with spread, redirected and
     /// splashing where it enters water, damaging what it hits or puffing
     /// `te_impact` off a wall (not the sky), with a bubble trail through
-    /// water. `pellet` varies the spread between shotgun pellets. C ref:
-    /// `fire_lead` (g_weapon.c).
+    /// water. The spread is C's two `crandom()` offsets at 8192 units.
+    /// C ref: `fire_lead` (g_weapon.c).
     #[allow(clippy::too_many_arguments)]
     fn fire_lead(
         &mut self,
@@ -707,13 +741,11 @@ impl GameWorld {
         hspread: i32,
         vspread: i32,
         means_of_death: MeansOfDeath,
-        pellet: u32,
     ) {
         let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
             return;
         };
         let pass = self.number_of(owner);
-        let time = self.level.time;
         // A muzzle inside a wall hits the wall, not what is beyond it.
         let mut tr = self.gi.trace(
             owner_origin,
@@ -725,7 +757,10 @@ impl GameWorld {
         );
         let mut water = None;
         if tr.fraction >= 1.0 {
-            let mut end = start + apply_spread(aimdir, hspread, vspread, time, pellet) * 8192.0;
+            let (forward, right, up) = angle_vectors(vectoangles(aimdir));
+            let r = self.crandom() * hspread as f32;
+            let u = self.crandom() * vspread as f32;
+            let mut end = start + forward * 8192.0 + right * r + up * u;
             let mut mask = MASK_SHOT | MASK_WATER;
             if self.gi.point_contents(start) & MASK_WATER != 0 {
                 water = Some(start);
@@ -762,9 +797,10 @@ impl GameWorld {
                         self.gi.multicast(tr.endpos, Multicast::PVS);
                     }
                     // Change the bullet's course when it enters water.
-                    let course = (end - start).normalize_or_zero();
-                    end = water_start
-                        + apply_spread(course, hspread * 2, vspread * 2, time, pellet) * 8192.0;
+                    let (forward, right, up) = angle_vectors(vectoangles(end - start));
+                    let r = self.crandom() * hspread as f32 * 2.0;
+                    let u = self.crandom() * vspread as f32 * 2.0;
+                    end = water_start + forward * 8192.0 + right * r + up * u;
                 }
                 // Re-trace ignoring water this time.
                 tr = self
@@ -858,7 +894,7 @@ impl GameWorld {
         count: i32,
         means_of_death: MeansOfDeath,
     ) {
-        for pellet in 0..count.max(0) as u32 {
+        for _ in 0..count.max(0) {
             self.fire_lead(
                 owner,
                 start,
@@ -869,7 +905,6 @@ impl GameWorld {
                 hspread,
                 vspread,
                 means_of_death,
-                pellet,
             );
         }
         self.player_noise(owner, start, PlayerNoise::Weapon);
@@ -907,7 +942,7 @@ impl GameWorld {
 
             rocket.touch = Some(rocket_touch);
             rocket.think = Some(projectile_timeout);
-            rocket.game.nextthink = self.level.time + 8000.0 / speed as f32;
+            rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
 
@@ -1287,46 +1322,6 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
         (yaw, pitch)
     };
     Vec3f::new(-pitch, yaw, 0.0)
-}
-
-/// C `AngleVectors` (shared.c): forward, right, up.
-fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let (sy, cy) = angles.y.to_radians().sin_cos();
-    let (sp, cp) = angles.x.to_radians().sin_cos();
-    let (sr, cr) = angles.z.to_radians().sin_cos();
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
-    let up = Vec3f::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
-    (forward, right, up)
-}
-
-/// Seed for one spread value. There is no game RNG, so C's `crandom()`
-/// is replaced by a hash of the level time, the pellet and the axis: the
-/// same shot spreads the same way every time.
-fn spread_seed(time: f32, pellet: u32, axis: u32) -> u32 {
-    ((time * 1000.0) as u32)
-        .wrapping_mul(0x9E37_79B9)
-        .wrapping_add(pellet.wrapping_mul(0x85EB_CA6B))
-        .wrapping_add(axis.wrapping_mul(0xC2B2_AE35))
-}
-
-/// A value in [-1, 1) from `seed`, standing in for C `crandom()`.
-fn crandom(seed: u32) -> f32 {
-    let x = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345) >> 16;
-    x as f32 / 32768.0 - 1.0
-}
-
-/// Spread a bullet direction like C `fire_lead`: `crandom() * spread`
-/// units along right and up at 8192 units out.
-fn apply_spread(dir: Vec3f, hspread: i32, vspread: i32, time: f32, pellet: u32) -> Vec3f {
-    if hspread == 0 && vspread == 0 {
-        return dir;
-    }
-
-    let (forward, right, up) = angle_vectors(vectoangles(dir));
-    let r = crandom(spread_seed(time, pellet, 0)) * hspread as f32;
-    let u = crandom(spread_seed(time, pellet, 1)) * vspread as f32;
-    (forward * 8192.0 + right * r + up * u).normalize_or_zero()
 }
 
 // ==========================================================================
@@ -2246,23 +2241,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_spread_zero_returns_original() {
-        let dir = Vec3f::new(1.0, 0.0, 0.0);
-        let result = apply_spread(dir, 0, 0, 0.0, 0);
-        assert_eq!(result, dir);
-    }
-
-    #[test]
-    fn apply_spread_nonzero_changes_direction() {
-        let dir = Vec3f::new(1.0, 0.0, 0.0);
-        let result = apply_spread(dir, 500, 500, 1.234, 0);
-        // Should be different from original (spread applied).
-        assert!((result - dir).length() > 0.001 || result == dir);
-        // Should still be normalized.
-        assert!((result.length() - 1.0).abs() < 0.01);
-    }
-
-    #[test]
     fn projectile_timeout_frees_entity() {
         let mut world = test_world();
         let ent = world.spawn().unwrap();
@@ -2452,15 +2430,184 @@ mod tests {
         assert_eq!(world.entities.get(enemy).unwrap().game.health, 100);
     }
 
+    /// The two `crandom()` values a fresh shot draws from a world whose
+    /// RNG is at `rand_state`.
+    fn next_two_crandoms(rand_state: u32) -> (f32, f32) {
+        let mut twin = test_world();
+        twin.level.rand_state = rand_state;
+        (twin.crandom(), twin.crandom())
+    }
+
     #[test]
-    fn spread_offsets_stay_within_the_spread_and_differ_per_pellet() {
-        for pellet in 0..64 {
-            let r = crandom(spread_seed(1.234, pellet, 0));
-            assert!((-1.0..=1.0).contains(&r), "{r}");
-        }
-        assert_ne!(
-            apply_spread(Vec3f::X, 500, 500, 1.0, 0),
-            apply_spread(Vec3f::X, 500, 500, 1.0, 1)
+    fn fire_lead_spreads_with_game_crandom_at_c_end_point() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        world.level.rand_state = 12_345;
+        let (cr, cu) = next_two_crandoms(12_345);
+        let start = Vec3f::new(0.0, 0.0, 16.0);
+        let dir = Vec3f::new(1.0, 1.0, 0.0).normalize();
+
+        world.fire_bullet(owner, start, dir, 1, 0, 300, 500, MeansOfDeath::Machinegun);
+
+        // C fire_lead: end = start + 8192 forward + r right + u up.
+        let (forward, right, up) = angle_vectors(vectoangles(dir));
+        let end = start + forward * 8192.0 + right * (cr * 300.0) + up * (cu * 500.0);
+        assert_eq!(gi.trace_ends.borrow()[1], end);
+    }
+
+    #[test]
+    fn fire_lead_draws_its_two_crandoms_even_without_spread() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        world.level.rand_state = 99;
+        let mut twin = test_world();
+        twin.level.rand_state = 99;
+        twin.crandom();
+        twin.crandom();
+
+        world.fire_bullet(
+            owner,
+            Vec3f::ZERO,
+            Vec3f::X,
+            1,
+            0,
+            0,
+            0,
+            MeansOfDeath::Machinegun,
         );
+
+        assert_eq!(world.level.rand_state, twin.level.rand_state);
+        assert_eq!(gi.trace_ends.borrow()[1], Vec3f::new(8192.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn shots_fired_in_the_same_frame_spread_differently() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        for _ in 0..2 {
+            world.fire_bullet(
+                owner,
+                Vec3f::ZERO,
+                Vec3f::X,
+                1,
+                0,
+                500,
+                500,
+                MeansOfDeath::Machinegun,
+            );
+        }
+        let ends = gi.trace_ends.borrow();
+        // Each shot traces the muzzle, then the spread line.
+        assert_ne!(ends[1], ends[3]);
+    }
+
+    #[test]
+    fn fire_blaster_checks_the_path_from_the_shooter_to_the_muzzle() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        let start = Vec3f::new(16.0, 0.0, 0.0);
+
+        world.fire_blaster(
+            owner,
+            start,
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        // C traces from self->s.origin to the bolt, passing the bolt.
+        assert_eq!(*gi.trace_ends.borrow(), vec![start]);
+        assert_eq!(*gi.trace_masks.borrow(), vec![MASK_SHOT]);
+        assert_eq!(*gi.trace_pass_ents.borrow(), vec![world.number_of(bolt)]);
+        assert_eq!(world.entities.get(bolt).unwrap().state.origin, start);
+    }
+
+    #[test]
+    fn fire_blaster_touches_what_blocks_the_muzzle_at_once() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        let target = target_at(&mut world, Vec3f::new(8.0, 0.0, 0.0), 100);
+        hit(&world, &gi, target);
+
+        world.fire_blaster(
+            owner,
+            Vec3f::new(16.0, 0.0, 0.0),
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        assert_eq!(world.entities.get(target).unwrap().game.health, 85);
+        assert!(world.find_by_classname(None, "bolt").is_none());
+    }
+
+    #[test]
+    fn fire_blaster_explodes_at_once_when_the_muzzle_is_inside_a_wall() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.entities.spawn_numbered(0).unwrap();
+        let owner = world.spawn().unwrap();
+        // No entity hit: C's tr.ent is the world.
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 0.5,
+            ..Trace::default()
+        });
+
+        world.fire_blaster(
+            owner,
+            Vec3f::new(16.0, 0.0, 0.0),
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        assert!(world.find_by_classname(None, "bolt").is_none());
+    }
+
+    #[test]
+    fn blaster_bolts_are_dead_monsters_that_cast_no_shadow() {
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_blaster(
+            owner,
+            Vec3f::ZERO,
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        let bolt = world.entities.get(bolt).unwrap();
+        // C: player prediction does not clip against bolts.
+        assert_ne!(bolt.svflags & q2_shared::constants::SVF_DEADMONSTER, 0);
+        assert_ne!(bolt.state.renderfx & q2_shared::constants::RF_NOSHADOW, 0);
+    }
+
+    #[test]
+    fn rocket_lifetime_is_c_integer_division_of_8000_by_speed() {
+        let mut world = test_world();
+        world.level.time = 3.0;
+        let owner = world.spawn().unwrap();
+        world.fire_rocket(owner, Vec3f::ZERO, Vec3f::X, 100, 650, 150.0, 120);
+        // 8000 / 650 is 12 in C's int division, not 12.31. (The BFG's
+        // 8000 / speed is replaced by bfg_think at once, as in C.)
+        let key = world.find_by_classname(None, "rocket").unwrap();
+        assert_eq!(world.entities.get(key).unwrap().game.nextthink, 15.0);
+    }
+
+    #[test]
+    fn a_zero_speed_rocket_does_not_divide_by_zero() {
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_rocket(owner, Vec3f::ZERO, Vec3f::X, 100, 0, 150.0, 120);
+        let key = world.find_by_classname(None, "rocket").unwrap();
+        assert!(world.entities.get(key).unwrap().game.nextthink.is_finite());
     }
 }

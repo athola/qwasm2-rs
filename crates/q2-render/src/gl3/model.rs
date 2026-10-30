@@ -146,7 +146,10 @@ impl<A> ModelRegistry<A> {
                 handle
             }
             None => {
-                tracing::warn!("GL3: can't register model {name}");
+                // C GL3_RegisterModel returns NULL without a message (Mod_ForName
+                // with crash false): CL_RegisterTEntModels asks for
+                // mission-pack and CTF models the demo pak lacks.
+                tracing::debug!("GL3: can't register model {name}");
                 self.failed.insert(name.to_string());
                 ModelHandle::NONE
             }

@@ -32,11 +32,27 @@ pub struct FloorImport {
     pub wall_x: Option<f32>,
     /// Contents of the liquid filling the world below `water.0`, if set.
     pub water: Option<(f32, i32)>,
+    /// `(x, z)`: the floor is at height z (a stair up, or a ledge down)
+    /// at and beyond x, if set.
+    pub step: Option<(f32, f32)>,
+    /// Solid above this height, if set.
+    pub ceiling: Option<f32>,
 }
 
 impl FloorImport {
     fn solid(&self, p: Vec3f) -> bool {
-        p.z < 0.0 || self.wall_x.is_some_and(|w| p.x >= w)
+        p.z < self.floor_under(p.x, p.x)
+            || self.wall_x.is_some_and(|w| p.x >= w)
+            || self.ceiling.is_some_and(|c| p.z > c)
+    }
+
+    /// The highest floor under the x span `lo..=hi`.
+    fn floor_under(&self, lo: f32, hi: f32) -> f32 {
+        match self.step {
+            Some((x, z)) if lo >= x => z,
+            Some((x, z)) if hi >= x => z.max(0.0),
+            _ => 0.0,
+        }
     }
 }
 
@@ -83,9 +99,14 @@ impl GameImport for FloorImport {
         _pass_ent: Option<usize>,
         _content_mask: i32,
     ) -> Trace {
-        let start_solid =
-            start.z + mins.z < 0.0 || self.wall_x.is_some_and(|w| start.x + maxs.x > w);
-        if start_solid {
+        let floor = |p: Vec3f| self.floor_under(p.x + mins.x, p.x + maxs.x);
+        let in_ceiling = |p: Vec3f| self.ceiling.is_some_and(|c| p.z + maxs.z > c);
+        let in_floor_or_wall =
+            |p: Vec3f| p.z + mins.z < floor(p) || self.wall_x.is_some_and(|w| p.x + maxs.x > w);
+        // Only the ceiling can be traced out of, as C's startsolid without
+        // allsolid.
+        let startsolid = in_ceiling(start) || in_floor_or_wall(start);
+        if in_floor_or_wall(start) || (in_ceiling(start) && in_ceiling(end)) {
             return Trace {
                 allsolid: true,
                 startsolid: true,
@@ -96,9 +117,17 @@ impl GameImport for FloorImport {
             };
         }
         let (mut fraction, mut normal) = (1.0_f32, Vec3f::ZERO);
-        if end.z + mins.z < 0.0 {
-            fraction = (start.z + mins.z) / (start.z - end.z);
+        let floor_end = floor(end);
+        if end.z + mins.z < floor_end {
             normal = Vec3f::Z;
+            fraction = match self.step {
+                // Level into a stair: stop at its face.
+                Some((x, _)) if start.z <= end.z => {
+                    normal = Vec3f::NEG_X;
+                    ((x - (start.x + maxs.x)) / (end.x - start.x)).max(0.0)
+                }
+                _ => (start.z + mins.z - floor_end) / (start.z - end.z),
+            };
         }
         if let Some(w) = self.wall_x.filter(|&w| end.x + maxs.x > w) {
             let wall = (w - (start.x + maxs.x)) / (end.x - start.x);
@@ -115,6 +144,7 @@ impl GameImport for FloorImport {
                 ..Plane::default()
             },
             ent_index: (fraction < 1.0).then_some(0),
+            startsolid,
             ..Trace::default()
         }
     }
@@ -694,6 +724,12 @@ pub fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
         .unwrap()
 }
 
+/// A `pain` callback that records the hit's kick in `count`, so a test
+/// can read back the kick a shot carried.
+pub fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
+    world.entities.get_mut(key).unwrap().game.count = kick as i32;
+}
+
 /// Whether `key` is playing `mv` (C compares `currentmove` pointers).
 pub fn playing(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
     mi(world, key)
@@ -775,22 +811,30 @@ pub fn seed(world: &mut GameWorld, rolls: impl Fn(&mut GameWorld) -> bool) {
 
 /// Seed the random sequence so the next `random()` satisfies `want`.
 pub fn seed_random(world: &mut GameWorld, want: impl Fn(f32) -> bool) {
-    let seed = (0..)
+    let seed = (0..100_000)
         .find(|&seed| {
             world.level.rand_state = seed;
             want(world.random())
         })
-        .unwrap();
+        .expect("no seed gives that roll");
     world.level.rand_state = seed;
 }
 
+#[test]
+#[should_panic(expected = "no seed gives that roll")]
+fn seed_random_fails_on_a_roll_no_seed_gives() {
+    let mut world = crate::world::test_world();
+    seed_random(&mut world, |r| r > 1.0);
+}
+
 // ---------------------------------------------------------------------------
-// C move-table checkers, one per table style the monster tests use
+// C move-table checker
 // ---------------------------------------------------------------------------
 
 /// One C `mmove_t`: the Rust move, C first and last frame numbers, C
 /// endfunc name (`-` for NULL) and C's `mframe_t`s as `ai:dist:think`
-/// (`ai_` dropped, `-` for NULL, `*n` for n equal frames in a row).
+/// (`ai_` dropped, `-` for a NULL ai or think, `*n` for n equal frames
+/// in a row).
 pub type CMoveRow = (&'static MonsterMove, i32, i32, &'static str, &'static str);
 
 fn ai_name(f: Option<AnimFrameFn>) -> &'static str {
@@ -802,7 +846,12 @@ fn ai_name(f: Option<AnimFrameFn>) -> &'static str {
         (ai::ai_move, "move"),
         (ai::ai_turn, "turn"),
     ];
-    f.and_then(|f| table.iter().find(|(g, _)| std::ptr::fn_addr_eq(*g, f)))
+    let Some(f) = f else {
+        return "-";
+    };
+    table
+        .iter()
+        .find(|(g, _)| std::ptr::fn_addr_eq(*g, f))
         .map_or("?", |(_, n)| n)
 }
 
@@ -832,98 +881,5 @@ pub fn assert_moves_match_c(moves: &[CMoveRow], names: &[(ThinkFn, &str)]) {
             })
             .collect();
         assert_eq!(rust, c, "frames of move {first}");
-    }
-}
-
-/// Pin a move to C: frame range, one aifunc throughout, the non-zero
-/// distances and the think functions by frame index, the endfunc.
-pub fn check_move(
-    mv: &MonsterMove,
-    (first, last): (i32, i32),
-    aifunc: AnimFrameFn,
-    dists: &[(usize, f32)],
-    thinks: &[(usize, ThinkFn)],
-    endfunc: Option<ThinkFn>,
-) {
-    assert_eq!((mv.firstframe, mv.lastframe), (first, last));
-    assert_eq!(mv.frames.len() as i32, last - first + 1, "{first}");
-    for (i, f) in mv.frames.iter().enumerate() {
-        let want = dists.iter().find(|d| d.0 == i).map_or(0.0, |d| d.1);
-        assert_eq!(f.dist, want, "move {first} frame {i} dist");
-        assert!(
-            f.aifunc.is_some_and(|a| std::ptr::fn_addr_eq(a, aifunc)),
-            "move {first} frame {i} aifunc"
-        );
-        let want = thinks.iter().find(|t| t.0 == i).map(|t| t.1);
-        match (f.thinkfunc, want) {
-            (None, None) => {}
-            (Some(have), Some(want)) => {
-                assert!(
-                    std::ptr::fn_addr_eq(have, want),
-                    "move {first} frame {i} think"
-                )
-            }
-            _ => panic!("move {first} frame {i} think presence"),
-        }
-    }
-    match (mv.endfunc, endfunc) {
-        (None, None) => {}
-        (Some(have), Some(want)) => assert!(std::ptr::fn_addr_eq(have, want), "{first} end"),
-        _ => panic!("move {first} endfunc presence"),
-    }
-}
-
-/// One C `mmove_t`: bounds, each frame's aifunc as runs of
-/// (count, fn), dists, (frame index, thinkfunc) pairs and endfunc.
-pub struct CMove {
-    pub bounds: (i32, i32),
-    pub ai: Vec<(usize, Option<AnimFrameFn>)>,
-    pub dists: Vec<f32>,
-    pub thinks: Vec<(usize, ThinkFn)>,
-    pub end: Option<ThinkFn>,
-}
-
-/// `n` zero distances.
-pub fn zeros(n: usize) -> Vec<f32> {
-    vec![0.0; n]
-}
-
-pub fn assert_move(name: &str, mv: &MonsterMove, c: CMove) {
-    assert_eq!((mv.firstframe, mv.lastframe), c.bounds, "{name} bounds");
-    assert_eq!(
-        mv.frames.len() as i32,
-        c.bounds.1 - c.bounds.0 + 1,
-        "{name} length"
-    );
-    let ai: Vec<Option<AnimFrameFn>> =
-        c.ai.iter()
-            .flat_map(|&(n, f)| std::iter::repeat_n(f, n))
-            .collect();
-    assert_eq!(ai.len(), mv.frames.len(), "{name} ai runs");
-    for (i, (frame, want)) in mv.frames.iter().zip(&ai).enumerate() {
-        let same = match (frame.aifunc, want) {
-            (None, None) => true,
-            (Some(a), Some(b)) => std::ptr::fn_addr_eq(a, *b),
-            _ => false,
-        };
-        assert!(same, "{name} frame {i} aifunc");
-    }
-    let dists: Vec<f32> = mv.frames.iter().map(|f| f.dist).collect();
-    assert_eq!(dists, c.dists, "{name} dists");
-    let thinks: Vec<usize> = (0..mv.frames.len())
-        .filter(|&i| mv.frames[i].thinkfunc.is_some())
-        .collect();
-    let want: Vec<usize> = c.thinks.iter().map(|&(i, _)| i).collect();
-    assert_eq!(thinks, want, "{name} think frames");
-    for &(i, f) in &c.thinks {
-        assert!(
-            std::ptr::fn_addr_eq(mv.frames[i].thinkfunc.unwrap(), f),
-            "{name} frame {i} thinkfunc"
-        );
-    }
-    match (mv.endfunc, c.end) {
-        (None, None) => {}
-        (Some(a), Some(b)) => assert!(std::ptr::fn_addr_eq(a, b), "{name} endfunc"),
-        _ => panic!("{name} endfunc"),
     }
 }

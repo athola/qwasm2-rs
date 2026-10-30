@@ -6,11 +6,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::flash::project_source;
+use crate::monster::{frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -40,20 +38,8 @@ const SOUNDS: [&str; 11] = [
     SOUND_SEARCH,
 ];
 
-/// C `g_monsterfootsteps` (default "0"). The cvar is not ported, so
-/// footsteps stay at C's default: silent.
-const MONSTER_FOOTSTEPS: bool = false;
-
 /// C `MODEL_SCALE` (parasite.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -192,6 +178,7 @@ static PARASITE_FRAMES_STOP_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 0.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_STOP_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN10,
     lastframe: FRAME_RUN15,
@@ -237,6 +224,7 @@ static PARASITE_FRAMES_STOP_WALK: [MonsterFrame; 6] = [
     frame(ai::ai_walk, 0.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_STOP_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN10,
     lastframe: FRAME_RUN15,
@@ -328,6 +316,7 @@ static PARASITE_FRAMES_BREAK: [MonsterFrame; 32] = [
     frame(ai::ai_charge, 1.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_BREAK: MonsterMove = MonsterMove {
     firstframe: FRAME_BREAK01,
     lastframe: FRAME_BREAK32,
@@ -347,23 +336,6 @@ pub static PARASITE_MOVE_DEATH: MonsterMove = MonsterMove {
 // ---------------------------------------------------------------------------
 // Callbacks. C ref: parasite.c.
 // ---------------------------------------------------------------------------
-
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
 
 fn stands_ground(world: &GameWorld, key: EntityKey) -> bool {
     world
@@ -393,9 +365,15 @@ pub fn parasite_tap(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_BODY, SOUND_TAP, ATTN_IDLE);
 }
 
-/// C ref: `parasite_footstep`.
+/// C ref: `parasite_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn parasite_footstep(world: &mut GameWorld, key: EntityKey) {
-    if MONSTER_FOOTSTEPS {
+    parasite_step(world, key, MONSTER_FOOTSTEPS);
+}
+
+/// The `parasite_footstep` body: the tap, without a `randk()`, when
+/// `enabled`.
+fn parasite_step(world: &mut GameWorld, key: EntityKey, enabled: bool) {
+    if enabled {
         parasite_tap(world, key);
     }
 }
@@ -491,7 +469,7 @@ pub fn parasite_pain(
         return;
     }
     ent.game.pain_debounce_time = time + 3.0;
-    if world.game.skill == 3 {
+    if world.game.skill == SKILL_HARDPLUS {
         return; // No pain anims in nightmare.
     }
     let name = if world.random() < 0.5 {
@@ -622,34 +600,7 @@ pub fn parasite_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -718,6 +669,7 @@ pub fn finish_parasite(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 
@@ -855,6 +807,21 @@ mod tests {
     }
 
     #[test]
+    fn parasite_footstep_taps_without_randk_only_when_the_cvar_is_on() {
+        let (mut world, gi) = test_world_recording();
+        let key = parasite(&mut world);
+        let rand = world.level.rand_state;
+        parasite_step(&mut world, key, false);
+        assert!(sounds_of(&world, &gi, key).is_empty());
+        parasite_step(&mut world, key, true);
+        assert_eq!(
+            sounds_of(&world, &gi, key),
+            [(CHAN_BODY, SOUND_TAP.into(), ATTN_IDLE)]
+        );
+        assert_eq!(world.level.rand_state, rand, "no randk() drawn");
+    }
+
+    #[test]
     fn parasite_sounds_play_on_their_c_channels() {
         let (mut world, gi) = test_world_recording();
         let key = parasite(&mut world);
@@ -966,9 +933,15 @@ mod tests {
     fn parasite_drain_attack_tries_the_enemy_head_and_feet_before_giving_up() {
         // Origin too steep, the top of the box (z + 32 - 8) too, the
         // bottom (z - 24 + 8) shallow enough: the drain still hits.
-        let (mut world, _gi, key, player) = drain_setup(80.0, 50.0);
+        let (mut world, gi, key, player) = drain_setup(80.0, 50.0);
         parasite_drain_attack(&mut world, key);
         assert_eq!(health(&world, player), 98);
+        // C resets end to the enemy origin for the trace and the beam,
+        // whichever point passed the check.
+        assert_eq!(
+            gi.wire.borrow()[4],
+            format!("position {:?}", Vec3f::new(80.0, 0.0, 74.0))
+        );
         // Every point too steep: no drain.
         let (mut world, _gi, key, player) = drain_setup(20.0, 100.0);
         parasite_drain_attack(&mut world, key);
@@ -977,6 +950,19 @@ mod tests {
         let (mut world, _gi, key, player) = drain_setup(300.0, 0.0);
         parasite_drain_attack(&mut world, key);
         assert_eq!(health(&world, player), 100);
+    }
+
+    #[test]
+    fn parasite_drain_attack_does_not_push_the_enemy() {
+        // C: T_Damage(..., damage, 0, DAMAGE_NO_KNOCKBACK, MOD_UNKNOWN).
+        let (mut world, _gi, key, player) = drain_setup(100.0, 0.0);
+        let p = world.entities.get_mut(player).unwrap();
+        p.game.movetype = MoveType::Walk; // a mover knockback can push
+        p.game.mass = 200;
+        world.entities.get_mut(key).unwrap().state.frame = FRAME_DRAIN03;
+        parasite_drain_attack(&mut world, key);
+        assert_eq!(health(&world, player), 95);
+        assert_eq!(world.entities.get(player).unwrap().velocity, Vec3f::ZERO);
     }
 
     #[test]
@@ -1019,7 +1005,7 @@ mod tests {
         parasite_stand(&mut world, key);
         parasite_pain(&mut world, key, key, 0.0, 10);
         assert_eq!(gi.sound_calls.borrow().len(), calls, "debounced");
-        world.game.skill = 3;
+        world.game.skill = SKILL_HARDPLUS;
         world.level.time = 6.0;
         parasite_pain(&mut world, key, key, 0.0, 10);
         assert_eq!(

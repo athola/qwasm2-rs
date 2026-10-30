@@ -261,7 +261,6 @@ pub fn draw_sky(gl: &glow::Context, uniforms: &WorldUniforms, sky: &SkyGpu, view
 pub enum BatchFilter {
     Opaque,
     Translucent,
-    All,
 }
 
 impl BatchFilter {
@@ -269,7 +268,6 @@ impl BatchFilter {
         match self {
             BatchFilter::Opaque => translucency == Translucency::Opaque,
             BatchFilter::Translucent => translucency != Translucency::Opaque,
-            BatchFilter::All => true,
         }
     }
 }

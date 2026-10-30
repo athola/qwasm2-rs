@@ -473,10 +473,11 @@ pub const PRINT_CHAT: i32 = 3;
 pub const PRINT_ALL: i32 = 0;
 pub const PRINT_DEVELOPER: i32 = 1;
 
-// Error codes (mapped to Q2Error variants, kept for protocol compat)
+// C shared.h Com_Error codes. ERR_FATAL and ERR_DROP map to Q2Error
+// variants; ERR_DISCONNECT ("don't kill server") has no variant.
 pub const ERR_FATAL: i32 = 0;
 pub const ERR_DROP: i32 = 1;
-pub const ERR_QUIT: i32 = 2;
+pub const ERR_DISCONNECT: i32 = 2;
 
 // Entity flags
 pub const SVF_NOCLIENT: u32 = 0x00000001;

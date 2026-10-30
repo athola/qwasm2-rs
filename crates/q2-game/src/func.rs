@@ -42,8 +42,10 @@ pub const DOOR_START_OPEN: i32 = 1;
 pub const DOOR_REVERSE: i32 = 2;
 pub const DOOR_CRUSHER: i32 = 4;
 pub const DOOR_NOMONSTER: i32 = 8;
-/// func_door_rotating's ANIMATED flag.
+/// ANIMATED: the texture cycles (func_door and func_door_rotating).
 pub const DOOR_ANIMATED: i32 = 16;
+/// func_door's ANIMATED_FAST; the same bit is func_door_rotating's X_AXIS.
+pub const DOOR_ANIMATED_FAST: i32 = 64;
 pub const DOOR_TOGGLE: i32 = 32;
 pub const DOOR_X_AXIS: i32 = 64;
 pub const DOOR_Y_AXIS: i32 = 128;
@@ -165,14 +167,23 @@ pub fn move_calc(world: &mut GameWorld, key: EntityKey, dest: Vec3f, endfunc: En
         if leader.is_some() && current == leader {
             move_begin(world, key);
         } else {
-            ent.game.nextthink = time + FRAMETIME;
+            ent.game.nextthink = time_plus(time, FRAMETIME_C);
             ent.think = Some(move_begin);
         }
     } else {
         mi.current_speed = 0.0;
         ent.think = Some(think_accel_move);
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
     }
+}
+
+/// C `FRAMETIME`, the double 0.1: the float expressions it appears in
+/// are evaluated in double and rounded to float once.
+const FRAMETIME_C: f64 = 0.1;
+
+/// C `level.time + seconds`, where `seconds` is a double expression.
+fn time_plus(time: f32, seconds: f64) -> f32 {
+    (f64::from(time) + seconds) as f32
 }
 
 /// Constant-speed move: whole frames at `speed`, then `move_final` covers
@@ -185,14 +196,15 @@ pub fn move_begin(world: &mut GameWorld, key: EntityKey) {
     let Some(mi) = ent.moveinfo.as_deref_mut() else {
         return;
     };
-    if mi.speed * FRAMETIME >= mi.remaining_distance {
+    if f64::from(mi.speed) * FRAMETIME_C >= f64::from(mi.remaining_distance) {
         move_final(world, key);
         return;
     }
     ent.velocity = mi.dir * mi.speed;
-    let frames = ((mi.remaining_distance / mi.speed) / FRAMETIME).floor();
-    mi.remaining_distance -= frames * mi.speed * FRAMETIME;
-    ent.game.nextthink = time + frames * FRAMETIME;
+    let frames = (f64::from(mi.remaining_distance / mi.speed) / FRAMETIME_C).floor() as f32;
+    mi.remaining_distance =
+        (f64::from(mi.remaining_distance) - f64::from(frames * mi.speed) * FRAMETIME_C) as f32;
+    ent.game.nextthink = time_plus(time, f64::from(frames) * FRAMETIME_C);
     ent.think = Some(move_final);
 }
 
@@ -209,9 +221,9 @@ pub fn move_final(world: &mut GameWorld, key: EntityKey) {
         move_done(world, key);
         return;
     }
-    ent.velocity = mi.dir * (mi.remaining_distance / FRAMETIME);
-    ent.think = Some(move_done_think);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.velocity = mi.dir * ((f64::from(mi.remaining_distance) / FRAMETIME_C) as f32);
+    ent.think = Some(move_done);
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
 }
 
 /// Movement complete — clear velocity and call endfunc. C ref: `Move_Done`.
@@ -227,10 +239,6 @@ pub fn move_done(world: &mut GameWorld, key: EntityKey) {
     if let Some(func) = endfunc {
         func(world, key);
     }
-}
-
-pub fn move_done_think(world: &mut GameWorld, key: EntityKey) {
-    move_done(world, key);
 }
 
 /// Start turning toward `end_angles` (state UP) or `start_angles`,
@@ -252,7 +260,7 @@ pub fn angle_move_calc(world: &mut GameWorld, key: EntityKey, endfunc: EndMoveFn
     if leader.is_some() && current == leader {
         angle_move_begin(world, key);
     } else {
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
         ent.think = Some(angle_move_begin);
     }
 }
@@ -279,13 +287,13 @@ pub fn angle_move_begin(world: &mut GameWorld, key: EntityKey) {
     };
     let destdelta = angle_move_delta(ent, mi);
     let traveltime = destdelta.length() / mi.speed;
-    if traveltime < FRAMETIME {
+    if f64::from(traveltime) < FRAMETIME_C {
         angle_move_final(world, key);
         return;
     }
-    let frames = (traveltime / FRAMETIME).floor();
-    ent.avelocity = destdelta * (1.0 / traveltime);
-    ent.game.nextthink = time + frames * FRAMETIME;
+    let frames = (f64::from(traveltime) / FRAMETIME_C).floor() as f32;
+    ent.avelocity = destdelta * ((1.0 / f64::from(traveltime)) as f32);
+    ent.game.nextthink = time_plus(time, f64::from(frames) * FRAMETIME_C);
     ent.think = Some(angle_move_final);
 }
 
@@ -303,9 +311,9 @@ pub fn angle_move_final(world: &mut GameWorld, key: EntityKey) {
         angle_move_done(world, key);
         return;
     }
-    ent.avelocity = delta * (1.0 / FRAMETIME);
+    ent.avelocity = delta * ((1.0 / FRAMETIME_C) as f32);
     ent.think = Some(angle_move_done);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
 }
 
 /// Turn complete: stop spinning and call endfunc. C ref: `AngleMove_Done`.
@@ -343,6 +351,12 @@ pub fn plat_calc_accelerated_move(mi: &mut MoveInfo) {
     mi.decel_distance = decel_dist;
 }
 
+/// C `speed * (1.0 - ratio)`: the double 1.0 makes it a double
+/// expression, rounded to float once.
+fn one_minus(speed: f32, ratio: f32) -> f32 {
+    (f64::from(speed) * (1.0 - f64::from(ratio))) as f32
+}
+
 /// C ref: `plat_Accelerate`.
 pub fn plat_accelerate(mi: &mut MoveInfo) {
     // Decelerating?
@@ -365,7 +379,7 @@ pub fn plat_accelerate(mi: &mut MoveInfo) {
         && mi.remaining_distance - mi.current_speed < mi.decel_distance
     {
         let p1_distance = mi.remaining_distance - mi.decel_distance;
-        let p2_distance = mi.move_speed * (1.0 - (p1_distance / mi.move_speed));
+        let p2_distance = one_minus(mi.move_speed, p1_distance / mi.move_speed);
         let distance = p1_distance + p2_distance;
         mi.current_speed = mi.move_speed;
         mi.next_speed = mi.move_speed - mi.decel * (p2_distance / distance);
@@ -383,7 +397,7 @@ pub fn plat_accelerate(mi: &mut MoveInfo) {
         // use the average speed over the whole move.
         let p1_distance = mi.remaining_distance - mi.decel_distance;
         let p1_speed = (old_speed + mi.move_speed) / 2.0;
-        let p2_distance = mi.move_speed * (1.0 - (p1_distance / p1_speed));
+        let p2_distance = one_minus(mi.move_speed, p1_distance / p1_speed);
         let distance = p1_distance + p2_distance;
         mi.current_speed =
             (p1_speed * (p1_distance / distance)) + (mi.move_speed * (p2_distance / distance));
@@ -412,23 +426,8 @@ pub fn think_accel_move(world: &mut GameWorld, key: EntityKey) {
         return;
     }
     ent.velocity = mi.dir * (mi.current_speed * 10.0);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
     ent.think = Some(think_accel_move);
-}
-
-/// `self`, then each `teamchain` member (C `for (ent = self; ent; ent =
-/// ent->teamchain)`).
-fn team_members(world: &GameWorld, first: EntityKey) -> Vec<EntityKey> {
-    let mut members = vec![first];
-    let mut next = world.entities.get(first).and_then(|e| e.game.teamchain);
-    while let Some(k) = next {
-        if members.contains(&k) {
-            break;
-        }
-        members.push(k);
-        next = world.entities.get(k).and_then(|e| e.game.teamchain);
-    }
-    members
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +559,6 @@ pub fn plat_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         return;
     };
     let dmg = ent.game.dmg;
-    let state = ent.moveinfo.as_ref().map(|mi| mi.state);
     let origin = world
         .entities
         .get(other)
@@ -577,6 +575,12 @@ pub fn plat_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         DamageFlags::empty(),
         MeansOfDeath::Crush,
     );
+    // After the damage, as C: a kill can fire a deathtarget that moves us.
+    let state = world
+        .entities
+        .get(self_key)
+        .and_then(|e| e.moveinfo.as_ref())
+        .map(|mi| mi.state);
     match state {
         Some(STATE_UP) => plat_go_down(world, self_key),
         Some(STATE_DOWN) => plat_go_up(world, self_key),
@@ -642,7 +646,7 @@ pub fn door_use(
     }
     let toggle = ent.game.spawnflags & DOOR_TOGGLE != 0;
     let state = ent.moveinfo.as_ref().map(|mi| mi.state);
-    let members = team_members(world, self_key);
+    let members = world.team_chain(self_key);
     let closing = toggle && matches!(state, Some(STATE_UP) | Some(STATE_TOP));
     for member in members {
         if let Some(e) = world.entities.get_mut(member) {
@@ -652,7 +656,7 @@ pub fn door_use(
         if closing {
             door_go_down(world, member);
         } else {
-            door_go_up(world, member, activator);
+            door_go_up(world, member, Some(activator));
         }
     }
 }
@@ -671,10 +675,6 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         ent.game.spawnflags & DOOR_CRUSHER != 0,
         ent.game.teammaster.unwrap_or(self_key),
     );
-    let (wait, state) = ent
-        .moveinfo
-        .as_ref()
-        .map_or((0.0, STATE_BOTTOM), |mi| (mi.wait, mi.state));
     let origin = world
         .entities
         .get(other)
@@ -692,17 +692,19 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         MeansOfDeath::Crush,
     );
     // A door with a negative wait would never come back if blocked, so
-    // let it squash the object to death real fast.
+    // let it squash the object to death real fast. Read after the damage,
+    // as C does: a kill can fire a deathtarget that moves this door.
+    let (wait, state) = world
+        .entities
+        .get(self_key)
+        .and_then(|e| e.moveinfo.as_ref())
+        .map_or((0.0, STATE_BOTTOM), |mi| (mi.wait, mi.state));
     if crusher || wait < 0.0 {
         return;
     }
-    for member in team_members(world, master) {
+    for member in world.team_chain(master) {
         if state == STATE_DOWN {
-            let activator = world
-                .entities
-                .get(member)
-                .and_then(|e| e.game.activator)
-                .unwrap_or(member);
+            let activator = world.entities.get(member).and_then(|e| e.game.activator);
             door_go_up(world, member, activator);
         } else {
             door_go_down(world, member);
@@ -713,7 +715,7 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
 /// Start a door's move or turn to its open position, by classname as C
 /// does: func_door (also func_water) slides, func_door_rotating turns.
 /// C ref: `door_go_up`.
-pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: EntityKey) {
+pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: Option<EntityKey>) {
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -743,7 +745,15 @@ pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: EntityKey) {
         "func_door_rotating" => angle_move_calc(world, key, door_hit_top),
         _ => {}
     }
-    world.use_targets(key, activator);
+    // Deviation: a door reopened by door_blocked passes its own activator,
+    // which doors never set, so C calls G_UseTargets(self, NULL). C then
+    // skips the message, still frees killtargets and calls every target's
+    // use with a NULL activator (door_use, button_use, train_use and
+    // func_timer_use return on it; others run). UseFn has no absent
+    // activator, so here nothing is fired at all.
+    if let Some(activator) = activator {
+        world.use_targets(key, activator);
+    }
     door_use_areaportals(world, key, true);
 }
 
@@ -813,7 +823,7 @@ pub fn door_killed(
     let Some(master) = world.entities.get(self_key).and_then(|e| e.game.teammaster) else {
         return;
     };
-    for member in team_members(world, master) {
+    for member in world.team_chain(master) {
         if let Some(e) = world.entities.get_mut(member) {
             e.game.health = e.game.max_health;
             e.game.takedamage = TakeDamage::No;
@@ -896,7 +906,7 @@ pub fn think_calc_move_speed(world: &mut GameWorld, key: EntityKey) {
     {
         return; // only the team master does this
     }
-    let members = team_members(world, key);
+    let members = world.team_chain(key);
     let distance = |w: &GameWorld, k: EntityKey| {
         w.entities
             .get(k)
@@ -946,7 +956,7 @@ pub fn think_spawn_door_trigger(world: &mut GameWorld, key: EntityKey) {
         return; // only the team leader spawns a trigger
     }
     let (mut mins, mut maxs) = (ent.absmin, ent.absmax);
-    for member in team_members(world, key).into_iter().skip(1) {
+    for member in world.team_chain(key).into_iter().skip(1) {
         if let Some(m) = world.entities.get(member) {
             mins = mins.min(m.absmin).min(m.absmax);
             maxs = maxs.max(m.absmin).max(m.absmax);
@@ -983,10 +993,16 @@ pub fn think_spawn_door_trigger(world: &mut GameWorld, key: EntityKey) {
 // Button callbacks
 // ---------------------------------------------------------------------------
 
+use q2_shared::constants::{EF_ANIM01, EF_ANIM23};
+
 /// C ref: `button_done`.
 pub fn button_done(world: &mut GameWorld, key: EntityKey) {
     if let Some(mi) = moveinfo_mut(world, key) {
         mi.state = STATE_BOTTOM;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.state.effects &= !EF_ANIM23;
+        ent.state.effects |= EF_ANIM01;
     }
 }
 
@@ -1016,6 +1032,10 @@ pub fn button_wait(world: &mut GameWorld, key: EntityKey) {
         .unwrap_or(key);
     if let Some(mi) = moveinfo_mut(world, key) {
         mi.state = STATE_TOP;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.state.effects &= !EF_ANIM01;
+        ent.state.effects |= EF_ANIM23;
     }
     world.use_targets(key, activator);
     if let Some(ent) = world.entities.get_mut(key) {
@@ -1248,16 +1268,27 @@ pub(crate) fn start_func_timer(
     let pausetime = fields
         .get("pausetime")
         .map_or(0.0, |v| q2_common::cvar::parse_value(v));
-    let jitter = world.crandom();
+    let start_on = world
+        .entities
+        .get(key)
+        .is_some_and(|e| e.game.spawnflags & TIMER_START_ON != 0);
+    if !start_on {
+        return;
+    }
+    // C crandom() is the double 2.0 * (random() - 0.5), and the 1.0 makes
+    // the whole sum double.
+    let crandom = 2.0 * (f64::from(world.random()) - 0.5);
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
-    if ent.game.spawnflags & TIMER_START_ON != 0 {
-        ent.game.nextthink =
-            time + 1.0 + pausetime + ent.game.delay + ent.game.wait + jitter * ent.game.random;
-        ent.game.activator = Some(key);
-    }
+    ent.game.nextthink = (f64::from(time)
+        + 1.0
+        + f64::from(pausetime)
+        + f64::from(ent.game.delay)
+        + f64::from(ent.game.wait)
+        + crandom * f64::from(ent.game.random)) as f32;
+    ent.game.activator = Some(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,9 +1298,9 @@ pub(crate) fn start_func_timer(
 /// func_explosive spawnflag: invisible and non-solid until used.
 const EXPLOSIVE_TRIGGER_SPAWN: i32 = 1;
 
-/// Blow the brush up from its centre (bmodel origins are 0,0,0), fire its
-/// targets and remove it. C ref: `func_explosive_explode`; the debris and
-/// explosion effect are not ported.
+/// Blow the brush up from its centre (bmodel origins are 0,0,0) into
+/// debris flung away from the inflictor, fire its targets and remove it,
+/// with an explosion when it does damage. C ref: `func_explosive_explode`.
 pub fn func_explosive_die(
     world: &mut GameWorld,
     self_key: EntityKey,
@@ -1285,10 +1316,12 @@ pub fn func_explosive_die(
     let Some(ent) = world.entities.get_mut(self_key) else {
         return;
     };
-    ent.state.origin = ent.absmin + ent.size * 0.5;
+    // Bmodel origins are (0 0 0), so blow up from the centre.
+    let mut size = ent.size * 0.5;
+    let origin = ent.absmin + size;
+    ent.state.origin = origin;
     ent.game.takedamage = TakeDamage::No;
-    ent.velocity = (ent.state.origin - inflictor_origin).normalize_or_zero() * 150.0;
-    let dmg = ent.game.dmg;
+    let (dmg, mass) = (ent.game.dmg, ent.game.mass);
 
     if dmg != 0 {
         world.t_radius_damage(
@@ -1300,9 +1333,40 @@ pub fn func_explosive_die(
             MeansOfDeath::Explosive,
         );
     }
+    if let Some(ent) = world.entities.get_mut(self_key) {
+        ent.velocity = (ent.state.origin - inflictor_origin).normalize_or_zero() * 150.0;
+    }
+
+    // Start chunks towards the center.
+    size *= 0.5;
+    let mass = if mass == 0 { 75 } else { mass };
+    let chunk_origin = |world: &mut GameWorld| {
+        // C crandom() is a double, so each sum is a double.
+        let mut along = |c: f32, s: f32| {
+            (f64::from(c) + 2.0 * (f64::from(world.random()) - 0.5) * f64::from(s)) as f32
+        };
+        let x = along(origin.x, size.x);
+        let y = along(origin.y, size.y);
+        let z = along(origin.z, size.z);
+        Vec3f::new(x, y, z)
+    };
+    if mass >= 100 {
+        for _ in 0..(mass / 100).min(8) {
+            let at = chunk_origin(world);
+            crate::misc::throw_debris(world, self_key, "models/objects/debris1/tris.md2", 1.0, at);
+        }
+    }
+    for _ in 0..(mass / 25).min(16) {
+        let at = chunk_origin(world);
+        crate::misc::throw_debris(world, self_key, "models/objects/debris2/tris.md2", 2.0, at);
+    }
 
     world.use_targets(self_key, attacker);
-    world.free_entity(self_key);
+    if dmg != 0 {
+        crate::misc::become_explosion1(world, self_key);
+    } else {
+        world.free_entity(self_key);
+    }
 }
 
 /// C ref: `func_explosive_use`.
@@ -1582,7 +1646,7 @@ pub fn func_train_find(world: &mut GameWorld, key: EntityKey) {
         ent.game.spawnflags |= TRAIN_START_ON;
     }
     if ent.game.spawnflags & TRAIN_START_ON != 0 {
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
         ent.think = Some(train_next);
         ent.game.activator = Some(key);
     }
@@ -1786,9 +1850,10 @@ pub fn sp_func_plat(storage: &mut EntityStorage, key: EntityKey, fields: &HashMa
     ent.solid = Solid::Bsp;
     ent.game.movetype = MoveType::Push;
     let g = &mut ent.game;
-    g.speed = if g.speed == 0.0 { 20.0 } else { g.speed * 0.1 };
-    g.accel = if g.accel == 0.0 { 5.0 } else { g.accel * 0.1 };
-    g.decel = if g.decel == 0.0 { 5.0 } else { g.decel * 0.1 };
+    let tenth = |v: f32| (f64::from(v) * 0.1) as f32; // C `*= 0.1`, a double
+    g.speed = if g.speed == 0.0 { 20.0 } else { tenth(g.speed) };
+    g.accel = if g.accel == 0.0 { 5.0 } else { tenth(g.accel) };
+    g.decel = if g.decel == 0.0 { 5.0 } else { tenth(g.decel) };
     if g.dmg == 0 {
         g.dmg = 2;
     }
@@ -1869,6 +1934,7 @@ pub fn sp_func_button(
     let pos1 = ent.state.origin;
     let pos2 = pos1 + movedir * move_distance(movedir, ent.maxs - ent.mins, lip);
 
+    ent.state.effects |= EF_ANIM01;
     ent.use_fn = Some(button_use);
     if ent.game.health != 0 {
         ent.game.max_health = ent.game.health;
@@ -1951,6 +2017,12 @@ pub fn sp_func_door(storage: &mut EntityStorage, key: EntityKey, fields: &HashMa
         end_origin: pos2,
         ..Default::default()
     }));
+    if ent.game.spawnflags & DOOR_ANIMATED != 0 {
+        ent.state.effects |= EF_ANIM_ALL;
+    }
+    if ent.game.spawnflags & DOOR_ANIMATED_FAST != 0 {
+        ent.state.effects |= EF_ANIM_ALLFAST;
+    }
 
     // Non-teamed doors are a team of one.
     if ent.game.team.is_empty() {
@@ -2388,7 +2460,7 @@ pub fn sp_func_timer(
     ent.use_fn = Some(func_timer_use);
     ent.think = Some(func_timer_think);
     if ent.game.random >= ent.game.wait {
-        ent.game.random = ent.game.wait - FRAMETIME;
+        ent.game.random = (f64::from(ent.game.wait) - FRAMETIME_C) as f32;
         tracing::debug!("func_timer at {:?} has random >= wait", ent.state.origin);
     }
     ent.svflags = q2_shared::constants::SVF_NOCLIENT;
@@ -2514,12 +2586,15 @@ pub(crate) fn finish_button(
     }
 }
 
-/// A targeted door without health centerprints its message when touched.
-/// C ref: the `else if (ent->targetname && ent->message)` branch of
-/// SP_func_door, SP_func_door_rotating and SP_func_door_secret.
+/// A targeted door centerprints its message when touched: without
+/// health for func_door and func_door_secret (C `else if`), with or
+/// without for func_door_rotating (C `if`).
+/// C ref: SP_func_door, SP_func_door_rotating and SP_func_door_secret.
 fn finish_door_message(world: &mut GameWorld, key: EntityKey) {
     let has_touch = world.entities.get(key).is_some_and(|e| {
-        e.game.health == 0 && !e.game.targetname.is_empty() && !e.game.message.is_empty()
+        (e.game.health == 0 || e.game.classname == "func_door_rotating")
+            && !e.game.targetname.is_empty()
+            && !e.game.message.is_empty()
     });
     if has_touch {
         world.gi.sound_index("misc/talk.wav");
@@ -2949,6 +3024,47 @@ mod tests {
             .unwrap()
             .state;
         assert_eq!(state, STATE_TOP);
+        // C: pressed shows the ANIM23 frames, back out the ANIM01 ones.
+        use q2_shared::constants::{EF_ANIM01, EF_ANIM23};
+        let effects = |world: &GameWorld| world.entities.get(button).unwrap().state.effects;
+        assert_eq!(effects(&world) & (EF_ANIM01 | EF_ANIM23), EF_ANIM23);
+        run_for(&mut world, 1.5);
+        assert_eq!(mover(&world, button).1, STATE_BOTTOM);
+        assert_eq!(effects(&world) & (EF_ANIM01 | EF_ANIM23), EF_ANIM01);
+    }
+
+    #[test]
+    fn func_button_spawns_showing_its_idle_frames() {
+        let world = spawned(r#"{ "classname" "func_button" "model" "*1" }"#);
+        let button = world.entities.get(by_class(&world, "func_button")).unwrap();
+        assert_ne!(button.state.effects & q2_shared::constants::EF_ANIM01, 0);
+    }
+
+    #[test]
+    fn func_explosive_bursts_into_c_debris_and_explodes_only_with_dmg() {
+        // C func_explosive_explode: mass / 100 big chunks (at most 8) and
+        // mass / 25 small ones (at most 16), under ThrowDebris cap of 20 a
+        // frame; BecomeExplosion1 with dmg.
+        for (mass, dmg, chunks) in [(0, 0, 3), (250, 0, 2 + 10), (5000, 20, 20)] {
+            let (mut world, gi) = spawned_gi(&format!(
+                "{{ \"classname\" \"func_explosive\" \"model\" \"*1\" \"mass\" \"{mass}\" \"dmg\" \"{dmg}\" }}"
+            ));
+            let brush = by_class(&world, "func_explosive");
+            let p = player(&mut world);
+            func_explosive_die(&mut world, brush, p, p, 100, Vec3f::ZERO);
+            let debris = world
+                .entities
+                .iter()
+                .filter(|(_, e)| e.in_use && e.game.classname == "debris")
+                .count();
+            assert_eq!(debris, chunks, "mass {mass}");
+            assert_eq!(
+                gi.multicasts.borrow().len(),
+                usize::from(dmg != 0),
+                "dmg {dmg}"
+            );
+            assert!(!world.entities.is_live(brush));
+        }
     }
 
     #[test]
@@ -3013,6 +3129,169 @@ mod tests {
         // nextthink should be set for next firing.
         let nt = world.entities.get(timer).unwrap().game.nextthink;
         assert!(nt > world.level.time);
+    }
+
+    /// A mover at level time 1 with `remaining` units left at `speed`.
+    fn moving(remaining: f32, speed: f32) -> (GameWorld, EntityKey) {
+        let mut world = test_world();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().moveinfo = Some(Box::new(MoveInfo {
+            speed,
+            remaining_distance: remaining,
+            dir: Vec3f::X,
+            ..Default::default()
+        }));
+        (world, key)
+    }
+
+    #[test]
+    fn move_begin_counts_frames_with_c_double_frametime() {
+        // C: floor((280 / 100) / 0.1) in double is 27 (2.8f is just under
+        // 2.8); the float quotient rounds to 28.
+        let (mut world, key) = moving(280.0, 100.0);
+        move_begin(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.moveinfo.as_ref().unwrap().remaining_distance, 10.0);
+        assert_eq!(ent.game.nextthink, (1.0f64 + 27.0 * 0.1) as f32);
+    }
+
+    #[test]
+    fn move_final_and_think_times_add_the_double_frametime() {
+        let remaining = 10.0f32 / 7.0; // / 0.1f rounds differently from / 0.1
+        let (mut world, key) = moving(remaining, 100.0);
+        world.level.time = 0.3;
+        move_final(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.velocity.x, (f64::from(remaining) / 0.1) as f32);
+        assert_eq!(ent.game.nextthink, (f64::from(0.3f32) + 0.1) as f32);
+    }
+
+    #[test]
+    fn plat_speeds_scale_by_the_double_tenth() {
+        // C `ent->speed *= 0.1` is a double multiply; 9 * 0.1f rounds to a
+        // different float.
+        let world = spawned(
+            r#"{ "classname" "func_plat" "model" "*2" "speed" "9" "accel" "13" "decel" "18" }"#,
+        );
+        let mi = world
+            .entities
+            .get(by_class(&world, "func_plat"))
+            .unwrap()
+            .moveinfo
+            .clone()
+            .unwrap();
+        assert_eq!(
+            (mi.speed, mi.accel, mi.decel),
+            (
+                (9.0f64 * 0.1) as f32,
+                (13.0f64 * 0.1) as f32,
+                (18.0f64 * 0.1) as f32
+            )
+        );
+    }
+
+    #[test]
+    fn only_a_start_on_func_timer_draws_its_start_jitter() {
+        // C calls crandom() only inside `if (self->spawnflags & 1)`.
+        let mut world = test_world();
+        world.init_game();
+        world.level.rand_state = 9;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.wait = 1.0;
+        start_func_timer(&mut world, key, &HashMap::new());
+        assert_eq!(world.level.rand_state, 9);
+
+        world.entities.get_mut(key).unwrap().game.spawnflags = TIMER_START_ON;
+        world.entities.get_mut(key).unwrap().game.random = 0.3;
+        let mut rng = test_world();
+        rng.level.rand_state = 9;
+        let crandom = 2.0 * (f64::from(rng.random()) - 0.5); // C: a double
+        start_func_timer(&mut world, key, &HashMap::new());
+        let expected = (0.0 + 1.0 + 0.0 + 0.0 + 1.0 + crandom * f64::from(0.3f32)) as f32;
+        assert_eq!(world.entities.get(key).unwrap().game.nextthink, expected);
+    }
+
+    #[test]
+    fn func_timer_random_over_wait_drops_to_wait_minus_the_double_frametime() {
+        let world = spawned(r#"{ "classname" "func_timer" "wait" "0.1" "random" "5" }"#);
+        let timer = world.entities.get(by_class(&world, "func_timer")).unwrap();
+        assert_eq!(timer.game.random, (f64::from(0.1f32) - 0.1) as f32); // 1.49e-9, not 0
+    }
+
+    /// (current_speed, remaining_distance, next_speed) bits after each
+    /// Think_AccelMove of a mover starting `distance` away.
+    fn accel_frames(speed: f32, accel: f32, decel: f32, distance: f32) -> Vec<(u32, u32, u32)> {
+        let (mut world, key) = moving(distance, speed);
+        if let Some(mi) = world.entities.get_mut(key).unwrap().moveinfo.as_deref_mut() {
+            mi.accel = accel;
+            mi.decel = decel;
+        }
+        let mut frames = Vec::new();
+        loop {
+            think_accel_move(&mut world, key);
+            let ent = world.entities.get(key).unwrap();
+            let mi = ent.moveinfo.as_ref().unwrap();
+            frames.push((
+                mi.current_speed.to_bits(),
+                mi.remaining_distance.to_bits(),
+                mi.next_speed.to_bits(),
+            ));
+            let again = ent.think.is_some_and(|t| {
+                std::ptr::fn_addr_eq(t, think_accel_move as crate::entity::ThinkFn)
+            });
+            if !again {
+                return frames;
+            }
+        }
+    }
+
+    fn speeds(frames: Vec<(u32, u32, u32)>) -> Vec<(u32, u32)> {
+        frames.into_iter().map(|(c, r, _)| (c, r)).collect()
+    }
+
+    #[test]
+    fn accelerated_moves_match_a_c_run_frame_by_frame() {
+        // From the C plat_CalcAcceleratedMove / plat_Accelerate /
+        // Think_AccelMove compiled with -ffp-contract=off.
+        #[rustfmt::skip]
+        let default_plat = [
+            (0x40a00000, 0x42f00000), (0x41200000, 0x42e60000), (0x41700000, 0x42d20000),
+            (0x41a00000, 0x42b40000), (0x41a00000, 0x428c0000), (0x41a00000, 0x42480000),
+            (0x41700000, 0x41f00000), (0x41200000, 0x41700000), (0x40a00000, 0x40a00000),
+        ];
+        assert_eq!(speeds(accel_frames(20.0, 5.0, 5.0, 120.0)), default_plat);
+        #[rustfmt::skip]
+        let short = [
+            (0x40a00000, 0x42140000), (0x41200000, 0x42000000), (0x4131eb51, 0x41b00000),
+            (0x40fcf014, 0x412e14af), (0x4039e028, 0x403e7294), (0x4039e028, 0x3d924d80),
+        ];
+        assert_eq!(speeds(accel_frames(20.0, 5.0, 5.0, 37.0)), short);
+        #[rustfmt::skip]
+        let odd = [
+            (0x40066666, 0x4226cccd), (0x40866666, 0x421e6667), (0x40c99999, 0x420d999a),
+            (0x40e9999a, 0x41e8ccce), (0x40e9999a, 0x41ae6668), (0x40c5a7a3, 0x41680003),
+            (0x408f413c, 0x41052c32), (0x4031b5ab, 0x40762e50), (0x3f89d1bc, 0x3f88f14a),
+        ];
+        assert_eq!(speeds(accel_frames(7.3, 2.1, 1.7, 41.7)), odd);
+        // The double 1.0 in plat_Accelerate's p2_distance rounds next_speed
+        // differently from float here.
+        let tenth = |v: f64| (v * 0.1) as f32;
+        #[rustfmt::skip]
+        let decelerating = [
+            (0x3f800000, 0x41a00000, 0), (0x3fc00000, 0x41980000, 0),
+            (0x3fc00000, 0x418c0000, 0), (0x3fc00000, 0x41800000, 0),
+            (0x3fc00000, 0x41680000, 0), (0x3fc00000, 0x41500000, 0),
+            (0x3fc00000, 0x41380000, 0), (0x3fc00000, 0x41200000, 0),
+            (0x3fc00000, 0x41080000, 0), (0x3fc00000, 0x40e00000, 0),
+            (0x3fc00000, 0x40b00000, 0), (0x3fc00000, 0x40800000, 0),
+            (0x3fc00000, 0x40200000, 0x3f6aaaab), (0x3f6aaaab, 0x3f800000, 0),
+            (0x3f6aaaab, 0x3daaaaa8, 0),
+        ];
+        assert_eq!(
+            accel_frames(tenth(15.0), tenth(10.0), tenth(10.0), 20.0),
+            decelerating
+        );
     }
 
     #[test]
@@ -3289,6 +3568,87 @@ mod tests {
         assert!(!world.entities.is_live(item));
     }
 
+    #[test]
+    fn door_reopened_by_a_block_does_not_fire_its_targets() {
+        // C door_go_up(ent, ent->activator): a door's activator is never
+        // set, and door_use returns on the NULL activator G_UseTargets gets.
+        let mut world = spawned(
+            r#"{ "classname" "func_door" "model" "*1" "angle" "-1" "target" "d2" }
+               { "classname" "func_door" "model" "*1" "targetname" "d2" "origin" "500 0 0" }"#,
+        );
+        let door = by_class(&world, "func_door");
+        let other = world.find_by_targetname(None, "d2").unwrap();
+        run_for(&mut world, 0.2); // Think_SpawnDoorTrigger and friends
+        moveinfo_mut(&mut world, door).unwrap().state = STATE_DOWN;
+        let p = player(&mut world);
+        world.entities.get_mut(p).unwrap().game.takedamage = TakeDamage::Aim;
+
+        door_blocked(&mut world, door, p);
+
+        assert_eq!(mover(&world, door).1, STATE_UP);
+        assert_eq!(mover(&world, other).1, STATE_BOTTOM);
+    }
+
+    /// Dying turns the func_plat round, as a deathtarget re-using it could.
+    fn die_reversing_the_plat(
+        world: &mut GameWorld,
+        _key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        let plat = by_class(world, "func_plat");
+        moveinfo_mut(world, plat).unwrap().state = STATE_DOWN;
+    }
+
+    #[test]
+    fn blocked_plat_reverses_on_its_state_after_the_crush_damage() {
+        // C plat_blocked reads moveinfo.state after T_Damage.
+        let mut world = spawned(r#"{ "classname" "func_plat" "model" "*2" }"#);
+        let plat = by_class(&world, "func_plat");
+        moveinfo_mut(&mut world, plat).unwrap().state = STATE_UP;
+        let victim = player(&mut world);
+        {
+            let v = world.entities.get_mut(victim).unwrap();
+            v.game.takedamage = TakeDamage::Aim;
+            v.game.health = 1;
+            v.die = Some(die_reversing_the_plat);
+        }
+        plat_blocked(&mut world, plat, victim);
+        assert_eq!(mover(&world, plat).1, STATE_UP, "plat_go_up from DOWN");
+    }
+
+    /// Dying sends the func_door up, as a deathtarget re-using it could.
+    fn die_opening_the_door(
+        world: &mut GameWorld,
+        _key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        let door = by_class(world, "func_door");
+        moveinfo_mut(world, door).unwrap().state = STATE_UP;
+    }
+
+    #[test]
+    fn blocked_door_reverses_on_its_state_after_the_crush_damage() {
+        // C door_blocked reads moveinfo.state after T_Damage.
+        let mut world = spawned(r#"{ "classname" "func_door" "model" "*1" "angle" "-1" }"#);
+        let door = by_class(&world, "func_door");
+        moveinfo_mut(&mut world, door).unwrap().state = STATE_DOWN;
+        let victim = player(&mut world);
+        {
+            let v = world.entities.get_mut(victim).unwrap();
+            v.game.takedamage = TakeDamage::Aim;
+            v.game.health = 1;
+            v.die = Some(die_opening_the_door);
+        }
+        door_blocked(&mut world, door, victim);
+        assert_eq!(mover(&world, door).1, STATE_DOWN, "door_go_down from UP");
+    }
+
     // -- func_door_rotating --
 
     fn angles_of(world: &GameWorld, key: EntityKey) -> Vec3f {
@@ -3353,6 +3713,21 @@ mod tests {
             Vec3f::new(90.0, 0.0, 0.0)
         );
         assert_ne!(p.state.effects & EF_ANIM_ALL, 0);
+    }
+
+    #[test]
+    fn func_door_animates_its_texture_with_spawnflags_16_and_64() {
+        // C SP_func_door: 16 is EF_ANIM_ALL, 64 EF_ANIM_ALLFAST.
+        for (flags, effects) in [(0, 0), (16, EF_ANIM_ALL), (64, EF_ANIM_ALLFAST)] {
+            let world = spawned(&format!(
+                "{{ \"classname\" \"func_door\" \"model\" \"*1\" \"spawnflags\" \"{flags}\" }}"
+            ));
+            let door = world.entities.get(by_class(&world, "func_door")).unwrap();
+            assert_eq!(
+                door.state.effects & (EF_ANIM_ALL | EF_ANIM_ALLFAST),
+                effects
+            );
+        }
     }
 
     #[test]
@@ -4371,12 +4746,22 @@ mod tests {
     }
 
     #[test]
-    fn only_a_targeted_door_without_health_gets_a_message_touch() {
-        for keys in [
-            "\"targetname\" \"d\" \"message\" \"m\" \"health\" \"10\"",
-            "\"message\" \"m\"",
-            "\"targetname\" \"d\"",
-        ] {
+    fn targeted_doors_get_a_message_touch_as_c_decides() {
+        // func_door and func_door_secret use `else if`, so a shootable door
+        // gets no message touch; SP_func_door_rotating a plain `if`.
+        let shootable = "\"targetname\" \"d\" \"message\" \"m\" \"health\" \"10\"";
+        let world = spawned(&format!(
+            "{{ \"classname\" \"func_door\" \"model\" \"*1\" {shootable} }}"
+        ));
+        let touch = world
+            .entities
+            .get(by_class(&world, "func_door"))
+            .unwrap()
+            .touch;
+        assert!(
+            touch.is_none_or(|t| !std::ptr::fn_addr_eq(t, door_touch as crate::entity::TouchFn))
+        );
+        for keys in ["\"message\" \"m\"", "\"targetname\" \"d\""] {
             for class in ["func_door", "func_door_rotating"] {
                 let world = spawned(&format!(
                     "{{ \"classname\" \"{class}\" \"model\" \"*1\" {keys} }}"
@@ -4392,16 +4777,20 @@ mod tests {
                 );
             }
         }
-        for class in ["func_door_rotating", "func_door_secret"] {
+        for (class, health) in [
+            ("func_door_rotating", ""),
+            ("func_door_rotating", "\"health\" \"10\""),
+            ("func_door_secret", ""),
+        ] {
             let world = spawned(&format!(
-                "{{ \"classname\" \"{class}\" \"model\" \"*1\" \"targetname\" \"d\" \"message\" \"m\" }}"
+                "{{ \"classname\" \"{class}\" \"model\" \"*1\" \"targetname\" \"d\" \"message\" \"m\" {health} }}"
             ));
             let door = world.find_by_targetname(None, "d").unwrap();
             let touch = world.entities.get(door).unwrap().touch;
             assert!(
                 touch
                     .is_some_and(|t| std::ptr::fn_addr_eq(t, door_touch as crate::entity::TouchFn)),
-                "{class}"
+                "{class} {health}"
             );
         }
     }

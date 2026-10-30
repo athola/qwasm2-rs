@@ -6,12 +6,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_railgun;
 use crate::monster::flash::monster_flash_source;
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -54,6 +52,7 @@ const SOUND_CLEAVER_HIT: &str = "gladiator/melee2.wav";
 const SOUND_CLEAVER_MISS: &str = "gladiator/melee3.wav";
 const SOUND_IDLE: &str = "gladiator/gldidle1.wav";
 const SOUND_SEARCH: &str = "gladiator/gldsrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["gladiator/step1.wav", "gladiator/step2.wav"];
 const SOUND_SIGHT: &str = "gladiator/sight.wav";
 
 /// The sounds C `SP_monster_gladiator` precaches, in its order.
@@ -73,14 +72,6 @@ const PRECACHE: [&str; 10] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: gladiator.c `gladiator_frames_*` / `gladiator_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static GLADIATOR_FRAMES_STAND: [MonsterFrame; 7] = [
     frame(ai::ai_stand, 0.0, None),
@@ -256,26 +247,6 @@ static GLADIATOR_MOVE_DEATH: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C `self->monsterinfo.currentmove == &move`: the frame tables are
 /// statics, so their addresses identify a move.
 fn is_current(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
@@ -299,10 +270,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`gladiator/step1.wav`, `step2.wav`) never play.
-/// C ref: `gladiator_footstep`.
-pub fn gladiator_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `gladiator_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn gladiator_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `gladiator_idle`.
 pub fn gladiator_idle(world: &mut GameWorld, key: EntityKey) {
@@ -465,34 +436,7 @@ pub fn gladiator_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -568,6 +512,7 @@ pub fn sp_monster_gladiator_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording};
@@ -780,16 +725,6 @@ mod tests {
     }
 
     #[test]
-    fn gladiator_spawns_with_its_c_pain_walk_run_and_melee_callbacks() {
-        let mut world = test_world();
-        let key = spawned(&mut world);
-        let ent = world.entities.get(key).unwrap();
-        let mi = ent.monsterinfo.as_ref().unwrap();
-        assert!(ent.pain.is_some());
-        assert!(mi.walk.is_some() && mi.run.is_some() && mi.melee.is_some());
-    }
-
-    #[test]
     fn gladiator_spawns_with_the_c_values_and_callbacks() {
         let mut world = test_world();
         let key = spawned(&mut world);
@@ -803,6 +738,17 @@ mod tests {
             ai::walkmonster_start_go as ThinkFn
         ));
         let mi = ent.monsterinfo.as_ref().unwrap();
+        assert!(std::ptr::fn_addr_eq(
+            ent.pain.unwrap(),
+            gladiator_pain as crate::entity::PainFn
+        ));
+        for (got, want) in [
+            (mi.walk, gladiator_walk as ThinkFn),
+            (mi.run, gladiator_run),
+            (mi.melee, gladiator_melee),
+        ] {
+            assert!(std::ptr::fn_addr_eq(got.unwrap(), want));
+        }
         assert_eq!(mi.scale, 1.0);
         assert!(mi.dodge.is_none());
         assert!(std::ptr::fn_addr_eq(
@@ -1087,8 +1033,8 @@ mod tests {
     fn gladiator_holding_ground_sights_a_player_and_shoots_it_with_the_railgun() {
         let (mut world, gi, key, player) =
             monster_arena(sp_monster_gladiator, sp_monster_gladiator_finish, 400.0);
-        // Holding ground, C's missile chance is 0.4 a frame instead of 0.02
-        // at mid range, so the gladiator shoots instead of closing in.
+        // Holding ground, C's missile chance is 0.4 a frame instead of 0.1
+        // at near range, so the gladiator shoots instead of closing in.
         mi_mut(&mut world, key).aiflags |= AiFlags::STAND_GROUND;
         let (mut angry, mut gunned) = (false, false);
         run(&mut world, key, 100, |w| {

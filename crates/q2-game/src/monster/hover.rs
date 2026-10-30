@@ -6,11 +6,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{become_explosion1, throw_gib, throw_head, GibType};
 use crate::monster::{fire::monster_fire_blaster, flash::monster_flash_source};
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -38,14 +37,6 @@ const SOUND_IDLE_LOOP: &str = "hover/hovidle1.wav";
 
 /// C `MODEL_SCALE` (hover.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -305,21 +296,9 @@ pub static HOVER_MOVE_END_ATTACK: MonsterMove = MonsterMove {
 // Callbacks. C ref: hover.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), CHAN_VOICE, index, 1.0, ATTN_NORM, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
+/// Every hover sound plays on `CHAN_VOICE` at `ATTN_NORM`.
+fn sound(world: &GameWorld, key: EntityKey, name: &str) {
+    crate::monster::sound(world, key, CHAN_VOICE, name, ATTN_NORM);
 }
 
 /// C ref: `hover_sight`.
@@ -601,6 +580,7 @@ pub fn finish_hover(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 
@@ -751,6 +731,40 @@ mod tests {
             assert!(ent.velocity.x > 0.0 && (ent.velocity.length() - 1000.0).abs() < 0.5);
             world.free_entity(bolt);
         }
+    }
+
+    #[test]
+    fn hover_reattack_ends_the_attack_when_the_enemy_is_out_of_sight() {
+        let (mut world, gi) = test_world_recording();
+        let key = hover(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 64.0));
+        world.entities.get_mut(key).unwrap().game.enemy = Some(player);
+        seed(&mut world, |w| w.random() <= 0.6);
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 0.5,
+            ..Trace::default()
+        });
+        hover_reattack(&mut world, key);
+        assert!(playing(&world, key, &HOVER_MOVE_END_ATTACK));
+    }
+
+    #[test]
+    fn hover_fire_blaster_shoots_from_the_c_muzzle_with_its_flash() {
+        let (mut world, gi) = crate::misc::wire::wire_world();
+        world.entities.spawn_numbered(0).unwrap();
+        let key = hover(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 64.0));
+        world.entities.get_mut(key).unwrap().game.enemy = Some(player);
+        hover_fire_blaster(&mut world, key);
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        // C flash offset (32.5, -0.8, 10) from (0, 0, 64) facing +x.
+        let at = world.entities.get(bolt).unwrap().state.origin;
+        assert!((at - Vec3f::new(32.5, 0.8, 74.0)).length() < 1e-3, "{at}");
+        let wire = gi.wire.borrow();
+        assert_eq!(
+            wire[wire.len() - 2],
+            crate::misc::wire::Wire::Byte(MZ2_HOVER_BLASTER_1)
+        );
     }
 
     fn pain(world: &mut GameWorld, key: EntityKey, damage: i32) {

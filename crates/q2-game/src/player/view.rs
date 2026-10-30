@@ -26,30 +26,17 @@ const FRAME_CRPAIN4: i32 = 172;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
+/// C `bob_up` cvar default.
+const BOB_UP: f32 = 0.005;
+
 impl GameWorld {
-    /// Calculate view offset for a player entity.
-    /// Applies view bob, damage kick, and fall effects.
-    /// C ref: `SV_CalcViewOffset` (player/view.c).
-    pub fn update_player_view(&mut self, key: EntityKey) {
-        let Some(ent) = self.entities.get(key) else {
-            return;
-        };
-        if ent.client.is_none() {
-            return;
-        }
-
-        // View bob based on movement speed.
-        let speed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
-        let bob_time = self.level.time;
-        let bob = if speed > 0.0 {
-            (bob_time * 6.0).sin() * speed * 0.005
-        } else {
-            0.0
-        };
-
-        // Apply view offset to player state: eye height comes from the
-        // entity's viewheight (C SV_CalcViewOffset), which pmove lowers when
-        // ducking.
+    /// Advance the walk bob and set the eye offset: eye height plus bob
+    /// (at most 6) and the shot and damage kicks, bounded to the player
+    /// box. Returns the bob for the gun offset.
+    /// C ref: `ClientEndServerFrame`'s bob setup and `SV_CalcViewOffset`
+    /// (player/view.c).
+    pub fn update_player_view(&mut self, key: EntityKey) -> Bob {
+        let bob = self.calc_bob(key);
         // The last shot's kick (C: base angles are `kick_angles`, cleared
         // for the dead; the origin kick adds to the eye, clamped).
         let now = self.level.time;
@@ -62,6 +49,9 @@ impl GameWorld {
                 client.kick_angles
                     + Vec3f::new(ratio * client.v_dmg_pitch, 0.0, ratio * client.v_dmg_roll)
             };
+            // Eye height comes from the entity's viewheight, which pmove
+            // lowers when ducking, plus at most 6 of bob.
+            let bob = (bob.fracsin * bob.xyspeed * BOB_UP).min(6.0);
             let v = Vec3f::new(0.0, 0.0, ent.game.viewheight + bob) + client.kick_origin;
             client.ps.viewoffset = Vec3f::new(
                 v.x.clamp(-14.0, 14.0),
@@ -69,6 +59,7 @@ impl GameWorld {
                 v.z.clamp(-22.0, 30.0),
             );
         }
+        bob
     }
 }
 
@@ -477,39 +468,43 @@ impl GameWorld {
     }
 
     /// Advance the walk bob: a quicker step at higher speed on the ground,
-    /// none in the air, back to the start when nearly still; ducked steps
-    /// cycle four times as fast. C ref: `ClientEndServerFrame`'s bob part.
+    /// the last step kept in the air (C's file static `bobmove`), back to
+    /// the start when nearly still; ducked steps cycle four times as fast.
+    /// Speed and sine are in double, as in C. C ref:
+    /// `ClientEndServerFrame`'s bob part.
     pub fn calc_bob(&mut self, key: EntityKey) -> Bob {
+        let still = Bob {
+            xyspeed: 0.0,
+            cycle: 0,
+            fracsin: 0.0,
+        };
         let Some(ent) = self.entities.get(key) else {
-            return Bob {
-                xyspeed: 0.0,
-                cycle: 0,
-                fracsin: 0.0,
-            };
+            return still;
         };
-        let xyspeed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
-        let on_ground = ent.game.ground_entity.is_some();
-        let Some(client) = self.client_mut(key) else {
-            return Bob {
-                xyspeed,
-                cycle: 0,
-                fracsin: 0.0,
-            };
-        };
-        let bobmove = if xyspeed < 5.0 {
-            client.bobtime = 0.0; // start at beginning of cycle again
-            0.0
+        if ent.client.is_none() {
+            return still;
+        }
+        let (vel, on_ground) = (ent.velocity, ent.game.ground_entity.is_some());
+        let xyspeed = f64::from(vel.x * vel.x + vel.y * vel.y).sqrt() as f32;
+        let restart = xyspeed < 5.0;
+        if restart {
+            self.game.bobmove = 0.0;
         } else if on_ground {
-            if xyspeed > 210.0 {
+            self.game.bobmove = if xyspeed > 210.0 {
                 0.25
             } else if xyspeed > 100.0 {
                 0.125
             } else {
                 0.0625
-            }
-        } else {
-            0.0
+            };
+        }
+        let bobmove = self.game.bobmove;
+        let Some(client) = self.client_mut(key) else {
+            return still;
         };
+        if restart {
+            client.bobtime = 0.0; // start at beginning of cycle again
+        }
         client.bobtime += bobmove;
         let mut bobtime = client.bobtime;
         if client.ps.pmove.pm_flags & q2_common::pmove::PMF_DUCKED != 0 {
@@ -518,7 +513,7 @@ impl GameWorld {
         Bob {
             xyspeed,
             cycle: bobtime as i32,
-            fracsin: (bobtime * std::f32::consts::PI).sin().abs(),
+            fracsin: (f64::from(bobtime) * std::f64::consts::PI).sin().abs() as f32,
         }
     }
 
@@ -1364,5 +1359,65 @@ mod tests {
         let (still, running) = (bob_at(0.0), bob_at(300.0));
         assert_eq!(still, 0.0);
         assert_ne!(running, still);
+    }
+
+    /// A player standing on the floor (or not) moving at `speed`; returns
+    /// its eye height (22 plus the bob) after one view update.
+    fn bob(world: &mut GameWorld, key: EntityKey, speed: f32, on_ground: bool) -> f32 {
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.velocity = Vec3f::new(speed, 0.0, 0.0);
+        ent.game.ground_entity = on_ground.then_some(key);
+        world.update_player_view(key);
+        world.client(key).unwrap().ps.viewoffset.z
+    }
+
+    fn player(world: &mut GameWorld) -> EntityKey {
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        key
+    }
+
+    /// C: 22 + fabs(sin(bobtime * M_PI)) * xyspeed * bob_up (0.005).
+    fn c_bob(bobtime: f32, xyspeed: f32) -> f32 {
+        let fracsin = (f64::from(bobtime) * std::f64::consts::PI).sin().abs() as f32;
+        22.0 + fracsin * xyspeed * 0.005
+    }
+
+    #[test]
+    fn view_bob_follows_the_c_bob_cycle_on_the_ground() {
+        let mut world = test_world();
+        let key = player(&mut world);
+        // Over 210 units/s the cycle advances 0.25 a frame.
+        assert_eq!(bob(&mut world, key, 300.0, true), c_bob(0.25, 300.0));
+        assert_eq!(bob(&mut world, key, 300.0, true), c_bob(0.5, 300.0));
+        // Off the ground the last bobmove keeps going (C's static).
+        assert_eq!(bob(&mut world, key, 150.0, false), c_bob(0.75, 150.0));
+        // Below 5 units/s the cycle restarts.
+        assert_eq!(bob(&mut world, key, 4.0, true), 22.0);
+        assert_eq!(world.client(key).unwrap().bobtime, 0.0);
+        // 100..=210 advances 0.125, slower 0.0625.
+        assert_eq!(bob(&mut world, key, 150.0, true), c_bob(0.125, 150.0));
+        assert_eq!(bob(&mut world, key, 50.0, true), c_bob(0.1875, 50.0));
+    }
+
+    #[test]
+    fn view_bob_is_at_most_6_and_ducking_quickens_it() {
+        let mut world = test_world();
+        let key = player(&mut world);
+        world.client_mut(key).unwrap().bobtime = 0.25;
+        assert_eq!(bob(&mut world, key, 3000.0, true), 28.0);
+        world.client_mut(key).unwrap().bobtime = 0.0;
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        // bobtime 0.0625 runs as 0.25 when ducked.
+        assert_eq!(bob(&mut world, key, 50.0, true), c_bob(0.25, 50.0));
+    }
+
+    #[test]
+    fn view_offset_stays_inside_the_player_box() {
+        let mut world = test_world();
+        let key = player(&mut world);
+        world.entities.get_mut(key).unwrap().game.viewheight = 40.0;
+        world.update_player_view(key);
+        assert_eq!(world.client(key).unwrap().ps.viewoffset.z, 30.0);
     }
 }

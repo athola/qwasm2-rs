@@ -2,9 +2,9 @@
 //!
 //! The full PAK bytes stay in the JS heap after fetch.  Only the directory
 //! index (a few hundred KB at most) is parsed into Rust memory at open time.
-//! Individual asset reads slice the `Uint8Array` on demand, copying only the
-//! requested bytes into WASM linear memory.  Between level transitions the
-//! caller drops loaded asset buffers; WASM memory returns to baseline.
+//! Individual asset reads copy only the requested bytes into WASM linear
+//! memory, once. Linear memory never shrinks: asset buffers dropped between
+//! levels free space the allocator reuses for the next level's assets.
 
 use js_sys::Uint8Array;
 use q2_common::{
@@ -37,8 +37,8 @@ impl PakReader for JsPakReader {
                 self.array.length()
             )));
         }
-        // Uint8Array::slice copies [offset, end) from the JS buffer into a new
-        // typed array, then to_vec() moves those bytes into WASM linear memory.
-        Ok(self.array.slice(offset, end).to_vec())
+        // subarray is a view of [offset, end) without a copy; to_vec() copies
+        // those bytes into WASM linear memory.
+        Ok(self.array.subarray(offset, end).to_vec())
     }
 }

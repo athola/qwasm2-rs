@@ -36,6 +36,9 @@ pub(crate) mod test_support {
         pub(crate) userinfo: String,
         /// Entity numbers `client_begin` was called with, in order.
         pub(crate) begun: Vec<usize>,
+        /// `client_think` calls, shared so a test can read it after
+        /// boxing the game.
+        pub(crate) thinks: std::rc::Rc<std::cell::Cell<u32>>,
     }
 
     impl GameExport for NullGame {
@@ -54,10 +57,13 @@ pub(crate) mod test_support {
         }
         fn client_disconnect(&mut self, _: usize) {}
         fn client_command(&mut self, _: usize) {}
-        fn client_think(&mut self, _: usize, _: &UserCmd) {}
+        fn client_think(&mut self, _: usize, _: &UserCmd) {
+            self.thinks.set(self.thinks.get() + 1);
+        }
         fn run_frame(&mut self) {
             self.frames_run += 1;
         }
+        fn clear_entity_events(&mut self) {}
         fn server_command(&mut self) {}
         fn num_edicts(&self) -> usize {
             0

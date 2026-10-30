@@ -5,10 +5,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -32,14 +31,6 @@ const SOUNDS: [&str; 8] = [
 
 /// C `MODEL_SCALE` (flipper.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -174,21 +165,9 @@ pub static FLIPPER_MOVE_DEATH: MonsterMove = MonsterMove {
 // Callbacks. C ref: flipper.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, ATTN_NORM, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
+/// Every flipper sound plays at `ATTN_NORM`.
+fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str) {
+    crate::monster::sound(world, key, channel, name, ATTN_NORM);
 }
 
 /// C ref: `flipper_stand`.
@@ -394,6 +373,7 @@ pub fn finish_flipper(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 
@@ -514,29 +494,25 @@ mod tests {
     }
 
     #[test]
-    fn flipper_pain_debounces_three_seconds_and_picks_pain1_or_pain2() {
+    fn flipper_pain_debounces_three_seconds_and_picks_pain1_on_an_odd_randk() {
         let (mut world, gi) = test_world_recording();
         world.level.time = 5.0;
         let key = flipper(&mut world);
-        let (mut one, mut two) = (0, 0);
-        for _ in 0..200 {
+        // C: n = (randk() + 1) % 2, pain1 when n is 0.
+        for (odd, mv, name) in [
+            (true, &FLIPPER_MOVE_PAIN1, "flipper/flppain1.wav"),
+            (false, &FLIPPER_MOVE_PAIN2, "flipper/flppain2.wav"),
+        ] {
             world.entities.get_mut(key).unwrap().game.pain_debounce_time = 0.0;
+            seed(&mut world, |w| (w.random_u32() % 2 == 1) == odd);
             pain(&mut world, key, 40);
             assert_eq!(
                 world.entities.get(key).unwrap().game.pain_debounce_time,
                 8.0
             );
-            let sound = sounds_of(&world, &gi, key).pop().unwrap().1;
-            if playing(&world, key, &FLIPPER_MOVE_PAIN1) {
-                assert_eq!(sound, "flipper/flppain1.wav");
-                one += 1;
-            } else {
-                assert!(playing(&world, key, &FLIPPER_MOVE_PAIN2));
-                assert_eq!(sound, "flipper/flppain2.wav");
-                two += 1;
-            }
+            assert!(playing(&world, key, mv), "odd {odd}");
+            assert_eq!(sounds_of(&world, &gi, key).pop().unwrap().1, name);
         }
-        assert!(one > 50 && two > 50, "{one} {two}");
 
         // Within the debounce: no new sound or move.
         let calls = gi.sound_calls.borrow().len();

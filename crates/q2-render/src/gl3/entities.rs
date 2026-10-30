@@ -266,7 +266,10 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
             bound = want;
         }
         match kind {
-            EntityDraw::Brush(submodel) => draw_brush(scene, entity, submodel, translucent),
+            // The SURF_TRANS33/66 faces wait for `draw_brush_alpha_faces`.
+            EntityDraw::Brush(submodel) => {
+                draw_brush(scene, entity, submodel, BatchFilter::Opaque, translucent)
+            }
             EntityDraw::Alias => draw_alias(scene, entity, translucent),
             EntityDraw::Beam => {
                 if let (Some(fx), Some(palette)) = (scene.fx, scene.palette) {
@@ -295,8 +298,14 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
     }
 }
 
-/// C ref: `GL3_DrawBrushModel`.
-fn draw_brush(scene: &EntityScene, entity: &RenderEntity, submodel: usize, translucent: bool) {
+/// The `filter` faces of a brush entity. C ref: `GL3_DrawBrushModel`.
+fn draw_brush(
+    scene: &EntityScene,
+    entity: &RenderEntity,
+    submodel: usize,
+    filter: BatchFilter,
+    translucent: bool,
+) {
     let Some(world) = scene.world else {
         return;
     };
@@ -309,11 +318,28 @@ fn draw_brush(scene: &EntityScene, entity: &RenderEntity, submodel: usize, trans
         view_proj: &view_proj,
         time: scene.refdef.time,
         frame: entity.frame,
-        filter: BatchFilter::All,
+        filter,
         translucent_entity: translucent,
         areabits: None,
     };
     draw_batches(scene.gl, scene.world_uniforms, world, batches, &draw);
+}
+
+/// The SURF_TRANS33/66 faces of every brush entity, in the final alpha pass
+/// after all entities (C `DrawInlineBModel` chains them on
+/// `gl3_alpha_surfaces`, whatever the entity's own flags). Deliberate
+/// deviation: C draws that chain with the identity matrix, so a moved or
+/// rotated brush entity's glass stays where the entity spawned; here it
+/// keeps the entity's matrix. The world program must be bound.
+pub fn draw_brush_alpha_faces(scene: &EntityScene, entities: &[RenderEntity]) {
+    for entity in entities
+        .iter()
+        .filter(|e| e.flags & (RF_VIEWERMODEL | RF_BEAM) == 0)
+    {
+        if let Some(Model::Brush { submodel }) = scene.models.get(entity.model) {
+            draw_brush(scene, entity, *submodel, BatchFilter::Translucent, false);
+        }
+    }
 }
 
 /// One MD2 with the alias program bound. C ref: `GL3_DrawAliasModel`.

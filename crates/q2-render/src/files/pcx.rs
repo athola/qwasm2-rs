@@ -1,4 +1,6 @@
-//! ZSoft PCX loader (C `LoadPCX` in `refresh/files/pcx.c`).
+//! ZSoft PCX loader (C `LoadPCX` in `refresh/files/pcx.c`). Not ported:
+//! `fixQuitScreen`, which patches 11 rows of the stock baseq2 `pics/quit.pcx`
+//! identified by name and checksum.
 
 use super::palette::rgb_entries;
 use super::{malformed, slice_at};
@@ -63,23 +65,27 @@ pub fn load_pcx(data: &[u8]) -> Q2Result<PcxImage> {
 
     let mut pixels = Vec::with_capacity(pixel_count);
     let mut cursor = HEADER_SIZE;
-    while pixels.len() < pixel_count {
-        let mut byte = *data
-            .get(cursor)
-            .ok_or_else(|| malformed(WHAT, "truncated RLE data"))?;
-        cursor += 1;
-        let mut run = 1usize;
-        if byte & 0xC0 == 0xC0 {
-            run = usize::from(byte & 0x3F);
-            byte = *data
+    for row in 0..height {
+        let row_end = (row + 1) * width;
+        while pixels.len() < row_end {
+            let mut byte = *data
                 .get(cursor)
-                .ok_or_else(|| malformed(WHAT, "truncated RLE run"))?;
+                .ok_or_else(|| malformed(WHAT, "truncated RLE data"))?;
             cursor += 1;
+            let mut run = 1usize;
+            if byte & 0xC0 == 0xC0 {
+                run = usize::from(byte & 0x3F);
+                byte = *data
+                    .get(cursor)
+                    .ok_or_else(|| malformed(WHAT, "truncated RLE run"))?;
+                cursor += 1;
+            }
+            // What a run leaves past the row end is dropped: C writes it at
+            // the start of the next row, which then overwrites it, and past
+            // the last row it has "no place for write".
+            let room = row_end - pixels.len();
+            pixels.resize(pixels.len() + run.min(room), byte);
         }
-        // Runs spilling past the image are clipped, as C does on "no place
-        // for write".
-        let room = pixel_count - pixels.len();
-        pixels.resize(pixels.len() + run.min(room), byte);
     }
 
     Ok(PcxImage {
@@ -131,6 +137,15 @@ mod tests {
         let image = load_pcx(&bytes).unwrap();
         assert_eq!(image.pixels, vec![4, 4]);
         assert!(image.palette.is_none());
+    }
+
+    // C LoadPCX decodes row by row: a run's overflow lands at the start of
+    // the next row, which that row then overwrites from x = 0.
+    #[test]
+    fn run_crossing_a_row_end_is_dropped_at_the_row_end_like_c() {
+        let mut bytes = header(2, 2);
+        bytes.extend_from_slice(&[0xC3, 9, 1, 2]); // 3 x 9 into a 2-wide row
+        assert_eq!(load_pcx(&bytes).unwrap().pixels, vec![9, 9, 1, 2]);
     }
 
     #[test]

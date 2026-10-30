@@ -9,7 +9,7 @@ use q2_render_api::DLight;
 use q2_shared::constants::MAX_LIGHTSTYLES;
 
 use super::lightmap::{calc_surface_extents, style_count};
-use super::world::{face_positions, SURF_SKY, SURF_WARP};
+use super::world::{face_positions, SURF_WARP};
 use crate::bsp::BspData;
 
 /// C `GL3_LightPoint` traces this far below the point.
@@ -36,8 +36,8 @@ struct LightFace {
 
 pub struct LightTree {
     nodes: Vec<LightNode>,
-    /// Parallel to the BSP face array; `None` for faces C gives no lightmap
-    /// (sky, warp) or whose geometry is malformed.
+    /// Parallel to the BSP face array; `None` for faces C skips (warp) or
+    /// whose geometry is malformed.
     faces: Vec<Option<LightFace>>,
     lighting: Vec<u8>,
 }
@@ -60,7 +60,7 @@ impl LightTree {
                 }
             })
             .collect();
-        // `trace` recurses along child links, so a link back to the node or
+        // `trace` follows child links, so a link back to the node or
         // an ancestor would never end. q2bsp writes nodes in preorder (the
         // rule collision's `validate_references` enforces); without it the
         // tree is dropped and everything traces dark.
@@ -80,7 +80,9 @@ impl LightTree {
             .iter()
             .map(|face| {
                 let texinfo = bsp.texinfo.get(usize::try_from(face.texinfo_idx).ok()?)?;
-                if texinfo.flags & (SURF_SKY | SURF_WARP) != 0 {
+                // C skips SURF_DRAWTURB, and SURF_DRAWSKY only with
+                // r_fixsurfsky set (default 0): sky faces stay in the trace.
+                if texinfo.flags & SURF_WARP != 0 {
                     return None;
                 }
                 let positions = face_positions(bsp, face)?;
@@ -134,6 +136,9 @@ impl LightTree {
     }
 
     /// C `RecursiveLightPoint`: `None` when the segment hits no lit face.
+    /// The recursion runs on a heap stack in C's visiting order (near side,
+    /// the node's faces, far side), since an untrusted BSP can chain its
+    /// nodes deeper than the wasm32 call stack.
     fn trace(
         &self,
         child: i32,
@@ -141,27 +146,44 @@ impl LightTree {
         end: [f32; 3],
         styles: &[f32; MAX_LIGHTSTYLES],
     ) -> Option<[f32; 3]> {
-        let node = self.nodes.get(usize::try_from(child).ok()?)?;
-        let front = dot(start, node.normal) - node.dist;
-        let back = dot(end, node.normal) - node.dist;
-        let side = usize::from(front < 0.0);
-        if (back < 0.0) == (side == 1) {
-            return self.trace(node.children[side], start, end, styles);
+        enum Step<'a> {
+            Trace(i32, [f32; 3], [f32; 3]),
+            Faces(&'a LightNode, [f32; 3]),
         }
+        let mut steps = vec![Step::Trace(child, start, end)];
+        while let Some(step) = steps.pop() {
+            let (child, start, end) = match step {
+                Step::Trace(child, start, end) => (child, start, end),
+                Step::Faces(node, mid) => {
+                    if let Some(color) = self.face_color(node, mid, styles) {
+                        return Some(color);
+                    }
+                    continue;
+                }
+            };
+            let Some(node) = usize::try_from(child).ok().and_then(|i| self.nodes.get(i)) else {
+                continue;
+            };
+            let front = dot(start, node.normal) - node.dist;
+            let back = dot(end, node.normal) - node.dist;
+            let side = usize::from(front < 0.0);
+            if (back < 0.0) == (side == 1) {
+                steps.push(Step::Trace(node.children[side], start, end));
+                continue;
+            }
 
-        let fraction = front / (front - back);
-        let mid = [
-            start[0] + (end[0] - start[0]) * fraction,
-            start[1] + (end[1] - start[1]) * fraction,
-            start[2] + (end[2] - start[2]) * fraction,
-        ];
-        if let Some(color) = self.trace(node.children[side], start, mid, styles) {
-            return Some(color);
+            let fraction = front / (front - back);
+            let mid = [
+                start[0] + (end[0] - start[0]) * fraction,
+                start[1] + (end[1] - start[1]) * fraction,
+                start[2] + (end[2] - start[2]) * fraction,
+            ];
+            // Pushed in reverse of the order they run.
+            steps.push(Step::Trace(node.children[1 - side], mid, end));
+            steps.push(Step::Faces(node, mid));
+            steps.push(Step::Trace(node.children[side], start, mid));
         }
-        if let Some(color) = self.face_color(node, mid, styles) {
-            return Some(color);
-        }
-        self.trace(node.children[1 - side], mid, end, styles)
+        None
     }
 
     /// Styled lightmap sample of the first face of `node` that contains `mid`.
@@ -356,12 +378,49 @@ mod tests {
         near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [1.0; 3]);
     }
 
+    // An untrusted BSP can chain its nodes as deep as it has nodes; the
+    // trace must not grow the call stack with them (wasm32 aborts).
     #[test]
-    fn warp_and_sky_faces_carry_no_light() {
-        for flags in [SURF_WARP, SURF_SKY] {
-            let tree = LightTree::from_bsp(&floor_bsp(flags, 0));
-            near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
-        }
+    fn a_node_chain_far_deeper_than_the_stack_traces_without_overflow() {
+        const DEPTH: i32 = 200_000;
+        let nodes = (0..DEPTH)
+            .map(|index| LightNode {
+                normal: [0.0, 0.0, 1.0],
+                dist: -1.0e9, // start and end both in front
+                children: [if index + 1 < DEPTH { index + 1 } else { -1 }, -1],
+                first_face: 0,
+                num_faces: 0,
+            })
+            .collect();
+        let tree = LightTree {
+            nodes,
+            faces: Vec::new(),
+            lighting: vec![0; 3],
+        };
+        let traced = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || tree.light_point([0.0; 3], &ON, &[]))
+            .expect("thread spawns")
+            .join()
+            .expect("trace returns");
+        near(traced, [0.0; 3]);
+    }
+
+    #[test]
+    fn warp_faces_carry_no_light() {
+        let tree = LightTree::from_bsp(&floor_bsp(SURF_WARP, 0));
+        near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
+    }
+
+    // C skips SURF_DRAWSKY faces only with r_fixsurfsky set (default 0), and
+    // stock sky faces carry lightmap samples, so the trace stops there.
+    #[test]
+    fn sky_faces_are_lit_like_c_default_r_fixsurfsky() {
+        let tree = LightTree::from_bsp(&floor_bsp(crate::gl3::world::SURF_SKY, 0));
+        near(
+            tree.light_point([20.0, 36.0, 100.0], &ON, &[]),
+            [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
     }
 
     #[test]

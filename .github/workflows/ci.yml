@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # Installs the toolchain, components and wasm32 target pinned in rust-toolchain.toml.
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: make fmt-check
       - run: make lint
       - run: make check
@@ -36,7 +36,7 @@ jobs:
         run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: gamedata/baseq2/pak0.pak
           key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
@@ -53,30 +53,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - run: rustup toolchain install
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: cargo-audit
+          tool: cargo-audit@0.22.1
       - run: cargo audit
 
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.14.0
       # The map-loading spec routes the pak request to the demo pak0.pak.
       - name: Read demo pak checksum
         id: demo
         run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: gamedata/baseq2/pak0.pak
           key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
@@ -85,13 +85,13 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y p7zip-full
           make gamedata-demo
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('tests/browser/package-lock.json') }}
       # Builds the release wasm bundle (exercising the bundler's glue patching) and runs Playwright.
       - run: make test-browser PLAYWRIGHT_INSTALL_FLAGS=--with-deps
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: playwright-test-results

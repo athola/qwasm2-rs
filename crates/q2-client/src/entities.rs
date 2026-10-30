@@ -1,7 +1,8 @@
 //! Entities to draw between two server frames. C ref: `CL_AddPacketEntities`
 //! (client/cl_entities.c) and the no-lerp rules of `CL_ParseEntity`
-//! (client/cl_parse.c). Particle trails and lights are `fx`'s; player
-//! skins are not done.
+//! (client/cl_parse.c). Particle trails and lights are `fx`'s. Not done:
+//! player skins with the custom weapon model (`modelindex2` 255) and the
+//! Rogue defender sphere's translucent linked shell (#35).
 
 use q2_shared::constants::{
     EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_COLOR_SHELL, EF_DOUBLE, EF_HALF_DAMAGE,
@@ -182,7 +183,23 @@ pub fn entity_views(
                 alpha: 0.30,
                 ..view.clone()
             });
-            std::iter::once(view).chain(shell)
+            // C "duplicate for linked models", which it skips for the own
+            // player. modelindex2 255 is the player's weapon model from
+            // clientinfo, not ported with player skins (#35). The effects
+            // stay with the entity itself.
+            let linked = [s.modelindex2, s.modelindex3, s.modelindex4]
+                .into_iter()
+                .filter(|&m| m != 0 && m != 255 && !viewer)
+                .map(|modelindex| EntityView {
+                    modelindex,
+                    effects: 0,
+                    skinnum: 0,
+                    flags: 0,
+                    alpha: 1.0,
+                    ..view.clone()
+                })
+                .collect::<Vec<_>>();
+            std::iter::once(view).chain(shell).chain(linked)
         })
         .collect()
 }
@@ -493,6 +510,38 @@ mod tests {
         // Only the rogue game dir recombines them.
         let mixed = RF_SHELL_RED | RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM;
         assert_eq!(shell_combinations(mixed, false), mixed);
+    }
+
+    // C CL_AddPacketEntities "duplicate for linked models": modelindex2..4
+    // are drawn as copies of the entity with skin 0, no flags and no alpha.
+    #[test]
+    fn linked_models_are_drawn_as_plain_copies_of_the_entity() {
+        let mut s = state(4, Vec3f::new(1.0, 2.0, 3.0), 6);
+        s.modelindex2 = 7;
+        s.modelindex4 = 9;
+        s.skinnum = 2;
+        s.renderfx = RF_TRANSLUCENT;
+        s.effects = q2_shared::constants::EF_POWERSCREEN;
+        let views = entity_views("", &[s], &[], 1.0, 0, 0);
+        let models: Vec<i32> = views.iter().map(|v| v.modelindex).collect();
+        assert_eq!(models, vec![3, 7, 9]);
+        assert_eq!(views[0].effects, q2_shared::constants::EF_POWERSCREEN);
+        for linked in &views[1..] {
+            // C adds the entity's effects (its power screen, say) once.
+            assert_eq!(linked.effects, 0);
+            assert_eq!((linked.skinnum, linked.flags, linked.alpha), (0, 0, 1.0));
+            assert_eq!((linked.origin, linked.frame), (views[0].origin, 6));
+        }
+    }
+
+    #[test]
+    fn custom_weapon_and_own_player_links_are_not_drawn() {
+        let mut other = state(4, Vec3f::ZERO, 0);
+        other.modelindex2 = 255; // the weapon model from clientinfo
+        let mut own = state(1, Vec3f::ZERO, 0);
+        own.modelindex3 = 7; // C skips the own player before its links
+        let views = entity_views("", &[own, other], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 2);
     }
 
     #[test]

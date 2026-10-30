@@ -103,7 +103,12 @@ pub fn wav_info(name: &str, wav: &[u8]) -> Q2Result<WavInfo> {
     let mut samples = 0;
     let mut last = iff_data;
     if let Some(cue) = find_next_chunk(wav, end, &mut last, b"cue ") {
-        loopstart = le_i32(wav, cue + 32).unwrap_or(0);
+        // C reads the cue point without a bounds check, past the end of a
+        // file cut off inside it; that is an error here.
+        let Some(start) = le_i32(wav, cue + 32) else {
+            return bad("short cue chunk");
+        };
+        loopstart = start;
         // A LIST chunk right after may hold the loop length ("mark"); C's
         // own comment: not a proper parse, but it works with cooledit.
         if let Some(list) = find_next_chunk(wav, end, &mut last, b"LIST") {
@@ -298,6 +303,18 @@ pub(crate) mod tests {
             (b"cue ", cue(1)),
             (b"LIST", mark_list(9)),
             (b"data", pcm16(&[1, 2])),
+        ]);
+        assert!(wav_info("a.wav", &wav).is_err());
+    }
+
+    // C reads the cue point past the end of such a file; Some(0) here
+    // would turn a one-shot into an endless loop.
+    #[test]
+    fn cue_chunk_cut_off_by_the_end_of_the_file_is_an_error() {
+        let wav = riff(&[
+            (b"fmt ", fmt(1, 11025, 16)),
+            (b"data", pcm16(&[1, 2])),
+            (b"cue ", vec![1, 0, 0, 0]),
         ]);
         assert!(wav_info("a.wav", &wav).is_err());
     }

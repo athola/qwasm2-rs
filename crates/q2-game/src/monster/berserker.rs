@@ -5,10 +5,8 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -53,6 +51,7 @@ const SOUND_DIE: &str = "berserk/berdeth2.wav";
 const SOUND_IDLE: &str = "berserk/beridle1.wav";
 const SOUND_PUNCH: &str = "berserk/attack.wav";
 const SOUND_SEARCH: &str = "berserk/bersrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["berserk/step1.wav", "berserk/step2.wav"];
 const SOUND_SIGHT: &str = "berserk/sight.wav";
 
 /// The sounds C `SP_monster_berserk` precaches, in its order.
@@ -68,14 +67,6 @@ const PRECACHE: [&str; 6] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: berserker.c `berserk_frames_*` / `berserk_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static BERSERK_FRAMES_STAND: [MonsterFrame; 5] = [
     frame(ai::ai_stand, 0.0, Some(berserk_fidget)),
@@ -314,26 +305,6 @@ static BERSERK_MOVE_DEATH2: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
     world
         .entities
@@ -346,10 +317,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`berserk/step1.wav`, `step2.wav`) never play.
-/// C ref: `berserk_footstep`.
-pub fn berserk_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `berserk_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn berserk_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `berserk_sight`.
 pub fn berserk_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
@@ -490,34 +461,7 @@ pub fn berserk_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -596,6 +540,7 @@ pub fn sp_monster_berserker_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording, MockGameImport};
 
@@ -847,16 +792,6 @@ mod tests {
     }
 
     #[test]
-    fn berserker_spawns_with_its_c_pain_walk_run_and_melee_callbacks() {
-        let mut world = test_world();
-        let key = spawned(&mut world);
-        let ent = world.entities.get(key).unwrap();
-        let mi = ent.monsterinfo.as_ref().unwrap();
-        assert!(ent.pain.is_some());
-        assert!(mi.walk.is_some() && mi.run.is_some() && mi.melee.is_some());
-    }
-
-    #[test]
     fn berserker_spawns_with_the_c_values_and_callbacks() {
         let mut world = test_world();
         let key = spawned(&mut world);
@@ -871,6 +806,17 @@ mod tests {
             ai::walkmonster_start_go as ThinkFn
         ));
         let mi = ent.monsterinfo.as_ref().unwrap();
+        assert!(std::ptr::fn_addr_eq(
+            ent.pain.unwrap(),
+            berserk_pain as crate::entity::PainFn
+        ));
+        for (got, want) in [
+            (mi.walk, berserk_walk as ThinkFn),
+            (mi.run, berserk_run),
+            (mi.melee, berserk_melee),
+        ] {
+            assert!(std::ptr::fn_addr_eq(got.unwrap(), want));
+        }
         assert_eq!(mi.scale, 1.0);
         assert!(mi.attack.is_none() && mi.dodge.is_none() && mi.idle.is_none());
         assert!(mi.sight.is_some() && mi.search.is_some() && mi.stand.is_some());
@@ -981,10 +927,12 @@ mod tests {
     }
 
     #[test]
-    fn berserker_spike_hits_for_15_to_20_and_club_for_5_to_10() {
-        for (attack, low) in [
-            (berserk_attack_spike as ThinkFn, 15),
-            (berserk_attack_club as ThinkFn, 5),
+    fn berserker_spike_hits_for_15_to_20_and_club_for_5_to_10_both_kicking_400() {
+        // Both kick 400: the low spike straight on throws the enemy up and
+        // away, the club from his left (mins[0]) pushes it to his right.
+        for (attack, low, away) in [
+            (berserk_attack_spike as ThinkFn, 15, Vec3f::X),
+            (berserk_attack_club as ThinkFn, 5, -Vec3f::Y),
         ] {
             for k in 0..6 {
                 let (mut world, gi) = test_world_recording();
@@ -994,6 +942,9 @@ mod tests {
                 attack(&mut world, key);
                 let health = world.entities.get(enemy).unwrap().game.health;
                 assert_eq!(health, 100 - (low + k as i32));
+                let push = world.entities.get(enemy).unwrap().velocity;
+                assert!((push.length() - 400.0).abs() < 0.01, "{push}");
+                assert!(push.dot(away) > 0.0, "{push}");
             }
         }
     }

@@ -57,7 +57,7 @@ impl GameWorld {
         self.init_client_resp(&mut client);
         self.init_client_persistant(&mut client.pers);
         client_userinfo_changed(&mut client.pers, userinfo);
-        if self.game.maxclients > 1 {
+        if self.game.maxclients() > 1 {
             self.gi
                 .dprintf(&format!("{} connected\n", client.pers.netname));
         }
@@ -73,8 +73,10 @@ impl GameWorld {
     }
 
     /// Place a connected client into the game world at a spawn point.
-    /// C ref: `PutClientInServer` (player/client.c). The help-computer
-    /// counts coop carries across a respawn are not ported.
+    /// C ref: `PutClientInServer` (player/client.c). Not ported: the
+    /// help-computer counts coop carries across a respawn, and
+    /// `air_finished` and `pain`, which only player drowning (P_WorldEffects)
+    /// and player_pain read, neither of which is ported.
     pub fn begin_client(&mut self, key: EntityKey) {
         // Before health is set back up, so farthest ranging does not count
         // this client.
@@ -121,11 +123,16 @@ impl GameWorld {
         }
         self.fetch_client_ent_data(key);
 
+        let number = self.number_of(key).unwrap_or(1);
         if let Some(ent) = self.entities.get_mut(key) {
+            ent.game.ground_entity = None;
             ent.in_use = true;
             ent.game.takedamage = TakeDamage::Aim;
             ent.game.deadflag = DeadFlag::No;
-            ent.svflags &= !SvFlags::DEADMONSTER.bits();
+            ent.game.waterlevel = 0;
+            ent.game.watertype = 0;
+            ent.game.flags.remove(EntityFlags::NO_KNOCKBACK);
+            ent.svflags = 0;
             ent.die = Some(player_die);
             ent.game.movetype = MoveType::Walk;
             ent.game.viewheight = 22.0;
@@ -138,7 +145,12 @@ impl GameWorld {
             ent.velocity = Vec3f::ZERO;
             // 255: "use the skin specified model"; anything else makes
             // ClientThink treat the player as gibs.
+            ent.state.effects = 0;
             ent.state.modelindex = 255;
+            ent.state.modelindex2 = 255; // custom gun model
+                                         // The skin is the player number; the weapon is added later.
+            ent.state.skinnum = number as i32 - 1;
+            ent.state.frame = 0;
             ent.state.origin = spawn_origin + Vec3f::new(0.0, 0.0, 1.0); // off the ground
             ent.state.old_origin = ent.state.origin;
             ent.state.angles = Vec3f::new(0.0, spawn_angles.y, 0.0);
@@ -159,6 +171,8 @@ impl GameWorld {
             }
         }
 
+        // C ignores whether something survived.
+        self.kill_box(key);
         self.link_entity(key);
 
         self.player_skin_configstring(key);
@@ -317,7 +331,7 @@ impl GameWorld {
     /// C ref: `PlayersRangeFromSpot` (player/client.c).
     fn players_range_from_spot(&self, spot: EntityKey) -> f32 {
         let origin = self.spot_origin(spot);
-        (1..=self.game.maxclients.max(0) as usize)
+        (1..=self.game.maxclients().max(0) as usize)
             .filter_map(|n| self.entities.key_for_number(n))
             .filter_map(|k| self.entities.get(k))
             .filter(|p| p.in_use && p.game.health > 0)
@@ -417,7 +431,7 @@ impl GameWorld {
     /// Leave a copy of the player's corpse in the next body queue slot.
     /// C ref: `CopyToBodyQue` (player/client.c).
     fn copy_to_body_que(&mut self, key: EntityKey) {
-        let number = self.game.maxclients + self.level.body_que + 1;
+        let number = self.game.maxclients() + self.level.body_que + 1;
         self.level.body_que = (self.level.body_que + 1) % BODY_QUEUE_SIZE as i32;
         let Some(body) = usize::try_from(number)
             .ok()
@@ -596,6 +610,12 @@ impl GameWorld {
         let ground_linkcount = ground
             .and_then(|g| self.entities.get(g))
             .map(|g| g.linkcount);
+        let had_ground = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.game.ground_entity.is_some());
+        let jumped =
+            had_ground && pm.ground_entity.is_none() && pm.cmd.upmove >= 10 && pm.waterlevel == 0;
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
@@ -627,6 +647,17 @@ impl GameWorld {
                 client.v_angle = pm.viewangles;
                 client.ps.viewangles = pm.viewangles;
             }
+        }
+
+        if jumped {
+            let jump = self.gi.sound_index("*jump1.wav");
+            self.gi
+                .sound(Some(number), CHAN_VOICE, jump, 1.0, ATTN_NORM, 0.0);
+            let origin = self
+                .entities
+                .get(key)
+                .map_or(Vec3f::ZERO, |e| e.state.origin);
+            self.player_noise(key, origin, crate::player::weapon::PlayerNoise::SelfNoise);
         }
 
         self.link_entity(key);
@@ -763,33 +794,40 @@ impl GameWorld {
             .collect();
 
         for key in keys {
-            self.world_effects(key);
-            let bob = self.calc_bob(key);
-            self.damage_feedback(key);
-            self.update_player_view(key);
-            self.calc_gun_offset(key, &bob);
-            // After the view offset, so eye contents are right.
-            self.calc_blend(key);
-            self.update_player_stats(key);
-            self.set_client_effects(key);
-            self.set_client_sound(key);
-            // If the scoreboard is up, update it.
-            let showscores = self.client(key).is_some_and(|c| c.showscores);
-            if showscores && self.level.framenum & 31 == 0 {
-                let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
-                self.deathmatch_scoreboard_message(key, enemy);
-                if let Some(number) = self.number_of(key) {
-                    self.gi.unicast(number, false);
-                }
-            }
-            if let Some(client) = self.client_mut(key) {
-                client.oldviewangles = client.ps.viewangles;
-                client.kick_origin = Vec3f::ZERO;
-                client.kick_angles = Vec3f::ZERO;
-            }
+            self.client_end_server_frame(key);
         }
         self.level.gibs_this_frame = 0;
         self.level.debris_this_frame = 0;
+    }
+
+    /// Build one client's view, effects, sound and status bar for this
+    /// frame. C ref: `ClientEndServerFrame` (player/view.c).
+    pub fn client_end_server_frame(&mut self, key: EntityKey) {
+        self.world_effects(key);
+        // C works out the bob before P_DamageFeedback; the feedback does
+        // not touch the bob, so the view offset computes it here.
+        self.damage_feedback(key);
+        let bob = self.update_player_view(key);
+        self.calc_gun_offset(key, &bob);
+        // After the view offset, so eye contents are right.
+        self.calc_blend(key);
+        self.update_player_stats(key);
+        self.set_client_effects(key);
+        self.set_client_sound(key);
+        // If the scoreboard is up, update it.
+        let showscores = self.client(key).is_some_and(|c| c.showscores);
+        if showscores && self.level.framenum & 31 == 0 {
+            let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
+            self.deathmatch_scoreboard_message(key, enemy);
+            if let Some(number) = self.number_of(key) {
+                self.gi.unicast(number, false);
+            }
+        }
+        if let Some(client) = self.client_mut(key) {
+            client.oldviewangles = client.ps.viewangles;
+            client.kick_origin = Vec3f::ZERO;
+            client.kick_angles = Vec3f::ZERO;
+        }
     }
 }
 
@@ -901,6 +939,12 @@ pub fn player_die(
     {
         client.respawn_time = time + 1.0;
         client.ps.pmove.pm_type = PmType::Dead;
+        // Clear the inventory, keeping keys for the coop respawn.
+        for (n, item) in world.items.iter().enumerate() {
+            if world.game.coop && item.flags.contains(crate::constants::ItemFlags::KEY) {
+                client.resp.coop_respawn.inventory[n] = client.pers.inventory[n];
+            }
+        }
         client.pers.inventory.fill(0);
     }
     // Remove powerups.
@@ -1238,6 +1282,61 @@ mod tests {
         world.disconnect_client(key);
         // C keeps client edicts allocated; the slot is just no longer in use.
         assert!(!world.entities.get(key).unwrap().in_use);
+    }
+
+    #[test]
+    fn begin_client_clears_what_a_gibbed_body_left_on_the_edict() {
+        // C PutClientInServer: effects 0, skin = client index, frame 0,
+        // modelindex2 255, svflags 0, no FL_NO_KNOCKBACK, no ground, dry.
+        let mut world = test_world();
+        world.init_game();
+        let key = world.connect_client(1, "").unwrap();
+        {
+            let e = world.entities.get_mut(key).unwrap();
+            e.state.effects = q2_shared::constants::EF_GIB;
+            e.state.skinnum = 7;
+            e.state.frame = 5;
+            e.svflags = SvFlags::DEADMONSTER.bits() | SvFlags::NOCLIENT.bits();
+            e.game.flags |= EntityFlags::NO_KNOCKBACK;
+            e.game.ground_entity = Some(key);
+            e.game.waterlevel = 2;
+            e.game.watertype = q2_shared::constants::CONTENTS_WATER;
+        }
+        world.begin_client(key);
+        let e = world.entities.get(key).unwrap();
+        // ChangeWeapon then raises the blaster: C ShowGun puts its weapmodel
+        // (1) in the skin's high byte and plays FRAME_pain301 (62).
+        assert_eq!(
+            (e.state.effects, e.state.skinnum, e.state.frame),
+            (0, 1 << 8, 62)
+        );
+        assert_eq!((e.state.modelindex, e.state.modelindex2), (255, 255));
+        assert_eq!(e.svflags, 0);
+        assert!(!e.game.flags.contains(EntityFlags::NO_KNOCKBACK));
+        assert_eq!(e.game.ground_entity, None);
+        assert_eq!((e.game.waterlevel, e.game.watertype), (0, 0));
+    }
+
+    #[test]
+    fn begin_client_telefrags_whatever_stands_on_the_spawn_point() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_game();
+        let key = world.connect_client(1, "").unwrap();
+        let camper = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(camper).unwrap();
+            e.game.health = 100;
+            e.game.takedamage = TakeDamage::Yes;
+            e.solid = Solid::Bbox;
+        }
+        // The first trace KillBox makes hits the camper.
+        gi.queued_traces.borrow_mut().push_back(Trace {
+            startsolid: true,
+            ent_index: world.number_of(camper),
+            ..Default::default()
+        });
+        world.begin_client(key);
+        assert!(world.entities.get(camper).unwrap().game.health <= 0);
     }
 
     #[test]
@@ -1802,6 +1901,36 @@ mod tests {
     }
 
     #[test]
+    fn leaving_the_ground_with_upmove_plays_the_jump_sound_and_makes_noise() {
+        // C ClientThink: had ground, pmove lost it, upmove >= 10, dry.
+        for (upmove, jumps) in [(200, true), (9, false)] {
+            let (mut world, gi) = crate::world::test_world_recording();
+            let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.begin_client(key);
+            let floor = world.spawn().unwrap();
+            world.entities.get_mut(key).unwrap().game.ground_entity = Some(floor);
+            world.level.framenum = 10;
+            let cmd = UserCmd {
+                msec: 100,
+                upmove,
+                ..Default::default()
+            };
+
+            world.think_client(key, &cmd);
+
+            let jump = gi.sounds.borrow().iter().position(|s| s == "*jump1.wav");
+            let voiced = jump.is_some_and(|i| {
+                gi.sound_calls
+                    .borrow()
+                    .iter()
+                    .any(|c| c.0 == Some(1) && c.1 == CHAN_VOICE && c.2 == i as i32 + 1)
+            });
+            assert_eq!(voiced, jumps, "upmove {upmove}");
+            assert_eq!(world.level.sound_entity.is_some(), jumps, "upmove {upmove}");
+        }
+    }
+
+    #[test]
     fn think_client_keeps_the_light_level_the_player_stands_in_for_monsters() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
@@ -1846,6 +1975,35 @@ mod tests {
             Some("male/grunt".to_string())
         );
         assert_eq!(extract_info_value(info, "male/grunt"), None);
+    }
+
+    #[test]
+    fn a_coop_player_dying_keeps_its_keys_for_the_respawn() {
+        // C player_die copies IT_KEY items to resp.coop_respawn in coop.
+        for coop in [true, false] {
+            let mut world = test_world();
+            world.game.coop = coop;
+            world.init_items();
+            let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.begin_client(key);
+            let pass = world.find_item("key_pass").unwrap();
+            let shells = world.find_item("ammo_shells").unwrap();
+            {
+                let inv = &mut world.client_mut(key).unwrap().pers.inventory;
+                inv[pass] = 1;
+                inv[shells] = 10;
+            }
+            let attacker = world.spawn().unwrap();
+            player_die(&mut world, key, attacker, attacker, 100, Vec3f::ZERO);
+            let client = world.client(key).unwrap();
+            assert!(client.pers.inventory.iter().all(|&n| n == 0));
+            let kept = &client.resp.coop_respawn.inventory;
+            assert_eq!(
+                (kept[pass], kept[shells]),
+                (i32::from(coop), 0),
+                "coop {coop}"
+            );
+        }
     }
 
     #[test]

@@ -98,7 +98,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// `<out>.br`, the name the devserver looks for next to the web pak.
 /// `--allow` list: extensions with an optional leading `.` or `*.`, any case.
 fn parse_allowlist(raw: &str) -> Result<HashSet<String>> {
     let extensions: HashSet<String> = raw
@@ -117,6 +116,7 @@ fn parse_allowlist(raw: &str) -> Result<HashSet<String>> {
     Ok(extensions)
 }
 
+/// `<out>.br`, the name the devserver looks for next to the web pak.
 fn br_path(out: &Path) -> PathBuf {
     let mut name = OsString::from(out.as_os_str());
     name.push(".br");

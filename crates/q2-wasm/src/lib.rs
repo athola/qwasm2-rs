@@ -11,6 +11,9 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod console_log;
+
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
@@ -302,8 +305,8 @@ impl Engine {
 
     /// Take the server's entities and player state when a new 10 Hz frame
     /// has run (C CL_ParseFrame keeps the previous one for interpolation),
-    /// and keep the renderer's models in step with the model configstrings.
-    /// Returns whether a new frame arrived.
+    /// and keep the renderer's models and the sounds in step with their
+    /// configstrings. Returns whether a new frame arrived.
     fn sync_frame(&mut self) -> bool {
         let framenum = self.local.framenum();
         if self.frames.serverframe() == Some(framenum) {
@@ -322,57 +325,62 @@ impl Engine {
             |i| local.configstring(i),
             |name| renderer.register_model(name),
         );
+        // Sounds the game registers during play (C CL_ParseConfigString).
+        let fs = &self.fs;
+        self.sound
+            .sync_sounds(|i| local.configstring(i), |path| fs.load_file(path).ok());
         true
     }
 
-    /// Follow a level exit (C `gamemap`): the server loads the next map
-    /// into the same game, then the client preps the renderer for it (C
-    /// `CL_PrepRefresh`) and starts from a clear state (C `CL_ClearState`
-    /// on the reconnect), so nothing interpolates from the old map.
-    fn change_map(&mut self, level: &str) -> q2_common::error::Q2Result<()> {
+    /// Follow a level exit (C `gamemap`): the server loads the next level
+    /// into the same game, then the client starts from a clear state (C
+    /// `CL_ClearState` on the reconnect, which stops all sounds) and, for a
+    /// game map, registers its sounds and preps the renderer (C
+    /// `CL_RegisterSounds`, `CL_PrepRefresh`). `sounds`, the old map's last
+    /// frame of sounds, go with the old map: their indices name its
+    /// `CS_SOUNDS`. The client is cleared before the renderer is prepped,
+    /// so a failed prep does not leave the old map's sounds and frames.
+    fn change_map(
+        &mut self,
+        level: &str,
+        sounds: &mut Vec<q2_server::game_iface::SoundEvent>,
+    ) -> q2_common::error::Q2Result<()> {
         use q2_server::init::{LevelKind, MapRequest};
         let request = MapRequest::parse(level);
         log(&format!("Level exit to {level}"));
-        // demo2 exits to victory.pcx: a picture level with no map or
-        // player, which `tick` draws (C SCR_PlayCinematic). There is no
-        // cinematic or demo playback; the current map keeps running.
-        match request.kind {
-            LevelKind::Game => {}
-            LevelKind::Pic => {
-                self.local.change_map(&request, &[])?;
-                self.frames = q2_client::frame::FrameHistory::default();
-                self.effects.clear();
-                self.fx.clear();
-                self.trails = q2_client::fx::EntityTrails::default();
-                self.text.layout.clear();
-                log(&format!("Picture: pics/{} shown", request.map));
-                return Ok(());
-            }
-            LevelKind::Cinematic | LevelKind::Demo => {
-                log(&format!(
-                    "{}: only game maps and pictures can be loaded",
-                    request.map
-                ));
-                return Ok(());
-            }
-        }
-        let bsp = self.fs.load_file(&format!("maps/{}.bsp", request.map))?;
+        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
+        // level with no map or player, which `tick` draws (C
+        // SCR_PlayCinematic). There is no cinematic or demo playback:
+        // LocalGame refuses one, or skips it to its next server.
+        let bsp = match request.kind {
+            LevelKind::Game => self.fs.load_file(&format!("maps/{}.bsp", request.map))?,
+            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Vec::new(),
+        };
         self.local.change_map(&request, &bsp)?;
-        let local = &self.local;
-        prep_refresh(
-            self.renderer.as_mut(),
-            |i| local.configstring(i),
-            &mut self.models,
-        )?;
-        // C CL_ClearState -> S_StopAllSounds, then CL_RegisterSounds.
+        if matches!(request.kind, LevelKind::Cinematic | LevelKind::Demo) {
+            log(&format!("{}: skipped, no cinematic playback", request.map));
+            return Ok(());
+        }
+        // C CL_ClearState -> S_StopAllSounds.
         self.sound.stop_all();
-        self.register_sounds();
+        sounds.clear();
         self.frames = q2_client::frame::FrameHistory::default();
         self.effects.clear();
         self.fx.clear();
         self.trails = q2_client::fx::EntityTrails::default();
         self.text.layout.clear();
         self.input.view_angles = q2_shared::types::Vec3f::ZERO;
+        if request.kind == LevelKind::Pic {
+            log(&format!("Picture: pics/{} shown", request.map));
+            return Ok(());
+        }
+        self.register_sounds();
+        let local = &self.local;
+        prep_refresh(
+            self.renderer.as_mut(),
+            |i| local.configstring(i),
+            &mut self.models,
+        )?;
         log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
     }
@@ -461,10 +469,10 @@ impl Engine {
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.
         self.local.frame(elapsed_us);
-        let sounds = self.local.take_sounds();
+        let mut sounds = self.local.take_sounds();
         let messages = self.local.take_messages();
         if let Some(level) = self.local.take_map_change() {
-            if let Err(e) = self.change_map(&level) {
+            if let Err(e) = self.change_map(&level, &mut sounds) {
                 console::error_1(&q2err_to_js(e));
             }
         }
@@ -486,6 +494,13 @@ impl Engine {
 
         // A key press would send C's `nextserver`, which SV_Nextserver
         // ignores for a picture outside coop: the picture stays.
+        if self.local.picture().is_some() {
+            // C S_Update still runs: the stops the map change queued reach
+            // the output, and with no entities no loop is left playing. The
+            // client is not spawned, so C sends it no unreliable sounds.
+            let origin = q2_shared::types::Vec3f::ZERO;
+            self.mix_sounds(&[], &[], &[], origin, origin, 0.0);
+        }
         if let Some(name) = self.local.picture() {
             picture_frame(
                 self.renderer.as_mut(),
@@ -1387,6 +1402,13 @@ impl ViewSize {
 #[wasm_bindgen(start)]
 pub fn wasm_main() {
     console_error_panic_hook_setup();
+    // The one process-wide logger, like the panic hook above.
+    #[cfg(target_arch = "wasm32")]
+    if let Err(e) = tracing::subscriber::set_global_default(console_log::console_subscriber(
+        console_log::browser_console,
+    )) {
+        console::error_1(&format!("[qwasm2-rs] no tracing output: {e}").into());
+    }
     console::log_1(&"[qwasm2-rs] WASM module initialized".into());
 }
 
@@ -1468,18 +1490,28 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
     canvas_el.set_attribute(ENGINE_MARK, "")?;
 
-    let started = run_engine(canvas_id, pak_url).await;
-    if started.is_err() {
-        // Allow a retry after a failed start (e.g. the pak fetch failed).
-        if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
-            console::error_1(&e);
+    let (engine, map_name) = match load_engine(canvas_id, pak_url).await {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            // Nothing is attached to the page yet: allow a retry after a
+            // failed start (e.g. the pak fetch failed).
+            if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
+                console::error_1(&e);
+            }
+            return Err(e);
         }
-    }
-    started
+    };
+    // From here on the input and audio listeners are leaked for the page's
+    // lifetime, so a failure keeps the mark: a retry would attach a second
+    // set.
+    run_engine(engine, &map_name)
 }
 
+/// Every fallible start step that attaches nothing to the page: the GL
+/// context, the pak, the renderer, the server and the client. Returns the
+/// engine and the map it loaded.
 #[cfg(target_arch = "wasm32")]
-async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, String), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
@@ -1589,10 +1621,17 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     let cl_gun = cl_gun_from_query(&search);
     engine.cl_gun = q2_common::cvar::parse_value(cl_gun);
     engine.local.set_cvar("cl_gun", cl_gun);
+    Ok((engine, map_name.to_string()))
+}
 
-    // 9. Input, last of the fallible steps before the loop: the listeners
-    //    are leaked for the page's lifetime, so a failed start that is
-    //    retried must not have attached them already.
+/// Attach input and audio to the canvas and start the game loop.
+#[cfg(target_arch = "wasm32")]
+fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
+    // 9. Input: the listeners are leaked for the page's lifetime.
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let canvas = engine.canvas.clone();
     let input_state = q2_platform::wasm::input::setup_input_listeners(
         &canvas,
         vid_fullscreen_from_query(&search),
@@ -1620,6 +1659,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     // leave it borrowed for the listeners, which would then panic on every
     // event and bury the first panic.
     let frame_callback = Box::new(move |timestamp: f64| {
+        // take_frame keeps a key tapped between frames down for this one.
         let input = input_state.borrow_mut().take_frame();
         engine.borrow_mut().tick(timestamp, &input);
     }) as Box<dyn FnMut(f64)>;

@@ -5,11 +5,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::movement::m_check_bottom;
+use crate::monster::{frame, set_move, sound, throw_organic_gibs};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -89,67 +87,7 @@ const PRECACHE: [&str; 13] = [
 // Moves. C ref: mutant.c `mutant_frames_*` / `mutant_move_*`.
 // ---------------------------------------------------------------------------
 
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
-
-static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-];
+static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [frame(ai::ai_stand, 0.0, None); 51];
 
 static MUTANT_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
@@ -320,17 +258,7 @@ static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
     endfunc: Some(mutant_run),
 };
 
-static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [frame(ai::ai_move, 0.0, None); 9];
 
 static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
@@ -339,18 +267,7 @@ static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     endfunc: Some(mutant_dead),
 };
 
-static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [frame(ai::ai_move, 0.0, None); 10];
 
 static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
@@ -362,22 +279,6 @@ static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
 
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world
@@ -435,6 +336,7 @@ pub fn mutant_search(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SEARCH, ATTN_NORM);
 }
 
+/// Defined but unused in C too: no mutant frame calls it.
 /// C ref: `mutant_swing`.
 pub fn mutant_swing(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SWING, ATTN_NORM);
@@ -477,9 +379,10 @@ pub fn mutant_run(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// A claw for 10 to 14 from the `right` side of the box.
-fn mutant_hit(world: &mut GameWorld, key: EntityKey, right: f32, hit_sound: &str) {
-    let aim = Vec3f::new(ai::MELEE_DISTANCE, right, 8.0);
+/// A claw for 10 to 14, `side` along the right axis: `mins.x` (negative)
+/// for the left claw, `maxs.x` for the right.
+fn mutant_hit(world: &mut GameWorld, key: EntityKey, side: f32, hit_sound: &str) {
+    let aim = Vec3f::new(ai::MELEE_DISTANCE, side, 8.0);
     let damage = 10 + (world.random_u32() % 5) as i32;
     if world.fire_hit(key, aim, damage, 100) {
         sound(world, key, CHAN_WEAPON, hit_sound, ATTN_NORM);
@@ -742,34 +645,7 @@ pub fn mutant_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -851,211 +727,44 @@ pub fn sp_monster_mutant_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (mutant_idle_loop, "mutant_idle_loop"),
+        (mutant_stand, "mutant_stand"),
+        (mutant_step, "mutant_step"),
+        (mutant_walk_loop, "mutant_walk_loop"),
+        (mutant_hit_left, "mutant_hit_left"),
+        (mutant_hit_right, "mutant_hit_right"),
+        (mutant_check_refire, "mutant_check_refire"),
+        (mutant_run, "mutant_run"),
+        (mutant_jump_takeoff, "mutant_jump_takeoff"),
+        (mutant_check_landing, "mutant_check_landing"),
+        (mutant_dead, "mutant_dead"),
+    ];
+
+    use crate::entity::ThinkFn;
+    use crate::monster::test_support::{assert_moves_match_c, CMoveRow};
     use crate::monster::test_support::{floor_world, walker};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording};
 
-    type CFrame = (AnimFrameFn, f32, Option<ThinkFn>);
-    type CMove = (&'static MonsterMove, i32, i32, Vec<CFrame>, Option<ThinkFn>);
-
-    /// (move, firstframe, lastframe, [(aifunc, dist, thinkfunc)], endfunc) from C.
-    #[rustfmt::skip]
-    fn c_moves() -> Vec<CMove> {
-        vec![
-            (&MUTANT_MOVE_STAND, 62, 112, vec![
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-            ], None),
-            (&MUTANT_MOVE_IDLE, 113, 125, vec![
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, Some(mutant_idle_loop as ThinkFn)),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-                (ai::ai_stand as AnimFrameFn, 0.0, None),
-            ], Some(mutant_stand as ThinkFn)),
-            (&MUTANT_MOVE_WALK, 130, 141, vec![
-                (ai::ai_walk as AnimFrameFn, 3.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_walk as AnimFrameFn, 1.0, None),
-                (ai::ai_walk as AnimFrameFn, 5.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_walk as AnimFrameFn, 10.0, None),
-                (ai::ai_walk as AnimFrameFn, 13.0, None),
-                (ai::ai_walk as AnimFrameFn, 10.0, None),
-                (ai::ai_walk as AnimFrameFn, 0.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_walk as AnimFrameFn, 5.0, None),
-                (ai::ai_walk as AnimFrameFn, 6.0, None),
-                (ai::ai_walk as AnimFrameFn, 16.0, None),
-                (ai::ai_walk as AnimFrameFn, 15.0, None),
-                (ai::ai_walk as AnimFrameFn, 6.0, None),
-            ], None),
-            (&MUTANT_MOVE_START_WALK, 126, 129, vec![
-                (ai::ai_walk as AnimFrameFn, 5.0, None),
-                (ai::ai_walk as AnimFrameFn, 5.0, None),
-                (ai::ai_walk as AnimFrameFn, -2.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_walk as AnimFrameFn, 1.0, None),
-            ], Some(mutant_walk_loop as ThinkFn)),
-            (&MUTANT_MOVE_RUN, 56, 61, vec![
-                (ai::ai_run as AnimFrameFn, 40.0, None),
-                (ai::ai_run as AnimFrameFn, 40.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_run as AnimFrameFn, 24.0, None),
-                (ai::ai_run as AnimFrameFn, 5.0, Some(mutant_step as ThinkFn)),
-                (ai::ai_run as AnimFrameFn, 17.0, None),
-                (ai::ai_run as AnimFrameFn, 10.0, None),
-            ], None),
-            (&MUTANT_MOVE_ATTACK, 8, 14, vec![
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 0.0, Some(mutant_hit_left as ThinkFn)),
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 0.0, Some(mutant_hit_right as ThinkFn)),
-                (ai::ai_charge as AnimFrameFn, 0.0, Some(mutant_check_refire as ThinkFn)),
-            ], Some(mutant_run as ThinkFn)),
-            (&MUTANT_MOVE_JUMP, 0, 7, vec![
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 17.0, None),
-                (ai::ai_charge as AnimFrameFn, 15.0, Some(mutant_jump_takeoff as ThinkFn)),
-                (ai::ai_charge as AnimFrameFn, 15.0, None),
-                (ai::ai_charge as AnimFrameFn, 15.0, Some(mutant_check_landing as ThinkFn)),
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-                (ai::ai_charge as AnimFrameFn, 3.0, None),
-                (ai::ai_charge as AnimFrameFn, 0.0, None),
-            ], Some(mutant_run as ThinkFn)),
-            (&MUTANT_MOVE_PAIN1, 34, 38, vec![
-                (ai::ai_move as AnimFrameFn, 4.0, None),
-                (ai::ai_move as AnimFrameFn, -3.0, None),
-                (ai::ai_move as AnimFrameFn, -8.0, None),
-                (ai::ai_move as AnimFrameFn, 2.0, None),
-                (ai::ai_move as AnimFrameFn, 5.0, None),
-            ], Some(mutant_run as ThinkFn)),
-            (&MUTANT_MOVE_PAIN2, 39, 44, vec![
-                (ai::ai_move as AnimFrameFn, -24.0, None),
-                (ai::ai_move as AnimFrameFn, 11.0, None),
-                (ai::ai_move as AnimFrameFn, 5.0, None),
-                (ai::ai_move as AnimFrameFn, -2.0, None),
-                (ai::ai_move as AnimFrameFn, 6.0, None),
-                (ai::ai_move as AnimFrameFn, 4.0, None),
-            ], Some(mutant_run as ThinkFn)),
-            (&MUTANT_MOVE_PAIN3, 45, 55, vec![
-                (ai::ai_move as AnimFrameFn, -22.0, None),
-                (ai::ai_move as AnimFrameFn, 3.0, None),
-                (ai::ai_move as AnimFrameFn, 3.0, None),
-                (ai::ai_move as AnimFrameFn, 2.0, None),
-                (ai::ai_move as AnimFrameFn, 1.0, None),
-                (ai::ai_move as AnimFrameFn, 1.0, None),
-                (ai::ai_move as AnimFrameFn, 6.0, None),
-                (ai::ai_move as AnimFrameFn, 3.0, None),
-                (ai::ai_move as AnimFrameFn, 2.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 1.0, None),
-            ], Some(mutant_run as ThinkFn)),
-            (&MUTANT_MOVE_DEATH1, 15, 23, vec![
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-            ], Some(mutant_dead as ThinkFn)),
-            (&MUTANT_MOVE_DEATH2, 24, 33, vec![
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-                (ai::ai_move as AnimFrameFn, 0.0, None),
-            ], Some(mutant_dead as ThinkFn)),
-        ]
-    }
-
-    fn same_think(a: Option<ThinkFn>, b: Option<ThinkFn>) -> bool {
-        match (a, b) {
-            (None, None) => true,
-            (Some(a), Some(b)) => std::ptr::fn_addr_eq(a, b),
-            _ => false,
-        }
-    }
-
     #[test]
     fn mutant_moves_match_c_frame_by_frame() {
-        for (mv, first, last, frames, end) in c_moves() {
-            assert_eq!((mv.firstframe, mv.lastframe), (first, last));
-            assert_eq!(mv.frames.len(), frames.len(), "move at {first}");
-            assert_eq!(mv.frames.len() as i32, last - first + 1);
-            for (i, (got, (ai, dist, think))) in mv.frames.iter().zip(&frames).enumerate() {
-                let at = format!("move at {first}, frame {i}");
-                assert!(
-                    got.aifunc.is_some_and(|a| std::ptr::fn_addr_eq(a, *ai)),
-                    "{at}"
-                );
-                assert_eq!(got.dist, *dist, "{at}");
-                assert!(same_think(got.thinkfunc, *think), "{at}");
-            }
-            assert!(same_think(mv.endfunc, end), "move at {first}");
-        }
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&MUTANT_MOVE_STAND, 62, 112, "-", "stand:0:-*51"),
+            (&MUTANT_MOVE_IDLE, 113, 125, "mutant_stand", "stand:0:-*6 stand:0:mutant_idle_loop stand:0:-*6"),
+            (&MUTANT_MOVE_WALK, 130, 141, "-", "walk:3:mutant_step walk:1:- walk:5:mutant_step walk:10:- walk:13:- walk:10:- walk:0:mutant_step walk:5:- walk:6:- walk:16:- walk:15:- walk:6:-"),
+            (&MUTANT_MOVE_START_WALK, 126, 129, "mutant_walk_loop", "walk:5:-*2 walk:-2:mutant_step walk:1:-"),
+            (&MUTANT_MOVE_RUN, 56, 61, "-", "run:40:- run:40:mutant_step run:24:- run:5:mutant_step run:17:- run:10:-"),
+            (&MUTANT_MOVE_ATTACK, 8, 14, "mutant_run", "charge:0:-*2 charge:0:mutant_hit_left charge:0:-*2 charge:0:mutant_hit_right charge:0:mutant_check_refire"),
+            (&MUTANT_MOVE_JUMP, 0, 7, "mutant_run", "charge:0:- charge:17:- charge:15:mutant_jump_takeoff charge:15:- charge:15:mutant_check_landing charge:0:- charge:3:- charge:0:-"),
+            (&MUTANT_MOVE_PAIN1, 34, 38, "mutant_run", "move:4:- move:-3:- move:-8:- move:2:- move:5:-"),
+            (&MUTANT_MOVE_PAIN2, 39, 44, "mutant_run", "move:-24:- move:11:- move:5:- move:-2:- move:6:- move:4:-"),
+            (&MUTANT_MOVE_PAIN3, 45, 55, "mutant_run", "move:-22:- move:3:-*2 move:2:- move:1:-*2 move:6:- move:3:- move:2:- move:0:- move:1:-"),
+            (&MUTANT_MOVE_DEATH1, 15, 23, "mutant_dead", "move:0:-*9"),
+            (&MUTANT_MOVE_DEATH2, 24, 33, "mutant_dead", "move:0:-*10"),
+        ];
+        assert_moves_match_c(c, NAMES);
     }
 
     fn spawned(world: &mut GameWorld) -> EntityKey {

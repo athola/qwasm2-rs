@@ -11,7 +11,7 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{EntityKey, EntityStorage, MonsterInfo, MoveInfo};
+use crate::entity::{EntityKey, EntityStorage, MonsterInfo};
 use crate::monster::infantry;
 use crate::weapons::vectoangles;
 use crate::world::GameWorld;
@@ -45,16 +45,12 @@ pub fn snap_to_eights(x: f32) -> f32 {
     0.125 * (x as i32) as f32
 }
 
-/// C `pos1` / `pos2` (the breach's pitch and yaw limits). The entity has
-/// no such fields, so the breach keeps them in its `moveinfo`.
+/// C `pos1` / `pos2`: the breach's pitch and yaw limits.
 fn limits(world: &GameWorld, key: EntityKey) -> (Vec3f, Vec3f) {
     world
         .entities
         .get(key)
-        .and_then(|e| e.moveinfo.as_ref())
-        .map_or((Vec3f::ZERO, Vec3f::ZERO), |mi| {
-            (mi.start_angles, mi.end_angles)
-        })
+        .map_or((Vec3f::ZERO, Vec3f::ZERO), |e| (e.game.pos1, e.game.pos2))
 }
 
 /// Crush whatever blocks the turret, credited to the driver.
@@ -127,6 +123,17 @@ fn wrap180(d: f32) -> f32 {
     }
 }
 
+/// C's two ifs, not `f32::clamp`: a map's negative `speed` makes the
+/// bounds cross, which would panic `clamp` and leaves C at `-step`.
+fn cap_turn(delta: f32, step: f32) -> f32 {
+    let delta = if delta > step { step } else { delta };
+    if delta < -step {
+        -step
+    } else {
+        delta
+    }
+}
+
 /// Turn toward `move_angles` within the pitch/yaw limits at `speed`
 /// degrees a second, turn the base with it, drag the driver along, and
 /// fire when the driver asked. C ref: `turret_breach_think`.
@@ -161,8 +168,8 @@ pub fn turret_breach_think(world: &mut GameWorld, key: EntityKey) {
 
     let step = ent.game.speed * FRAMETIME;
     let mut delta = aim - current_angles;
-    delta.x = wrap180(delta.x).clamp(-step, step);
-    delta.y = wrap180(delta.y).clamp(-step, step);
+    delta.x = cap_turn(wrap180(delta.x), step);
+    delta.y = cap_turn(wrap180(delta.y), step);
     delta.z = 0.0;
     ent.avelocity = delta * (1.0 / FRAMETIME);
     ent.game.nextthink = time + FRAMETIME;
@@ -279,11 +286,8 @@ pub fn sp_turret_breach(
     let maxpitch = or(st_float(fields, "maxpitch"), 30.0);
     let minyaw = st_float(fields, "minyaw");
     let maxyaw = or(st_float(fields, "maxyaw"), 360.0);
-    ent.moveinfo = Some(Box::new(MoveInfo {
-        start_angles: Vec3f::new(-minpitch, minyaw, 0.0),
-        end_angles: Vec3f::new(-maxpitch, maxyaw, 0.0),
-        ..Default::default()
-    }));
+    ent.game.pos1 = Vec3f::new(-minpitch, minyaw, 0.0);
+    ent.game.pos2 = Vec3f::new(-maxpitch, maxyaw, 0.0);
     ent.game.ideal_yaw = ent.state.angles.y;
     ent.game.move_angles.y = ent.game.ideal_yaw;
     ent.blocked = Some(turret_blocked);
@@ -327,16 +331,24 @@ pub fn turret_driver_die(
     damage: i32,
     point: Vec3f,
 ) {
-    let Some(breach) = world.entities.get(key).and_then(|e| e.game.target_ent) else {
-        return;
-    };
-    let Some(b) = world.entities.get_mut(breach) else {
-        return;
-    };
-    // Level the gun.
-    b.game.move_angles.x = 0.0;
-    b.owner = None;
-    let master = b.game.teammaster;
+    // C dereferences target_ent unchecked. A driver that never linked
+    // (misnamed target) has no gun or team; one whose breach is gone
+    // still leaves the team it joined. Either way the driver dies.
+    let breach = world.entities.get(key).and_then(|e| e.game.target_ent);
+    if let Some(b) = breach.and_then(|b| world.entities.get_mut(b)) {
+        // Level the gun.
+        b.game.move_angles.x = 0.0;
+        b.owner = None;
+    }
+    turret_driver_leave_team(world, key);
+    // C: a driver's gib_health is 0, so infantry_die always gibs it.
+    infantry::infantry_die(world, key, inflictor, attacker, damage, point);
+}
+
+/// Take the driver off the end of the turret's team (the breach's team,
+/// which the driver joined in `turret_driver_link`).
+fn turret_driver_leave_team(world: &mut GameWorld, key: EntityKey) {
+    let master = world.entities.get(key).and_then(|e| e.game.teammaster);
 
     // Remove the driver from the end of the team chain.
     let mut member = master;
@@ -357,8 +369,6 @@ pub fn turret_driver_die(
         ent.game.teammaster = None;
         ent.game.flags &= !EntityFlags::TEAMSLAVE;
     }
-    // C: a driver's gib_health is 0, so infantry_die always gibs it.
-    infantry::infantry_die(world, key, inflictor, attacker, damage, point);
 }
 
 /// Track an enemy and tell the breach where to aim, and to fire once the
@@ -504,8 +514,12 @@ pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
 /// then runs `monster_start`, which does the rest of C's inline monster
 /// setup (deathmatch removal, `total_monsters`, SVF_MONSTER, RF_FRAMELERP,
 /// DAMAGE_AIM, `monster_use`, MASK_MONSTERSOLID, `old_origin`) and keeps
-/// the `turret_driver_link` think. C's stand is `infantry_stand`, which
-/// nothing calls for a driver; it is not wired here.
+/// the `turret_driver_link` think. It also does what C's driver never
+/// gets: MOVETYPE_STEP until `turret_driver_link` puts PUSH back,
+/// `max_health`, `air_finished`, the `M_CheckAttack` checkattack, a
+/// forever `pausetime` and the SIGHT-to-AMBUSH spawnflag rewrite. The
+/// stand is `infantry_stand`, which C's HuntTarget calls for this
+/// STAND_GROUND monster once FindTarget succeeds.
 pub fn sp_turret_driver(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -526,6 +540,7 @@ pub fn sp_turret_driver(
     ent.game.flags |= EntityFlags::NO_KNOCKBACK;
     ent.monsterinfo = Some(Box::new(MonsterInfo {
         aiflags: AiFlags::STAND_GROUND | AiFlags::DUCKED,
+        stand: Some(infantry::infantry_stand),
         ..Default::default()
     }));
     ent.think = Some(turret_driver_link);
@@ -539,6 +554,7 @@ pub fn sp_turret_driver(
 mod tests {
     use super::*;
     use crate::entity::ThinkFn;
+    use crate::monster::test_support::{mi_mut, player_at};
     use crate::world::{test_world, test_world_recording};
 
     fn fields(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -609,10 +625,12 @@ mod tests {
         assert!(ent.monsterinfo.is_none());
         assert_eq!((ent.solid, ent.game.movetype), (Solid::Bsp, MoveType::Push));
         assert_eq!((ent.game.speed, ent.game.dmg), (50.0, 10));
+        // C pos1 / pos2; C's breach has no moveinfo.
         assert_eq!(
-            limits(&world, key),
+            (ent.game.pos1, ent.game.pos2),
             (Vec3f::new(30.0, 0.0, 0.0), Vec3f::new(-30.0, 360.0, 0.0))
         );
+        assert!(ent.moveinfo.is_none());
         assert_eq!((ent.game.ideal_yaw, ent.game.move_angles.y), (90.0, 90.0));
         assert!(ent.blocked.is_some());
         assert!(std::ptr::fn_addr_eq(
@@ -639,7 +657,7 @@ mod tests {
         let ent = world.entities.get(key).unwrap();
         assert_eq!((ent.game.speed, ent.game.dmg), (20.0, 3));
         assert_eq!(
-            limits(&world, key),
+            (ent.game.pos1, ent.game.pos2),
             (Vec3f::new(10.0, 90.0, 0.0), Vec3f::new(-45.0, 270.0, 0.0))
         );
     }
@@ -728,6 +746,22 @@ mod tests {
         ent.game.speed = 2000.0;
         turret_breach_think(&mut world, key);
         assert!((world.entities.get(key).unwrap().avelocity.y - 1100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn turret_breach_think_with_a_negative_map_speed_turns_like_c() {
+        // "speed" "-50" survives the spawn (only 0 is replaced). C's two
+        // ifs then always leave the turn at +5 degrees a frame.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.speed = -50.0;
+        sp_turret_breach(&mut world.entities, key, &HashMap::new());
+        world.entities.get_mut(key).unwrap().game.move_angles = Vec3f::new(-20.0, 90.0, 0.0);
+        turret_breach_think(&mut world, key);
+        assert_eq!(
+            world.entities.get(key).unwrap().avelocity,
+            Vec3f::new(50.0, 50.0, 0.0)
+        );
     }
 
     #[test]
@@ -825,6 +859,11 @@ mod tests {
         assert!(ent.game.flags.contains(EntityFlags::NO_KNOCKBACK));
         let mi = ent.monsterinfo.as_ref().unwrap();
         assert_eq!(mi.aiflags, AiFlags::STAND_GROUND | AiFlags::DUCKED);
+        // HuntTarget calls it for a STAND_GROUND monster once FindTarget hits.
+        assert!(mi.stand.is_some_and(|f| std::ptr::fn_addr_eq(
+            f,
+            infantry::infantry_stand as crate::entity::MonsterStandFn
+        )));
         assert!(std::ptr::fn_addr_eq(
             ent.think.unwrap(),
             turret_driver_link as ThinkFn
@@ -852,18 +891,6 @@ mod tests {
             world.entities.get(t.breach).unwrap().game.teamchain,
             Some(t.driver)
         );
-    }
-
-    fn player_at(world: &mut GameWorld, at: Vec3f) -> EntityKey {
-        let player = world.spawn_test_client(crate::entity::ClientData::default());
-        let p = world.entities.get_mut(player).unwrap();
-        p.game.classname = "player".to_string();
-        p.state.origin = at;
-        p.game.health = 100;
-        p.game.viewheight = 22.0;
-        world.link_entity(player);
-        world.level.sight_client_key = Some(player);
-        player
     }
 
     #[test]
@@ -903,14 +930,50 @@ mod tests {
         assert_eq!(mi.attack_finished, 6.0);
     }
 
-    fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
-        world
-            .entities
-            .get_mut(key)
-            .unwrap()
-            .monsterinfo
-            .as_mut()
-            .unwrap()
+    #[test]
+    fn turret_driver_finds_a_player_and_starts_its_reaction_clock() {
+        let mut world = test_world();
+        world.level.time = 4.0;
+        let t = turret(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 42.0));
+        mi_mut(&mut world, t.driver).aiflags |= AiFlags::LOST_SIGHT;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.driver).unwrap().game.enemy,
+            Some(player)
+        );
+        let mi = mi_mut(&mut world, t.driver);
+        assert_eq!(mi.trail_time, 4.0);
+        assert!(!mi.aiflags.contains(AiFlags::LOST_SIGHT));
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.move_angles,
+            crate::weapons::vectoangles(Vec3f::new(300.0, 0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn turret_driver_holds_fire_until_attack_finished() {
+        let mut world = test_world();
+        world.level.time = 10.0;
+        let t = turret(&mut world);
+        let player = player_at(&mut world, Vec3f::new(300.0, 0.0, 42.0));
+        world.entities.get_mut(t.driver).unwrap().game.enemy = Some(player);
+        let mi = mi_mut(&mut world, t.driver);
+        mi.trail_time = 0.0;
+        mi.attack_finished = 10.5;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.spawnflags & SPAWNFLAG_FIRE,
+            0
+        );
+        assert_eq!(mi_mut(&mut world, t.driver).attack_finished, 10.5);
+
+        world.level.time = 10.5;
+        turret_driver_think(&mut world, t.driver);
+        assert_eq!(
+            world.entities.get(t.breach).unwrap().game.spawnflags & SPAWNFLAG_FIRE,
+            SPAWNFLAG_FIRE
+        );
     }
 
     #[test]
@@ -968,41 +1031,76 @@ mod tests {
         assert_eq!(gi.sounds.borrow()[0], "misc/udeath.wav");
     }
 
-    /// A map turret (breach + base team, muzzle target, driver) with a
-    /// player in view: the driver links, sights the player, aims the
-    /// breach and fires a rocket at it.
-    #[test]
-    fn turret_on_a_map_sights_a_player_and_fires_a_rocket() {
-        let mut world = test_world();
-        let map = r#"
+    const TURRET_MAP: &str = r#"
 { "classname" "worldspawn" }
 { "classname" "turret_base" "model" "*1" "team" "t1" }
 { "classname" "turret_breach" "model" "*2" "team" "t1" "targetname" "gun" "target" "tip" "origin" "0 0 64" }
 { "classname" "info_notnull" "targetname" "tip" "origin" "40 0 64" }
 { "classname" "turret_driver" "target" "gun" "origin" "-32 0 48" }
 "#;
-        world.spawn_entities("turret", map, "");
+
+    #[test]
+    fn turret_driver_does_not_fall_before_it_links() {
+        // C SP_turret_driver is MOVETYPE_PUSH from the start, so the seat
+        // offset turret_driver_link records is taken from the map origin.
+        let mut world = test_world();
+        world.spawn_entities("turret", TURRET_MAP, "");
+        let driver = world.find_by_classname(None, "turret_driver").unwrap();
+        let seat = world.entities.get(driver).unwrap().state.origin;
+        world.run_frame();
+        assert_eq!(world.entities.get(driver).unwrap().state.origin.z, seat.z);
+    }
+
+    #[test]
+    fn turret_driver_without_a_breach_still_dies() {
+        // A misnamed target leaves target_ent unset; C would dereference
+        // NULL, the port skips the unlinking and still dies.
+        let mut world = test_world();
+        let driver = world.spawn().unwrap();
+        world.entities.get_mut(driver).unwrap().game.target = "nothing".to_string();
+        sp_turret_driver(&mut world.entities, driver, &HashMap::new());
+        turret_driver_link(&mut world, driver);
+        assert_eq!(world.entities.get(driver).unwrap().game.target_ent, None);
+        world.entities.get_mut(driver).unwrap().game.health = -10;
+        let count = world.entities.count();
+        turret_driver_die(&mut world, driver, driver, driver, 50, Vec3f::ZERO);
+        assert_eq!(
+            world.entities.get(driver).unwrap().game.deadflag,
+            DeadFlag::Dead
+        );
+        assert_eq!(world.entities.count(), count + 6, "2 bones, 4 meat");
+    }
+
+    #[test]
+    fn turret_driver_whose_breach_is_gone_still_leaves_the_team_and_dies() {
+        let mut world = test_world();
+        let t = turret(&mut world);
+        world.free_entity(t.breach);
+        world.entities.get_mut(t.driver).unwrap().game.health = -10;
+        turret_driver_die(&mut world, t.driver, t.driver, t.driver, 50, Vec3f::ZERO);
+        let d = world.entities.get(t.driver).unwrap();
+        assert_eq!(d.game.deadflag, DeadFlag::Dead);
+        assert_eq!(d.game.teammaster, None);
+        assert!(!d.game.flags.contains(EntityFlags::TEAMSLAVE));
+        assert_eq!(world.entities.get(t.base).unwrap().owner, None);
+    }
+
+    /// A map turret (breach + base team, muzzle target, driver) with a
+    /// player in view: the driver links, sights the player, aims the
+    /// breach and fires a rocket at it.
+    #[test]
+    fn turret_on_a_map_sights_a_player_and_fires_a_rocket() {
+        let mut world = test_world();
+        world.spawn_entities("turret", TURRET_MAP, "");
         let driver = world.find_by_classname(None, "turret_driver").unwrap();
         assert_eq!(world.level.total_monsters, 1);
         let player = player_at(&mut world, Vec3f::new(400.0, 0.0, 42.0));
 
         let mut fired = None;
         for _ in 0..60 {
-            world.level.time += FRAMETIME;
-            world.level.framenum += 1;
-            world.level.sight_client_key = Some(player);
-            let thinkers: Vec<EntityKey> = world.entities.iter().map(|(k, _)| k).collect();
-            for key in thinkers {
-                let Some(ent) = world.entities.get_mut(key) else {
-                    continue;
-                };
-                let due =
-                    ent.game.nextthink > 0.0 && ent.game.nextthink <= world.level.time + 0.001;
-                if let (true, Some(think)) = (due, ent.think) {
-                    ent.game.nextthink = 0.0;
-                    think(&mut world, key);
-                }
-            }
+            // The real frame: only physics_pusher's team loop runs the
+            // TEAMSLAVE driver's think once it has linked.
+            world.run_frame();
             if let Some(rocket) = world.find_by_classname(None, "rocket") {
                 fired = Some(rocket);
                 break;

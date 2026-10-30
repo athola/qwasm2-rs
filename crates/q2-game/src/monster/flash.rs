@@ -26,20 +26,17 @@ pub fn project_source(point: Vec3f, distance: [f32; 3], forward: Vec3f, right: V
 
 /// Muzzle start, forward and right for `key` firing flash `flash`: the
 /// `AngleVectors` + `G_ProjectSource(origin, monster_flash_offset[flash])`
-/// pair that opens every C monster attack.
+/// pair that opens every C monster attack. A flash number outside the
+/// table, which C would read past the array for, gives `None`.
 pub fn monster_flash_source(
     world: &GameWorld,
     key: EntityKey,
     flash: i32,
 ) -> Option<(Vec3f, Vec3f, Vec3f)> {
+    let offset = *MONSTER_FLASH_OFFSET.get(usize::try_from(flash).ok()?)?;
     let ent = world.entities.get(key)?;
     let (forward, right, _) = crate::physics::angle_vectors(ent.state.angles);
-    let start = project_source(
-        ent.state.origin,
-        MONSTER_FLASH_OFFSET[flash as usize],
-        forward,
-        right,
-    );
+    let start = project_source(ent.state.origin, offset, forward, right);
     Some((start, forward, right))
 }
 
@@ -116,5 +113,14 @@ mod tests {
         let monster = world.spawn().unwrap();
         world.entities.free(monster);
         assert!(monster_flash_source(&world, monster, MZ2_TANK_BLASTER_1).is_none());
+    }
+
+    #[test]
+    fn monster_flash_source_of_a_flash_outside_the_table_is_none() {
+        let mut world = crate::world::test_world();
+        let monster = world.spawn().unwrap();
+        let past_end = MONSTER_FLASH_OFFSET.len() as i32;
+        assert!(monster_flash_source(&world, monster, -1).is_none());
+        assert!(monster_flash_source(&world, monster, past_end).is_none());
     }
 }

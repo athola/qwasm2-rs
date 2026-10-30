@@ -10,12 +10,11 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{monster_fire_blaster, monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::monster_flash_source;
+use crate::monster::{enemy_eye, frame, set_move, sound};
 use crate::world::GameWorld;
 
 /// C tank.h `MODEL_SCALE`.
@@ -31,14 +30,6 @@ const FRAME_ATTAK406: i32 = 173;
 const FRAME_ATTAK411: i32 = 178;
 const FRAME_ATTAK415: i32 = 182;
 const FRAME_ATTAK419: i32 = 186;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: tank.c `tank_frames_*` / `tank_move_*`. `start_walk`,
 // `stop_walk` and `stop_run` exist in C but nothing selects them.
@@ -571,36 +562,11 @@ static TANK_MOVE_DEATH: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C compares `currentmove` pointers; the tables are statics.
 fn is_current(mi: &MonsterInfo, mv: &MonsterMove) -> bool {
     mi.currentmove
         .as_ref()
         .is_some_and(|cm| std::ptr::eq(cm.frames, mv.frames))
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
-/// The enemy's eye: C `enemy->s.origin` plus `viewheight` on z.
-fn enemy_eye(world: &GameWorld, key: EntityKey) -> Option<Vec3f> {
-    let enemy = world.entities.get(key)?.game.enemy?;
-    let enemy = world.entities.get(enemy)?;
-    Some(enemy.state.origin + Vec3f::new(0.0, 0.0, enemy.game.viewheight))
 }
 
 fn frame_of(world: &GameWorld, key: EntityKey) -> i32 {
@@ -776,7 +742,7 @@ pub fn tank_rocket(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// One bullet of the chaingun sweep: pitched at the enemy, yawed 8
-/// degrees a frame from right to left and back. C ref: `TankMachineGun`.
+/// degrees a frame from left to right and back. C ref: `TankMachineGun`.
 pub fn tank_machine_gun(world: &mut GameWorld, key: EntityKey) {
     let frame = frame_of(world, key);
     let flash = MZ2_TANK_MACHINEGUN_1 + (frame - FRAME_ATTAK406);
@@ -1062,6 +1028,25 @@ pub fn tank_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (tank_footstep, "tank_footstep"),
+        (tank_machine_gun, "tank_machine_gun"),
+        (tank_walk, "tank_walk"),
+        (tank_stand, "tank_stand"),
+        (tank_run, "tank_run"),
+        (tank_blaster, "tank_blaster"),
+        (tank_reattack_blaster, "tank_reattack_blaster"),
+        (tank_windup, "tank_windup"),
+        (tank_strike, "tank_strike"),
+        (tank_poststrike, "tank_poststrike"),
+        (tank_doattack_rocket, "tank_doattack_rocket"),
+        (tank_rocket, "tank_rocket"),
+        (tank_refire_rocket, "tank_refire_rocket"),
+        (tank_thud, "tank_thud"),
+        (tank_dead, "tank_dead"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::WireImport;
     use crate::monster::test_support::*;
     use std::rc::Rc;
@@ -1086,265 +1071,33 @@ mod tests {
 
     #[test]
     fn tank_moves_match_c_tank_c() {
-        let walk = [
-            4.0, 5.0, 3.0, 2.0, 5.0, 5.0, 4.0, 4.0, 3.0, 5.0, 4.0, 5.0, 7.0, 7.0, 6.0, 6.0,
-        ]
-        .to_vec();
-        let step: ThinkFn = tank_footstep;
-        let blaster: ThinkFn = tank_blaster;
-        let rocket: ThinkFn = tank_rocket;
-        let stand = Some(ai::ai_stand as AnimFrameFn);
-        let walk_ai = Some(ai::ai_walk as AnimFrameFn);
-        let run_ai = Some(ai::ai_run as AnimFrameFn);
-        let move_ai = Some(ai::ai_move as AnimFrameFn);
-        let charge = Some(ai::ai_charge as AnimFrameFn);
-        let chain_thinks: Vec<(usize, ThinkFn)> =
-            (5..24).map(|i| (i, tank_machine_gun as ThinkFn)).collect();
-        let mut pre_rocket = zeros(21);
-        pre_rocket[11..16].copy_from_slice(&[1.0, 2.0, 7.0, 7.0, 7.0]);
-        pre_rocket[20] = -3.0;
-        let mut post_rocket = zeros(23);
-        post_rocket[1..8].copy_from_slice(&[-1.0, -1.0, 0.0, 2.0, 3.0, 4.0, 2.0]);
-        post_rocket[11..16].copy_from_slice(&[-9.0, -8.0, -7.0, -1.0, -1.0]);
-        let strike = [
-            3.0, 2.0, 2.0, 1.0, 6.0, 7.0, 9.0, 2.0, 1.0, 2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, -2.0,
-            -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -3.0,
-            -10.0, -10.0, -2.0, -3.0, -2.0,
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&TANK_MOVE_STAND, 0, 29, "-", "stand:0:-*30"),
+            (&TANK_MOVE_START_WALK, 30, 33, "tank_walk", "walk:0:- walk:6:-*2 walk:11:tank_footstep"),
+            (&TANK_MOVE_WALK, 34, 49, "-", "walk:4:- walk:5:- walk:3:- walk:2:- walk:5:-*2 walk:4:- walk:4:tank_footstep walk:3:- walk:5:- walk:4:- walk:5:- walk:7:-*2 walk:6:- walk:6:tank_footstep"),
+            (&TANK_MOVE_STOP_WALK, 50, 54, "tank_stand", "walk:3:-*2 walk:2:-*2 walk:4:tank_footstep"),
+            (&TANK_MOVE_START_RUN, 30, 33, "tank_run", "run:0:- run:6:-*2 run:11:tank_footstep"),
+            (&TANK_MOVE_RUN, 34, 49, "-", "run:4:- run:5:- run:3:- run:2:- run:5:-*2 run:4:- run:4:tank_footstep run:3:- run:5:- run:4:- run:5:- run:7:-*2 run:6:- run:6:tank_footstep"),
+            (&TANK_MOVE_STOP_RUN, 50, 54, "tank_walk", "run:3:-*2 run:2:-*2 run:4:tank_footstep"),
+            (&TANK_MOVE_PAIN1, 197, 200, "tank_run", "move:0:-*4"),
+            (&TANK_MOVE_PAIN2, 201, 205, "tank_run", "move:0:-*5"),
+            (&TANK_MOVE_PAIN3, 206, 221, "tank_run", "move:-7:- move:0:-*3 move:2:- move:0:-*2 move:3:- move:0:- move:2:- move:0:-*5 move:0:tank_footstep"),
+            (&TANK_MOVE_ATTACK_BLAST, 55, 70, "tank_reattack_blaster", "charge:0:-*4 charge:-1:- charge:-2:- charge:-1:-*2 charge:0:- charge:0:tank_blaster charge:0:-*2 charge:0:tank_blaster charge:0:-*2 charge:0:tank_blaster"),
+            (&TANK_MOVE_REATTACK_BLAST, 65, 70, "tank_reattack_blaster", "charge:0:-*2 charge:0:tank_blaster charge:0:-*2 charge:0:tank_blaster"),
+            (&TANK_MOVE_ATTACK_POST_BLAST, 71, 76, "tank_run", "move:0:-*2 move:2:- move:3:- move:2:- move:-2:tank_footstep"),
+            (&TANK_MOVE_ATTACK_STRIKE, 77, 114, "tank_poststrike", "move:3:- move:2:-*2 move:1:- move:6:- move:7:- move:9:tank_footstep move:2:- move:1:- move:2:- move:2:tank_footstep move:2:- move:0:-*4 move:-2:-*2 move:0:tank_windup move:0:-*6 move:0:tank_strike move:0:- move:-1:-*5 move:-3:- move:-10:-*2 move:-2:- move:-3:- move:-2:tank_footstep"),
+            (&TANK_MOVE_ATTACK_PRE_ROCKET, 115, 135, "tank_doattack_rocket", "charge:0:-*11 charge:1:- charge:2:- charge:7:-*2 charge:7:tank_footstep charge:0:-*4 charge:-3:-"),
+            (&TANK_MOVE_ATTACK_FIRE_ROCKET, 136, 144, "tank_refire_rocket", "charge:-3:- charge:0:- charge:0:tank_rocket charge:0:-*2 charge:0:tank_rocket charge:0:-*2 charge:-1:tank_rocket"),
+            (&TANK_MOVE_ATTACK_POST_ROCKET, 145, 167, "tank_run", "charge:0:- charge:-1:-*2 charge:0:- charge:2:- charge:3:- charge:4:- charge:2:- charge:0:-*3 charge:-9:- charge:-8:- charge:-7:- charge:-1:- charge:-1:tank_footstep charge:0:-*7"),
+            (&TANK_MOVE_ATTACK_CHAIN, 168, 196, "tank_run", "charge:0:-*5 -:0:tank_machine_gun*19 charge:0:-*5"),
+            (&TANK_MOVE_DEATH, 222, 253, "tank_dead", "move:-7:- move:-2:-*2 move:1:- move:3:- move:6:- move:1:-*2 move:2:- move:0:-*3 move:-2:- move:0:-*2 move:-3:- move:0:-*6 move:-4:- move:-6:- move:-4:- move:-5:- move:-7:- move:-15:tank_thud move:-5:- move:0:-*3"),
         ];
-        let death = [
-            -7.0, -2.0, -2.0, 1.0, 3.0, 6.0, 1.0, 1.0, 2.0, 0.0, 0.0, 0.0, -2.0, 0.0, 0.0, -3.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -4.0, -6.0, -4.0, -5.0, -7.0, -15.0, -5.0, 0.0, 0.0, 0.0,
-        ];
-        let moves: Vec<(&str, &MonsterMove, CMove)> = vec![
-            (
-                "stand",
-                &TANK_MOVE_STAND,
-                CMove {
-                    bounds: (0, 29),
-                    ai: vec![(30, stand)],
-                    dists: zeros(30),
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "start_walk",
-                &TANK_MOVE_START_WALK,
-                CMove {
-                    bounds: (30, 33),
-                    ai: vec![(4, walk_ai)],
-                    dists: vec![0.0, 6.0, 6.0, 11.0],
-                    thinks: vec![(3, step)],
-                    end: Some(tank_walk),
-                },
-            ),
-            (
-                "walk",
-                &TANK_MOVE_WALK,
-                CMove {
-                    bounds: (34, 49),
-                    ai: vec![(16, walk_ai)],
-                    dists: walk.clone(),
-                    thinks: vec![(7, step), (15, step)],
-                    end: None,
-                },
-            ),
-            (
-                "stop_walk",
-                &TANK_MOVE_STOP_WALK,
-                CMove {
-                    bounds: (50, 54),
-                    ai: vec![(5, walk_ai)],
-                    dists: vec![3.0, 3.0, 2.0, 2.0, 4.0],
-                    thinks: vec![(4, step)],
-                    end: Some(tank_stand),
-                },
-            ),
-            (
-                "start_run",
-                &TANK_MOVE_START_RUN,
-                CMove {
-                    bounds: (30, 33),
-                    ai: vec![(4, run_ai)],
-                    dists: vec![0.0, 6.0, 6.0, 11.0],
-                    thinks: vec![(3, step)],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "run",
-                &TANK_MOVE_RUN,
-                CMove {
-                    bounds: (34, 49),
-                    ai: vec![(16, run_ai)],
-                    dists: walk,
-                    thinks: vec![(7, step), (15, step)],
-                    end: None,
-                },
-            ),
-            (
-                "stop_run",
-                &TANK_MOVE_STOP_RUN,
-                CMove {
-                    bounds: (50, 54),
-                    ai: vec![(5, run_ai)],
-                    dists: vec![3.0, 3.0, 2.0, 2.0, 4.0],
-                    thinks: vec![(4, step)],
-                    end: Some(tank_walk),
-                },
-            ),
-            (
-                "pain1",
-                &TANK_MOVE_PAIN1,
-                CMove {
-                    bounds: (197, 200),
-                    ai: vec![(4, move_ai)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "pain2",
-                &TANK_MOVE_PAIN2,
-                CMove {
-                    bounds: (201, 205),
-                    ai: vec![(5, move_ai)],
-                    dists: zeros(5),
-                    thinks: vec![],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "pain3",
-                &TANK_MOVE_PAIN3,
-                CMove {
-                    bounds: (206, 221),
-                    ai: vec![(16, move_ai)],
-                    dists: vec![
-                        -7.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0,
-                    ],
-                    thinks: vec![(15, step)],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "attack_blast",
-                &TANK_MOVE_ATTACK_BLAST,
-                CMove {
-                    bounds: (55, 70),
-                    ai: vec![(16, charge)],
-                    dists: vec![
-                        0.0, 0.0, 0.0, 0.0, -1.0, -2.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        0.0, 0.0,
-                    ],
-                    thinks: vec![(9, blaster), (12, blaster), (15, blaster)],
-                    end: Some(tank_reattack_blaster),
-                },
-            ),
-            (
-                "reattack_blast",
-                &TANK_MOVE_REATTACK_BLAST,
-                CMove {
-                    bounds: (65, 70),
-                    ai: vec![(6, charge)],
-                    dists: zeros(6),
-                    thinks: vec![(2, blaster), (5, blaster)],
-                    end: Some(tank_reattack_blaster),
-                },
-            ),
-            (
-                "attack_post_blast",
-                &TANK_MOVE_ATTACK_POST_BLAST,
-                CMove {
-                    bounds: (71, 76),
-                    ai: vec![(6, move_ai)],
-                    dists: vec![0.0, 0.0, 2.0, 3.0, 2.0, -2.0],
-                    thinks: vec![(5, step)],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "attack_strike",
-                &TANK_MOVE_ATTACK_STRIKE,
-                CMove {
-                    bounds: (77, 114),
-                    ai: vec![(38, move_ai)],
-                    dists: strike.to_vec(),
-                    thinks: vec![
-                        (6, step),
-                        (10, step),
-                        (18, tank_windup),
-                        (25, tank_strike),
-                        (37, step),
-                    ],
-                    end: Some(tank_poststrike),
-                },
-            ),
-            (
-                "attack_pre_rocket",
-                &TANK_MOVE_ATTACK_PRE_ROCKET,
-                CMove {
-                    bounds: (115, 135),
-                    ai: vec![(21, charge)],
-                    dists: pre_rocket,
-                    thinks: vec![(15, step)],
-                    end: Some(tank_doattack_rocket),
-                },
-            ),
-            (
-                "attack_fire_rocket",
-                &TANK_MOVE_ATTACK_FIRE_ROCKET,
-                CMove {
-                    bounds: (136, 144),
-                    ai: vec![(9, charge)],
-                    dists: vec![-3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0],
-                    thinks: vec![(2, rocket), (5, rocket), (8, rocket)],
-                    end: Some(tank_refire_rocket),
-                },
-            ),
-            (
-                "attack_post_rocket",
-                &TANK_MOVE_ATTACK_POST_ROCKET,
-                CMove {
-                    bounds: (145, 167),
-                    ai: vec![(23, charge)],
-                    dists: post_rocket,
-                    thinks: vec![(15, step)],
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "attack_chain",
-                &TANK_MOVE_ATTACK_CHAIN,
-                CMove {
-                    bounds: (168, 196),
-                    ai: vec![(5, charge), (19, None), (5, charge)],
-                    dists: zeros(29),
-                    thinks: chain_thinks,
-                    end: Some(tank_run),
-                },
-            ),
-            (
-                "death",
-                &TANK_MOVE_DEATH,
-                CMove {
-                    bounds: (222, 253),
-                    ai: vec![(32, move_ai)],
-                    dists: death.to_vec(),
-                    thinks: vec![(27, tank_thud)],
-                    end: Some(tank_dead),
-                },
-            ),
-        ];
-        for (name, mv, c) in moves {
-            assert_move(name, mv, c);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
-    fn tank_spawns_with_c_health_box_callbacks_and_starts_walking() {
+    fn tank_spawns_with_c_health_box_callbacks_and_stands() {
         let (world, _, key) = tank();
         let ent = world.entities.get(key).unwrap();
         assert_eq!(
@@ -1746,6 +1499,68 @@ mod tests {
         }
         let want: Vec<i32> = (MZ2_TANK_MACHINEGUN_1..MZ2_TANK_MACHINEGUN_1 + 19).collect();
         assert_eq!(muzzle_flashes(&gi), want);
+    }
+
+    /// A tank at (0, 0, 24) facing +x on attak406 (yaw + 40), with a
+    /// player at (300, 0, `player_z`) as its enemy.
+    fn tank_in_arena(player_z: f32) -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
+        let (mut world, gi, player) = player_arena(300.0);
+        world.entities.get_mut(player).unwrap().state.origin.z = player_z;
+        world.link_entity(player);
+        let key = world.spawn().unwrap();
+        sp_monster_tank(&mut world.entities, key, &HashMap::new());
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(0.0, 0.0, 24.0);
+        ent.state.frame = FRAME_ATTAK406;
+        ent.game.enemy = Some(player);
+        world.link_entity(key);
+        (world, gi, key, player)
+    }
+
+    /// Put the trace target 100 units along `(pitch, yaw)` from the
+    /// muzzle, fire one chaingun bullet and return the player's damage.
+    fn chaingun_damage_along(
+        world: &mut GameWorld,
+        gi: &ArenaImport,
+        key: EntityKey,
+        player: EntityKey,
+        pitch: f32,
+    ) -> i32 {
+        let flash = MZ2_TANK_MACHINEGUN_1;
+        let (start, _, _) = monster_flash_source(world, key, flash).unwrap();
+        let (forward, _, _) = crate::physics::angle_vectors(Vec3f::new(pitch, 40.0, 0.0));
+        gi.target_at(
+            start + forward * 100.0,
+            8.0,
+            world.number_of(player).unwrap(),
+        );
+        let before = world.entities.get(player).unwrap().game.health;
+        tank_machine_gun(world, key);
+        before - world.entities.get(player).unwrap().game.health
+    }
+
+    #[test]
+    fn tank_machine_gun_pitches_at_the_enemys_eye_for_20_damage() {
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        let (start, _, _) = monster_flash_source(&world, key, MZ2_TANK_MACHINEGUN_1).unwrap();
+        let p = world.entities.get(player).unwrap();
+        let eye = p.state.origin + Vec3f::new(0.0, 0.0, p.game.viewheight);
+        let pitch = crate::weapons::vectoangles(eye - start).x;
+        assert!(pitch < 0.0, "the enemy is above: negative pitch looks up");
+        assert_eq!(
+            chaingun_damage_along(&mut world, &gi, key, player, pitch),
+            20
+        );
+        // The same bullet fired level would miss a box on the pitched line.
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        assert_eq!(chaingun_damage_along(&mut world, &gi, key, player, 0.0), 0);
+    }
+
+    #[test]
+    fn tank_machine_gun_without_an_enemy_fires_level() {
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        world.entities.get_mut(key).unwrap().game.enemy = None;
+        assert_eq!(chaingun_damage_along(&mut world, &gi, key, player, 0.0), 20);
     }
 
     #[test]

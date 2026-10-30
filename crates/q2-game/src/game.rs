@@ -6,26 +6,13 @@
 
 use crate::traits::{EdictView, GameExport};
 use crate::world::GameWorld;
-use q2_shared::{
-    constants::MAX_CLIENTS,
-    types::{PlayerState, UserCmd},
-};
+use q2_shared::types::{PlayerState, UserCmd};
 
 impl GameWorld {
-    /// Set `game.maxclients` (clamped to `MAX_CLIENTS`, as the server clamps
-    /// its cvar) and reserve entity numbers `1..=maxclients` for clients.
-    pub fn set_max_clients(&mut self, max_clients: usize) {
-        let max_clients = max_clients.min(MAX_CLIENTS);
-        self.game.maxclients = max_clients as i32;
-        self.entities.set_max_clients(max_clients);
-        // C InitGame allocates game.clients for maxclients.
-        self.clients.resize_with(max_clients, Default::default);
-    }
-
     /// `true` if `number` is a client entity number. The server only passes
     /// valid ones in C; anything else is logged and ignored here.
     fn is_client_number(&self, number: usize) -> bool {
-        let valid = (1..=self.game.maxclients as usize).contains(&number);
+        let valid = (1..=self.game.maxclients() as usize).contains(&number);
         if !valid {
             tracing::warn!(number, "client entity number out of range");
         }
@@ -105,10 +92,12 @@ impl GameExport for GameWorld {
                 self.send_login_effect(key);
             }
             self.print_entered_the_game(key);
-        } else if !intermission && self.game.maxclients > 1 {
+        } else if !intermission && self.game.maxclients() > 1 {
             self.send_login_effect(key);
             self.print_entered_the_game(key);
         }
+        // Make sure all view stuff is valid.
+        self.client_end_server_frame(key);
     }
 
     fn client_disconnect(&mut self, number: usize) {
@@ -140,6 +129,12 @@ impl GameExport for GameWorld {
 
     fn run_frame(&mut self) {
         GameWorld::run_frame(self);
+    }
+
+    fn clear_entity_events(&mut self) {
+        for (_, ent) in self.entities.iter_mut() {
+            ent.state.event = 0;
+        }
     }
 
     fn server_command(&mut self) {}
@@ -180,7 +175,7 @@ impl GameExport for GameWorld {
 mod tests {
     use super::*;
     use crate::world::test_world_recording;
-    use q2_shared::constants::CS_MAXCLIENTS;
+    use q2_shared::constants::{CS_MAXCLIENTS, MAX_CLIENTS};
 
     #[test]
     fn spawning_a_map_advertises_the_client_count_like_sp_worldspawn() {
@@ -199,7 +194,7 @@ mod tests {
     fn client_count_is_clamped_to_max_clients() {
         let (mut world, _gi) = test_world_recording();
         world.set_max_clients(MAX_CLIENTS + 7);
-        assert_eq!(world.game.maxclients as usize, MAX_CLIENTS);
+        assert_eq!(world.game.maxclients() as usize, MAX_CLIENTS);
     }
 
     #[test]
@@ -212,6 +207,21 @@ mod tests {
         world.client_begin(3);
         world.client_disconnect(MAX_CLIENTS + 1);
         world.client_think(0, &UserCmd::default());
+    }
+
+    #[test]
+    fn client_begin_leaves_a_valid_view_and_status_bar() {
+        // C ClientBegin ends with ClientEndServerFrame.
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(1);
+        world.init();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert!(world.client_connect(1, ""));
+        world.client_begin(1);
+        let key = world.entities.key_for_number(1).unwrap();
+        let ps = &world.client(key).unwrap().ps;
+        assert_eq!(ps.stats[q2_shared::constants::STAT_HEALTH], 100);
+        assert_eq!(ps.viewoffset.z, 22.0);
     }
 
     #[test]

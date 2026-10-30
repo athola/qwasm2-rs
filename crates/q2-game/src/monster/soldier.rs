@@ -8,11 +8,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash};
+use crate::monster::{fire, flash, footstep, MONSTER_FOOTSTEPS};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -84,10 +83,6 @@ const SOLDIER_HEALTH: i32 = 30;
 const SOLDIER_SS_HEALTH: i32 = 40;
 const SOLDIER_MASS: i32 = 100;
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0"; the game has no
-/// cvar access, so footsteps stay off as in a default C game.
-const G_MONSTERFOOTSTEPS: bool = false;
-
 const SOUND_IDLE: &str = "soldier/solidle1.wav";
 const SOUND_SIGHT1: &str = "soldier/solsght1.wav";
 const SOUND_SIGHT2: &str = "soldier/solsrch1.wav";
@@ -98,7 +93,7 @@ const SOUND_DEATH_LIGHT: &str = "soldier/soldeth2.wav";
 const SOUND_DEATH: &str = "soldier/soldeth1.wav";
 const SOUND_DEATH_SS: &str = "soldier/soldeth3.wav";
 const SOUND_COCK: &str = "infantry/infatck3.wav";
-const SOUND_STEPS: [&str; 4] = [
+pub(crate) const SOUND_STEPS: [&str; 4] = [
     "player/step1.wav",
     "player/step2.wav",
     "player/step3.wav",
@@ -109,14 +104,6 @@ const SOUND_STEPS: [&str; 4] = [
 // Moves. C ref: soldier.c `soldier_frames_*` / `soldier_move_*`, one entry
 // per model frame in C order.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static SOLDIER_FRAMES_STAND1: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, Some(soldier_idle)),
@@ -695,13 +682,6 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
 }
 
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C compares `currentmove` pointers; the tables are statics, so their
 /// addresses identify a move.
 fn is_current(mi: &MonsterInfo, mv: &MonsterMove) -> bool {
@@ -714,15 +694,6 @@ fn set_nextframe(world: &mut GameWorld, key: EntityKey, frame: i32) {
     if let Some(mi) = monsterinfo_mut(world, key) {
         mi.nextframe = frame;
     }
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`;
-/// the server hands back the index the spawn precached.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 fn skinnum(world: &GameWorld, key: EntityKey) -> i32 {
@@ -754,11 +725,7 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `soldier_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn soldier_footstep(world: &mut GameWorld, key: EntityKey) {
-    if !G_MONSTERFOOTSTEPS {
-        return;
-    }
-    let step = SOUND_STEPS[(world.random_u32() % 4) as usize];
-    sound(world, key, CHAN_BODY, step, ATTN_NORM);
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `soldier_idle`.
@@ -840,7 +807,8 @@ pub fn soldier_run(world: &mut GameWorld, key: EntityKey) {
 // ---------------------------------------------------------------------------
 
 /// Bloody skin below half health; a hit while flying up knocks the
-/// soldier over (pain4), even during the debounce. C ref: `soldier_pain`.
+/// soldier over (pain4), and during the debounce does so only while it
+/// is already in pain1-3. C ref: `soldier_pain`.
 pub fn soldier_pain(
     world: &mut GameWorld,
     key: EntityKey,
@@ -886,7 +854,7 @@ pub fn soldier_pain(
         set_move(world, key, &SOLDIER_MOVE_PAIN4);
         return;
     }
-    if skill == crate::constants::SKILL_HARDPLUS {
+    if skill == SKILL_HARDPLUS {
         return; // no pain anims in nightmare
     }
     let r = world.random();
@@ -942,7 +910,9 @@ const MACHINEGUN_FLASH: [i32; 8] = [
 /// and 6). The machinegun holds the frame for 3-10 frames of fire.
 /// C ref: `soldier_fire`. C dereferences `self->enemy` for aimed shots;
 /// without one there is nothing to aim at, so nothing fires.
-pub fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
+/// Private: only this file's `soldier_fireN` wrappers call it, with
+/// flash numbers 0-7, the length of the flash tables.
+fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
     let skin = skinnum(world, key);
     let flash_index = if skin < 2 {
         BLASTER_FLASH[flash_number]
@@ -1024,7 +994,7 @@ pub fn soldier_fire1(world: &mut GameWorld, key: EntityKey) {
 /// Fire again on nightmare half the time, or always at melee range.
 /// The C refire tests in order, so `random()` is only drawn on nightmare.
 fn refire(world: &mut GameWorld, key: EntityKey, enemy: EntityKey) -> bool {
-    (world.game.skill == crate::constants::SKILL_HARDPLUS && world.random() < 0.5)
+    (world.game.skill == SKILL_HARDPLUS && world.random() < 0.5)
         || ai::range(world, key, enemy) == Range::Melee
 }
 
@@ -1159,7 +1129,7 @@ pub fn soldier_attack6_refire(world: &mut GameWorld, key: EntityKey) {
     if (ai::range(world, key, enemy) as i32) < Range::Mid as i32 {
         return;
     }
-    if world.game.skill == crate::constants::SKILL_HARDPLUS {
+    if world.game.skill == SKILL_HARDPLUS {
         set_nextframe(world, key, FRAME_RUNS03);
     }
 }
@@ -1188,10 +1158,12 @@ pub fn soldier_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
     };
     sound(world, key, CHAN_VOICE, shout, ATTN_NORM);
 
+    // C calls range(self, self->enemy) unchecked; with no enemy there
+    // is nothing to range, so the port only shouts.
     let Some(enemy) = world.entities.get(key).and_then(|e| e.game.enemy) else {
         return;
     };
-    if world.game.skill > crate::constants::SKILL_EASY
+    if world.game.skill > SKILL_EASY
         && ai::range(world, key, enemy) as i32 >= Range::Mid as i32
         && world.random() > 0.5
     {
@@ -1226,7 +1198,7 @@ pub fn soldier_dodge(world: &mut GameWorld, key: EntityKey, attacker: EntityKey,
     }
 
     let skill = world.game.skill;
-    if skill == crate::constants::SKILL_EASY {
+    if skill == SKILL_EASY {
         set_move(world, key, &SOLDIER_MOVE_DUCK);
         return;
     }
@@ -1238,7 +1210,7 @@ pub fn soldier_dodge(world: &mut GameWorld, key: EntityKey, attacker: EntityKey,
     let r = world.random();
     let duck_above = if skill == SKILL_MEDIUM {
         Some(0.33)
-    } else if skill >= crate::constants::SKILL_HARD {
+    } else if skill >= SKILL_HARD {
         Some(0.66)
     } else {
         None
@@ -1466,7 +1438,36 @@ pub fn finish_soldier_ss(world: &mut GameWorld, key: EntityKey, _fields: &HashMa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monster::test_support::{check_move, player_arena, seed, sounds, think_for};
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (soldier_idle, "soldier_idle"),
+        (soldier_stand, "soldier_stand"),
+        (soldier_cock, "soldier_cock"),
+        (soldier_footstep, "soldier_footstep"),
+        (soldier_walk1_random, "soldier_walk1_random"),
+        (soldier_run, "soldier_run"),
+        (soldier_fire1, "soldier_fire1"),
+        (soldier_attack1_refire1, "soldier_attack1_refire1"),
+        (soldier_attack1_refire2, "soldier_attack1_refire2"),
+        (soldier_fire2, "soldier_fire2"),
+        (soldier_attack2_refire1, "soldier_attack2_refire1"),
+        (soldier_attack2_refire2, "soldier_attack2_refire2"),
+        (soldier_fire3, "soldier_fire3"),
+        (soldier_attack3_refire, "soldier_attack3_refire"),
+        (soldier_duck_up, "soldier_duck_up"),
+        (soldier_fire4, "soldier_fire4"),
+        (soldier_fire8, "soldier_fire8"),
+        (soldier_attack6_refire, "soldier_attack6_refire"),
+        (soldier_duck_down, "soldier_duck_down"),
+        (soldier_duck_hold, "soldier_duck_hold"),
+        (soldier_fire6, "soldier_fire6"),
+        (soldier_fire7, "soldier_fire7"),
+        (soldier_dead, "soldier_dead"),
+    ];
+
+    use crate::entity::ThinkFn;
+    use crate::monster::test_support::{
+        assert_moves_match_c, player_arena, seed, sounds, think_for, CMoveRow,
+    };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
 
@@ -1537,425 +1538,34 @@ mod tests {
             .unwrap()
     }
 
-    fn dists(mv: &MonsterMove) -> Vec<f32> {
-        mv.frames.iter().map(|f| f.dist).collect()
-    }
-
-    fn all_ai(mv: &MonsterMove, aifunc: AnimFrameFn) -> bool {
-        mv.frames
-            .iter()
-            .all(|f| f.aifunc.is_some_and(|a| std::ptr::fn_addr_eq(a, aifunc)))
-    }
-
-    fn think_frames(mv: &MonsterMove) -> Vec<usize> {
-        (0..mv.frames.len())
-            .filter(|&i| mv.frames[i].thinkfunc.is_some())
-            .collect()
-    }
-
-    fn ends_with(mv: &MonsterMove, endfunc: ThinkFn) -> bool {
-        mv.endfunc.is_some_and(|e| std::ptr::fn_addr_eq(e, endfunc))
-    }
-
-    const ALL_MOVES: [&MonsterMove; 22] = [
-        &SOLDIER_MOVE_STAND1,
-        &SOLDIER_MOVE_STAND3,
-        &SOLDIER_MOVE_WALK1,
-        &SOLDIER_MOVE_WALK2,
-        &SOLDIER_MOVE_START_RUN,
-        &SOLDIER_MOVE_RUN,
-        &SOLDIER_MOVE_PAIN1,
-        &SOLDIER_MOVE_PAIN2,
-        &SOLDIER_MOVE_PAIN3,
-        &SOLDIER_MOVE_PAIN4,
-        &SOLDIER_MOVE_ATTACK1,
-        &SOLDIER_MOVE_ATTACK2,
-        &SOLDIER_MOVE_ATTACK3,
-        &SOLDIER_MOVE_ATTACK4,
-        &SOLDIER_MOVE_ATTACK6,
-        &SOLDIER_MOVE_DUCK,
-        &SOLDIER_MOVE_DEATH1,
-        &SOLDIER_MOVE_DEATH2,
-        &SOLDIER_MOVE_DEATH3,
-        &SOLDIER_MOVE_DEATH4,
-        &SOLDIER_MOVE_DEATH5,
-        &SOLDIER_MOVE_DEATH6,
-    ];
-
-    #[test]
-    fn soldier_moves_have_one_frame_entry_per_model_frame() {
-        for mv in ALL_MOVES {
-            assert_eq!(
-                mv.frames.len() as i32,
-                mv.lastframe - mv.firstframe + 1,
-                "move starting at {}",
-                mv.firstframe
-            );
-        }
-    }
-
     #[test]
     fn every_soldier_move_matches_c() {
-        check_move(
-            &SOLDIER_MOVE_STAND1,
-            (146, 175),
-            ai::ai_stand,
-            &[],
-            &[(0, soldier_idle as ThinkFn)],
-            Some(soldier_stand as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_STAND3,
-            (176, 214),
-            ai::ai_stand,
-            &[],
-            &[(21, soldier_cock as ThinkFn)],
-            Some(soldier_stand as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_WALK1,
-            (215, 247),
-            ai::ai_walk,
-            &[
-                (0, 3.0),
-                (1, 6.0),
-                (2, 2.0),
-                (3, 2.0),
-                (4, 2.0),
-                (5, 1.0),
-                (6, 6.0),
-                (7, 5.0),
-                (8, 3.0),
-                (9, -1.0),
-            ],
-            &[
-                (3, soldier_footstep as ThinkFn),
-                (8, soldier_footstep as ThinkFn),
-                (9, soldier_walk1_random as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &SOLDIER_MOVE_WALK2,
-            (256, 265),
-            ai::ai_walk,
-            &[
-                (0, 4.0),
-                (1, 4.0),
-                (2, 9.0),
-                (3, 8.0),
-                (4, 5.0),
-                (5, 1.0),
-                (6, 3.0),
-                (7, 7.0),
-                (8, 6.0),
-                (9, 7.0),
-            ],
-            &[
-                (0, soldier_footstep as ThinkFn),
-                (4, soldier_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &SOLDIER_MOVE_START_RUN,
-            (97, 98),
-            ai::ai_run,
-            &[(0, 7.0), (1, 5.0)],
-            &[],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_RUN,
-            (99, 104),
-            ai::ai_run,
-            &[
-                (0, 10.0),
-                (1, 11.0),
-                (2, 11.0),
-                (3, 16.0),
-                (4, 10.0),
-                (5, 15.0),
-            ],
-            &[
-                (1, soldier_footstep as ThinkFn),
-                (4, soldier_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &SOLDIER_MOVE_PAIN1,
-            (50, 54),
-            ai::ai_move,
-            &[(0, -3.0), (1, 4.0), (2, 1.0), (3, 1.0)],
-            &[],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_PAIN2,
-            (55, 61),
-            ai::ai_move,
-            &[
-                (0, -13.0),
-                (1, -1.0),
-                (2, 2.0),
-                (3, 4.0),
-                (4, 2.0),
-                (5, 3.0),
-                (6, 2.0),
-            ],
-            &[],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_PAIN3,
-            (62, 79),
-            ai::ai_move,
-            &[
-                (0, -8.0),
-                (1, 10.0),
-                (2, -4.0),
-                (3, -1.0),
-                (4, -3.0),
-                (6, 3.0),
-                (11, 1.0),
-                (13, 1.0),
-                (14, 2.0),
-                (15, 4.0),
-                (16, 3.0),
-                (17, 2.0),
-            ],
-            &[
-                (2, soldier_footstep as ThinkFn),
-                (17, soldier_footstep as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_PAIN4,
-            (80, 96),
-            ai::ai_move,
-            &[
-                (3, -10.0),
-                (4, -6.0),
-                (5, 8.0),
-                (6, 4.0),
-                (7, 1.0),
-                (9, 2.0),
-                (10, 5.0),
-                (11, 2.0),
-                (12, -1.0),
-                (13, -1.0),
-                (14, 3.0),
-                (15, 2.0),
-            ],
-            &[],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_ATTACK1,
-            (0, 11),
-            ai::ai_charge,
-            &[],
-            &[
-                (2, soldier_fire1 as ThinkFn),
-                (5, soldier_attack1_refire1 as ThinkFn),
-                (7, soldier_cock as ThinkFn),
-                (8, soldier_attack1_refire2 as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_ATTACK2,
-            (12, 29),
-            ai::ai_charge,
-            &[],
-            &[
-                (4, soldier_fire2 as ThinkFn),
-                (7, soldier_attack2_refire1 as ThinkFn),
-                (12, soldier_cock as ThinkFn),
-                (14, soldier_attack2_refire2 as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_ATTACK3,
-            (30, 38),
-            ai::ai_charge,
-            &[],
-            &[
-                (2, soldier_fire3 as ThinkFn),
-                (5, soldier_attack3_refire as ThinkFn),
-                (6, soldier_duck_up as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_ATTACK4,
-            (39, 44),
-            ai::ai_charge,
-            &[],
-            &[
-                (1, soldier_footstep as ThinkFn),
-                (2, soldier_fire4 as ThinkFn),
-                (5, soldier_footstep as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_ATTACK6,
-            (109, 122),
-            ai::ai_charge,
-            &[
-                (0, 10.0),
-                (1, 4.0),
-                (2, 12.0),
-                (3, 11.0),
-                (4, 13.0),
-                (5, 18.0),
-                (6, 15.0),
-                (7, 14.0),
-                (8, 11.0),
-                (9, 8.0),
-                (10, 11.0),
-                (11, 12.0),
-                (12, 12.0),
-                (13, 17.0),
-            ],
-            &[
-                (2, soldier_footstep as ThinkFn),
-                (3, soldier_fire8 as ThinkFn),
-                (6, soldier_footstep as ThinkFn),
-                (9, soldier_footstep as ThinkFn),
-                (12, soldier_footstep as ThinkFn),
-                (13, soldier_attack6_refire as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DUCK,
-            (45, 49),
-            ai::ai_move,
-            &[(0, 5.0), (1, -1.0), (2, 1.0), (4, 5.0)],
-            &[
-                (0, soldier_duck_down as ThinkFn),
-                (1, soldier_duck_hold as ThinkFn),
-                (3, soldier_duck_up as ThinkFn),
-            ],
-            Some(soldier_run as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH1,
-            (272, 307),
-            ai::ai_move,
-            &[(1, -10.0), (2, -10.0), (3, -10.0), (4, -5.0)],
-            &[
-                (21, soldier_fire6 as ThinkFn),
-                (24, soldier_fire7 as ThinkFn),
-            ],
-            Some(soldier_dead as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH2,
-            (308, 342),
-            ai::ai_move,
-            &[(0, -5.0), (1, -5.0), (2, -5.0)],
-            &[],
-            Some(soldier_dead as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH3,
-            (343, 387),
-            ai::ai_move,
-            &[(0, -5.0), (1, -5.0), (2, -5.0)],
-            &[],
-            Some(soldier_dead as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH4,
-            (388, 440),
-            ai::ai_move,
-            &[],
-            &[],
-            Some(soldier_dead as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH5,
-            (441, 464),
-            ai::ai_move,
-            &[(0, -5.0), (1, -5.0), (2, -5.0)],
-            &[],
-            Some(soldier_dead as ThinkFn),
-        );
-        check_move(
-            &SOLDIER_MOVE_DEATH6,
-            (465, 474),
-            ai::ai_move,
-            &[],
-            &[],
-            Some(soldier_dead as ThinkFn),
-        );
-    }
-
-    #[test]
-    fn soldier_move_stand1_matches_c() {
-        let mv = &SOLDIER_MOVE_STAND1;
-        assert_eq!((mv.firstframe, mv.lastframe), (146, 175));
-        assert!(all_ai(mv, ai::ai_stand));
-        assert_eq!(dists(mv), [0.0; 30]);
-        assert!(ends_with(mv, soldier_stand));
-    }
-
-    #[test]
-    fn soldier_move_walk1_matches_c() {
-        let mv = &SOLDIER_MOVE_WALK1;
-        assert_eq!((mv.firstframe, mv.lastframe), (215, 247));
-        assert!(all_ai(mv, ai::ai_walk));
-        let mut c = vec![3.0, 6.0, 2.0, 2.0, 2.0, 1.0, 6.0, 5.0, 3.0, -1.0];
-        c.resize(33, 0.0);
-        assert_eq!(dists(mv), c);
-        // Frames 3 and 8 are C's soldier_footstep.
-        assert_eq!(think_frames(mv), [3, 8, 9]);
-        assert!(std::ptr::fn_addr_eq(
-            mv.frames[9].thinkfunc.unwrap(),
-            soldier_walk1_random as ThinkFn
-        ));
-        assert!(mv.endfunc.is_none());
-    }
-
-    #[test]
-    fn soldier_move_run_and_start_run_match_c() {
-        let start = &SOLDIER_MOVE_START_RUN;
-        assert_eq!((start.firstframe, start.lastframe), (97, 98));
-        assert!(all_ai(start, ai::ai_run));
-        assert_eq!(dists(start), [7.0, 5.0]);
-        assert!(ends_with(start, soldier_run));
-
-        let run = &SOLDIER_MOVE_RUN;
-        assert_eq!((run.firstframe, run.lastframe), (99, 104));
-        assert!(all_ai(run, ai::ai_run));
-        assert_eq!(dists(run), [10.0, 11.0, 11.0, 16.0, 10.0, 15.0]);
-        assert!(run.endfunc.is_none());
-    }
-
-    #[test]
-    fn soldier_move_pain1_matches_c() {
-        let mv = &SOLDIER_MOVE_PAIN1;
-        assert_eq!((mv.firstframe, mv.lastframe), (50, 54));
-        assert!(all_ai(mv, ai::ai_move));
-        assert_eq!(dists(mv), [-3.0, 4.0, 1.0, 1.0, 0.0]);
-        assert!(ends_with(mv, soldier_run));
-    }
-
-    #[test]
-    fn soldier_move_death1_matches_c() {
-        let mv = &SOLDIER_MOVE_DEATH1;
-        assert_eq!((mv.firstframe, mv.lastframe), (272, 307));
-        assert!(all_ai(mv, ai::ai_move));
-        let mut c = vec![0.0, -10.0, -10.0, -10.0, -5.0];
-        c.resize(36, 0.0);
-        assert_eq!(dists(mv), c);
-        assert!(ends_with(mv, soldier_dead));
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&SOLDIER_MOVE_STAND1, 146, 175, "soldier_stand", "stand:0:soldier_idle stand:0:-*29"),
+            (&SOLDIER_MOVE_STAND3, 176, 214, "soldier_stand", "stand:0:-*21 stand:0:soldier_cock stand:0:-*17"),
+            (&SOLDIER_MOVE_WALK1, 215, 247, "-", "walk:3:- walk:6:- walk:2:- walk:2:soldier_footstep walk:2:- walk:1:- walk:6:- walk:5:- walk:3:soldier_footstep walk:-1:soldier_walk1_random walk:0:-*23"),
+            (&SOLDIER_MOVE_WALK2, 256, 265, "-", "walk:4:soldier_footstep walk:4:- walk:9:- walk:8:- walk:5:soldier_footstep walk:1:- walk:3:- walk:7:- walk:6:- walk:7:-"),
+            (&SOLDIER_MOVE_START_RUN, 97, 98, "soldier_run", "run:7:- run:5:-"),
+            (&SOLDIER_MOVE_RUN, 99, 104, "-", "run:10:- run:11:soldier_footstep run:11:- run:16:- run:10:soldier_footstep run:15:-"),
+            (&SOLDIER_MOVE_PAIN1, 50, 54, "soldier_run", "move:-3:- move:4:- move:1:-*2 move:0:-"),
+            (&SOLDIER_MOVE_PAIN2, 55, 61, "soldier_run", "move:-13:- move:-1:- move:2:- move:4:- move:2:- move:3:- move:2:-"),
+            (&SOLDIER_MOVE_PAIN3, 62, 79, "soldier_run", "move:-8:- move:10:- move:-4:soldier_footstep move:-1:- move:-3:- move:0:- move:3:- move:0:-*4 move:1:- move:0:- move:1:- move:2:- move:4:- move:3:- move:2:soldier_footstep"),
+            (&SOLDIER_MOVE_PAIN4, 80, 96, "soldier_run", "move:0:-*3 move:-10:- move:-6:- move:8:- move:4:- move:1:- move:0:- move:2:- move:5:- move:2:- move:-1:-*2 move:3:- move:2:- move:0:-"),
+            (&SOLDIER_MOVE_ATTACK1, 0, 11, "soldier_run", "charge:0:-*2 charge:0:soldier_fire1 charge:0:-*2 charge:0:soldier_attack1_refire1 charge:0:- charge:0:soldier_cock charge:0:soldier_attack1_refire2 charge:0:-*3"),
+            (&SOLDIER_MOVE_ATTACK2, 12, 29, "soldier_run", "charge:0:-*4 charge:0:soldier_fire2 charge:0:-*2 charge:0:soldier_attack2_refire1 charge:0:-*4 charge:0:soldier_cock charge:0:- charge:0:soldier_attack2_refire2 charge:0:-*3"),
+            (&SOLDIER_MOVE_ATTACK3, 30, 38, "soldier_run", "charge:0:-*2 charge:0:soldier_fire3 charge:0:-*2 charge:0:soldier_attack3_refire charge:0:soldier_duck_up charge:0:-*2"),
+            (&SOLDIER_MOVE_ATTACK4, 39, 44, "soldier_run", "charge:0:- charge:0:soldier_footstep charge:0:soldier_fire4 charge:0:-*2 charge:0:soldier_footstep"),
+            (&SOLDIER_MOVE_ATTACK6, 109, 122, "soldier_run", "charge:10:- charge:4:- charge:12:soldier_footstep charge:11:soldier_fire8 charge:13:- charge:18:- charge:15:soldier_footstep charge:14:- charge:11:- charge:8:soldier_footstep charge:11:- charge:12:- charge:12:soldier_footstep charge:17:soldier_attack6_refire"),
+            (&SOLDIER_MOVE_DUCK, 45, 49, "soldier_run", "move:5:soldier_duck_down move:-1:soldier_duck_hold move:1:- move:0:soldier_duck_up move:5:-"),
+            (&SOLDIER_MOVE_DEATH1, 272, 307, "soldier_dead", "move:0:- move:-10:-*3 move:-5:- move:0:-*16 move:0:soldier_fire6 move:0:-*2 move:0:soldier_fire7 move:0:-*11"),
+            (&SOLDIER_MOVE_DEATH2, 308, 342, "soldier_dead", "move:-5:-*3 move:0:-*32"),
+            (&SOLDIER_MOVE_DEATH3, 343, 387, "soldier_dead", "move:-5:-*3 move:0:-*42"),
+            (&SOLDIER_MOVE_DEATH4, 388, 440, "soldier_dead", "move:0:-*53"),
+            (&SOLDIER_MOVE_DEATH5, 441, 464, "soldier_dead", "move:-5:-*3 move:0:-*21"),
+            (&SOLDIER_MOVE_DEATH6, 465, 474, "soldier_dead", "move:0:-*10"),
+        ];
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
@@ -2073,23 +1683,23 @@ mod tests {
         let key = world.spawn().unwrap();
         sp_monster_soldier(&mut world.entities, key, &HashMap::new());
 
-        // Initialize.
+        // Initialize: C monster_start puts the soldier on a random frame
+        // of stand1, firstframe + randk() % 30. monster_start_go (skipped
+        // here) would stand the soldier for good.
+        let mut rng = test_world();
+        rng.level.rand_state = world.level.rand_state;
+        let start = FRAME_STAND101 + (rng.random_u32() % 30) as i32;
         ai::monster_start(&mut world, key);
         assert!(world.entities.get(key).unwrap().think.is_some());
+        assert_eq!(world.entities.get(key).unwrap().state.frame, start);
+        mi_mut(&mut world, key).pausetime = 100_000_000.0;
 
-        // Run one AI frame (think → monster_move_frame → advance animation).
-        // The spawn frame 0 is outside stand1, so the first tick snaps to it.
-        ai::monster_think(&mut world, key);
-        assert_eq!(world.entities.get(key).unwrap().state.frame, FRAME_STAND101);
-
-        // Run several more frames.
+        // Each AI frame (think, monster_move_frame) advances the animation.
+        assert!(start + 5 <= FRAME_STAND130, "the move does not wrap here");
         for _ in 0..5 {
             ai::monster_think(&mut world, key);
         }
-        assert_eq!(
-            world.entities.get(key).unwrap().state.frame,
-            FRAME_STAND101 + 5
-        );
+        assert_eq!(world.entities.get(key).unwrap().state.frame, start + 5);
     }
 
     // -- callbacks ----------------------------------------------------------
@@ -2257,7 +1867,7 @@ mod tests {
     #[test]
     fn soldier_pain_flung_upward_falls_over_even_on_nightmare() {
         let (mut world, _, key, enemy) = duel(2, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         world.entities.get_mut(key).unwrap().velocity.z = 101.0;
         soldier_pain(&mut world, key, enemy, 0.0, 5);
         assert!(is(&world, key, &SOLDIER_MOVE_PAIN4));
@@ -2266,7 +1876,7 @@ mod tests {
     #[test]
     fn soldier_pain_on_nightmare_only_cries_out() {
         let (mut world, gi, key, enemy) = duel(2, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_pain(&mut world, key, enemy, 0.0, 5);
         assert!(is(&world, key, &SOLDIER_MOVE_STAND1));
         assert_eq!(sounds(&gi), [voice(SOUND_PAIN)]);
@@ -2344,6 +1954,36 @@ mod tests {
     }
 
     #[test]
+    fn soldier_fire_picks_the_skins_muzzle_flash_by_flash_number() {
+        // C soldier_fire: blaster_flash / shotgun_flash / machinegun_flash
+        // by skin, indexed by the caller's flash number.
+        for (skin, shot, flash) in [
+            (0, soldier_fire1 as ThinkFn, MZ2_SOLDIER_BLASTER_1),
+            (1, soldier_fire6, MZ2_SOLDIER_BLASTER_6),
+            (2, soldier_fire3, MZ2_SOLDIER_SHOTGUN_3),
+            (3, soldier_fire2, MZ2_SOLDIER_SHOTGUN_2),
+            (4, soldier_fire8, MZ2_SOLDIER_MACHINEGUN_8),
+            (5, soldier_fire7, MZ2_SOLDIER_MACHINEGUN_7),
+        ] {
+            let (mut world, gi) = crate::misc::wire::wire_world();
+            let key = world.spawn().unwrap();
+            sp_monster_soldier(&mut world.entities, key, &HashMap::new());
+            let enemy = world.spawn().unwrap();
+            world.entities.get_mut(enemy).unwrap().state.origin = Vec3f::new(300.0, 0.0, 0.0);
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.state.skinnum = skin;
+            ent.game.enemy = Some(enemy);
+            shot(&mut world, key);
+            let wire = gi.wire.borrow();
+            assert_eq!(
+                wire[wire.len() - 2],
+                crate::misc::wire::Wire::Byte(flash),
+                "skin {skin}"
+            );
+        }
+    }
+
+    #[test]
     fn soldier_aimed_shot_without_an_enemy_fires_nothing() {
         let (mut world, _, key, _) = duel(0, 300.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
@@ -2389,7 +2029,7 @@ mod tests {
         ] {
             for (lo, hi, want) in [(0.0, 0.5, again), (0.5, 1.01, end)] {
                 let (mut world, _, key, _) = duel(0, 300.0);
-                world.game.skill = crate::constants::SKILL_HARDPLUS;
+                world.game.skill = SKILL_HARDPLUS;
                 seed(&mut world, |w| (lo..hi).contains(&w.random()));
                 refire1(&mut world, key);
                 assert_eq!(nextframe(&world, key), want);
@@ -2426,7 +2066,7 @@ mod tests {
             assert_eq!(nextframe(&world, key), 0);
 
             let (mut world, _, key, _) = duel(2, 300.0);
-            world.game.skill = crate::constants::SKILL_HARDPLUS;
+            world.game.skill = SKILL_HARDPLUS;
             seed(&mut world, |w| w.random() < 0.5);
             refire2(&mut world, key);
             assert_eq!(nextframe(&world, key), again, "nightmare");
@@ -2505,22 +2145,22 @@ mod tests {
     #[test]
     fn soldier_attack6_refire_on_nightmare_runs_and_shoots_again_at_mid_range() {
         let (mut world, _, key, _) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), FRAME_RUNS03);
 
         let (mut world, _, key, _) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARD;
+        world.game.skill = SKILL_HARD;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "hard");
 
         let (mut world, _, key, _) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "near");
 
         let (mut world, _, key, enemy) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         world.entities.get_mut(enemy).unwrap().game.health = 0;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "dead enemy");
@@ -2548,7 +2188,7 @@ mod tests {
     fn soldier_sight_shouts_one_of_two_lines() {
         for (lo, hi, name) in [(0.0, 0.5, SOUND_SIGHT1), (0.5, 1.01, SOUND_SIGHT2)] {
             let (mut world, gi, key, enemy) = duel(0, 600.0);
-            world.game.skill = crate::constants::SKILL_EASY;
+            world.game.skill = SKILL_EASY;
             seed(&mut world, |w| (lo..hi).contains(&w.random()));
             soldier_sight(&mut world, key, enemy);
             assert_eq!(sounds(&gi), [voice(name)]);
@@ -2577,7 +2217,7 @@ mod tests {
         assert!(is(&world, key, &SOLDIER_MOVE_STAND1));
 
         let (mut world, _, key, enemy) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         seed(&mut world, |w| {
             w.random();
             w.random() > 0.5
@@ -2600,7 +2240,7 @@ mod tests {
     #[test]
     fn soldier_dodge_on_easy_ducks_and_turns_on_an_unseen_attacker() {
         let (mut world, _, key, enemy) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_EASY;
+        world.game.skill = SKILL_EASY;
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() <= 0.25);
         soldier_dodge(&mut world, key, enemy, 0.5);

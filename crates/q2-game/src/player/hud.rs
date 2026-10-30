@@ -174,7 +174,7 @@ impl GameWorld {
         let framenum = self.level.framenum;
         // Sort the clients by score (earlier slots first on ties).
         let mut sorted: Vec<(usize, EntityKey, i32)> = Vec::new();
-        for i in 0..self.game.maxclients.max(0) as usize {
+        for i in 0..self.game.maxclients().max(0) as usize {
             let Some(cl_ent) = self.entities.key_for_number(i + 1) else {
                 continue;
             };
@@ -311,7 +311,7 @@ impl GameWorld {
         if self.level.intermission_time != 0.0 {
             return; // already activated
         }
-        let clients: Vec<EntityKey> = (1..=self.game.maxclients.max(0) as usize)
+        let clients: Vec<EntityKey> = (1..=self.game.maxclients().max(0) as usize)
             .filter_map(|n| self.entities.key_for_number(n))
             .filter(|&k| self.entities.get(k).is_some_and(|e| e.in_use))
             .collect();

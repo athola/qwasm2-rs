@@ -33,7 +33,7 @@ pub fn setup_input_listeners(
         let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
             if let Some(key) = key_code_to_q2(&event.code()) {
-                state.borrow_mut().keys[key as usize] = true;
+                state.borrow_mut().key_down(key);
                 if lock_doc.pointer_lock_element().is_some() {
                     event.prevent_default();
                 }
@@ -51,7 +51,7 @@ pub fn setup_input_listeners(
         let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
             if let Some(key) = key_code_to_q2(&event.code()) {
-                state.borrow_mut().keys[key as usize] = false;
+                state.borrow_mut().key_up(key);
                 if lock_doc.pointer_lock_element().is_some() {
                     event.prevent_default();
                 }
@@ -140,8 +140,8 @@ pub fn setup_input_listeners(
     {
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
-            let mut s = state.borrow_mut();
-            s.mouse_buttons |= 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            let mask = 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            state.borrow_mut().button_down(mask);
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
@@ -152,8 +152,8 @@ pub fn setup_input_listeners(
     {
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
-            let mut s = state.borrow_mut();
-            s.mouse_buttons &= !(1u8.checked_shl(event.button() as u32).unwrap_or(0));
+            let mask = 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            state.borrow_mut().button_up(mask);
         }) as Box<dyn FnMut(_)>);
         // On the document: a button pressed on the canvas may be released
         // after the cursor has left it.

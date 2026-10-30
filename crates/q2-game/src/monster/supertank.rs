@@ -11,12 +11,11 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::{monster_flash_source, project_source, MONSTER_FLASH_OFFSET};
+use crate::monster::{enemy_eye, frame, set_move, sound};
 use crate::world::GameWorld;
 
 /// C supertank.h `MODEL_SCALE`.
@@ -26,14 +25,6 @@ const MODEL_SCALE: f32 = 1.0;
 const FRAME_ATTAK2_8: i32 = 27;
 const FRAME_ATTAK2_11: i32 = 30;
 const FRAME_ATTAK2_14: i32 = 33;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: supertank.c `supertank_frames_*` / `supertank_move_*`.
 // `turn_right`, `turn_left`, `backward`, `attack3` and `attack4` exist
@@ -345,24 +336,6 @@ static SUPERTANK_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
 /// The enemy, alive or not.
 fn enemy_of(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
     world
@@ -371,12 +344,6 @@ fn enemy_of(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
         .game
         .enemy
         .filter(|&e| world.entities.get(e).is_some())
-}
-
-/// The enemy's eye: C `enemy->s.origin` plus `viewheight` on z.
-fn enemy_eye(world: &GameWorld, key: EntityKey) -> Option<Vec3f> {
-    let enemy = world.entities.get(enemy_of(world, key)?)?;
-    Some(enemy.state.origin + Vec3f::new(0.0, 0.0, enemy.game.viewheight))
 }
 
 fn frame_of(world: &GameWorld, key: EntityKey) -> i32 {
@@ -736,6 +703,17 @@ pub fn supertank_precache(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (tread_sound, "tread_sound"),
+        (supertank_run, "supertank_run"),
+        (boss_explode, "boss_explode"),
+        (supertank_dead, "supertank_dead"),
+        (supertank_rocket, "supertank_rocket"),
+        (supertank_machine_gun, "supertank_machine_gun"),
+        (supertank_reattack1, "supertank_reattack1"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
     use std::rc::Rc;
@@ -750,186 +728,25 @@ mod tests {
 
     #[test]
     fn supertank_moves_match_c_supertank_c() {
-        let tread: ThinkFn = tread_sound;
-        let stand = Some(ai::ai_stand as AnimFrameFn);
-        let walk = Some(ai::ai_walk as AnimFrameFn);
-        let run = Some(ai::ai_run as AnimFrameFn);
-        let mv = Some(ai::ai_move as AnimFrameFn);
-        let charge = Some(ai::ai_charge as AnimFrameFn);
-        let rocket: ThinkFn = supertank_rocket;
-        let mg: Vec<(usize, ThinkFn)> = (0..6)
-            .map(|i| (i, supertank_machine_gun as ThinkFn))
-            .collect();
-        let moves: Vec<(&str, &MonsterMove, CMove)> = vec![
-            (
-                "stand",
-                &SUPERTANK_MOVE_STAND,
-                CMove {
-                    bounds: (194, 253),
-                    ai: vec![(60, stand)],
-                    dists: zeros(60),
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "run",
-                &SUPERTANK_MOVE_RUN,
-                CMove {
-                    bounds: (128, 145),
-                    ai: vec![(18, run)],
-                    dists: vec![12.0; 18],
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "forward",
-                &SUPERTANK_MOVE_FORWARD,
-                CMove {
-                    bounds: (128, 145),
-                    ai: vec![(18, walk)],
-                    dists: vec![4.0; 18],
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "turn_right",
-                &SUPERTANK_MOVE_TURN_RIGHT,
-                CMove {
-                    bounds: (176, 193),
-                    ai: vec![(18, mv)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "turn_left",
-                &SUPERTANK_MOVE_TURN_LEFT,
-                CMove {
-                    bounds: (146, 163),
-                    ai: vec![(18, mv)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain3",
-                &SUPERTANK_MOVE_PAIN3,
-                CMove {
-                    bounds: (172, 175),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain2",
-                &SUPERTANK_MOVE_PAIN2,
-                CMove {
-                    bounds: (168, 171),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain1",
-                &SUPERTANK_MOVE_PAIN1,
-                CMove {
-                    bounds: (164, 167),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "death",
-                &SUPERTANK_MOVE_DEATH,
-                CMove {
-                    bounds: (98, 121),
-                    ai: vec![(24, mv)],
-                    dists: zeros(24),
-                    thinks: vec![(23, boss_explode)],
-                    end: Some(supertank_dead),
-                },
-            ),
-            (
-                "backward",
-                &SUPERTANK_MOVE_BACKWARD,
-                CMove {
-                    bounds: (80, 97),
-                    ai: vec![(18, walk)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "attack4",
-                &SUPERTANK_MOVE_ATTACK4,
-                CMove {
-                    bounds: (74, 79),
-                    ai: vec![(6, mv)],
-                    dists: zeros(6),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack3",
-                &SUPERTANK_MOVE_ATTACK3,
-                CMove {
-                    bounds: (47, 73),
-                    ai: vec![(27, mv)],
-                    dists: zeros(27),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack2",
-                &SUPERTANK_MOVE_ATTACK2,
-                CMove {
-                    bounds: (20, 46),
-                    ai: vec![(8, charge), (19, mv)],
-                    dists: zeros(27),
-                    thinks: vec![(7, rocket), (10, rocket), (13, rocket)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack1",
-                &SUPERTANK_MOVE_ATTACK1,
-                CMove {
-                    bounds: (0, 5),
-                    ai: vec![(6, charge)],
-                    dists: zeros(6),
-                    thinks: mg,
-                    end: Some(supertank_reattack1),
-                },
-            ),
-            (
-                "end_attack1",
-                &SUPERTANK_MOVE_END_ATTACK1,
-                CMove {
-                    bounds: (6, 19),
-                    ai: vec![(14, mv)],
-                    dists: zeros(14),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&SUPERTANK_MOVE_STAND, 194, 253, "-", "stand:0:-*60"),
+            (&SUPERTANK_MOVE_RUN, 128, 145, "-", "run:12:tread_sound run:12:-*17"),
+            (&SUPERTANK_MOVE_FORWARD, 128, 145, "-", "walk:4:tread_sound walk:4:-*17"),
+            (&SUPERTANK_MOVE_TURN_RIGHT, 176, 193, "supertank_run", "move:0:tread_sound move:0:-*17"),
+            (&SUPERTANK_MOVE_TURN_LEFT, 146, 163, "supertank_run", "move:0:tread_sound move:0:-*17"),
+            (&SUPERTANK_MOVE_PAIN3, 172, 175, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_PAIN2, 168, 171, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_PAIN1, 164, 167, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_DEATH, 98, 121, "supertank_dead", "move:0:-*23 move:0:boss_explode"),
+            (&SUPERTANK_MOVE_BACKWARD, 80, 97, "-", "walk:0:tread_sound walk:0:-*17"),
+            (&SUPERTANK_MOVE_ATTACK4, 74, 79, "supertank_run", "move:0:-*6"),
+            (&SUPERTANK_MOVE_ATTACK3, 47, 73, "supertank_run", "move:0:-*27"),
+            (&SUPERTANK_MOVE_ATTACK2, 20, 46, "supertank_run", "charge:0:-*7 charge:0:supertank_rocket move:0:-*2 move:0:supertank_rocket move:0:-*2 move:0:supertank_rocket move:0:-*13"),
+            (&SUPERTANK_MOVE_ATTACK1, 0, 5, "supertank_reattack1", "charge:0:supertank_machine_gun*6"),
+            (&SUPERTANK_MOVE_END_ATTACK1, 6, 19, "supertank_run", "move:0:-*14"),
         ];
-        for (name, mv, c) in moves {
-            assert_move(name, mv, c);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
@@ -1108,6 +925,21 @@ mod tests {
     }
 
     #[test]
+    fn supertank_pain_on_hard_spares_the_volley_from_its_first_frame_only() {
+        let (mut world, _, key) = supertank();
+        world.game.skill = crate::constants::SKILL_HARD;
+        set_frame(&mut world, key, FRAME_ATTAK2_1);
+        pain(&mut world, key, 100, 0.5);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            0.0
+        );
+        set_frame(&mut world, key, FRAME_ATTAK2_1 - 1);
+        pain(&mut world, key, 100, 0.5);
+        assert!(playing(&world, key, &SUPERTANK_MOVE_PAIN3));
+    }
+
+    #[test]
     fn supertank_attack_uses_the_gun_close_and_mostly_rockets_far() {
         for (range, roll, mv) in [
             (160.0, 0.9, &SUPERTANK_MOVE_ATTACK1),
@@ -1151,6 +983,62 @@ mod tests {
         }
         let want: Vec<i32> = (MZ2_SUPERTANK_MACHINEGUN_1..MZ2_SUPERTANK_MACHINEGUN_1 + 6).collect();
         assert_eq!(muzzle_flashes(&gi), want);
+    }
+
+    /// A supertank at (0, 0, 24) facing +x but pitched 20 degrees, on
+    /// attak1_1, with a player at (300, 0, 24) as its enemy.
+    fn pitched_supertank() -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
+        let (mut world, gi, player) = player_arena(300.0);
+        let key = world.spawn().unwrap();
+        sp_monster_supertank(&mut world.entities, key, &HashMap::new());
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(0.0, 0.0, 24.0);
+        ent.state.angles = Vec3f::new(20.0, 0.0, 0.0);
+        ent.state.frame = FRAME_ATTAK1_1;
+        ent.game.enemy = Some(player);
+        world.link_entity(key);
+        (world, gi, key, player)
+    }
+
+    /// C projects flash offset (30, 30, 88.5) from (0, yaw, 0), ignoring
+    /// the pitch: forward +x, right -y.
+    const YAW_ONLY_START: Vec3f = Vec3f::new(30.0, -30.0, 112.5);
+
+    fn gun_damage_with_target_at(
+        world: &mut GameWorld,
+        gi: &ArenaImport,
+        key: EntityKey,
+        player: EntityKey,
+        at: Vec3f,
+    ) -> i32 {
+        gi.target_at(at, 4.0, world.number_of(player).unwrap());
+        let before = world.entities.get(player).unwrap().game.health;
+        supertank_machine_gun(world, key);
+        before - world.entities.get(player).unwrap().game.health
+    }
+
+    #[test]
+    fn supertank_machine_gun_fires_from_the_yaw_only_muzzle_at_the_eye_for_6() {
+        let (mut world, gi, key, player) = pitched_supertank();
+        let p = world.entities.get(player).unwrap();
+        let eye = p.state.origin + Vec3f::new(0.0, 0.0, p.game.viewheight);
+        // Close to the muzzle, where a pitched start would pass well clear.
+        let at = YAW_ONLY_START + (eye - YAW_ONLY_START).normalize() * 20.0;
+        assert_eq!(
+            gun_damage_with_target_at(&mut world, &gi, key, player, at),
+            6
+        );
+    }
+
+    #[test]
+    fn supertank_machine_gun_without_an_enemy_fires_level_ahead() {
+        let (mut world, gi, key, player) = pitched_supertank();
+        world.entities.get_mut(key).unwrap().game.enemy = None;
+        let at = YAW_ONLY_START + Vec3f::X * 20.0;
+        assert_eq!(
+            gun_damage_with_target_at(&mut world, &gi, key, player, at),
+            6
+        );
     }
 
     #[test]

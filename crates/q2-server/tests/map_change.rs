@@ -137,11 +137,28 @@ fn a_cinematic_level_is_refused_and_the_map_keeps_running() {
 }
 
 #[test]
+fn a_cinematic_with_a_next_server_goes_straight_to_it() {
+    // C SV_Map sets nextserver to `gamemap "two$east"` and plays the
+    // movie; SV_Nextserver runs it once the movie ends.
+    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
+    game.change_map(&MapRequest::parse("intro.cin+two$east"), &[])
+        .expect("the movie is skipped");
+    assert_eq!(game.take_map_change().as_deref(), Some("two$east"));
+    assert_eq!(game.configstring(CS_NAME), "one", "nothing loaded yet");
+}
+
+#[test]
 fn a_map_that_fails_to_load_is_an_error() {
     let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
+    play(&mut game, 3);
     assert!(game
         .change_map(&MapRequest::parse("broken"), b"not a bsp")
         .is_err());
+    // C drops the server: no command reaches ClientThink, so the player
+    // does not fall through the empty collision map.
+    let (before, _) = game.player().expect("old player edict");
+    play(&mut game, 5);
+    assert_eq!(game.player().expect("old player edict").0, before);
 }
 
 /// demo2's `info_player_start` with targetname `base1`, from its entity
