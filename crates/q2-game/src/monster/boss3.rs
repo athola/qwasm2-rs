@@ -1877,107 +1877,74 @@ pub fn makron_toss(world: &mut GameWorld, key: EntityKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{AnimFrameFn, ThinkFn};
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (jorg_idle, "jorg_idle"),
+        (jorg_step_left, "jorg_step_left"),
+        (jorg_step_right, "jorg_step_right"),
+        (makron_toss, "makron_toss"),
+        (boss_explode, "boss_explode"),
+        (jorg_bfg, "jorg_bfg"),
+        (jorg_firebullet, "jorg_firebullet"),
+        (jorg_run, "jorg_run"),
+        (jorg_dead, "jorg_dead"),
+        (jorg_attack1, "jorg_attack1"),
+        (jorg_reattack1, "jorg_reattack1"),
+        (makron_step_left, "makron_step_left"),
+        (makron_step_right, "makron_step_right"),
+        (makron_popup, "makron_popup"),
+        (makron_taunt, "makron_taunt"),
+        (makron_hit, "makron_hit"),
+        (makron_brainsplorch, "makron_brainsplorch"),
+        (makron_bfg, "makron_bfg"),
+        (makron_hyperblaster, "makron_hyperblaster"),
+        (makron_prerailgun, "makron_prerailgun"),
+        (makron_saveloc, "makron_saveloc"),
+        (makron_railgun, "makron_railgun"),
+        (makron_run, "makron_run"),
+        (makron_dead, "makron_dead"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::{wire_world, Wire, WireImport};
+    use crate::monster::test_support::{assert_moves_match_c, CMoveRow};
     use crate::world::{test_world, test_world_recording, MockGameImport};
 
-    /// One C `mmove_t` and its `mframe_t` table: ai per frame as a letter
-    /// (Stand, Walk, Run, Charge, Move), dists, think slots, endfunc.
-    struct CTable {
-        mv: &'static MonsterMove,
-        first: i32,
-        last: i32,
-        ai: &'static str,
-        dist: &'static [f32],
-        thinks: &'static [(usize, ThinkFn)],
-        end: Option<ThinkFn>,
-    }
-
-    fn ai_letter(f: AnimFrameFn) -> char {
-        let table: [(AnimFrameFn, char); 5] = [
-            (ai::ai_stand, 'S'),
-            (ai::ai_walk, 'W'),
-            (ai::ai_run, 'R'),
-            (ai::ai_charge, 'C'),
-            (ai::ai_move, 'M'),
-        ];
-        table
-            .iter()
-            .find(|(g, _)| std::ptr::fn_addr_eq(f, *g))
-            .map_or('?', |&(_, c)| c)
-    }
-
-    fn check(t: &CTable) {
-        let mv = t.mv;
-        let at = format!("move {}..{}", t.first, t.last);
-        assert_eq!((mv.firstframe, mv.lastframe), (t.first, t.last), "{at}");
-        assert_eq!(mv.frames.len() as i32, t.last - t.first + 1, "{at}");
-        let ai: String = mv
-            .frames
-            .iter()
-            .map(|f| ai_letter(f.aifunc.unwrap()))
-            .collect();
-        assert_eq!(ai, t.ai, "{at}");
-        let dist: Vec<f32> = mv.frames.iter().map(|f| f.dist).collect();
-        assert_eq!(dist, t.dist, "{at}");
-        let thinks: Vec<usize> = (0..mv.frames.len())
-            .filter(|&i| mv.frames[i].thinkfunc.is_some())
-            .collect();
-        let want: Vec<usize> = t.thinks.iter().map(|&(i, _)| i).collect();
-        assert_eq!(thinks, want, "{at}");
-        for &(i, f) in t.thinks {
-            assert!(
-                std::ptr::fn_addr_eq(mv.frames[i].thinkfunc.unwrap(), f),
-                "{at} frame {i}"
-            );
-        }
-        match (mv.endfunc, t.end) {
-            (None, None) => {}
-            (Some(a), Some(b)) => assert!(std::ptr::fn_addr_eq(a, b), "{at} endfunc"),
-            _ => panic!("{at} endfunc"),
-        }
-    }
-
     #[test]
-    #[rustfmt::skip]
     fn jorg_moves_match_c_boss31_c() {
-        let tables = [
-        CTable { mv: &JORG_MOVE_STAND, first: FRAME_STAND01, last: FRAME_STAND51, ai: "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 19.0, 11.0, 0.0, 0.0, 6.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, -17.0, 0.0, -12.0, -14.0], thinks: &[(0, jorg_idle as ThinkFn), (34, jorg_step_left as ThinkFn), (38, jorg_step_right as ThinkFn), (47, jorg_step_left as ThinkFn), (50, jorg_step_right as ThinkFn)], end: None },
-        CTable { mv: &JORG_MOVE_RUN, first: FRAME_WALK06, last: FRAME_WALK19, ai: "RRRRRRRRRRRRRR", dist: &[17.0, 0.0, 0.0, 0.0, 12.0, 8.0, 10.0, 33.0, 0.0, 0.0, 0.0, 9.0, 9.0, 9.0], thinks: &[(0, jorg_step_left as ThinkFn), (7, jorg_step_right as ThinkFn)], end: None },
-        CTable { mv: &JORG_MOVE_WALK, first: FRAME_WALK06, last: FRAME_WALK19, ai: "WWWWWWWWWWWWWW", dist: &[17.0, 0.0, 0.0, 0.0, 12.0, 8.0, 10.0, 33.0, 0.0, 0.0, 0.0, 9.0, 9.0, 9.0], thinks: &[], end: None },
-        CTable { mv: &JORG_MOVE_PAIN3, first: FRAME_PAIN301, last: FRAME_PAIN325, ai: "MMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[-28.0, -6.0, -3.0, -9.0, 0.0, 0.0, 0.0, 0.0, -7.0, 1.0, -11.0, -4.0, 0.0, 0.0, 10.0, 11.0, 0.0, 10.0, 3.0, 10.0, 7.0, 17.0, 0.0, 0.0, 0.0], thinks: &[(2, jorg_step_left as ThinkFn), (4, jorg_step_right as ThinkFn), (20, jorg_step_left as ThinkFn), (24, jorg_step_right as ThinkFn)], end: Some(jorg_run as ThinkFn) },
-        CTable { mv: &JORG_MOVE_PAIN2, first: FRAME_PAIN201, last: FRAME_PAIN203, ai: "MMM", dist: &[0.0, 0.0, 0.0], thinks: &[], end: Some(jorg_run as ThinkFn) },
-        CTable { mv: &JORG_MOVE_PAIN1, first: FRAME_PAIN101, last: FRAME_PAIN103, ai: "MMM", dist: &[0.0, 0.0, 0.0], thinks: &[], end: Some(jorg_run as ThinkFn) },
-        CTable { mv: &JORG_MOVE_DEATH, first: FRAME_DEATH01, last: FRAME_DEATH50, ai: "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(48, makron_toss as ThinkFn), (49, boss_explode as ThinkFn)], end: Some(jorg_dead as ThinkFn) },
-        CTable { mv: &JORG_MOVE_ATTACK2, first: FRAME_ATTAK201, last: FRAME_ATTAK213, ai: "CCCCCCCMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(6, jorg_bfg as ThinkFn)], end: Some(jorg_run as ThinkFn) },
-        CTable { mv: &JORG_MOVE_START_ATTACK1, first: FRAME_ATTAK101, last: FRAME_ATTAK108, ai: "CCCCCCCC", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(jorg_attack1 as ThinkFn) },
-        CTable { mv: &JORG_MOVE_ATTACK1, first: FRAME_ATTAK109, last: FRAME_ATTAK114, ai: "CCCCCC", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(0, jorg_firebullet as ThinkFn), (1, jorg_firebullet as ThinkFn), (2, jorg_firebullet as ThinkFn), (3, jorg_firebullet as ThinkFn), (4, jorg_firebullet as ThinkFn), (5, jorg_firebullet as ThinkFn)], end: Some(jorg_reattack1 as ThinkFn) },
-        CTable { mv: &JORG_MOVE_END_ATTACK1, first: FRAME_ATTAK115, last: FRAME_ATTAK118, ai: "MMMM", dist: &[0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(jorg_run as ThinkFn) },
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&JORG_MOVE_STAND, 112, 162, "-", "stand:0:jorg_idle stand:0:-*32 stand:19:- stand:11:jorg_step_left stand:0:-*2 stand:6:- stand:9:jorg_step_right stand:0:-*7 stand:-2:- stand:-17:jorg_step_left stand:0:- stand:-12:- stand:-14:jorg_step_right"),
+            (&JORG_MOVE_RUN, 168, 181, "-", "run:17:jorg_step_left run:0:-*3 run:12:- run:8:- run:10:- run:33:jorg_step_right run:0:-*3 run:9:-*3"),
+            (&JORG_MOVE_WALK, 168, 181, "-", "walk:17:- walk:0:-*3 walk:12:- walk:8:- walk:10:- walk:33:- walk:0:-*3 walk:9:-*3"),
+            (&JORG_MOVE_PAIN3, 87, 111, "jorg_run", "move:-28:- move:-6:- move:-3:jorg_step_left move:-9:- move:0:jorg_step_right move:0:-*3 move:-7:- move:1:- move:-11:- move:-4:- move:0:-*2 move:10:- move:11:- move:0:- move:10:- move:3:- move:10:- move:7:jorg_step_left move:17:- move:0:-*2 move:0:jorg_step_right"),
+            (&JORG_MOVE_PAIN2, 84, 86, "jorg_run", "move:0:-*3"),
+            (&JORG_MOVE_PAIN1, 81, 83, "jorg_run", "move:0:-*3"),
+            (&JORG_MOVE_DEATH, 31, 80, "jorg_dead", "move:0:-*48 move:0:makron_toss move:0:boss_explode"),
+            (&JORG_MOVE_ATTACK2, 18, 30, "jorg_run", "charge:0:-*6 charge:0:jorg_bfg move:0:-*6"),
+            (&JORG_MOVE_START_ATTACK1, 0, 7, "jorg_attack1", "charge:0:-*8"),
+            (&JORG_MOVE_ATTACK1, 8, 13, "jorg_reattack1", "charge:0:jorg_firebullet*6"),
+            (&JORG_MOVE_END_ATTACK1, 14, 17, "jorg_run", "move:0:-*4"),
         ];
-        for t in &tables {
-            check(t);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
-    #[rustfmt::skip]
     fn makron_moves_match_c_boss32_c() {
-        let tables = [
-        CTable { mv: &MAKRON_MOVE_STAND, first: FRAME_STAND201, last: FRAME_STAND260, ai: "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: None },
-        CTable { mv: &MAKRON_MOVE_RUN, first: FRAME_WALK204, last: FRAME_WALK213, ai: "RRRRRRRRRR", dist: &[3.0, 12.0, 8.0, 8.0, 8.0, 6.0, 12.0, 9.0, 6.0, 12.0], thinks: &[(0, makron_step_left as ThinkFn), (4, makron_step_right as ThinkFn)], end: None },
-        CTable { mv: &MAKRON_MOVE_WALK, first: FRAME_WALK204, last: FRAME_WALK213, ai: "WWWWWWWWWW", dist: &[3.0, 12.0, 8.0, 8.0, 8.0, 6.0, 12.0, 9.0, 6.0, 12.0], thinks: &[(0, makron_step_left as ThinkFn), (4, makron_step_right as ThinkFn)], end: None },
-        CTable { mv: &MAKRON_MOVE_PAIN6, first: FRAME_PAIN601, last: FRAME_PAIN627, ai: "MMMMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(15, makron_popup as ThinkFn), (23, makron_taunt as ThinkFn)], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_PAIN5, first: FRAME_PAIN501, last: FRAME_PAIN504, ai: "MMMM", dist: &[0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_PAIN4, first: FRAME_PAIN401, last: FRAME_PAIN404, ai: "MMMM", dist: &[0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_DEATH2, first: FRAME_DEATH201, last: FRAME_DEATH295, ai: "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[-15.0, 3.0, -12.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 11.0, 12.0, 11.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 7.0, 6.0, 0.0, 0.0, -1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -6.0, -4.0, -6.0, -4.0, -4.0, 0.0, 0.0, 0.0, 0.0, -2.0, -5.0, -3.0, -8.0, -3.0, -7.0, -4.0, -4.0, -6.0, -7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, 0.0, 0.0, 2.0, 0.0, 27.0, 26.0, 0.0, 0.0, 0.0], thinks: &[(3, makron_step_left as ThinkFn), (17, makron_step_right as ThinkFn), (35, makron_step_left as ThinkFn), (55, makron_step_right as ThinkFn), (57, makron_step_left as ThinkFn), (64, makron_step_right as ThinkFn), (66, makron_step_left as ThinkFn), (69, makron_step_right as ThinkFn), (72, makron_step_left as ThinkFn), (90, makron_hit as ThinkFn), (92, makron_brainsplorch as ThinkFn)], end: Some(makron_dead as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_SIGHT, first: FRAME_ACTIVE01, last: FRAME_ACTIVE13, ai: "MMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_ATTACK3, first: FRAME_ATTAK301, last: FRAME_ATTAK308, ai: "CCCCMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(3, makron_bfg as ThinkFn)], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_ATTACK4, first: FRAME_ATTAK401, last: FRAME_ATTAK426, ai: "CCCCMMMMMMMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(4, makron_hyperblaster as ThinkFn), (5, makron_hyperblaster as ThinkFn), (6, makron_hyperblaster as ThinkFn), (7, makron_hyperblaster as ThinkFn), (8, makron_hyperblaster as ThinkFn), (9, makron_hyperblaster as ThinkFn), (10, makron_hyperblaster as ThinkFn), (11, makron_hyperblaster as ThinkFn), (12, makron_hyperblaster as ThinkFn), (13, makron_hyperblaster as ThinkFn), (14, makron_hyperblaster as ThinkFn), (15, makron_hyperblaster as ThinkFn), (16, makron_hyperblaster as ThinkFn), (17, makron_hyperblaster as ThinkFn), (18, makron_hyperblaster as ThinkFn), (19, makron_hyperblaster as ThinkFn), (20, makron_hyperblaster as ThinkFn)], end: Some(makron_run as ThinkFn) },
-        CTable { mv: &MAKRON_MOVE_ATTACK5, first: FRAME_ATTAK501, last: FRAME_ATTAK516, ai: "CCCCCCCCMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(0, makron_prerailgun as ThinkFn), (7, makron_saveloc as ThinkFn), (8, makron_railgun as ThinkFn)], end: Some(makron_run as ThinkFn) },
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&MAKRON_MOVE_STAND, 414, 473, "-", "stand:0:-*60"),
+            (&MAKRON_MOVE_RUN, 477, 486, "-", "run:3:makron_step_left run:12:- run:8:-*2 run:8:makron_step_right run:6:- run:12:- run:9:- run:6:- run:12:-"),
+            (&MAKRON_MOVE_WALK, 477, 486, "-", "walk:3:makron_step_left walk:12:- walk:8:-*2 walk:8:makron_step_right walk:6:- walk:12:- walk:9:- walk:6:- walk:12:-"),
+            (&MAKRON_MOVE_PAIN6, 387, 413, "makron_run", "move:0:-*15 move:0:makron_popup move:0:-*7 move:0:makron_taunt move:0:-*3"),
+            (&MAKRON_MOVE_PAIN5, 383, 386, "makron_run", "move:0:-*4"),
+            (&MAKRON_MOVE_PAIN4, 379, 382, "makron_run", "move:0:-*4"),
+            (&MAKRON_MOVE_DEATH2, 251, 345, "makron_dead", "move:-15:- move:3:- move:-12:- move:0:makron_step_left move:0:-*11 move:11:- move:12:- move:11:makron_step_right move:0:-*15 move:5:- move:7:- move:6:makron_step_left move:0:-*2 move:-1:- move:2:- move:0:-*13 move:-6:- move:-4:- move:-6:makron_step_right move:-4:- move:-4:makron_step_left move:0:-*4 move:-2:- move:-5:- move:-3:makron_step_right move:-8:- move:-3:makron_step_left move:-7:- move:-4:- move:-4:makron_step_right move:-6:- move:-7:- move:0:makron_step_left move:0:-*12 move:-2:- move:0:-*2 move:2:- move:0:- move:27:makron_hit move:26:- move:0:makron_brainsplorch move:0:-*2"),
+            (&MAKRON_MOVE_SIGHT, 188, 200, "makron_run", "move:0:-*13"),
+            (&MAKRON_MOVE_ATTACK3, 201, 208, "makron_run", "charge:0:-*3 charge:0:makron_bfg move:0:-*4"),
+            (&MAKRON_MOVE_ATTACK4, 209, 234, "makron_run", "charge:0:-*4 move:0:makron_hyperblaster*17 move:0:-*5"),
+            (&MAKRON_MOVE_ATTACK5, 235, 250, "makron_run", "charge:0:makron_prerailgun charge:0:-*6 charge:0:makron_saveloc move:0:makron_railgun move:0:-*7"),
         ];
-        for t in &tables {
-            check(t);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     /// A seed whose game RNG satisfies `pred` from its first draw.

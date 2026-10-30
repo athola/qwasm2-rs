@@ -874,94 +874,52 @@ pub fn insane_finish(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{AnimFrameFn, ThinkFn};
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (insane_checkdown, "insane_checkdown"),
+        (insane_shake, "insane_shake"),
+        (insane_moan, "insane_moan"),
+        (insane_fist, "insane_fist"),
+        (insane_scream, "insane_scream"),
+        (insane_checkup, "insane_checkup"),
+        (insane_footstep, "insane_footstep"),
+        (insane_stand, "insane_stand"),
+        (insane_onground, "insane_onground"),
+        (insane_walk, "insane_walk"),
+        (insane_run, "insane_run"),
+        (insane_dead, "insane_dead"),
+        (insane_cross, "insane_cross"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::wire_world;
     use crate::monster::test_support::wire_sounds;
+    use crate::monster::test_support::{assert_moves_match_c, CMoveRow};
     use crate::world::test_world;
 
-    /// One C `mmove_t` and its `mframe_t` table: ai per frame as a letter
-    /// (Stand, Walk, Run, Charge, Move), dists, think slots, endfunc.
-    struct CTable {
-        mv: &'static MonsterMove,
-        first: i32,
-        last: i32,
-        ai: &'static str,
-        dist: &'static [f32],
-        thinks: &'static [(usize, ThinkFn)],
-        end: Option<ThinkFn>,
-    }
-
-    fn ai_letter(f: AnimFrameFn) -> char {
-        let table: [(AnimFrameFn, char); 5] = [
-            (ai::ai_stand, 'S'),
-            (ai::ai_walk, 'W'),
-            (ai::ai_run, 'R'),
-            (ai::ai_charge, 'C'),
-            (ai::ai_move, 'M'),
-        ];
-        table
-            .iter()
-            .find(|(g, _)| std::ptr::fn_addr_eq(f, *g))
-            .map_or('?', |&(_, c)| c)
-    }
-
-    fn check(t: &CTable) {
-        let mv = t.mv;
-        let at = format!("move {}..{}", t.first, t.last);
-        assert_eq!((mv.firstframe, mv.lastframe), (t.first, t.last), "{at}");
-        assert_eq!(mv.frames.len() as i32, t.last - t.first + 1, "{at}");
-        let ai: String = mv
-            .frames
-            .iter()
-            .map(|f| ai_letter(f.aifunc.unwrap()))
-            .collect();
-        assert_eq!(ai, t.ai, "{at}");
-        let dist: Vec<f32> = mv.frames.iter().map(|f| f.dist).collect();
-        assert_eq!(dist, t.dist, "{at}");
-        let thinks: Vec<usize> = (0..mv.frames.len())
-            .filter(|&i| mv.frames[i].thinkfunc.is_some())
-            .collect();
-        let want: Vec<usize> = t.thinks.iter().map(|&(i, _)| i).collect();
-        assert_eq!(thinks, want, "{at}");
-        for &(i, f) in t.thinks {
-            assert!(
-                std::ptr::fn_addr_eq(mv.frames[i].thinkfunc.unwrap(), f),
-                "{at} frame {i}"
-            );
-        }
-        match (mv.endfunc, t.end) {
-            (None, None) => {}
-            (Some(a), Some(b)) => assert!(std::ptr::fn_addr_eq(a, b), "{at} endfunc"),
-            _ => panic!("{at} endfunc"),
-        }
-    }
-
     #[test]
-    #[rustfmt::skip]
     fn insane_moves_match_c_insane_c() {
-        let tables = [
-        CTable { mv: &INSANE_MOVE_STAND_NORMAL, first: FRAME_STAND60, last: FRAME_STAND65, ai: "SSSSSS", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(5, insane_checkdown as ThinkFn)], end: Some(insane_stand as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_STAND_INSANE, first: FRAME_STAND65, last: FRAME_STAND94, ai: "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSS", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(0, insane_shake as ThinkFn), (29, insane_checkdown as ThinkFn)], end: Some(insane_stand as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_UPTODOWN, first: FRAME_STAND1, last: FRAME_STAND40, ai: "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.7, 4.1, 6.0, 7.6, 3.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(7, insane_moan as ThinkFn), (27, insane_fist as ThinkFn), (33, insane_fist as ThinkFn)], end: Some(insane_onground as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_DOWNTOUP, first: FRAME_STAND41, last: FRAME_STAND59, ai: "MMMMMMMMMMMMMMMMMMM", dist: &[-0.7, -1.2, -1.5, -4.5, -3.5, -0.2, 0.0, -1.3, -3.0, -2.0, 0.0, 0.0, 0.0, -3.3, -1.6, -0.3, 0.0, 0.0, 0.0], thinks: &[], end: Some(insane_stand as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_JUMPDOWN, first: FRAME_STAND96, last: FRAME_STAND100, ai: "MMMMM", dist: &[0.2, 11.5, 5.1, 7.1, 0.0], thinks: &[], end: Some(insane_onground as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_DOWN, first: FRAME_STAND100, last: FRAME_STAND160, ai: "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.7, -1.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 0.7, 0.0], thinks: &[(16, insane_fist as ThinkFn), (33, insane_moan as ThinkFn), (53, insane_scream as ThinkFn), (60, insane_checkup as ThinkFn)], end: Some(insane_onground as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_WALK_NORMAL, first: FRAME_WALK27, last: FRAME_WALK39, ai: "WWWWWWWWWWWWW", dist: &[0.0, 2.5, 3.5, 1.7, 2.3, 2.4, 2.2, 4.2, 5.6, 3.3, 2.4, 0.9, 0.0], thinks: &[(0, insane_scream as ThinkFn), (6, insane_footstep as ThinkFn), (12, insane_footstep as ThinkFn)], end: Some(insane_walk as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_RUN_NORMAL, first: FRAME_WALK27, last: FRAME_WALK39, ai: "WWWWWWWWWWWWW", dist: &[0.0, 2.5, 3.5, 1.7, 2.3, 2.4, 2.2, 4.2, 5.6, 3.3, 2.4, 0.9, 0.0], thinks: &[(0, insane_scream as ThinkFn), (6, insane_footstep as ThinkFn), (12, insane_footstep as ThinkFn)], end: Some(insane_run as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_WALK_INSANE, first: FRAME_WALK1, last: FRAME_WALK26, ai: "WWWWWWWWWWWWWWWWWWWWWWWWWW", dist: &[0.0, 3.4, 3.6, 2.9, 2.2, 2.6, 0.0, 0.7, 4.8, 5.3, 1.1, 2.0, 0.5, 0.0, 0.0, 4.9, 6.7, 3.8, 2.0, 0.2, 0.0, 3.4, 6.4, 5.0, 1.8, 0.0], thinks: &[(0, insane_scream as ThinkFn), (6, insane_footstep as ThinkFn), (11, insane_footstep as ThinkFn), (18, insane_footstep as ThinkFn), (24, insane_footstep as ThinkFn)], end: Some(insane_walk as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_RUN_INSANE, first: FRAME_WALK1, last: FRAME_WALK26, ai: "WWWWWWWWWWWWWWWWWWWWWWWWWW", dist: &[0.0, 3.4, 3.6, 2.9, 2.2, 2.6, 0.0, 0.7, 4.8, 5.3, 1.1, 2.0, 0.5, 0.0, 0.0, 4.9, 6.7, 3.8, 2.0, 0.2, 0.0, 3.4, 6.4, 5.0, 1.8, 0.0], thinks: &[(0, insane_scream as ThinkFn), (6, insane_footstep as ThinkFn), (11, insane_footstep as ThinkFn), (18, insane_footstep as ThinkFn), (24, insane_footstep as ThinkFn)], end: Some(insane_run as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_STAND_PAIN, first: FRAME_ST_PAIN2, last: FRAME_ST_PAIN12, ai: "MMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(4, insane_footstep as ThinkFn)], end: Some(insane_run as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_STAND_DEATH, first: FRAME_ST_DEATH2, last: FRAME_ST_DEATH18, ai: "MMMMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(insane_dead as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_CRAWL, first: FRAME_CRAWL1, last: FRAME_CRAWL9, ai: "WWWWWWWWW", dist: &[0.0, 1.5, 2.1, 3.6, 2.0, 0.9, 3.0, 3.4, 2.4], thinks: &[(0, insane_scream as ThinkFn)], end: None },
-        CTable { mv: &INSANE_MOVE_RUNCRAWL, first: FRAME_CRAWL1, last: FRAME_CRAWL9, ai: "WWWWWWWWW", dist: &[0.0, 1.5, 2.1, 3.6, 2.0, 0.9, 3.0, 3.4, 2.4], thinks: &[(0, insane_scream as ThinkFn)], end: None },
-        CTable { mv: &INSANE_MOVE_CRAWL_PAIN, first: FRAME_CR_PAIN2, last: FRAME_CR_PAIN10, ai: "MMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(insane_run as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_CRAWL_DEATH, first: FRAME_CR_DEATH10, last: FRAME_CR_DEATH16, ai: "MMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[], end: Some(insane_dead as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_CROSS, first: FRAME_CROSS1, last: FRAME_CROSS15, ai: "MMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(0, insane_moan as ThinkFn)], end: Some(insane_cross as ThinkFn) },
-        CTable { mv: &INSANE_MOVE_STRUGGLE_CROSS, first: FRAME_CROSS16, last: FRAME_CROSS30, ai: "MMMMMMMMMMMMMMM", dist: &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], thinks: &[(0, insane_scream as ThinkFn)], end: Some(insane_cross as ThinkFn) },
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&INSANE_MOVE_STAND_NORMAL, 59, 64, "insane_stand", "stand:0:-*5 stand:0:insane_checkdown"),
+            (&INSANE_MOVE_STAND_INSANE, 64, 93, "insane_stand", "stand:0:insane_shake stand:0:-*28 stand:0:insane_checkdown"),
+            (&INSANE_MOVE_UPTODOWN, 0, 39, "insane_onground", "move:0:-*7 move:0:insane_moan move:0:-*12 move:2.7:- move:4.1:- move:6:- move:7.6:- move:3.6:- move:0:-*2 move:0:insane_fist move:0:-*5 move:0:insane_fist move:0:-*6"),
+            (&INSANE_MOVE_DOWNTOUP, 40, 58, "insane_stand", "move:-0.7:- move:-1.2:- move:-1.5:- move:-4.5:- move:-3.5:- move:-0.2:- move:0:- move:-1.3:- move:-3:- move:-2:- move:0:-*3 move:-3.3:- move:-1.6:- move:-0.3:- move:0:-*3"),
+            (&INSANE_MOVE_JUMPDOWN, 95, 99, "insane_onground", "move:0.2:- move:11.5:- move:5.1:- move:7.1:- move:0:-"),
+            (&INSANE_MOVE_DOWN, 99, 159, "insane_onground", "move:0:-*11 move:-1.7:- move:-1.6:- move:0:-*3 move:0:insane_fist move:0:-*16 move:0:insane_moan move:0:-*17 move:0.5:- move:0:- move:-0.2:insane_scream move:0:- move:0.2:- move:0.4:- move:0.6:- move:0.8:- move:0.7:- move:0:insane_checkup"),
+            (&INSANE_MOVE_WALK_NORMAL, 160, 172, "insane_walk", "walk:0:insane_scream walk:2.5:- walk:3.5:- walk:1.7:- walk:2.3:- walk:2.4:- walk:2.2:insane_footstep walk:4.2:- walk:5.6:- walk:3.3:- walk:2.4:- walk:0.9:- walk:0:insane_footstep"),
+            (&INSANE_MOVE_RUN_NORMAL, 160, 172, "insane_run", "walk:0:insane_scream walk:2.5:- walk:3.5:- walk:1.7:- walk:2.3:- walk:2.4:- walk:2.2:insane_footstep walk:4.2:- walk:5.6:- walk:3.3:- walk:2.4:- walk:0.9:- walk:0:insane_footstep"),
+            (&INSANE_MOVE_WALK_INSANE, 173, 198, "insane_walk", "walk:0:insane_scream walk:3.4:- walk:3.6:- walk:2.9:- walk:2.2:- walk:2.6:- walk:0:insane_footstep walk:0.7:- walk:4.8:- walk:5.3:- walk:1.1:- walk:2:insane_footstep walk:0.5:- walk:0:-*2 walk:4.9:- walk:6.7:- walk:3.8:- walk:2:insane_footstep walk:0.2:- walk:0:- walk:3.4:- walk:6.4:- walk:5:- walk:1.8:insane_footstep walk:0:-"),
+            (&INSANE_MOVE_RUN_INSANE, 173, 198, "insane_run", "walk:0:insane_scream walk:3.4:- walk:3.6:- walk:2.9:- walk:2.2:- walk:2.6:- walk:0:insane_footstep walk:0.7:- walk:4.8:- walk:5.3:- walk:1.1:- walk:2:insane_footstep walk:0.5:- walk:0:-*2 walk:4.9:- walk:6.7:- walk:3.8:- walk:2:insane_footstep walk:0.2:- walk:0:- walk:3.4:- walk:6.4:- walk:5:- walk:1.8:insane_footstep walk:0:-"),
+            (&INSANE_MOVE_STAND_PAIN, 199, 209, "insane_run", "move:0:-*4 move:0:insane_footstep move:0:-*6"),
+            (&INSANE_MOVE_STAND_DEATH, 210, 226, "insane_dead", "move:0:-*17"),
+            (&INSANE_MOVE_CRAWL, 227, 235, "-", "walk:0:insane_scream walk:1.5:- walk:2.1:- walk:3.6:- walk:2:- walk:0.9:- walk:3:- walk:3.4:- walk:2.4:-"),
+            (&INSANE_MOVE_RUNCRAWL, 227, 235, "-", "walk:0:insane_scream walk:1.5:- walk:2.1:- walk:3.6:- walk:2:- walk:0.9:- walk:3:- walk:3.4:- walk:2.4:-"),
+            (&INSANE_MOVE_CRAWL_PAIN, 236, 244, "insane_run", "move:0:-*9"),
+            (&INSANE_MOVE_CRAWL_DEATH, 245, 251, "insane_dead", "move:0:-*7"),
+            (&INSANE_MOVE_CROSS, 252, 266, "insane_cross", "move:0:insane_moan move:0:-*14"),
+            (&INSANE_MOVE_STRUGGLE_CROSS, 267, 281, "insane_cross", "move:0:insane_scream move:0:-*14"),
         ];
-        for t in &tables {
-            check(t);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     /// A seed whose game RNG satisfies `pred` from its first draw.

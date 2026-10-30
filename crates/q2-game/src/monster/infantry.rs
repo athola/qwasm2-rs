@@ -746,275 +746,47 @@ pub fn finish_infantry(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (infantry_footstep, "infantry_footstep"),
+        (infantry_stand, "infantry_stand"),
+        (infantry_run, "infantry_run"),
+        (infantry_dead, "infantry_dead"),
+        (infantry_machine_gun, "infantry_machine_gun"),
+        (infantry_duck_down, "infantry_duck_down"),
+        (infantry_duck_hold, "infantry_duck_hold"),
+        (infantry_duck_up, "infantry_duck_up"),
+        (infantry_cock_gun, "infantry_cock_gun"),
+        (infantry_fire, "infantry_fire"),
+        (infantry_swing, "infantry_swing"),
+        (infantry_smack, "infantry_smack"),
+    ];
+
     use crate::entity::ThinkFn;
     use crate::monster::test_support::{
-        check_move, mi, mi_mut, player_arena, playing, seed, sounds, think_for, ArenaImport,
+        assert_moves_match_c, mi, mi_mut, player_arena, playing, seed, sounds, think_for,
+        ArenaImport, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
 
     #[test]
     fn every_infantry_move_matches_c() {
-        check_move(&INFANTRY_MOVE_STAND, (50, 71), ai::ai_stand, &[], &[], None);
-        check_move(
-            &INFANTRY_MOVE_FIDGET,
-            (1, 49),
-            ai::ai_stand,
-            &[
-                (0, 1.0),
-                (2, 1.0),
-                (3, 3.0),
-                (4, 6.0),
-                (5, 3.0),
-                (10, 1.0),
-                (15, 1.0),
-                (17, -1.0),
-                (20, 1.0),
-                (22, -2.0),
-                (23, 1.0),
-                (24, 1.0),
-                (25, 1.0),
-                (26, -1.0),
-                (29, -1.0),
-                (35, -1.0),
-                (38, 1.0),
-                (41, -1.0),
-                (42, -1.0),
-                (44, -3.0),
-                (45, -2.0),
-                (46, -3.0),
-                (47, -3.0),
-                (48, -2.0),
-            ],
-            &[
-                (5, infantry_footstep as ThinkFn),
-                (47, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_stand as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_WALK,
-            (74, 85),
-            ai::ai_walk,
-            &[
-                (0, 5.0),
-                (1, 4.0),
-                (2, 4.0),
-                (3, 5.0),
-                (4, 4.0),
-                (5, 5.0),
-                (6, 6.0),
-                (7, 4.0),
-                (8, 4.0),
-                (9, 4.0),
-                (10, 4.0),
-                (11, 5.0),
-            ],
-            &[
-                (0, infantry_footstep as ThinkFn),
-                (6, infantry_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &INFANTRY_MOVE_RUN,
-            (92, 99),
-            ai::ai_run,
-            &[
-                (0, 10.0),
-                (1, 20.0),
-                (2, 5.0),
-                (3, 7.0),
-                (4, 30.0),
-                (5, 35.0),
-                (6, 2.0),
-                (7, 6.0),
-            ],
-            &[
-                (1, infantry_footstep as ThinkFn),
-                (5, infantry_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &INFANTRY_MOVE_PAIN1,
-            (100, 109),
-            ai::ai_move,
-            &[
-                (0, -3.0),
-                (1, -2.0),
-                (2, -1.0),
-                (3, -2.0),
-                (4, -1.0),
-                (5, 1.0),
-                (6, -1.0),
-                (7, 1.0),
-                (8, 6.0),
-                (9, 2.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (9, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_PAIN2,
-            (110, 119),
-            ai::ai_move,
-            &[
-                (0, -3.0),
-                (1, -3.0),
-                (3, -1.0),
-                (4, -2.0),
-                (7, 2.0),
-                (8, 5.0),
-                (9, 2.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (9, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH1,
-            (125, 144),
-            ai::ai_move,
-            &[
-                (0, -4.0),
-                (3, -1.0),
-                (4, -4.0),
-                (8, -1.0),
-                (9, 3.0),
-                (10, 1.0),
-                (11, 1.0),
-                (12, -2.0),
-                (13, 2.0),
-                (14, 2.0),
-                (15, 9.0),
-                (16, 9.0),
-                (17, 5.0),
-                (18, -3.0),
-                (19, -3.0),
-            ],
-            &[
-                (4, infantry_footstep as ThinkFn),
-                (8, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH2,
-            (145, 169),
-            ai::ai_move,
-            &[
-                (1, 1.0),
-                (2, 5.0),
-                (3, -1.0),
-                (5, 1.0),
-                (6, 1.0),
-                (7, 4.0),
-                (8, 3.0),
-                (10, -2.0),
-                (11, -2.0),
-                (12, -3.0),
-                (13, -1.0),
-                (14, -2.0),
-                (16, 2.0),
-                (17, 2.0),
-                (18, 3.0),
-                (19, -10.0),
-                (20, -7.0),
-                (21, -8.0),
-                (22, -6.0),
-                (23, 4.0),
-            ],
-            &[
-                (5, infantry_footstep as ThinkFn),
-                (6, infantry_footstep as ThinkFn),
-                (10, infantry_machine_gun as ThinkFn),
-                (11, infantry_machine_gun as ThinkFn),
-                (12, infantry_machine_gun as ThinkFn),
-                (13, infantry_machine_gun as ThinkFn),
-                (14, infantry_machine_gun as ThinkFn),
-                (15, infantry_machine_gun as ThinkFn),
-                (16, infantry_machine_gun as ThinkFn),
-                (17, infantry_machine_gun as ThinkFn),
-                (18, infantry_machine_gun as ThinkFn),
-                (19, infantry_machine_gun as ThinkFn),
-                (20, infantry_machine_gun as ThinkFn),
-                (21, infantry_machine_gun as ThinkFn),
-            ],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DEATH3,
-            (170, 178),
-            ai::ai_move,
-            &[(3, -6.0), (4, -11.0), (5, -3.0), (6, -11.0)],
-            &[],
-            Some(infantry_dead as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_DUCK,
-            (120, 124),
-            ai::ai_move,
-            &[(0, -2.0), (1, -5.0), (2, 3.0), (3, 4.0)],
-            &[
-                (0, infantry_duck_down as ThinkFn),
-                (1, infantry_duck_hold as ThinkFn),
-                (3, infantry_duck_up as ThinkFn),
-                (4, infantry_footstep as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_ATTACK1,
-            (184, 198),
-            ai::ai_charge,
-            &[
-                (0, 4.0),
-                (1, -1.0),
-                (2, -1.0),
-                (4, -1.0),
-                (5, 1.0),
-                (6, 1.0),
-                (7, 2.0),
-                (8, -2.0),
-                (9, -3.0),
-                (10, 1.0),
-                (11, 5.0),
-                (12, -1.0),
-                (13, -2.0),
-                (14, -3.0),
-            ],
-            &[
-                (3, infantry_cock_gun as ThinkFn),
-                (10, infantry_fire as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
-        check_move(
-            &INFANTRY_MOVE_ATTACK2,
-            (199, 206),
-            ai::ai_charge,
-            &[
-                (0, 3.0),
-                (1, 6.0),
-                (3, 8.0),
-                (4, 5.0),
-                (5, 8.0),
-                (6, 6.0),
-                (7, 3.0),
-            ],
-            &[
-                (2, infantry_swing as ThinkFn),
-                (3, infantry_footstep as ThinkFn),
-                (5, infantry_smack as ThinkFn),
-            ],
-            Some(infantry_run as ThinkFn),
-        );
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&INFANTRY_MOVE_STAND, 50, 71, "-", "stand:0:-*22"),
+            (&INFANTRY_MOVE_FIDGET, 1, 49, "infantry_stand", "stand:1:- stand:0:- stand:1:- stand:3:- stand:6:- stand:3:infantry_footstep stand:0:-*4 stand:1:- stand:0:-*4 stand:1:- stand:0:- stand:-1:- stand:0:-*2 stand:1:- stand:0:- stand:-2:- stand:1:-*3 stand:-1:- stand:0:-*2 stand:-1:- stand:0:-*5 stand:-1:- stand:0:-*2 stand:1:- stand:0:-*2 stand:-1:-*2 stand:0:- stand:-3:- stand:-2:- stand:-3:- stand:-3:infantry_footstep stand:-2:-"),
+            (&INFANTRY_MOVE_WALK, 74, 85, "-", "walk:5:infantry_footstep walk:4:-*2 walk:5:- walk:4:- walk:5:- walk:6:infantry_footstep walk:4:-*4 walk:5:-"),
+            (&INFANTRY_MOVE_RUN, 92, 99, "-", "run:10:- run:20:infantry_footstep run:5:- run:7:- run:30:- run:35:infantry_footstep run:2:- run:6:-"),
+            (&INFANTRY_MOVE_PAIN1, 100, 109, "infantry_run", "move:-3:- move:-2:- move:-1:- move:-2:- move:-1:infantry_footstep move:1:- move:-1:- move:1:- move:6:- move:2:infantry_footstep"),
+            (&INFANTRY_MOVE_PAIN2, 110, 119, "infantry_run", "move:-3:-*2 move:0:- move:-1:- move:-2:infantry_footstep move:0:-*2 move:2:- move:5:- move:2:infantry_footstep"),
+            (&INFANTRY_MOVE_DEATH1, 125, 144, "infantry_dead", "move:-4:- move:0:-*2 move:-1:- move:-4:infantry_footstep move:0:-*3 move:-1:infantry_footstep move:3:- move:1:-*2 move:-2:- move:2:-*2 move:9:-*2 move:5:- move:-3:-*2"),
+            (&INFANTRY_MOVE_DEATH2, 145, 169, "infantry_dead", "move:0:- move:1:- move:5:- move:-1:- move:0:- move:1:infantry_footstep*2 move:4:- move:3:- move:0:- move:-2:infantry_machine_gun*2 move:-3:infantry_machine_gun move:-1:infantry_machine_gun move:-2:infantry_machine_gun move:0:infantry_machine_gun move:2:infantry_machine_gun*2 move:3:infantry_machine_gun move:-10:infantry_machine_gun move:-7:infantry_machine_gun move:-8:infantry_machine_gun move:-6:- move:4:- move:0:-"),
+            (&INFANTRY_MOVE_DEATH3, 170, 178, "infantry_dead", "move:0:-*3 move:-6:- move:-11:- move:-3:- move:-11:- move:0:-*2"),
+            (&INFANTRY_MOVE_DUCK, 120, 124, "infantry_run", "move:-2:infantry_duck_down move:-5:infantry_duck_hold move:3:- move:4:infantry_duck_up move:0:infantry_footstep"),
+            (&INFANTRY_MOVE_ATTACK1, 184, 198, "infantry_run", "charge:4:- charge:-1:-*2 charge:0:infantry_cock_gun charge:-1:- charge:1:-*2 charge:2:- charge:-2:- charge:-3:- charge:1:infantry_fire charge:5:- charge:-1:- charge:-2:- charge:-3:-"),
+            (&INFANTRY_MOVE_ATTACK2, 199, 206, "infantry_run", "charge:3:- charge:6:- charge:0:infantry_swing charge:8:infantry_footstep charge:5:- charge:8:infantry_smack charge:6:- charge:3:-"),
+        ];
+        assert_moves_match_c(c, NAMES);
     }
 
     /// An infantry at the origin facing +X, its live enemy at (x, 0, 0),

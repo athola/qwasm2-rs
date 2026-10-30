@@ -810,227 +810,52 @@ pub fn finish_gunner(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (gunner_idlesound, "gunner_idlesound"),
+        (gunner_stand, "gunner_stand"),
+        (gunner_fidget, "gunner_fidget"),
+        (gunner_footstep, "gunner_footstep"),
+        (gunner_run, "gunner_run"),
+        (gunner_dead, "gunner_dead"),
+        (gunner_duck_down, "gunner_duck_down"),
+        (gunner_duck_hold, "gunner_duck_hold"),
+        (gunner_duck_up, "gunner_duck_up"),
+        (gunner_opengun, "gunner_opengun"),
+        (gunner_fire_chain, "gunner_fire_chain"),
+        (gunner_fire, "gunner_fire"),
+        (gunner_refire_chain, "gunner_refire_chain"),
+        (gunner_grenade, "gunner_grenade"),
+    ];
+
     use crate::entity::ThinkFn;
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{
-        check_move, keep_kick, mi, mi_mut, player_arena, playing, seed, sounds, think_for,
-        ArenaImport,
+        assert_moves_match_c, keep_kick, mi, mi_mut, player_arena, playing, seed, sounds,
+        think_for, ArenaImport, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
 
     #[test]
     fn every_gunner_move_matches_c() {
-        check_move(
-            &GUNNER_MOVE_FIDGET,
-            (30, 69),
-            ai::ai_stand,
-            &[],
-            &[(7, gunner_idlesound as ThinkFn)],
-            Some(gunner_stand as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_STAND,
-            (0, 29),
-            ai::ai_stand,
-            &[],
-            &[
-                (9, gunner_fidget as ThinkFn),
-                (19, gunner_fidget as ThinkFn),
-                (29, gunner_fidget as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &GUNNER_MOVE_WALK,
-            (76, 88),
-            ai::ai_walk,
-            &[
-                (1, 3.0),
-                (2, 4.0),
-                (3, 5.0),
-                (4, 7.0),
-                (5, 2.0),
-                (6, 6.0),
-                (7, 4.0),
-                (8, 2.0),
-                (9, 7.0),
-                (10, 5.0),
-                (11, 7.0),
-                (12, 4.0),
-            ],
-            &[
-                (0, gunner_footstep as ThinkFn),
-                (5, gunner_footstep as ThinkFn),
-                (12, gunner_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &GUNNER_MOVE_RUN,
-            (94, 101),
-            ai::ai_run,
-            &[
-                (0, 26.0),
-                (1, 9.0),
-                (2, 9.0),
-                (3, 9.0),
-                (4, 15.0),
-                (5, 10.0),
-                (6, 13.0),
-                (7, 6.0),
-            ],
-            &[
-                (1, gunner_footstep as ThinkFn),
-                (5, gunner_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &GUNNER_MOVE_RUNANDSHOOT,
-            (102, 107),
-            ai::ai_run,
-            &[
-                (0, 32.0),
-                (1, 15.0),
-                (2, 10.0),
-                (3, 18.0),
-                (4, 8.0),
-                (5, 20.0),
-            ],
-            &[
-                (1, gunner_footstep as ThinkFn),
-                (4, gunner_footstep as ThinkFn),
-            ],
-            None,
-        );
-        check_move(
-            &GUNNER_MOVE_PAIN3,
-            (185, 189),
-            ai::ai_move,
-            &[(0, -3.0), (1, 1.0), (2, 1.0), (4, 1.0)],
-            &[],
-            Some(gunner_run as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_PAIN2,
-            (177, 184),
-            ai::ai_move,
-            &[
-                (0, -2.0),
-                (1, 11.0),
-                (2, 6.0),
-                (3, 2.0),
-                (4, -1.0),
-                (5, -7.0),
-                (6, -2.0),
-                (7, -7.0),
-            ],
-            &[
-                (2, gunner_footstep as ThinkFn),
-                (7, gunner_footstep as ThinkFn),
-            ],
-            Some(gunner_run as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_PAIN1,
-            (159, 176),
-            ai::ai_move,
-            &[
-                (0, 2.0),
-                (2, -5.0),
-                (3, 3.0),
-                (4, -1.0),
-                (9, 1.0),
-                (10, 1.0),
-                (11, 2.0),
-                (12, 1.0),
-                (14, -2.0),
-                (15, -2.0),
-            ],
-            &[
-                (2, gunner_footstep as ThinkFn),
-                (12, gunner_footstep as ThinkFn),
-                (16, gunner_footstep as ThinkFn),
-            ],
-            Some(gunner_run as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_DEATH,
-            (190, 200),
-            ai::ai_move,
-            &[(3, -7.0), (4, -3.0), (5, -5.0), (6, 8.0), (7, 6.0)],
-            &[],
-            Some(gunner_dead as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_DUCK,
-            (201, 208),
-            ai::ai_move,
-            &[
-                (0, 1.0),
-                (1, 1.0),
-                (2, 1.0),
-                (4, -1.0),
-                (5, -1.0),
-                (7, -1.0),
-            ],
-            &[
-                (0, gunner_duck_down as ThinkFn),
-                (2, gunner_duck_hold as ThinkFn),
-                (6, gunner_duck_up as ThinkFn),
-            ],
-            Some(gunner_run as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_ATTACK_CHAIN,
-            (137, 143),
-            ai::ai_charge,
-            &[],
-            &[
-                (0, gunner_opengun as ThinkFn),
-                (1, gunner_footstep as ThinkFn),
-            ],
-            Some(gunner_fire_chain as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_FIRE_CHAIN,
-            (144, 151),
-            ai::ai_charge,
-            &[],
-            &[
-                (0, gunner_fire as ThinkFn),
-                (1, gunner_fire as ThinkFn),
-                (2, gunner_fire as ThinkFn),
-                (3, gunner_fire as ThinkFn),
-                (4, gunner_fire as ThinkFn),
-                (5, gunner_fire as ThinkFn),
-                (6, gunner_fire as ThinkFn),
-                (7, gunner_fire as ThinkFn),
-            ],
-            Some(gunner_refire_chain as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_ENDFIRE_CHAIN,
-            (152, 158),
-            ai::ai_charge,
-            &[],
-            &[(6, gunner_footstep as ThinkFn)],
-            Some(gunner_run as ThinkFn),
-        );
-        check_move(
-            &GUNNER_MOVE_ATTACK_GRENADE,
-            (108, 128),
-            ai::ai_charge,
-            &[],
-            &[
-                (4, gunner_grenade as ThinkFn),
-                (7, gunner_grenade as ThinkFn),
-                (10, gunner_grenade as ThinkFn),
-                (13, gunner_grenade as ThinkFn),
-            ],
-            Some(gunner_run as ThinkFn),
-        );
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&GUNNER_MOVE_FIDGET, 30, 69, "gunner_stand", "stand:0:-*7 stand:0:gunner_idlesound stand:0:-*32"),
+            (&GUNNER_MOVE_STAND, 0, 29, "-", "stand:0:-*9 stand:0:gunner_fidget stand:0:-*9 stand:0:gunner_fidget stand:0:-*9 stand:0:gunner_fidget"),
+            (&GUNNER_MOVE_WALK, 76, 88, "-", "walk:0:gunner_footstep walk:3:- walk:4:- walk:5:- walk:7:- walk:2:gunner_footstep walk:6:- walk:4:- walk:2:- walk:7:- walk:5:- walk:7:- walk:4:gunner_footstep"),
+            (&GUNNER_MOVE_RUN, 94, 101, "-", "run:26:- run:9:gunner_footstep run:9:-*2 run:15:- run:10:gunner_footstep run:13:- run:6:-"),
+            (&GUNNER_MOVE_RUNANDSHOOT, 102, 107, "-", "run:32:- run:15:gunner_footstep run:10:- run:18:- run:8:gunner_footstep run:20:-"),
+            (&GUNNER_MOVE_PAIN3, 185, 189, "gunner_run", "move:-3:- move:1:-*2 move:0:- move:1:-"),
+            (&GUNNER_MOVE_PAIN2, 177, 184, "gunner_run", "move:-2:- move:11:- move:6:gunner_footstep move:2:- move:-1:- move:-7:- move:-2:- move:-7:gunner_footstep"),
+            (&GUNNER_MOVE_PAIN1, 159, 176, "gunner_run", "move:2:- move:0:- move:-5:gunner_footstep move:3:- move:-1:- move:0:-*4 move:1:-*2 move:2:- move:1:gunner_footstep move:0:- move:-2:-*2 move:0:gunner_footstep move:0:-"),
+            (&GUNNER_MOVE_DEATH, 190, 200, "gunner_dead", "move:0:-*3 move:-7:- move:-3:- move:-5:- move:8:- move:6:- move:0:-*3"),
+            (&GUNNER_MOVE_DUCK, 201, 208, "gunner_run", "move:1:gunner_duck_down move:1:- move:1:gunner_duck_hold move:0:- move:-1:-*2 move:0:gunner_duck_up move:-1:-"),
+            (&GUNNER_MOVE_ATTACK_CHAIN, 137, 143, "gunner_fire_chain", "charge:0:gunner_opengun charge:0:gunner_footstep charge:0:-*5"),
+            (&GUNNER_MOVE_FIRE_CHAIN, 144, 151, "gunner_refire_chain", "charge:0:gunner_fire*8"),
+            (&GUNNER_MOVE_ENDFIRE_CHAIN, 152, 158, "gunner_run", "charge:0:-*6 charge:0:gunner_footstep"),
+            (&GUNNER_MOVE_ATTACK_GRENADE, 108, 128, "gunner_run", "charge:0:-*4 charge:0:gunner_grenade charge:0:-*2 charge:0:gunner_grenade charge:0:-*2 charge:0:gunner_grenade charge:0:-*2 charge:0:gunner_grenade charge:0:-*7"),
+        ];
+        assert_moves_match_c(c, NAMES);
     }
 
     /// A gunner at the origin facing +X, its live enemy at (x, 0, 0), at

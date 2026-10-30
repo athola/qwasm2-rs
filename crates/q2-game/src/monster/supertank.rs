@@ -703,7 +703,17 @@ pub fn supertank_precache(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{AnimFrameFn, ThinkFn};
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (tread_sound, "tread_sound"),
+        (supertank_run, "supertank_run"),
+        (boss_explode, "boss_explode"),
+        (supertank_dead, "supertank_dead"),
+        (supertank_rocket, "supertank_rocket"),
+        (supertank_machine_gun, "supertank_machine_gun"),
+        (supertank_reattack1, "supertank_reattack1"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
     use std::rc::Rc;
@@ -718,186 +728,25 @@ mod tests {
 
     #[test]
     fn supertank_moves_match_c_supertank_c() {
-        let tread: ThinkFn = tread_sound;
-        let stand = Some(ai::ai_stand as AnimFrameFn);
-        let walk = Some(ai::ai_walk as AnimFrameFn);
-        let run = Some(ai::ai_run as AnimFrameFn);
-        let mv = Some(ai::ai_move as AnimFrameFn);
-        let charge = Some(ai::ai_charge as AnimFrameFn);
-        let rocket: ThinkFn = supertank_rocket;
-        let mg: Vec<(usize, ThinkFn)> = (0..6)
-            .map(|i| (i, supertank_machine_gun as ThinkFn))
-            .collect();
-        let moves: Vec<(&str, &MonsterMove, CMove)> = vec![
-            (
-                "stand",
-                &SUPERTANK_MOVE_STAND,
-                CMove {
-                    bounds: (194, 253),
-                    ai: vec![(60, stand)],
-                    dists: zeros(60),
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "run",
-                &SUPERTANK_MOVE_RUN,
-                CMove {
-                    bounds: (128, 145),
-                    ai: vec![(18, run)],
-                    dists: vec![12.0; 18],
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "forward",
-                &SUPERTANK_MOVE_FORWARD,
-                CMove {
-                    bounds: (128, 145),
-                    ai: vec![(18, walk)],
-                    dists: vec![4.0; 18],
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "turn_right",
-                &SUPERTANK_MOVE_TURN_RIGHT,
-                CMove {
-                    bounds: (176, 193),
-                    ai: vec![(18, mv)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "turn_left",
-                &SUPERTANK_MOVE_TURN_LEFT,
-                CMove {
-                    bounds: (146, 163),
-                    ai: vec![(18, mv)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain3",
-                &SUPERTANK_MOVE_PAIN3,
-                CMove {
-                    bounds: (172, 175),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain2",
-                &SUPERTANK_MOVE_PAIN2,
-                CMove {
-                    bounds: (168, 171),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "pain1",
-                &SUPERTANK_MOVE_PAIN1,
-                CMove {
-                    bounds: (164, 167),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "death",
-                &SUPERTANK_MOVE_DEATH,
-                CMove {
-                    bounds: (98, 121),
-                    ai: vec![(24, mv)],
-                    dists: zeros(24),
-                    thinks: vec![(23, boss_explode)],
-                    end: Some(supertank_dead),
-                },
-            ),
-            (
-                "backward",
-                &SUPERTANK_MOVE_BACKWARD,
-                CMove {
-                    bounds: (80, 97),
-                    ai: vec![(18, walk)],
-                    dists: zeros(18),
-                    thinks: vec![(0, tread)],
-                    end: None,
-                },
-            ),
-            (
-                "attack4",
-                &SUPERTANK_MOVE_ATTACK4,
-                CMove {
-                    bounds: (74, 79),
-                    ai: vec![(6, mv)],
-                    dists: zeros(6),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack3",
-                &SUPERTANK_MOVE_ATTACK3,
-                CMove {
-                    bounds: (47, 73),
-                    ai: vec![(27, mv)],
-                    dists: zeros(27),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack2",
-                &SUPERTANK_MOVE_ATTACK2,
-                CMove {
-                    bounds: (20, 46),
-                    ai: vec![(8, charge), (19, mv)],
-                    dists: zeros(27),
-                    thinks: vec![(7, rocket), (10, rocket), (13, rocket)],
-                    end: Some(supertank_run),
-                },
-            ),
-            (
-                "attack1",
-                &SUPERTANK_MOVE_ATTACK1,
-                CMove {
-                    bounds: (0, 5),
-                    ai: vec![(6, charge)],
-                    dists: zeros(6),
-                    thinks: mg,
-                    end: Some(supertank_reattack1),
-                },
-            ),
-            (
-                "end_attack1",
-                &SUPERTANK_MOVE_END_ATTACK1,
-                CMove {
-                    bounds: (6, 19),
-                    ai: vec![(14, mv)],
-                    dists: zeros(14),
-                    thinks: vec![],
-                    end: Some(supertank_run),
-                },
-            ),
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&SUPERTANK_MOVE_STAND, 194, 253, "-", "stand:0:-*60"),
+            (&SUPERTANK_MOVE_RUN, 128, 145, "-", "run:12:tread_sound run:12:-*17"),
+            (&SUPERTANK_MOVE_FORWARD, 128, 145, "-", "walk:4:tread_sound walk:4:-*17"),
+            (&SUPERTANK_MOVE_TURN_RIGHT, 176, 193, "supertank_run", "move:0:tread_sound move:0:-*17"),
+            (&SUPERTANK_MOVE_TURN_LEFT, 146, 163, "supertank_run", "move:0:tread_sound move:0:-*17"),
+            (&SUPERTANK_MOVE_PAIN3, 172, 175, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_PAIN2, 168, 171, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_PAIN1, 164, 167, "supertank_run", "move:0:-*4"),
+            (&SUPERTANK_MOVE_DEATH, 98, 121, "supertank_dead", "move:0:-*23 move:0:boss_explode"),
+            (&SUPERTANK_MOVE_BACKWARD, 80, 97, "-", "walk:0:tread_sound walk:0:-*17"),
+            (&SUPERTANK_MOVE_ATTACK4, 74, 79, "supertank_run", "move:0:-*6"),
+            (&SUPERTANK_MOVE_ATTACK3, 47, 73, "supertank_run", "move:0:-*27"),
+            (&SUPERTANK_MOVE_ATTACK2, 20, 46, "supertank_run", "charge:0:-*7 charge:0:supertank_rocket move:0:-*2 move:0:supertank_rocket move:0:-*2 move:0:supertank_rocket move:0:-*13"),
+            (&SUPERTANK_MOVE_ATTACK1, 0, 5, "supertank_reattack1", "charge:0:supertank_machine_gun*6"),
+            (&SUPERTANK_MOVE_END_ATTACK1, 6, 19, "supertank_run", "move:0:-*14"),
         ];
-        for (name, mv, c) in moves {
-            assert_move(name, mv, c);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
