@@ -201,7 +201,10 @@ impl GameWorld {
     }
 
     /// Free an entity: unlink it and keep the slot as a freed edict, so its
-    /// number is not reused for another 0.5 s. Client slots are never freed.
+    /// number is not reused for another 0.5 s, except that edicts freed in
+    /// the level's first 2 s can be reused at once (C G_Spawn's
+    /// `freetime < 2`, so map-load frees do not shift numbering). Client
+    /// slots are never freed.
     /// C ref: G_FreeEdict (g_utils.c)
     pub fn free_entity(&mut self, key: EntityKey) {
         let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
@@ -452,8 +455,11 @@ impl GameWorld {
     }
 
     /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
-    /// one survived (C callers mostly ignore it).
-    /// C ref: `KillBox` (g_utils.c).
+    /// one survived, `true` once the box is clear; no caller reads it.
+    /// C ref: `KillBox` (g_utils.c). C's SV_Trace reports the world when
+    /// nothing is hit, so C's loop ends by "damaging" the solid world and
+    /// returns false every time; here `world_trace`'s "world only on a hit"
+    /// (ADR-005) makes a clear box return true. The telefrags are the same.
     pub fn kill_box(&mut self, key: EntityKey) -> bool {
         use crate::constants::{DamageFlags, MeansOfDeath};
         loop {
@@ -469,8 +475,8 @@ impl GameWorld {
                 None,
                 q2_shared::constants::MASK_PLAYERSOLID,
             );
-            // The world (0) is never telefragged; C's trace.ent is NULL
-            // when nothing is hit.
+            // Nothing hit, or only the world (0), which takes no damage:
+            // the box is clear.
             let Some(victim) = tr
                 .ent_index
                 .filter(|&n| n != 0)
