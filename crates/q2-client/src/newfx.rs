@@ -2,8 +2,8 @@
 //! steam and smoke, the heat beam's rings and the tracker's dark shells.
 //! C ref: the cl_newfx.c part of client/cl_effects.c, plus `CL_FlagTrail`,
 //! `CL_IonripperTrail` and `CL_TrapParticles`. C's `CL_QuadTrail`,
-//! `CL_SmokeTrail` and `CL_Tracker_Explode`, which nothing calls, are not
-//! ported.
+//! `CL_SmokeTrail` and `CL_Tracker_Explode`, which nothing calls (id
+//! commented out the tracker one), are left out; ADR-003 says why.
 //!
 //! Where C leaves a particle field unset it keeps whatever the particle
 //! held when it was last freed; here such a field is 0 (each function

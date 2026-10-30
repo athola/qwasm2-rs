@@ -160,9 +160,17 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
   `menu_loadgame`, which nothing handles), the random pick in an item
-  team's respawn, the inventory layout, the `hand`/`fov`/`spectator`
-  userinfo,
-  `SP_FixCoopSpots`, and power-armor sparks.
+  team's respawn, the inventory layout, the `fov`/`spectator` userinfo,
+  and `SP_FixCoopSpots`.
+- **Effects left out on purpose:** `CL_QuadTrail`, `CL_SmokeTrail` and
+  `CL_Tracker_Explode` have no caller in yquake2 or id's 3.21 release,
+  so drawing them would change what valid input looks like, which
+  ADR-005 does not allow. id's `TE_TRACKER_EXPLOSION` has the
+  `CL_Tracker_Explode` call commented out in favour of the colour flash
+  and `CL_ColorExplosionParticles` drawn here, and `CL_QuadTrail` is
+  `CL_FlagTrail` with the blue flag's colour 115, which quad carriers
+  never get (they get the blue shell). Adding any of them would take an
+  opt-in effects setting and an ADR-005 amendment first.
 
 ## Consequences
 
