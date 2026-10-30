@@ -995,41 +995,43 @@ mod tests {
         assert_eq!(gi.sounds.borrow()[0], "misc/udeath.wav");
     }
 
-    /// A map turret (breach + base team, muzzle target, driver) with a
-    /// player in view: the driver links, sights the player, aims the
-    /// breach and fires a rocket at it.
-    #[test]
-    fn turret_on_a_map_sights_a_player_and_fires_a_rocket() {
-        let mut world = test_world();
-        let map = r#"
+    const TURRET_MAP: &str = r#"
 { "classname" "worldspawn" }
 { "classname" "turret_base" "model" "*1" "team" "t1" }
 { "classname" "turret_breach" "model" "*2" "team" "t1" "targetname" "gun" "target" "tip" "origin" "0 0 64" }
 { "classname" "info_notnull" "targetname" "tip" "origin" "40 0 64" }
 { "classname" "turret_driver" "target" "gun" "origin" "-32 0 48" }
 "#;
-        world.spawn_entities("turret", map, "");
+
+    #[test]
+    #[ignore = "needs monster_start fix from the ai.rs branch (monstersB-4)"]
+    fn turret_driver_does_not_fall_before_it_links() {
+        // C SP_turret_driver is MOVETYPE_PUSH from the start, so the seat
+        // offset turret_driver_link records is taken from the map origin.
+        let mut world = test_world();
+        world.spawn_entities("turret", TURRET_MAP, "");
+        let driver = world.find_by_classname(None, "turret_driver").unwrap();
+        let seat = world.entities.get(driver).unwrap().state.origin;
+        world.run_frame();
+        assert_eq!(world.entities.get(driver).unwrap().state.origin.z, seat.z);
+    }
+
+    /// A map turret (breach + base team, muzzle target, driver) with a
+    /// player in view: the driver links, sights the player, aims the
+    /// breach and fires a rocket at it.
+    #[test]
+    fn turret_on_a_map_sights_a_player_and_fires_a_rocket() {
+        let mut world = test_world();
+        world.spawn_entities("turret", TURRET_MAP, "");
         let driver = world.find_by_classname(None, "turret_driver").unwrap();
         assert_eq!(world.level.total_monsters, 1);
         let player = player_at(&mut world, Vec3f::new(400.0, 0.0, 42.0));
 
         let mut fired = None;
         for _ in 0..60 {
-            world.level.time += FRAMETIME;
-            world.level.framenum += 1;
-            world.level.sight_client_key = Some(player);
-            let thinkers: Vec<EntityKey> = world.entities.iter().map(|(k, _)| k).collect();
-            for key in thinkers {
-                let Some(ent) = world.entities.get_mut(key) else {
-                    continue;
-                };
-                let due =
-                    ent.game.nextthink > 0.0 && ent.game.nextthink <= world.level.time + 0.001;
-                if let (true, Some(think)) = (due, ent.think) {
-                    ent.game.nextthink = 0.0;
-                    think(&mut world, key);
-                }
-            }
+            // The real frame: only physics_pusher's team loop runs the
+            // TEAMSLAVE driver's think once it has linked.
+            world.run_frame();
             if let Some(rocket) = world.find_by_classname(None, "rocket") {
                 fired = Some(rocket);
                 break;
