@@ -174,9 +174,13 @@ impl Default for CmdSystem {
     }
 }
 
-/// C COM_Parse whitespace: every byte up to and including space.
+/// C COM_Parse / Cmd_TokenizeString whitespace: `c <= ' '` on a signed
+/// `char` (x86 and clang wasm32, Qwasm2's target), so bytes 0x80-0xFF are
+/// negative and count as separators too.
+///
+/// C ref: COM_Parse `(c = *data) <= ' '` and `while (c > 32)`.
 fn is_separator(c: char) -> bool {
-    c <= ' '
+    c <= ' ' || ('\u{80}'..='\u{ff}').contains(&c)
 }
 
 /// Tokenize a command string, handling quoted strings and `//` comments
@@ -295,6 +299,15 @@ mod tests {
     fn tokenize_quoted() {
         let tokens = tokenize("say \"hello world\"");
         assert_eq!(tokens, vec!["say", "hello world"]);
+    }
+
+    #[test]
+    fn tokenize_splits_on_high_bit_bytes_like_signed_char_c() {
+        assert_eq!(tokenize("a\u{e9}b \u{80}c\u{ff}"), ["a", "b", "c"]);
+        // Inside quotes only '"' ends the token, as in C COM_Parse.
+        assert_eq!(tokenize("\"a\u{e9}b\""), ["a\u{e9}b"]);
+        // Above U+00FF is no Q2 byte; it stays in the token.
+        assert_eq!(tokenize("a\u{100}b"), ["a\u{100}b"]);
     }
 
     #[test]
@@ -515,12 +528,11 @@ mod tests {
     #[test]
     fn tokenize_splits_on_control_bytes_but_not_unicode_spaces() {
         // C COM_Parse treats `c <= ' '` as whitespace with `c` read from a
-        // `char *`. With unsigned char only bytes 0..=32 qualify; where char
-        // is signed (x86, Apple arm64) bytes >= 0x80 are negative and would
-        // count too. The port follows the unsigned reading so high-bit
-        // (Latin-1) text stays inside its token.
+        // signed `char *`, so byte 0xA0 splits; a char above U+00FF is no
+        // Q2 byte and stays in its token.
         assert_eq!(tokenize("a\u{1}b"), vec!["a", "b"]);
-        assert_eq!(tokenize("a\u{a0}b"), vec!["a\u{a0}b"]);
+        assert_eq!(tokenize("a\u{a0}b"), vec!["a", "b"]);
+        assert_eq!(tokenize("a\u{2003}b"), vec!["a\u{2003}b"]);
     }
 
     #[test]
@@ -601,18 +613,20 @@ mod tests {
     fn limits_count_wire_bytes_not_utf8_bytes() {
         // NetMsg::read_string maps each wire byte to one char (U+0000..=U+00FF);
         // C's byte limits must count those chars, not their UTF-8 length.
+        // High-bit bytes separate bare words, so they are quoted here.
         let long = "\u{e9}".repeat(600);
-        assert_eq!(tokenize(&format!("echo {long}"))[1], long);
+        assert_eq!(tokenize(&format!("echo \"{long}\""))[1], long);
         assert_eq!(
-            tokenize(&format!("echo {}", "\u{e9}".repeat(MAX_TOKEN_CHARS)))[1],
+            tokenize(&format!("echo \"{}\"", "\u{e9}".repeat(MAX_TOKEN_CHARS)))[1],
             ""
         );
 
         let mut cmd = CmdSystem::new();
         let echo = logging_command(&mut cmd, "echo");
-        cmd.cbuf_add_text(&format!("echo {}\n", "\u{e9}".repeat(2000)));
+        cmd.cbuf_add_text(&format!("echo \"{}\"\n", "\u{e9}".repeat(2000)));
         cmd.cbuf_execute();
-        assert_eq!(echo.borrow()[0].chars().count(), MAX_LINE_CHARS);
+        // The line keeps MAX_LINE_CHARS chars, one of them the opening quote.
+        assert_eq!(echo.borrow()[0].chars().count(), MAX_LINE_CHARS - 1);
 
         let mut cmd = CmdSystem::new();
         cmd.cbuf_add_text(&"\u{e9}".repeat(CBUF_MAX_SIZE / 2 + 1));
