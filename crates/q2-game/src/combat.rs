@@ -80,9 +80,10 @@ impl GameWorld {
     // -----------------------------------------------------------------------
 
     /// Apply knockback to an entity — adds velocity in `dir` direction.
+    /// A negative knockback pulls the entity along `-dir`.
     ///
-    /// `scale`: 1600.0 for self-damage, 500.0 for other damage.
-    /// Minimum effective mass is 50.
+    /// `scale`: 1600.0 for a client hurting itself, 500.0 for everything
+    /// else. Minimum effective mass is 50. C ref: `apply_knockback`.
     fn apply_knockback(&mut self, target: EntityKey, dir: Vec3f, knockback: f32, scale: f32) {
         if knockback == 0.0 {
             return;
@@ -98,7 +99,7 @@ impl GameWorld {
         } else {
             Vec3f::ZERO
         };
-        let kvel = dir_norm * (scale * knockback / mass);
+        let kvel = dir_norm * (scale * (knockback / mass));
         ent.velocity += kvel;
     }
 
@@ -310,8 +311,9 @@ impl GameWorld {
 
     /// Apply damage to an entity. This is THE core damage function.
     ///
-    /// Sequence: check god mode → armor absorption → knockback → reduce health
-    /// → if health <= 0: Killed() → else: pain callback.
+    /// Sequence, as in C: knockback, god mode, power armor, armor, health,
+    /// then Killed() at or below 0 health or the pain callback otherwise.
+    /// C ref: `T_Damage`.
     ///
     /// # Parameters
     /// - `target`: entity taking damage
@@ -390,7 +392,7 @@ impl GameWorld {
         }
 
         // Apply knockback (unless suppressed by damage flags or movetype).
-        if !dflags.contains(DamageFlags::NO_KNOCKBACK) && knockback > 0.0 {
+        if !dflags.contains(DamageFlags::NO_KNOCKBACK) && knockback != 0.0 {
             let movetype = self
                 .entities
                 .get(target)
@@ -402,8 +404,15 @@ impl GameWorld {
                 && movetype != MoveType::Push
                 && movetype != MoveType::Stop
             {
-                let is_self_damage = target == attacker;
-                let scale = if is_self_damage { 1600.0 } else { 500.0 };
+                let target_is_client = self
+                    .entities
+                    .get(target)
+                    .is_some_and(|e| e.client.is_some());
+                let scale = if target_is_client && target == attacker {
+                    1600.0
+                } else {
+                    500.0
+                };
                 self.apply_knockback(target, dir, knockback, scale);
             }
         }
@@ -1238,6 +1247,75 @@ mod tests {
         // Velocity should have changed from knockback.
         let v = world.entities.get(target).unwrap().velocity;
         assert!(v.x > 0.0);
+    }
+
+    /// A mass-100 step entity with 100 health, hit along +x for 50 knockback
+    /// by `attacker`; returns its velocity.
+    fn knockback_velocity(
+        world: &mut GameWorld,
+        target: EntityKey,
+        attacker: EntityKey,
+        kick: i32,
+    ) -> Vec3f {
+        {
+            let ent = world.entities.get_mut(target).unwrap();
+            ent.game.health = 100;
+            ent.game.takedamage = TakeDamage::Yes;
+            ent.game.mass = 100;
+            ent.game.movetype = MoveType::Step;
+        }
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::new(1.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            1,
+            kick,
+            DamageFlags::empty(),
+            MeansOfDeath::Rocket,
+        );
+        world.entities.get(target).unwrap().velocity
+    }
+
+    #[test]
+    fn monster_hurting_itself_gets_the_500_scale() {
+        // C: `(client && attacker == targ) ? 1600 : 500`.
+        let mut world = test_world();
+        let monster = world.spawn().unwrap();
+        let v = knockback_velocity(&mut world, monster, monster, 50);
+        assert_eq!(v, Vec3f::new(500.0 * (50.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn client_hurting_itself_gets_the_1600_scale() {
+        let mut world = test_world();
+        let player = world.spawn_test_client(Default::default());
+        let v = knockback_velocity(&mut world, player, player, 50);
+        assert_eq!(v, Vec3f::new(1600.0 * (50.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn negative_knockback_pulls_the_target_back() {
+        // floater_zap kicks with -10; C apply_knockback skips only zero.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        let attacker = world.spawn().unwrap();
+        let v = knockback_velocity(&mut world, target, attacker, -10);
+        assert_eq!(v, Vec3f::new(500.0 * (-10.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn knockback_divides_by_mass_before_scaling_as_c_does() {
+        // C: scale * (knockback / mass). For 7/51, (500 * 7) / 51 rounds to
+        // a different f32.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        world.entities.get_mut(target).unwrap().game.mass = 51;
+        world.apply_knockback(target, Vec3f::new(1.0, 0.0, 0.0), 7.0, 500.0);
+        let v = world.entities.get(target).unwrap().velocity;
+        assert_eq!(v.x.to_bits(), (500.0f32 * (7.0f32 / 51.0f32)).to_bits());
     }
 
     #[test]
