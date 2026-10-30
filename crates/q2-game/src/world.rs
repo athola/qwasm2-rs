@@ -1208,13 +1208,15 @@ impl GameWorld {
             .configstring((q2_shared::constants::CS_LIGHTS + 63) as i32, "a");
     }
 
-    /// C SP_light: untargeted lights are freed; switchable styles (32 and
-    /// up) start on or off and toggle when used.
+    /// C SP_light: untargeted lights, and in deathmatch every light (they
+    /// cause global messages), are freed; switchable styles (32 and up)
+    /// start on or off and toggle when used.
     pub(crate) fn spawn_light(&mut self, key: EntityKey, _fields: &HashMap<String, String>) {
+        let deathmatch = self.game.deathmatch;
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
-        if ent.game.targetname.is_empty() {
+        if ent.game.targetname.is_empty() || deathmatch {
             self.free_entity(key);
             return;
         }
@@ -2248,6 +2250,22 @@ mod tests {
             .borrow()
             .iter()
             .any(|m| m == "ED_CallSpawn: NULL classname\n"));
+    }
+
+    #[test]
+    fn deathmatch_frees_even_targeted_lights() {
+        // C SP_light: `if (!self->targetname || deathmatch->value)`.
+        for (deathmatch, kept) in [(false, true), (true, false)] {
+            let mut world = test_world();
+            world.game.deathmatch = deathmatch;
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                r#"{ "classname" "worldspawn" } { "classname" "light" "targetname" "l" "style" "32" }"#,
+                "",
+            );
+            assert_eq!(world.find_by_classname(None, "light").is_some(), kept);
+        }
     }
 
     #[test]
