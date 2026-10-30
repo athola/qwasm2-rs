@@ -1087,8 +1087,8 @@ mod tests {
     fn gladiator_holding_ground_sights_a_player_and_shoots_it_with_the_railgun() {
         let (mut world, gi, key, player) =
             monster_arena(sp_monster_gladiator, sp_monster_gladiator_finish, 400.0);
-        // Holding ground, C's missile chance is 0.4 a frame instead of 0.02
-        // at mid range, so the gladiator shoots instead of closing in.
+        // Holding ground, C's missile chance is 0.4 a frame instead of 0.1
+        // at near range, so the gladiator shoots instead of closing in.
         mi_mut(&mut world, key).aiflags |= AiFlags::STAND_GROUND;
         let (mut angry, mut gunned) = (false, false);
         run(&mut world, key, 100, |w| {
