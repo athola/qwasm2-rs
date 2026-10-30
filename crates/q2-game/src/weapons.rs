@@ -302,6 +302,12 @@ pub fn bfg_touch(
     world.free_entity(self_key);
 }
 
+/// C `8000 / speed`, an int division. C divides by zero on a zero
+/// speed; this port gives that projectile 8000 seconds instead.
+fn projectile_lifetime(speed: i32) -> f32 {
+    8000_i32.checked_div(speed).unwrap_or(8000) as f32
+}
+
 /// Timeout cleanup — remove projectile entities that outlived their duration.
 fn projectile_timeout(world: &mut GameWorld, self_key: EntityKey) {
     world.free_entity(self_key);
@@ -551,7 +557,7 @@ impl GameWorld {
 
             rocket.touch = Some(rocket_touch);
             rocket.think = Some(projectile_timeout);
-            rocket.game.nextthink = self.level.time + 8000.0 / speed as f32;
+            rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
 
@@ -697,8 +703,11 @@ impl GameWorld {
             bfg.velocity = dir.normalize_or_zero() * speed as f32;
 
             bfg.touch = Some(bfg_touch);
+            // C then swaps this timeout for bfg_think every frame, so the
+            // ball only dies on touch. Without bfg_think (#33) the ball
+            // times out like a rocket.
             bfg.think = Some(projectile_timeout);
-            bfg.game.nextthink = self.level.time + 8000.0 / speed as f32;
+            bfg.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(bfg_key, dir, "sprites/s_bfg1.sp2");
 
@@ -1513,5 +1522,31 @@ mod tests {
         // C: player prediction does not clip against bolts.
         assert_ne!(bolt.svflags & q2_shared::constants::SVF_DEADMONSTER, 0);
         assert_ne!(bolt.state.renderfx & q2_shared::constants::RF_NOSHADOW, 0);
+    }
+
+    #[test]
+    fn rocket_lifetime_is_c_integer_division_of_8000_by_speed() {
+        let mut world = test_world();
+        world.level.time = 3.0;
+        let owner = world.spawn().unwrap();
+        world.fire_rocket(owner, Vec3f::ZERO, Vec3f::X, 100, 650, 150.0, 120);
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 400, 1000.0);
+        for (class, life) in [("rocket", 12.0), ("bfg blast", 20.0)] {
+            let key = world.find_by_classname(None, class).unwrap();
+            assert_eq!(
+                world.entities.get(key).unwrap().game.nextthink,
+                3.0 + life,
+                "{class}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_speed_rocket_does_not_divide_by_zero() {
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_rocket(owner, Vec3f::ZERO, Vec3f::X, 100, 0, 150.0, 120);
+        let key = world.find_by_classname(None, "rocket").unwrap();
+        assert!(world.entities.get(key).unwrap().game.nextthink.is_finite());
     }
 }
