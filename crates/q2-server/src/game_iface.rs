@@ -66,8 +66,9 @@ struct GiInner {
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
-/// `svc_sound` message. The PHS and reliable routing of that message is a
-/// network concern; the one local client hears every sound.
+/// `svc_sound` message, with volume, attenuation and offset at the byte
+/// precision the message carries. The PHS and reliable routing of that
+/// message is a network concern; the one local client hears every sound.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoundEvent {
     /// Entity number the sound plays on (for channel overrides).
@@ -149,13 +150,18 @@ impl GiInner {
                 None
             }
         });
+        // C writes each as a truncated byte and the client divides back
+        // (CL_ParseStartSoundPacket); the local client hears the same
+        // values. A default left out of the message (volume or attenuation
+        // 1, offset 0) quantizes to itself.
+        let byte = |v: f32, scale: f32| f32::from((v * scale) as i32 as u8) / scale;
         self.sounds.push(SoundEvent {
             ent,
             channel: channel & 7,
             sound_index,
-            volume,
-            attenuation,
-            time_ofs,
+            volume: byte(volume, 255.0),
+            attenuation: byte(attenuation, 64.0),
+            time_ofs: byte(time_ofs, 1000.0),
             origin,
         });
     }
@@ -830,11 +836,29 @@ mod tests {
             ent,
             channel,
             sound_index: 5,
-            volume: 0.5,
+            // 0.5 and 0.1 as svc_sound carries them: 127 / 255, 100 / 1000.
+            volume: 127.0 / 255.0,
             attenuation: 1.0,
-            time_ofs: 0.1,
+            time_ofs: 100.0 / 1000.0,
             origin,
         }
+    }
+
+    #[test]
+    fn sound_parameters_are_quantized_like_the_svc_sound_bytes() {
+        // C SV_StartSound writes (int)(volume * 255), (int)(attenuation *
+        // 64) and (int)(timeofs * 1000) as bytes; the client divides back.
+        let gi = ServerGameImport::new();
+        gi.sound(Some(3), 0, 5, 0.3, 3.0, 0.0125);
+        gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
+        let sounds = gi.take_sounds();
+        assert_eq!(sounds[0].volume, 76.0 / 255.0);
+        assert_eq!(sounds[0].attenuation, 3.0);
+        assert_eq!(sounds[0].time_ofs, 12.0 / 1000.0);
+        assert_eq!(sounds[1].volume, 1.0);
+        // 4 * 64 = 256 does not fit the byte: C sends 0, ATTN_NONE.
+        assert_eq!(sounds[1].attenuation, 0.0);
+        assert_eq!(sounds[1].time_ofs, 255.0 / 1000.0);
     }
 
     #[test]
