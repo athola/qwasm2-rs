@@ -436,8 +436,13 @@ impl GameWorld {
 
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.state.origin = trace.endpos;
-                // Push gibs, debris and dead monsters slightly off
-                // non-horizontal planes so they don't render black.
+            }
+            self.link_entity(key);
+
+            // Push gibs, debris and dead monsters slightly off
+            // non-horizontal planes so they don't render black. C does
+            // not relink, so the touch below sees the linked position.
+            if let Some(ent) = self.entities.get_mut(key) {
                 let nudge = (ent.game.classname.starts_with("monster_") && ent.game.health < 1)
                     || ent.game.classname == "debris"
                     || ent.state.effects & EF_GIB != 0;
@@ -445,7 +450,6 @@ impl GameWorld {
                     ent.state.origin += trace.plane.normal;
                 }
             }
-            self.link_entity(key);
 
             if trace.fraction != 1.0 {
                 let hit_key = trace
@@ -1944,6 +1948,31 @@ mod tests {
             world.test_entity_position(key);
         }
         assert_eq!(*gi.trace_masks.borrow(), [MASK_SOLID, MASK_MONSTERSOLID]);
+    }
+
+    #[test]
+    fn push_entity_links_a_gib_before_nudging_it_off_the_plane() {
+        // C SV_PushEntity links at trace.endpos, then adds the plane normal
+        // to the origin without relinking.
+        let (mut world, gi) = test_world_recording();
+        let gib = world.spawn().unwrap();
+        world.entities.get_mut(gib).unwrap().state.effects = EF_GIB;
+        let normal = Vec3f::new(1.0, 0.0, 0.0);
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 1.0,
+            endpos: Vec3f::new(5.0, 0.0, 0.0),
+            plane: Plane {
+                normal,
+                plane_type: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        world.push_entity(gib, Vec3f::new(10.0, 0.0, 0.0));
+        let link = *gi.links.borrow().last().expect("linked");
+        assert_eq!(link.origin, Vec3f::new(5.0, 0.0, 0.0));
+        let origin = world.entities.get(gib).unwrap().state.origin;
+        assert_eq!(origin, Vec3f::new(6.0, 0.0, 0.0));
     }
 
     #[test]
