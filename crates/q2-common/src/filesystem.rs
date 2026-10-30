@@ -340,7 +340,7 @@ impl FileSystem {
     pub fn load_file(&self, path: &str) -> Q2Result<Vec<u8>> {
         let cleaned = clean_path(path)
             .ok_or_else(|| Q2Error::Drop(format!("refusing path outside game dir: {path}")))?;
-        let normalized = cleaned.to_lowercase();
+        let normalized = cleaned.to_ascii_lowercase();
 
         for sp in self.search_paths.iter().rev() {
             match sp {
@@ -368,7 +368,7 @@ impl FileSystem {
         let Some(cleaned) = clean_path(path) else {
             return false;
         };
-        let normalized = cleaned.to_lowercase();
+        let normalized = cleaned.to_ascii_lowercase();
 
         for sp in self.search_paths.iter().rev() {
             match sp {
@@ -389,7 +389,7 @@ impl FileSystem {
 
     /// List all files matching a given extension (e.g., "bsp", "pcx").
     pub fn list_files(&self, extension: &str) -> Vec<String> {
-        let ext = format!(".{}", extension.to_lowercase());
+        let ext = format!(".{}", extension.to_ascii_lowercase());
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -466,7 +466,11 @@ fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<St
             .iter()
             .position(|&b| b == 0)
             .unwrap_or(PAK_ENTRY_NAME_LEN);
-        let file_name = String::from_utf8_lossy(&name_buf[..name_end]).to_string();
+        // One char per byte, like the Q2 strings that request files.
+        let file_name: String = name_buf[..name_end]
+            .iter()
+            .map(|&b| char::from(b))
+            .collect();
         let normalized = normalize_path(&file_name);
 
         let offset = read_u32_le(&mut cursor)?;
@@ -483,10 +487,11 @@ fn parse_pack_directory(pak_name: &str, dir_bytes: &[u8]) -> Q2Result<HashMap<St
     Ok(files)
 }
 
-/// Normalize a path: lowercase, forward slashes, strip leading ./
+/// Normalize a path: ASCII lowercase (C Q_stricmp folds ASCII only), forward
+/// slashes, strip leading ./
 fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
-        .to_lowercase()
+        .to_ascii_lowercase()
         .trim_start_matches("./")
         .to_string()
 }
@@ -706,6 +711,26 @@ mod tests {
 
         let data = fs.load_file("maps/demo.bsp").unwrap();
         assert_eq!(data, content);
+    }
+
+    #[test]
+    fn pak_names_match_q2_byte_strings_with_ascii_case_folding() {
+        // C Q_stricmp compares bytes and folds ASCII only; requested names
+        // hold one char per byte (NetMsg::read_string).
+        let dir = tempfile::tempdir().unwrap();
+        let game_dir = dir.path().join("baseq2");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        let mut pak_data = create_test_pak(&[("maps/Caf?.bsp", b"HIGH")]);
+        let at = pak_data.len() - PAK_DIR_ENTRY_SIZE as usize + "maps/Caf".len();
+        pak_data[at] = 0xE9;
+        std::fs::write(game_dir.join("pak0.pak"), &pak_data).unwrap();
+
+        let mut fs = FileSystem::new("baseq2");
+        fs.add_game_directory(&game_dir).unwrap();
+
+        assert_eq!(fs.load_file("maps/CAF\u{e9}.bsp").unwrap(), b"HIGH");
+        assert!(fs.file_exists("maps/caf\u{e9}.bsp"));
+        assert!(!fs.file_exists("maps/caf\u{c9}.bsp"));
     }
 
     #[test]
