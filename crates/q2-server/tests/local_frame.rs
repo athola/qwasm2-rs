@@ -4,7 +4,7 @@
 mod common;
 
 use q2_server::local::{LocalGame, LOCAL_PLAYER};
-use q2_shared::constants::{CS_MODELS, SVF_NOCLIENT};
+use q2_shared::constants::{CS_MODELS, EV_PLAYER_TELEPORT, SVF_NOCLIENT};
 use q2_shared::types::UserCmd;
 
 fn started(extra: &str) -> LocalGame {
@@ -164,4 +164,35 @@ fn demo1_area_bits_show_the_players_own_area() {
     let bits = game.area_bits().expect("area bits");
     let byte = bits[(area >> 3) as usize];
     assert_ne!(byte & (1 << (area & 7)), 0, "own area {area} visible");
+}
+
+#[test]
+fn a_teleport_event_is_sent_in_exactly_one_frame() {
+    // The player starts on a teleporter pad and is sent to the dest pad.
+    let mut game = started(concat!(
+        "{\n\"classname\" \"misc_teleporter\"\n\"target\" \"dest\"\n\"origin\" \"0 0 16\"\n}\n",
+        "{\n\"classname\" \"misc_teleporter_dest\"\n\"targetname\" \"dest\"\n\"origin\" \"128 0 16\"\n}\n",
+    ));
+    let mut frames_with_event = 0;
+    let mut framenum = game.framenum();
+    for _ in 0..20 {
+        game.think(&UserCmd::default());
+        game.frame(100_000);
+        if game.framenum() == framenum {
+            continue;
+        }
+        framenum = game.framenum();
+        let player = game
+            .entity_states()
+            .into_iter()
+            .find(|s| s.number == LOCAL_PLAYER as i32)
+            .expect("player sent");
+        if player.event == EV_PLAYER_TELEPORT {
+            frames_with_event += 1;
+        }
+    }
+    let (origin, _) = game.player().expect("player in game");
+    assert_eq!(origin.x, 128.0, "teleported to the dest pad");
+    // C SV_PrepWorldFrame: events only last for a single message.
+    assert_eq!(frames_with_event, 1);
 }

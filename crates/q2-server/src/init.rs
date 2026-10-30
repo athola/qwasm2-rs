@@ -350,6 +350,7 @@ mod tests {
         fn client_command(&mut self, _: usize) {}
         fn client_think(&mut self, _: usize, _: &q2_shared::types::UserCmd) {}
         fn run_frame(&mut self) {}
+        fn clear_entity_events(&mut self) {}
         fn server_command(&mut self) {}
         fn num_edicts(&self) -> usize {
             0

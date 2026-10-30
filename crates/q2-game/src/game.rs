@@ -135,6 +135,12 @@ impl GameExport for GameWorld {
         GameWorld::run_frame(self);
     }
 
+    fn clear_entity_events(&mut self) {
+        for (_, ent) in self.entities.iter_mut() {
+            ent.state.event = 0;
+        }
+    }
+
     fn server_command(&mut self) {}
 
     fn num_edicts(&self) -> usize {

@@ -55,6 +55,7 @@ pub(crate) mod test_support {
         fn run_frame(&mut self) {
             self.frames_run += 1;
         }
+        fn clear_entity_events(&mut self) {}
         fn server_command(&mut self) {}
         fn num_edicts(&self) -> usize {
             0

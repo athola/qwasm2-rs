@@ -50,7 +50,9 @@ impl Server {
         self.run_game_frame(svs, game, gi);
 
         // TODO(#10): SV_SendClientMessages — push state to connected clients.
-        // TODO(#10): SV_PrepWorldFrame     — clear per-frame entity events.
+        // SV_PrepWorldFrame clears the entity events once a frame is sent,
+        // so it runs after the send: `LocalGame::frame` sends the local
+        // client's frame and then calls `GameExport::clear_entity_events`.
     }
 
     /// Advance one 100 ms game tick (`SV_RunGameFrame`).

@@ -304,6 +304,11 @@ pub trait GameExport {
     /// Run one game frame (10 Hz by default in Q2).
     fn run_frame(&mut self);
 
+    /// Zero every edict's `state.event` once the frame holding it is sent:
+    /// events last for a single message. C ref: `SV_PrepWorldFrame`
+    /// (sv_main.c), which writes `ge->edicts` directly.
+    fn clear_entity_events(&mut self);
+
     /// Handle `sv <command>` on the server console.
     fn server_command(&mut self);
 
