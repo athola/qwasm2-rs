@@ -87,7 +87,8 @@ pub struct GameLocals {
     /// C `dmflags` cvar (`DF_*` bits); read by deathmatch spawn selection.
     pub dmflags: i32,
     pub num_items: i32,
-    /// C `skill` cvar, clamped to 0..=3 (easy, medium, hard, hard+).
+    /// C `skill` cvar: 0..=3 (easy, medium, hard, hard+) once
+    /// `spawn_entities` has clamped it, as C SpawnEntities does.
     pub skill: i32,
     /// C `deathmatch` and `coop` cvars (default 0): the browser plays
     /// single player, so both stay false there.
@@ -1489,6 +1490,7 @@ impl GameWorld {
     /// Parse an entity string and spawn all entities.
     /// C ref: `SpawnEntities` (g_spawn.c).
     pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str) {
+        self.game.skill = self.game.skill.clamp(0, 3);
         self.game.spawnpoint = spawnpoint.to_string();
         self.save_client_data();
         // `self.clients` is untouched: C re-points `g_edicts[i + 1].client`
@@ -2310,6 +2312,28 @@ mod tests {
         let item = world.entities.get(soldier).unwrap().game.item;
         assert_eq!(item, world.find_item("ammo_shells"));
         assert!(item.is_some());
+    }
+
+    #[test]
+    fn spawn_entities_clamps_the_skill_like_c() {
+        // C SpawnEntities clamps skill to 0..=3 before filtering, so -1
+        // plays (and filters) as easy, not hard.
+        for (skill, clamped, kept) in [(-1, 0, false), (7, 3, true)] {
+            let mut world = test_world();
+            world.game.skill = skill;
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                r#"{ "classname" "worldspawn" } { "classname" "info_notnull" "spawnflags" "256" }"#,
+                "",
+            );
+            assert_eq!(world.game.skill, clamped);
+            assert_eq!(
+                world.find_by_classname(None, "info_notnull").is_some(),
+                kept,
+                "skill {skill}"
+            );
+        }
     }
 
     #[test]
