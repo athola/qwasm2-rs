@@ -1,4 +1,4 @@
-use crate::state::{CEntity, ClientFrame, ClientState, ConnState};
+use crate::state::{CEntity, CenterPrint, ClientFrame, ClientState, ConnState};
 use q2_common::error::Q2Result;
 use q2_common::net_msg::NetMsg;
 use q2_common::q2_drop;
@@ -155,12 +155,19 @@ impl ClientState {
         tracing::info!("[server] {}", text);
     }
 
+    /// C svc_stufftext: `Cbuf_AddText(s)`, queued for the host (see
+    /// `ClientState::stufftext`).
     fn parse_stufftext(&mut self, msg: &mut NetMsg) {
-        let _cmd = msg.read_string();
+        let text = msg.read_string();
+        tracing::debug!("stufftext: {text}");
+        self.stufftext.push_str(&text);
     }
 
+    /// C svc_centerprint: `SCR_CenterPrint(MSG_ReadString())`.
     fn parse_centerprint(&mut self, msg: &mut NetMsg) {
-        let _text = msg.read_string();
+        let text = msg.read_string();
+        tracing::info!("[center] {text}");
+        self.centerprint = CenterPrint::new(&text, self.time);
     }
 
     /// Parse a complete svc_frame message including player state and entity list.
@@ -180,9 +187,6 @@ impl ClientState {
         let raw_areabits_len = msg.read_byte();
         if msg.is_overflowed() {
             q2_drop!("parse_frame: truncated frame header");
-        }
-        if serverframe < 0 {
-            q2_drop!("parse_frame: negative serverframe {serverframe}");
         }
         // Wraps like the C int multiply instead of panicking.
         let servertime = serverframe.wrapping_mul(100);
@@ -205,20 +209,25 @@ impl ClientState {
             msg.read_byte();
         }
 
-        // Locate the old frame for delta (or None for uncompressed frame).
+        // C CL_ParseFrame: a delta frame is valid when the slot for its
+        // base still holds that frame. C only prints when the base itself
+        // was invalid and parses against it anyway. When the slot holds
+        // another frame C still reads against it and keeps the result
+        // invalid; this reads against an empty base instead, which consumes
+        // the same bytes and is never a valid frame either.
         let old_frame: Option<ClientFrame> = if deltaframe > 0 {
-            let old_idx = (deltaframe as usize) & UPDATE_MASK;
-            let candidate = &self.frames[old_idx];
-            if candidate.serverframe == deltaframe && candidate.valid {
-                Some(candidate.clone())
-            } else {
+            let candidate = &self.frames[(deltaframe as usize) & UPDATE_MASK];
+            if candidate.serverframe != deltaframe {
                 tracing::warn!(
-                    "parse_frame: delta from invalid frame {} (have {}, valid={})",
-                    deltaframe,
-                    candidate.serverframe,
-                    candidate.valid
+                    "parse_frame: delta frame {deltaframe} too old (have {})",
+                    candidate.serverframe
                 );
                 None
+            } else {
+                if !candidate.valid {
+                    tracing::warn!("parse_frame: delta from invalid frame {deltaframe}");
+                }
+                Some(candidate.clone())
             }
         } else {
             None // uncompressed (fresh) frame
@@ -829,28 +838,106 @@ mod tests {
         assert_eq!(cs.frame.deltaframe, -1);
     }
 
-    #[test]
-    fn parse_stufftext_consumes_string() {
-        let mut cs = ClientState::default();
+    fn stufftext_msg(texts: &[&str]) -> NetMsg {
         let mut msg = NetMsg::new();
-        msg.write_byte(SvcOp::StuffText as i32);
-        msg.write_string("cmd connect");
+        for text in texts {
+            msg.write_byte(SvcOp::StuffText as i32);
+            msg.write_string(text);
+        }
         msg.begin_reading();
+        msg
+    }
 
+    // C svc_stufftext: Cbuf_AddText(MSG_ReadString()).
+    #[test]
+    fn stufftext_is_queued_for_the_command_buffer() {
+        let mut cs = ClientState::default();
+        let mut msg = stufftext_msg(&["cmd configstrings 3 0\n"]);
         cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
+        assert_eq!(cs.take_stufftext(), "cmd configstrings 3 0\n");
+        assert_eq!(cs.take_stufftext(), "", "taking the text empties the queue");
     }
 
     #[test]
-    fn parse_centerprint_consumes_string() {
+    fn stufftexts_append_in_arrival_order() {
         let mut cs = ClientState::default();
+        let mut msg = stufftext_msg(&["changing\n", "reconnect\n"]);
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.take_stufftext(), "changing\nreconnect\n");
+    }
+
+    // C runs Cbuf_Execute before CL_ParseServerData, so text stuffed ahead
+    // of svc_serverdata is not lost by the state reset.
+    #[test]
+    fn stufftext_before_serverdata_survives_the_state_reset() {
+        let mut cs = ClientState::default();
+        let mut msg = stufftext_msg(&["changing\n"]);
+        cs.parse_server_message(&mut msg).expect("valid message");
+        let mut msg = make_server_data_msg(34, 7, 0, "baseq2", "base1");
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.take_stufftext(), "changing\n");
+    }
+
+    fn centerprint_msg(text: &str) -> NetMsg {
         let mut msg = NetMsg::new();
         msg.write_byte(SvcOp::CenterPrint as i32);
-        msg.write_string("You found a secret!");
+        msg.write_string(text);
         msg.begin_reading();
+        msg
+    }
 
+    // C SCR_CenterPrint: text, scr_centertime_off = scr_centertime (2.5),
+    // scr_centertime_start = cl.time, scr_center_lines = 1 + newlines.
+    #[test]
+    fn centerprint_records_text_time_and_one_line() {
+        let mut cs = ClientState {
+            time: 1234.0,
+            ..Default::default()
+        };
+        let mut msg = centerprint_msg("You found a secret!");
         cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
+        assert_eq!(
+            cs.centerprint,
+            CenterPrint {
+                text: "You found a secret!".to_owned(),
+                time_off: 2.5,
+                time_start: 1234.0,
+                lines: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn centerprint_counts_a_line_per_newline() {
+        let mut cs = ClientState::default();
+        let mut msg = centerprint_msg("a\nb\n");
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.centerprint.lines, 3);
+    }
+
+    #[test]
+    fn centerprint_replaces_the_previous_one() {
+        let mut cs = ClientState::default();
+        let mut msg = centerprint_msg("first\nline");
+        cs.parse_server_message(&mut msg).expect("valid message");
+        let mut msg = centerprint_msg("second");
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.centerprint.text, "second");
+        assert_eq!(cs.centerprint.lines, 1);
+    }
+
+    // Q_strlcpy into char[1024] keeps 1023 chars; the line count is taken
+    // from the untruncated string, as C counts over `str`.
+    #[test]
+    fn centerprint_text_is_truncated_to_1023_chars_like_c() {
+        let mut cs = ClientState::default();
+        let long = format!("{}\n{}", "x".repeat(1100), "y");
+        let mut msg = centerprint_msg(&long);
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert_eq!(cs.centerprint.text, "x".repeat(1023));
+        assert_eq!(cs.centerprint.lines, 2);
     }
 
     #[test]
@@ -1102,6 +1189,51 @@ mod tests {
         // fov should be carried forward (delta); gravity should update.
         assert_eq!(cs.frame.playerstate.fov, 75.0);
         assert_eq!(cs.frame.playerstate.pmove.gravity, -500);
+    }
+
+    // C CL_ParseFrame (cl_parse.c:718-741): the base is the slot at
+    // deltaframe & UPDATE_MASK, and the frame is valid when that slot holds
+    // deltaframe, even if the slot itself was invalid (C only prints).
+    #[test]
+    fn delta_from_an_invalid_but_matching_base_is_valid_like_c() {
+        let mut cs = ClientState::default();
+        let ps1 = PlayerState {
+            fov: 75.0,
+            ..Default::default()
+        };
+        let mut msg = NetMsg::new();
+        write_empty_frame(&mut msg, 1, -1, Some(&ps1), &[]);
+        msg.begin_reading();
+        cs.parse_server_message(&mut msg).expect("valid message");
+        cs.frames[1 & UPDATE_MASK].valid = false;
+
+        let mut ps2 = ps1.clone();
+        ps2.pmove.gravity = -500;
+        let mut msg2 = NetMsg::new();
+        msg2.write_byte(SvcOp::Frame as i32);
+        msg2.write_long(2);
+        msg2.write_long(1);
+        msg2.write_byte(0);
+        msg2.write_byte(0);
+        msg2.write_player_state(&ps1, &ps2);
+        msg2.write_packet_entities_list(&[], &[], &[], 0)
+            .expect("valid entities");
+        msg2.begin_reading();
+        cs.parse_server_message(&mut msg2).expect("valid message");
+
+        assert!(cs.frame.valid);
+        assert_eq!(cs.frame.playerstate.fov, 75.0, "fov comes from the base");
+        assert_eq!(cs.frame.playerstate.pmove.gravity, -500);
+    }
+
+    #[test]
+    fn delta_from_a_frame_no_longer_held_is_invalid() {
+        let mut cs = ClientState::default();
+        let mut msg = make_frame_msg(1, -1);
+        cs.parse_server_message(&mut msg).expect("valid message");
+        let mut msg = make_frame_msg(2, 1 + UPDATE_BACKUP as i32);
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert!(!cs.frame.valid);
     }
 
     #[test]
@@ -1600,12 +1732,15 @@ mod tests {
         assert_eq!(cs.frame.servertime, i32::MAX.wrapping_mul(100));
     }
 
+    // C stores it at cl.frames[serverframe & UPDATE_MASK], which is in
+    // bounds for negative numbers too.
     #[test]
-    fn negative_serverframe_is_rejected() {
+    fn negative_serverframe_is_stored_like_c() {
         let mut cs = ClientState::default();
         let mut msg = make_frame_msg(-7, -1);
-        assert!(cs.parse_server_message(&mut msg).is_err());
-        assert_frame_not_stored(&cs, -7);
+        cs.parse_server_message(&mut msg).expect("valid frame");
+        assert_eq!(cs.frame.serverframe, -7);
+        assert_eq!(cs.frames[(-7i32 as usize) & UPDATE_MASK].serverframe, -7);
     }
 
     // C CL_ParseServerMessage: reading past the end of the message is
