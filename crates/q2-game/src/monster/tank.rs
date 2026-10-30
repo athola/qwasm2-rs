@@ -10,12 +10,11 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{monster_fire_blaster, monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::monster_flash_source;
+use crate::monster::{enemy_eye, frame, set_move, sound};
 use crate::world::GameWorld;
 
 /// C tank.h `MODEL_SCALE`.
@@ -31,14 +30,6 @@ const FRAME_ATTAK406: i32 = 173;
 const FRAME_ATTAK411: i32 = 178;
 const FRAME_ATTAK415: i32 = 182;
 const FRAME_ATTAK419: i32 = 186;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: tank.c `tank_frames_*` / `tank_move_*`. `start_walk`,
 // `stop_walk` and `stop_run` exist in C but nothing selects them.
@@ -571,36 +562,11 @@ static TANK_MOVE_DEATH: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C compares `currentmove` pointers; the tables are statics.
 fn is_current(mi: &MonsterInfo, mv: &MonsterMove) -> bool {
     mi.currentmove
         .as_ref()
         .is_some_and(|cm| std::ptr::eq(cm.frames, mv.frames))
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
-/// The enemy's eye: C `enemy->s.origin` plus `viewheight` on z.
-fn enemy_eye(world: &GameWorld, key: EntityKey) -> Option<Vec3f> {
-    let enemy = world.entities.get(key)?.game.enemy?;
-    let enemy = world.entities.get(enemy)?;
-    Some(enemy.state.origin + Vec3f::new(0.0, 0.0, enemy.game.viewheight))
 }
 
 fn frame_of(world: &GameWorld, key: EntityKey) -> i32 {
@@ -1062,6 +1028,7 @@ pub fn tank_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::WireImport;
     use crate::monster::test_support::*;
     use std::rc::Rc;

@@ -8,11 +8,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::{fire, flash};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -78,14 +77,6 @@ const SOUND_STEPS: [&str; 2] = ["gunner/step1.wav", "gunner/step2.wav"];
 // Moves. C ref: gunner.c `gunner_frames_*` / `gunner_move_*`, one entry
 // per model frame in C order.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 /// C `gunner_frames_fidget` lists 49 frames; the move plays the first 40.
 static GUNNER_FRAMES_FIDGET: [MonsterFrame; 40] = [
@@ -414,22 +405,6 @@ fn monsterinfo(world: &GameWorld, key: EntityKey) -> Option<&MonsterInfo> {
 
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`;
-/// the server hands back the index the spawn precached.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +838,7 @@ pub fn finish_gunner(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{
         check_move, player_arena, seed, sounds, think_for, ArenaImport,

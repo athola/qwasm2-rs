@@ -13,12 +13,11 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::monster_fire_blaster;
 use crate::monster::flash::{monster_flash_source, project_source};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 
 // C's sound_* names, one per file, shared by the call sites and
@@ -67,14 +66,6 @@ static MEDIC_CABLE_OFFSETS: [[f32; 3]; 10] = [
     [32.7, -19.7, 10.4],
     [32.7, -19.7, 10.4],
 ];
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: medic.c `medic_frames_*` / `medic_move_*`.
 const FRAME_WALK1: i32 = 0;
@@ -387,16 +378,6 @@ static MEDIC_MOVE_ATTACK_CABLE: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn mi_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
 }
@@ -407,14 +388,6 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
         .get(key)
         .and_then(|e| e.monsterinfo.as_ref())
         .map_or(AiFlags::empty(), |mi| mi.aiflags)
-}
-
-/// C `gi.sound(ent, channel, gi.soundindex(name), 1, attenuation, 0)`.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 fn enemy_of(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
@@ -986,6 +959,7 @@ pub fn medic_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
     use std::rc::Rc;

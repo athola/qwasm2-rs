@@ -11,9 +11,7 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{
     monster_fire_bfg, monster_fire_blaster, monster_fire_bullet, monster_fire_railgun,
@@ -21,6 +19,7 @@ use crate::monster::fire::{
 use crate::monster::flash::monster_flash_source;
 use crate::monster::movement::vectoyaw;
 use crate::monster::supertank::boss_explode;
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -149,14 +148,6 @@ const MAKRON_SOUNDS: [&str; 14] = [
 // `makron_frames_*` / `makron_move_*`. C's unused `jorg_move_start_walk`,
 // `jorg_move_end_walk` and `makron_move_death3` are left out.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static JORG_FRAMES_STAND: [MonsterFrame; 51] = [
     frame(ai::ai_stand, 0.0, Some(jorg_idle)),
@@ -846,24 +837,11 @@ static MAKRON_MOVE_ATTACK5: MonsterMove = MonsterMove {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world
         .entities
         .get_mut(key)
         .and_then(|e| e.monsterinfo.as_deref_mut())
-}
-
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 fn frame_of(world: &GameWorld, key: EntityKey) -> i32 {
@@ -1899,6 +1877,7 @@ pub fn makron_toss(world: &mut GameWorld, key: EntityKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::{wire_world, Wire, WireImport};
     use crate::world::{test_world, test_world_recording, MockGameImport};
 

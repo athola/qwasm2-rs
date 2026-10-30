@@ -5,10 +5,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -92,14 +91,6 @@ const PRECACHE: [&str; 14] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: brain.c `brain_frames_*` / `brain_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static BRAIN_FRAMES_STAND: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
@@ -427,22 +418,6 @@ static BRAIN_MOVE_RUN: MonsterMove = MonsterMove {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
 
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world
@@ -821,6 +796,7 @@ pub fn sp_monster_brain_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording, MockGameImport};
 

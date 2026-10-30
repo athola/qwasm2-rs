@@ -31,6 +31,51 @@ pub mod tank;
 pub(crate) mod test_support;
 pub mod turret;
 
+use q2_shared::types::Vec3f;
+
+use crate::entity::{AnimFrameFn, EntityKey, MonsterFrame, MonsterMove, ThinkFn};
+use crate::world::GameWorld;
+
+/// One C `mframe_t` row; `const` so the move tables can be statics.
+pub(crate) const fn frame(
+    aifunc: AnimFrameFn,
+    dist: f32,
+    thinkfunc: Option<ThinkFn>,
+) -> MonsterFrame {
+    MonsterFrame {
+        aifunc: Some(aifunc),
+        dist,
+        thinkfunc,
+    }
+}
+
+/// C `self->monsterinfo.currentmove = &move`.
+pub(crate) fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
+    if let Some(mi) = world
+        .entities
+        .get_mut(key)
+        .and_then(|e| e.monsterinfo.as_mut())
+    {
+        mi.currentmove = Some(mv.clone());
+    }
+}
+
+/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`;
+/// the server hands back the index the spawn precached.
+pub(crate) fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
+    let index = world.gi.sound_index(name);
+    world
+        .gi
+        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
+}
+
+/// The enemy's eye: C `enemy->s.origin` plus `viewheight` on z.
+pub(crate) fn enemy_eye(world: &GameWorld, key: EntityKey) -> Option<Vec3f> {
+    let enemy = world.entities.get(key)?.game.enemy?;
+    let enemy = world.entities.get(enemy)?;
+    Some(enemy.state.origin + Vec3f::new(0.0, 0.0, enemy.game.viewheight))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::world::test_world;

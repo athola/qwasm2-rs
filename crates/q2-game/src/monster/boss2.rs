@@ -14,25 +14,16 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::{monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::monster_flash_source;
 use crate::monster::movement::vectoyaw;
 use crate::monster::supertank::boss_explode;
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 
 /// C boss2.h `MODEL_SCALE`.
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: boss2.c `boss2_frames_*` / `boss2_move_*`.
 const FRAME_STAND30: i32 = 0;
@@ -226,16 +217,6 @@ static BOSS2_MOVE_DEATH: MonsterMove = MonsterMove {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
 
 /// C `gi.sound(self, CHAN_VOICE, gi.soundindex(name), 1, ATTN_NONE, 0)`.
 fn voice(world: &GameWorld, key: EntityKey, name: &str) {
@@ -594,6 +575,7 @@ pub fn boss2_precache(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::WireImport;
     use crate::monster::test_support::*;
     use std::rc::Rc;

@@ -7,10 +7,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -78,14 +77,6 @@ const SOUND_SCREAM: [&str; 8] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: insane.c `insane_frames_*` / `insane_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static INSANE_FRAMES_STAND_NORMAL: [MonsterFrame; 6] = [
     frame(ai::ai_stand, 0.0, None),
@@ -545,21 +536,9 @@ static INSANE_MOVE_STRUGGLE_CROSS: MonsterMove = MonsterMove {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
-fn sound(world: &mut GameWorld, key: EntityKey, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), CHAN_VOICE, index, 1.0, ATTN_IDLE, 0.0);
+/// Every insane voice sound plays on `CHAN_VOICE` at `ATTN_IDLE`.
+fn sound(world: &GameWorld, key: EntityKey, name: &str) {
+    crate::monster::sound(world, key, CHAN_VOICE, name, ATTN_IDLE);
 }
 
 fn spawnflags(world: &GameWorld, key: EntityKey) -> i32 {
@@ -923,6 +902,7 @@ pub fn insane_finish(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::wire_world;
     use crate::monster::test_support::wire_sounds;
     use crate::world::test_world;

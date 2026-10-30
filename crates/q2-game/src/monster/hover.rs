@@ -6,11 +6,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{become_explosion1, throw_gib, throw_head, GibType};
 use crate::monster::{fire::monster_fire_blaster, flash::monster_flash_source};
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -38,14 +37,6 @@ const SOUND_IDLE_LOOP: &str = "hover/hovidle1.wav";
 
 /// C `MODEL_SCALE` (hover.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -305,21 +296,9 @@ pub static HOVER_MOVE_END_ATTACK: MonsterMove = MonsterMove {
 // Callbacks. C ref: hover.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), CHAN_VOICE, index, 1.0, ATTN_NORM, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
+/// Every hover sound plays on `CHAN_VOICE` at `ATTN_NORM`.
+fn sound(world: &GameWorld, key: EntityKey, name: &str) {
+    crate::monster::sound(world, key, CHAN_VOICE, name, ATTN_NORM);
 }
 
 /// C ref: `hover_sight`.
@@ -601,6 +580,7 @@ pub fn finish_hover(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 

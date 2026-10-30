@@ -8,11 +8,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::{fire, flash};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -109,14 +108,6 @@ const SOUND_STEPS: [&str; 4] = [
 // Moves. C ref: soldier.c `soldier_frames_*` / `soldier_move_*`, one entry
 // per model frame in C order.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static SOLDIER_FRAMES_STAND1: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, Some(soldier_idle)),
@@ -695,13 +686,6 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
 }
 
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C compares `currentmove` pointers; the tables are statics, so their
 /// addresses identify a move.
 fn is_current(mi: &MonsterInfo, mv: &MonsterMove) -> bool {
@@ -714,15 +698,6 @@ fn set_nextframe(world: &mut GameWorld, key: EntityKey, frame: i32) {
     if let Some(mi) = monsterinfo_mut(world, key) {
         mi.nextframe = frame;
     }
-}
-
-/// C `gi.sound(self, channel, gi.soundindex(name), 1, attenuation, 0)`;
-/// the server hands back the index the spawn precached.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 fn skinnum(world: &GameWorld, key: EntityKey) -> i32 {
@@ -1471,6 +1446,7 @@ pub fn finish_soldier_ss(world: &mut GameWorld, key: EntityKey, _fields: &HashMa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::monster::test_support::{check_move, player_arena, seed, sounds, think_for};
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
