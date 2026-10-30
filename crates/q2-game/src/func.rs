@@ -165,14 +165,23 @@ pub fn move_calc(world: &mut GameWorld, key: EntityKey, dest: Vec3f, endfunc: En
         if leader.is_some() && current == leader {
             move_begin(world, key);
         } else {
-            ent.game.nextthink = time + FRAMETIME;
+            ent.game.nextthink = time_plus(time, FRAMETIME_C);
             ent.think = Some(move_begin);
         }
     } else {
         mi.current_speed = 0.0;
         ent.think = Some(think_accel_move);
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
     }
+}
+
+/// C `FRAMETIME`, the double 0.1: the float expressions it appears in
+/// are evaluated in double and rounded to float once.
+const FRAMETIME_C: f64 = 0.1;
+
+/// C `level.time + seconds`, where `seconds` is a double expression.
+fn time_plus(time: f32, seconds: f64) -> f32 {
+    (f64::from(time) + seconds) as f32
 }
 
 /// Constant-speed move: whole frames at `speed`, then `move_final` covers
@@ -185,14 +194,15 @@ pub fn move_begin(world: &mut GameWorld, key: EntityKey) {
     let Some(mi) = ent.moveinfo.as_deref_mut() else {
         return;
     };
-    if mi.speed * FRAMETIME >= mi.remaining_distance {
+    if f64::from(mi.speed) * FRAMETIME_C >= f64::from(mi.remaining_distance) {
         move_final(world, key);
         return;
     }
     ent.velocity = mi.dir * mi.speed;
-    let frames = ((mi.remaining_distance / mi.speed) / FRAMETIME).floor();
-    mi.remaining_distance -= frames * mi.speed * FRAMETIME;
-    ent.game.nextthink = time + frames * FRAMETIME;
+    let frames = (f64::from(mi.remaining_distance / mi.speed) / FRAMETIME_C).floor() as f32;
+    mi.remaining_distance =
+        (f64::from(mi.remaining_distance) - f64::from(frames * mi.speed) * FRAMETIME_C) as f32;
+    ent.game.nextthink = time_plus(time, f64::from(frames) * FRAMETIME_C);
     ent.think = Some(move_final);
 }
 
@@ -209,9 +219,9 @@ pub fn move_final(world: &mut GameWorld, key: EntityKey) {
         move_done(world, key);
         return;
     }
-    ent.velocity = mi.dir * (mi.remaining_distance / FRAMETIME);
+    ent.velocity = mi.dir * ((f64::from(mi.remaining_distance) / FRAMETIME_C) as f32);
     ent.think = Some(move_done_think);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
 }
 
 /// Movement complete — clear velocity and call endfunc. C ref: `Move_Done`.
@@ -252,7 +262,7 @@ pub fn angle_move_calc(world: &mut GameWorld, key: EntityKey, endfunc: EndMoveFn
     if leader.is_some() && current == leader {
         angle_move_begin(world, key);
     } else {
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
         ent.think = Some(angle_move_begin);
     }
 }
@@ -279,13 +289,13 @@ pub fn angle_move_begin(world: &mut GameWorld, key: EntityKey) {
     };
     let destdelta = angle_move_delta(ent, mi);
     let traveltime = destdelta.length() / mi.speed;
-    if traveltime < FRAMETIME {
+    if f64::from(traveltime) < FRAMETIME_C {
         angle_move_final(world, key);
         return;
     }
-    let frames = (traveltime / FRAMETIME).floor();
-    ent.avelocity = destdelta * (1.0 / traveltime);
-    ent.game.nextthink = time + frames * FRAMETIME;
+    let frames = (f64::from(traveltime) / FRAMETIME_C).floor() as f32;
+    ent.avelocity = destdelta * ((1.0 / f64::from(traveltime)) as f32);
+    ent.game.nextthink = time_plus(time, f64::from(frames) * FRAMETIME_C);
     ent.think = Some(angle_move_final);
 }
 
@@ -303,9 +313,9 @@ pub fn angle_move_final(world: &mut GameWorld, key: EntityKey) {
         angle_move_done(world, key);
         return;
     }
-    ent.avelocity = delta * (1.0 / FRAMETIME);
+    ent.avelocity = delta * ((1.0 / FRAMETIME_C) as f32);
     ent.think = Some(angle_move_done);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
 }
 
 /// Turn complete: stop spinning and call endfunc. C ref: `AngleMove_Done`.
@@ -412,7 +422,7 @@ pub fn think_accel_move(world: &mut GameWorld, key: EntityKey) {
         return;
     }
     ent.velocity = mi.dir * (mi.current_speed * 10.0);
-    ent.game.nextthink = time + FRAMETIME;
+    ent.game.nextthink = time_plus(time, FRAMETIME_C);
     ent.think = Some(think_accel_move);
 }
 
@@ -1567,7 +1577,7 @@ pub fn func_train_find(world: &mut GameWorld, key: EntityKey) {
         ent.game.spawnflags |= TRAIN_START_ON;
     }
     if ent.game.spawnflags & TRAIN_START_ON != 0 {
-        ent.game.nextthink = time + FRAMETIME;
+        ent.game.nextthink = time_plus(time, FRAMETIME_C);
         ent.think = Some(train_next);
         ent.game.activator = Some(key);
     }
@@ -1771,9 +1781,10 @@ pub fn sp_func_plat(storage: &mut EntityStorage, key: EntityKey, fields: &HashMa
     ent.solid = Solid::Bsp;
     ent.game.movetype = MoveType::Push;
     let g = &mut ent.game;
-    g.speed = if g.speed == 0.0 { 20.0 } else { g.speed * 0.1 };
-    g.accel = if g.accel == 0.0 { 5.0 } else { g.accel * 0.1 };
-    g.decel = if g.decel == 0.0 { 5.0 } else { g.decel * 0.1 };
+    let tenth = |v: f32| (f64::from(v) * 0.1) as f32; // C `*= 0.1`, a double
+    g.speed = if g.speed == 0.0 { 20.0 } else { tenth(g.speed) };
+    g.accel = if g.accel == 0.0 { 5.0 } else { tenth(g.accel) };
+    g.decel = if g.decel == 0.0 { 5.0 } else { tenth(g.decel) };
     if g.dmg == 0 {
         g.dmg = 2;
     }
@@ -2373,7 +2384,7 @@ pub fn sp_func_timer(
     ent.use_fn = Some(func_timer_use);
     ent.think = Some(func_timer_think);
     if ent.game.random >= ent.game.wait {
-        ent.game.random = ent.game.wait - FRAMETIME;
+        ent.game.random = (f64::from(ent.game.wait) - FRAMETIME_C) as f32;
         tracing::debug!("func_timer at {:?} has random >= wait", ent.state.origin);
     }
     ent.svflags = q2_shared::constants::SVF_NOCLIENT;
@@ -3013,6 +3024,73 @@ mod tests {
         // nextthink should be set for next firing.
         let nt = world.entities.get(timer).unwrap().game.nextthink;
         assert!(nt > world.level.time);
+    }
+
+    /// A mover at level time 1 with `remaining` units left at `speed`.
+    fn moving(remaining: f32, speed: f32) -> (GameWorld, EntityKey) {
+        let mut world = test_world();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().moveinfo = Some(Box::new(MoveInfo {
+            speed,
+            remaining_distance: remaining,
+            dir: Vec3f::X,
+            ..Default::default()
+        }));
+        (world, key)
+    }
+
+    #[test]
+    fn move_begin_counts_frames_with_c_double_frametime() {
+        // C: floor((280 / 100) / 0.1) in double is 27 (2.8f is just under
+        // 2.8); the float quotient rounds to 28.
+        let (mut world, key) = moving(280.0, 100.0);
+        move_begin(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.moveinfo.as_ref().unwrap().remaining_distance, 10.0);
+        assert_eq!(ent.game.nextthink, (1.0f64 + 27.0 * 0.1) as f32);
+    }
+
+    #[test]
+    fn move_final_and_think_times_add_the_double_frametime() {
+        let remaining = 10.0f32 / 7.0; // / 0.1f rounds differently from / 0.1
+        let (mut world, key) = moving(remaining, 100.0);
+        world.level.time = 0.3;
+        move_final(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.velocity.x, (f64::from(remaining) / 0.1) as f32);
+        assert_eq!(ent.game.nextthink, (f64::from(0.3f32) + 0.1) as f32);
+    }
+
+    #[test]
+    fn plat_speeds_scale_by_the_double_tenth() {
+        // C `ent->speed *= 0.1` is a double multiply; 9 * 0.1f rounds to a
+        // different float.
+        let world = spawned(
+            r#"{ "classname" "func_plat" "model" "*2" "speed" "9" "accel" "13" "decel" "18" }"#,
+        );
+        let mi = world
+            .entities
+            .get(by_class(&world, "func_plat"))
+            .unwrap()
+            .moveinfo
+            .clone()
+            .unwrap();
+        assert_eq!(
+            (mi.speed, mi.accel, mi.decel),
+            (
+                (9.0f64 * 0.1) as f32,
+                (13.0f64 * 0.1) as f32,
+                (18.0f64 * 0.1) as f32
+            )
+        );
+    }
+
+    #[test]
+    fn func_timer_random_over_wait_drops_to_wait_minus_the_double_frametime() {
+        let world = spawned(r#"{ "classname" "func_timer" "wait" "0.1" "random" "5" }"#);
+        let timer = world.entities.get(by_class(&world, "func_timer")).unwrap();
+        assert_eq!(timer.game.random, (f64::from(0.1f32) - 0.1) as f32); // 1.49e-9, not 0
     }
 
     #[test]
