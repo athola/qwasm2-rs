@@ -588,6 +588,12 @@ impl GameWorld {
         let ground_linkcount = ground
             .and_then(|g| self.entities.get(g))
             .map(|g| g.linkcount);
+        let had_ground = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.game.ground_entity.is_some());
+        let jumped =
+            had_ground && pm.ground_entity.is_none() && pm.cmd.upmove >= 10 && pm.waterlevel == 0;
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
@@ -618,6 +624,17 @@ impl GameWorld {
             } else {
                 client.ps.viewangles = pm.viewangles;
             }
+        }
+
+        if jumped {
+            let jump = self.gi.sound_index("*jump1.wav");
+            self.gi
+                .sound(Some(number), CHAN_VOICE, jump, 1.0, ATTN_NORM, 0.0);
+            let origin = self
+                .entities
+                .get(key)
+                .map_or(Vec3f::ZERO, |e| e.state.origin);
+            self.player_noise(key, origin, crate::player::weapon::PlayerNoise::SelfNoise);
         }
 
         self.link_entity(key);
@@ -1201,6 +1218,36 @@ mod tests {
             ent.state.origin.z,
             f32::from(client.ps.pmove.origin[2]) * 0.125
         );
+    }
+
+    #[test]
+    fn leaving_the_ground_with_upmove_plays_the_jump_sound_and_makes_noise() {
+        // C ClientThink: had ground, pmove lost it, upmove >= 10, dry.
+        for (upmove, jumps) in [(200, true), (9, false)] {
+            let (mut world, gi) = crate::world::test_world_recording();
+            let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.begin_client(key);
+            let floor = world.spawn().unwrap();
+            world.entities.get_mut(key).unwrap().game.ground_entity = Some(floor);
+            world.level.framenum = 10;
+            let cmd = UserCmd {
+                msec: 100,
+                upmove,
+                ..Default::default()
+            };
+
+            world.think_client(key, &cmd);
+
+            let jump = gi.sounds.borrow().iter().position(|s| s == "*jump1.wav");
+            let voiced = jump.is_some_and(|i| {
+                gi.sound_calls
+                    .borrow()
+                    .iter()
+                    .any(|c| c.0 == Some(1) && c.1 == CHAN_VOICE && c.2 == i as i32 + 1)
+            });
+            assert_eq!(voiced, jumps, "upmove {upmove}");
+            assert_eq!(world.level.sound_entity.is_some(), jumps, "upmove {upmove}");
+        }
     }
 
     #[test]
