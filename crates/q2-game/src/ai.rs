@@ -1674,11 +1674,10 @@ pub fn monster_triggered_start(world: &mut GameWorld, key: EntityKey) {
 /// whether the monster stays. The first think is the one the spawn
 /// function chose with [`walkmonster_start`], [`flymonster_start`] or
 /// [`swimmonster_start`], `walkmonster_start_go` if none.
-/// C ref: `monster_start` (g_monster.c). Kept from before: movetype STEP,
-/// SOLID_BBOX and a mass of 200 by default (C's `SP_*` set these), and
-/// `pausetime` set already so a monster that thinks before
-/// `monster_start_go` stands. Not here: the random start frame (see the
-/// module docs), and `st.item`, which `call_spawn` resolves.
+/// The movetype, solid, mass and `pausetime` are the spawn function's,
+/// as in C. C ref: `monster_start` (g_monster.c). Not here: the random
+/// start frame (see the module docs), and `st.item`, which `call_spawn`
+/// resolves.
 pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     if world.game.deathmatch {
         world.free_entity(key);
@@ -1723,11 +1722,6 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     ent.svflags &= !SvFlags::DEADMONSTER.bits();
     ent.state.old_origin = ent.state.origin;
 
-    ent.game.movetype = MoveType::Step;
-    ent.solid = Solid::Bbox;
-    if ent.game.mass == 0 {
-        ent.game.mass = 200;
-    }
     if ent.think.is_none() {
         ent.think = Some(walkmonster_start_go);
     }
@@ -1736,7 +1730,6 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
         if mi.checkattack.is_none() {
             mi.checkattack = Some(m_check_attack);
         }
-        mi.pausetime = PAUSE_FOREVER;
     }
     true
 }
@@ -2337,11 +2330,30 @@ mod tests {
         monster_start(&mut world, key);
 
         let ent = world.entities.get(key).unwrap();
-        assert_eq!(ent.game.movetype, MoveType::Step);
         assert_eq!(ent.game.takedamage, TakeDamage::Aim); // C DAMAGE_AIM
         assert!(ent.svflags & SvFlags::MONSTER.bits() != 0);
-        assert_eq!(ent.game.mass, 200);
         assert!(ent.think.is_some());
+    }
+
+    #[test]
+    fn monster_start_keeps_the_movetype_solid_mass_and_pause_its_spawn_chose() {
+        // C monster_start sets none of these: each SP_* does, and
+        // SP_turret_driver's MOVETYPE_PUSH must not become STEP.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.monsterinfo = Some(Box::default());
+            ent.game.movetype = MoveType::Push;
+            ent.solid = Solid::Not;
+        }
+
+        monster_start(&mut world, key);
+
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!((ent.game.movetype, ent.solid), (MoveType::Push, Solid::Not));
+        assert_eq!(ent.game.mass, 0);
+        assert_eq!(ent.monsterinfo.as_ref().unwrap().pausetime, 0.0);
     }
 
     #[test]

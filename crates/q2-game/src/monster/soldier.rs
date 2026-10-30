@@ -2073,9 +2073,11 @@ mod tests {
         let key = world.spawn().unwrap();
         sp_monster_soldier(&mut world.entities, key, &HashMap::new());
 
-        // Initialize.
+        // Initialize. monster_start_go (skipped here) would stand the
+        // soldier for good.
         ai::monster_start(&mut world, key);
         assert!(world.entities.get(key).unwrap().think.is_some());
+        mi_mut(&mut world, key).pausetime = 100_000_000.0;
 
         // Run one AI frame (think → monster_move_frame → advance animation).
         // The spawn frame 0 is outside stand1, so the first tick snaps to it.
