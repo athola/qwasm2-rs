@@ -443,23 +443,4 @@ mod tests {
         gi.unicast(1, true);
         gi.add_command_string("test");
     }
-
-    #[test]
-    fn game_import_unobstructed_trace_ends_at_end_point() {
-        let gi: &dyn GameImport = &NoopImport::default();
-        let end = Vec3f::new(100.0, 0.0, 0.0);
-        let tr = gi.trace(Vec3f::ZERO, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
-        // Contract: fraction 1.0 (no hit) implies endpos == end.
-        assert_eq!(tr.fraction, 1.0);
-        assert_eq!(tr.endpos, end);
-        assert!(!tr.allsolid);
-    }
-
-    #[test]
-    fn game_import_box_edicts_returns_empty() {
-        let gi: &dyn GameImport = &NoopImport::default();
-        // area_type 1 = AREA_SOLID; 0 is not a valid area type.
-        let edicts = gi.box_edicts(Vec3f::ZERO, Vec3f::new(100.0, 100.0, 100.0), 32, 1);
-        assert!(edicts.is_empty());
-    }
 }

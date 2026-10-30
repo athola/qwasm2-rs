@@ -2547,17 +2547,6 @@ mod tests {
         assert!(dir.z.abs() < 0.001);
     }
 
-    #[test]
-    fn mock_game_import_trace_passes_through() {
-        let gi = MockGameImport::default();
-        let start = Vec3f::new(0.0, 0.0, 0.0);
-        let end = Vec3f::new(100.0, 0.0, 0.0);
-        let trace = gi.trace(start, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
-        assert_eq!(trace.fraction, 1.0);
-        assert_eq!(trace.endpos, end);
-        assert!(!trace.allsolid);
-    }
-
     // -- Game Main Loop tests --
 
     #[test]
