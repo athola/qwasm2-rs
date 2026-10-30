@@ -358,9 +358,10 @@ impl CollisionMap {
             self.planes.push(CPlane {
                 normal: p.normal,
                 dist: p.dist,
-                // C keeps the on-disk int and takes the general path for
-                // any type >= 3; map out-of-range values to one of those.
-                plane_type: u8::try_from(p.plane_type).unwrap_or(u8::MAX),
+                // C ref: CMod_LoadPlanes stores the on-disk int in a byte
+                // (`out->type = LittleLong(in->type)`), keeping the low 8
+                // bits: 256 becomes the axial X type 0.
+                plane_type: p.plane_type as u8,
                 sign_bits: sign_bits_for_plane(p.normal),
             });
         }
@@ -3813,10 +3814,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn out_of_range_plane_type_takes_the_general_path_like_c() {
-        // C keeps the int and tests `type < 3`; 256 must not truncate to
-        // the axial X case.
-        for plane_type in [256, -1, 6] {
+    fn plane_type_wrapping_past_axial_takes_the_general_path_like_c() {
+        // C stores the on-disk int in a byte: -1 becomes 255, and both 255
+        // and 6 fail `type < 3`.
+        for plane_type in [-1, 6] {
             let mut cm = load(&diagonal_bsp(plane_type));
             assert_eq!(
                 cm.point_contents(Vec3f::new(-30.0, 10.0, 0.0), 0),
@@ -3848,6 +3849,26 @@ pub(crate) mod tests {
                 t.endpos
             );
         }
+    }
+
+    #[test]
+    fn plane_type_truncates_to_a_byte_like_c() {
+        // C ref: CMod_LoadPlanes `out->type = LittleLong(in->type)` into a
+        // byte, so 256 becomes 0 and takes the axial X path.
+        let axial = load(&diagonal_bsp(0));
+        let wrapped = load(&diagonal_bsp(256));
+        assert_eq!(wrapped.planes[0].plane_type, 0);
+        let probe = Vec3f::new(-10.0, 30.0, 0.0);
+        assert_eq!(wrapped.point_contents(probe, 0), CONTENTS_SOLID);
+        assert_eq!(
+            wrapped.point_contents(probe, 0),
+            axial.point_contents(probe, 0)
+        );
+        let (mins, maxs) = (Vec3f::new(-12.0, 28.0, -1.0), Vec3f::new(-8.0, 32.0, 1.0));
+        assert_eq!(
+            wrapped.box_leafnums(mins, maxs, 8),
+            axial.box_leafnums(mins, maxs, 8)
+        );
     }
 
     #[test]
