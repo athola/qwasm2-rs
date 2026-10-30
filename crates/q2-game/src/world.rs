@@ -271,6 +271,10 @@ impl GameWorld {
         // that don't quite touch.
         ent.absmin -= Vec3f::ONE;
         ent.absmax += Vec3f::ONE;
+        // If first time, make sure old_origin is valid.
+        if ent.linkcount == 0 {
+            ent.state.old_origin = ent.state.origin;
+        }
         ent.linkcount += 1;
 
         let owner = ent.owner;
@@ -1678,6 +1682,26 @@ mod tests {
         world.link_entity(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!((ent.areanum, ent.areanum2), (1, 0));
+    }
+
+    #[test]
+    fn first_link_of_an_entity_starts_its_lerp_at_its_origin() {
+        // C SV_LinkEdict copies origin to old_origin while linkcount is 0,
+        // so a rocket spawned into a reused number does not lerp from (0 0 0).
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        world.link_entity(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.old_origin,
+            Vec3f::new(100.0, 0.0, 0.0)
+        );
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(200.0, 0.0, 0.0);
+        world.link_entity(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.old_origin,
+            Vec3f::new(100.0, 0.0, 0.0)
+        );
     }
 
     #[test]
