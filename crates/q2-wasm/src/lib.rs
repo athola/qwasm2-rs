@@ -1074,6 +1074,12 @@ fn cl_gun_from_query(search: &str) -> &str {
     query_value(search, "cl_gun").unwrap_or("2")
 }
 
+/// `?cl_fxextra=1`: effects C does not draw (ADR-003), off by default.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_extras_from_query(search: &str) -> bool {
+    query_value(search, "cl_fxextra") == Some("1")
+}
+
 /// C cvar `game` (the game directory) from `?game=`; empty is baseq2.
 #[cfg(any(target_arch = "wasm32", test))]
 fn game_from_query(search: &str) -> &str {
@@ -1398,6 +1404,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
     engine.set_hand(hand);
     engine.game = game_from_query(&search).to_string();
+    engine.fx.extras = fx_extras_from_query(&search);
     let cl_gun = cl_gun_from_query(&search);
     engine.cl_gun = q2_common::cvar::parse_value(cl_gun);
     engine.local.set_cvar("cl_gun", cl_gun);
@@ -1858,6 +1865,10 @@ mod tests {
         // C cl_gun: 0 no gun, 1 none in a wide view, 2 (default) always.
         assert_eq!(cl_gun_from_query("?cl_gun=0"), "0");
         assert_eq!(cl_gun_from_query(""), "2");
+        // Effects beyond C are opt-in.
+        assert!(fx_extras_from_query("?cl_fxextra=1"));
+        assert!(!fx_extras_from_query("?cl_fxextra=0"));
+        assert!(!fx_extras_from_query(""));
         assert_eq!(game_from_query(""), "");
     }
 

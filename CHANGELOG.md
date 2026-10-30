@@ -145,6 +145,10 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- Opt-in explosion smoke (`?cl_fxextra=1`, off by default): rocket,
+  grenade and other dry explosions leave a rising column of grey smoke,
+  drawn with C's otherwise unused `CL_SmokeTrail`; ADR-005 now allows
+  additions like this only behind settings that default to C
 - The page reads C's `cl_gun` (`?cl_gun=`: 0 no gun, 1 none in a wide
   view, 2 always, the default), which the game reads too (`gi.cvar`) to
   show the weapon icon only when the gun is not drawn

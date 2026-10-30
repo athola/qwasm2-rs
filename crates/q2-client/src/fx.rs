@@ -314,6 +314,9 @@ pub struct ClientFx {
     dlights: Vec<crate::effects::ClientDLight>,
     /// C `cl_footsteps` (default 1).
     pub footsteps: bool,
+    /// Effects C does not draw, off by default (`?cl_fxextra=1`): dry
+    /// explosions leave rising smoke (`explosion_smoke`).
+    pub extras: bool,
 }
 
 impl Default for ClientFx {
@@ -327,6 +330,7 @@ impl Default for ClientFx {
             sustains: [Sustain::default(); MAX_SUSTAINS],
             dlights: Vec::new(),
             footsteps: true,
+            extras: false,
         }
     }
 }
@@ -443,6 +447,22 @@ impl ClientFx {
             FlashParticles::Smoke => {}
         }
         self.smoke_and_flash(origin, time, servertime);
+    }
+
+    /// Not in C (opt-in `extras`): a 64-unit column of grey smoke rising
+    /// from a dry explosion, drawn by C's otherwise unused
+    /// `CL_SmokeTrail`. ADR-003 records why it is opt-in.
+    fn explosion_smoke(&mut self, pos: Vec3f, time: i32, randk: &mut impl FnMut() -> u32) {
+        if !self.extras {
+            return;
+        }
+        let style = crate::newfx::SmokeTrail {
+            color_start: 4,
+            color_run: 8,
+            spacing: 4,
+        };
+        let top = pos + Vec3f::new(0.0, 0.0, 64.0);
+        self.particles.smoke_trail(pos, top, style, time, randk);
     }
 
     /// A model explosion (C's `ex_poly` cases): `light` in orange unless
@@ -649,6 +669,9 @@ impl ClientFx {
                 ex.baseframe = 30;
                 ex.ent.angles.y = (randk() % 360) as f32;
                 self.particles.explosion_particles(pos, time, randk);
+                if kind != TE_GRENADE_EXPLOSION_WATER {
+                    self.explosion_smoke(pos, time, randk);
+                }
                 let name = if kind == TE_GRENADE_EXPLOSION_WATER {
                     "weapons/xpld_wat.wav"
                 } else {
@@ -680,6 +703,9 @@ impl ClientFx {
                     TE_EXPLOSION1_BIG | TE_EXPLOSION1_NP | TE_PLAIN_EXPLOSION
                 ) {
                     self.particles.explosion_particles(pos, time, randk);
+                }
+                if matches!(kind, TE_EXPLOSION1 | TE_ROCKET_EXPLOSION) {
+                    self.explosion_smoke(pos, time, randk);
                 }
                 let name = if kind == TE_ROCKET_EXPLOSION_WATER {
                     "weapons/xpld_wat.wav"
@@ -1834,6 +1860,46 @@ mod tests {
         );
         let frame = fx.frame(2050, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
         assert_eq!(models(&frame), [Some(MOD_SMOKE)]);
+    }
+
+    #[test]
+    fn with_extras_dry_explosions_leave_a_rising_smoke_column() {
+        for kind in [
+            TE_ROCKET_EXPLOSION,
+            TE_GRENADE_EXPLOSION,
+            TE_EXPLOSION1,
+            TE_EXPLOSION2,
+        ] {
+            let plain = {
+                let mut fx = ClientFx::default();
+                fx.temp_entity(&pos_only(kind, P), 1000, 1000, &mut rng(&[0]));
+                fx.particles.len()
+            };
+            let mut fx = ClientFx {
+                extras: true,
+                ..ClientFx::default()
+            };
+            fx.temp_entity(&pos_only(kind, P), 1000, 1000, &mut rng(&[0]));
+            assert_eq!(fx.particles.len(), plain + 16, "{kind}");
+            let smoke = &fx.particles.active[plain..];
+            for p in smoke {
+                assert!((4..12).contains(&p.color), "grey: {}", p.color);
+                assert!(p.vel.z > 0.0, "rises");
+                assert!(p.org.z >= P.z - 3.0 && p.org.z <= P.z + 67.0);
+            }
+        }
+        // Under water there is no smoke.
+        for kind in [TE_ROCKET_EXPLOSION_WATER, TE_GRENADE_EXPLOSION_WATER] {
+            let count = |extras| {
+                let mut fx = ClientFx {
+                    extras,
+                    ..ClientFx::default()
+                };
+                fx.temp_entity(&pos_only(kind, P), 1000, 1000, &mut rng(&[0]));
+                fx.particles.len()
+            };
+            assert_eq!(count(true), count(false), "{kind}");
+        }
     }
 
     #[test]

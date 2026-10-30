@@ -162,15 +162,18 @@ effects, and the deathmatch rules end matches through C's intermission.
   `menu_loadgame`, which nothing handles), the random pick in an item
   team's respawn, the inventory layout, the `fov`/`spectator` userinfo,
   and `SP_FixCoopSpots`.
-- **Effects left out on purpose:** `CL_QuadTrail`, `CL_SmokeTrail` and
+- **Effects left out on purpose:** `CL_QuadTrail` and
   `CL_Tracker_Explode` have no caller in yquake2 or id's 3.21 release,
-  so drawing them would change what valid input looks like, which
-  ADR-005 does not allow. id's `TE_TRACKER_EXPLOSION` has the
-  `CL_Tracker_Explode` call commented out in favour of the colour flash
-  and `CL_ColorExplosionParticles` drawn here, and `CL_QuadTrail` is
-  `CL_FlagTrail` with the blue flag's colour 115, which quad carriers
-  never get (they get the blue shell). Adding any of them would take an
-  opt-in effects setting and an ADR-005 amendment first.
+  so drawing them would change what valid input looks like. id's
+  `TE_TRACKER_EXPLOSION` has the `CL_Tracker_Explode` call commented out
+  in favour of the colour flash and `CL_ColorExplosionParticles` drawn
+  here, and `CL_QuadTrail` is `CL_FlagTrail` with the blue flag's colour
+  115, which quad carriers never get (they get the blue shell).
+- **Opt-in additions (ADR-005), off by default:** `?cl_fxextra=1` gives
+  C's otherwise unused `CL_SmokeTrail` a caller: rocket, grenade and
+  `TE_EXPLOSION1`/`TE_EXPLOSION2` blasts out of water leave a 64-unit
+  column of grey smoke (palette 4..11, every 4 units) rising from the
+  blast. C has no such effect; the trigger is this port's invention.
 
 ## Consequences
 

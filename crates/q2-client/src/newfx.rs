@@ -1,8 +1,9 @@
 //! The mission packs' particle effects (rogue, xatrix, CTF): their trails,
 //! steam and smoke, the heat beam's rings and the tracker's dark shells.
 //! C ref: the cl_newfx.c part of client/cl_effects.c, plus `CL_FlagTrail`,
-//! `CL_IonripperTrail` and `CL_TrapParticles`. C's `CL_QuadTrail`,
-//! `CL_SmokeTrail` and `CL_Tracker_Explode`, which nothing calls (id
+//! `CL_IonripperTrail`, `CL_TrapParticles` and `CL_SmokeTrail`, which
+//! nothing in C calls but the opt-in explosion smoke does. C's
+//! `CL_QuadTrail` and `CL_Tracker_Explode`, which nothing calls (id
 //! commented out the tracker one), are left out; ADR-003 says why.
 //!
 //! Where C leaves a particle field unset it keeps whatever the particle
@@ -68,7 +69,52 @@ fn random_dir(randk: &mut impl FnMut() -> u32) -> Vec3f {
     dir
 }
 
+/// The look of a smoke trail: colours `color_start + randk % color_run`,
+/// one particle every `spacing` units. C ref: `CL_SmokeTrail`'s
+/// `colorStart`, `colorRun` and `spacing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmokeTrail {
+    pub color_start: i32,
+    pub color_run: i32,
+    pub spacing: i32,
+}
+
 impl Particles {
+    /// Rising smoke along a line. C leaves the x and y velocity unset (0
+    /// here); a zero colour run divides by zero in C and makes nothing
+    /// here. C ref: `CL_SmokeTrail`.
+    pub fn smoke_trail(
+        &mut self,
+        start: Vec3f,
+        end: Vec3f,
+        style: SmokeTrail,
+        time: i32,
+        randk: &mut impl FnMut() -> u32,
+    ) {
+        if style.color_run == 0 {
+            return;
+        }
+        let spacing = style.spacing as f32;
+        let mut vec = end - start;
+        let mut len = vector_normalize(&mut vec);
+        let (mut mv, vec) = (start, vec * spacing);
+        while len > 0.0 {
+            len -= spacing;
+            let Some(p) = self.alloc() else { return };
+            p.accel = Vec3f::ZERO;
+            p.time = time as f32;
+            p.alpha = 1.0;
+            p.alphavel = -1.0 / (1.0 + frandk(randk) * 0.5);
+            // C's randk is never negative.
+            p.color = style.color_start + (randk() % style.color_run.unsigned_abs()) as i32;
+            for j in 0..3 {
+                p.org[j] = mv[j] + crandk(randk) * 3.0;
+            }
+            p.vel = Vec3f::new(0.0, 0.0, 20.0 + crandk(randk) * 5.0);
+            mv += vec;
+        }
+    }
+
     /// A CTF flag carrier's trail in `color` (242 red, 115 blue), wide and
     /// slow to fade. C ref: `CL_FlagTrail`.
     pub fn flag_trail(
@@ -693,6 +739,33 @@ mod tests {
                 assert!((-128.0..128.0).contains(&p.vel[j]), "{:?}", p.vel);
             }
         }
+    }
+
+    #[test]
+    fn a_smoke_trail_rises_in_its_colour_run() {
+        let mut ps = Particles::default();
+        let style = SmokeTrail {
+            color_start: 0x10,
+            color_run: 4,
+            spacing: 10,
+        };
+        ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[6]));
+        assert_eq!(ps.len(), 10);
+        let p = ps.active[0];
+        assert_eq!(p.color, 0x12, "0x10 + 6 % 4");
+        assert_eq!((p.vel.x, p.vel.y), (0.0, 0.0));
+        // C randk is never negative: a high bit stays in the run.
+        ps.clear();
+        ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[u32::MAX]));
+        assert!(ps.active.iter().all(|p| (0x10..0x14).contains(&p.color)));
+        // C divides by zero for an empty colour run.
+        ps.clear();
+        let style = SmokeTrail {
+            color_run: 0,
+            ..style
+        };
+        ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[6]));
+        assert!(ps.is_empty());
     }
 
     #[test]
