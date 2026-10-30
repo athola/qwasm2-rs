@@ -1585,7 +1585,14 @@ impl GameWorld {
         }
         self.gi.dprintf(&format!("{inhibit} entities inhibited.\n"));
         self.find_teams();
-        self.trail.init();
+        // C PlayerTrail_Init returns in deathmatch, leaving its static
+        // trail as the last map left it (pointing at edicts the new map
+        // has cleared); here a deathmatch map starts with no trail.
+        if self.game.deathmatch {
+            self.trail = Default::default();
+        } else {
+            self.trail.init();
+        }
 
         // Entities a spawn function created itself (a plat's trigger); C
         // links them inside the SP_* function.
