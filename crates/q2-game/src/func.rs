@@ -559,7 +559,6 @@ pub fn plat_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         return;
     };
     let dmg = ent.game.dmg;
-    let state = ent.moveinfo.as_ref().map(|mi| mi.state);
     let origin = world
         .entities
         .get(other)
@@ -576,6 +575,12 @@ pub fn plat_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         DamageFlags::empty(),
         MeansOfDeath::Crush,
     );
+    // After the damage, as C: a kill can fire a deathtarget that moves us.
+    let state = world
+        .entities
+        .get(self_key)
+        .and_then(|e| e.moveinfo.as_ref())
+        .map(|mi| mi.state);
     match state {
         Some(STATE_UP) => plat_go_down(world, self_key),
         Some(STATE_DOWN) => plat_go_up(world, self_key),
@@ -670,10 +675,6 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         ent.game.spawnflags & DOOR_CRUSHER != 0,
         ent.game.teammaster.unwrap_or(self_key),
     );
-    let (wait, state) = ent
-        .moveinfo
-        .as_ref()
-        .map_or((0.0, STATE_BOTTOM), |mi| (mi.wait, mi.state));
     let origin = world
         .entities
         .get(other)
@@ -691,7 +692,13 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         MeansOfDeath::Crush,
     );
     // A door with a negative wait would never come back if blocked, so
-    // let it squash the object to death real fast.
+    // let it squash the object to death real fast. Read after the damage,
+    // as C does: a kill can fire a deathtarget that moves this door.
+    let (wait, state) = world
+        .entities
+        .get(self_key)
+        .and_then(|e| e.moveinfo.as_ref())
+        .map_or((0.0, STATE_BOTTOM), |mi| (mi.wait, mi.state));
     if crusher || wait < 0.0 {
         return;
     }
@@ -3478,6 +3485,66 @@ mod tests {
         let item = world.spawn().unwrap();
         door_blocked(&mut world, door, item);
         assert!(!world.entities.is_live(item));
+    }
+
+    /// Dying turns the func_plat round, as a deathtarget re-using it could.
+    fn die_reversing_the_plat(
+        world: &mut GameWorld,
+        _key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        let plat = by_class(world, "func_plat");
+        moveinfo_mut(world, plat).unwrap().state = STATE_DOWN;
+    }
+
+    #[test]
+    fn blocked_plat_reverses_on_its_state_after_the_crush_damage() {
+        // C plat_blocked reads moveinfo.state after T_Damage.
+        let mut world = spawned(r#"{ "classname" "func_plat" "model" "*2" }"#);
+        let plat = by_class(&world, "func_plat");
+        moveinfo_mut(&mut world, plat).unwrap().state = STATE_UP;
+        let victim = player(&mut world);
+        {
+            let v = world.entities.get_mut(victim).unwrap();
+            v.game.takedamage = TakeDamage::Aim;
+            v.game.health = 1;
+            v.die = Some(die_reversing_the_plat);
+        }
+        plat_blocked(&mut world, plat, victim);
+        assert_eq!(mover(&world, plat).1, STATE_UP, "plat_go_up from DOWN");
+    }
+
+    /// Dying sends the func_door up, as a deathtarget re-using it could.
+    fn die_opening_the_door(
+        world: &mut GameWorld,
+        _key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        let door = by_class(world, "func_door");
+        moveinfo_mut(world, door).unwrap().state = STATE_UP;
+    }
+
+    #[test]
+    fn blocked_door_reverses_on_its_state_after_the_crush_damage() {
+        // C door_blocked reads moveinfo.state after T_Damage.
+        let mut world = spawned(r#"{ "classname" "func_door" "model" "*1" "angle" "-1" }"#);
+        let door = by_class(&world, "func_door");
+        moveinfo_mut(&mut world, door).unwrap().state = STATE_DOWN;
+        let victim = player(&mut world);
+        {
+            let v = world.entities.get_mut(victim).unwrap();
+            v.game.takedamage = TakeDamage::Aim;
+            v.game.health = 1;
+            v.die = Some(die_opening_the_door);
+        }
+        door_blocked(&mut world, door, victim);
+        assert_eq!(mover(&world, door).1, STATE_DOWN, "door_go_down from UP");
     }
 
     // -- func_door_rotating --
