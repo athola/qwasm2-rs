@@ -68,6 +68,18 @@ test.describe('Qwasm2 WASM Module', () => {
     );
     expect(unexpected).toEqual([]);
   });
+
+  test('CP-0: A refused clipboard write shows Copy failed', async ({ page }) => {
+    const rejections: string[] = [];
+    page.on('pageerror', err => rejections.push(err.message));
+    await loadUntilSettled(page);
+    await page.evaluate(() => {
+      navigator.clipboard.writeText = () => Promise.reject(new DOMException('denied', 'NotAllowedError'));
+    });
+    await page.evaluate(() => (window as unknown as { copyLog: () => void }).copyLog());
+    await expect(page.locator('#status-toolbar button').first()).toHaveText('Copy failed');
+    expect(rejections).toEqual([]);
+  });
 });
 
 test.describe('Qwasm2 with the demo pak', () => {
