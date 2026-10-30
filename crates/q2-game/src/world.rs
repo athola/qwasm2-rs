@@ -1378,7 +1378,13 @@ impl GameWorld {
         let Some(name) = fields.get("item") else {
             return;
         };
-        match self.find_item(name) {
+        // C FindItemByClassname compares with Q_stricmp, where
+        // ED_CallSpawn's item lookup (find_item) uses strcmp.
+        let found = self
+            .items
+            .iter()
+            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(name));
+        match found {
             Some(item) => {
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.item = Some(item);
@@ -2282,6 +2288,22 @@ mod tests {
                 "frame {frame}"
             );
         }
+    }
+
+    #[test]
+    fn monster_item_key_is_matched_ignoring_case() {
+        // C monster_start uses FindItemByClassname, which is Q_stricmp.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "monster_soldier" "item" "Ammo_Shells" }"#,
+            "",
+        );
+        let soldier = world.find_by_classname(None, "monster_soldier").unwrap();
+        let item = world.entities.get(soldier).unwrap().game.item;
+        assert_eq!(item, world.find_item("ammo_shells"));
+        assert!(item.is_some());
     }
 
     #[test]
