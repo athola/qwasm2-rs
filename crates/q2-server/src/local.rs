@@ -165,9 +165,15 @@ impl LocalGame {
     ///
     /// A picture level (`.pcx`) needs no `bsp`: the server shows it with no
     /// map and no player (`Server::pic`) until the next map change, and the
-    /// game keeps the player's persistent data meanwhile. Cinematic and
-    /// demo levels cannot be played back and are refused with
-    /// `Q2Error::Drop`, leaving the current map running.
+    /// game keeps the player's persistent data meanwhile.
+    ///
+    /// Cinematic and demo levels cannot be played back. One that names a
+    /// next server (`intro.cin+base1`) goes straight to it: C plays the
+    /// movie and then `SV_Nextserver` runs `gamemap "<next>"`, so the next
+    /// level is handed out by `take_map_change` and the current map runs
+    /// until the caller follows it. One without is refused with
+    /// `Q2Error::Drop`, leaving the current map running where C would end
+    /// the server (`killserver`) after the movie.
     pub fn change_map(&mut self, level: &MapRequest, bsp: &[u8]) -> Q2Result<()> {
         match level.kind {
             LevelKind::Game => self.sv.map(
@@ -186,6 +192,10 @@ impl LocalGame {
                 self.game.as_mut(),
             )?,
             LevelKind::Cinematic | LevelKind::Demo => {
+                if let Some(next) = &level.next_server {
+                    *self.next_map.borrow_mut() = Some(next.clone());
+                    return Ok(());
+                }
                 return Err(Q2Error::Drop(format!(
                     "{}: cinematic and demo playback is not supported",
                     level.map
