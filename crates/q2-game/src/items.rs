@@ -155,6 +155,8 @@ pub struct ItemDef {
     pub pickup_sound: &'static str,
     /// World model path.
     pub world_model: &'static str,
+    /// Entity effects of the item in the world (C `world_model_flags`).
+    pub world_model_flags: u32,
     /// HUD icon name.
     pub icon: &'static str,
     /// Display name for pickup messages.
@@ -228,6 +230,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
         classname: "",
         pickup_sound: "",
         world_model: "",
+        world_model_flags: 0,
         icon: "",
         pickup_name: "",
         quantity: 0,
@@ -248,6 +251,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_armor_body",
             pickup_sound: "misc/ar1_pkup.wav",
             world_model: "models/items/armor/body/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_bodyarmor",
             pickup_name: "Body Armor",
             quantity: 0,
@@ -264,6 +268,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_armor_combat",
             pickup_sound: "misc/ar1_pkup.wav",
             world_model: "models/items/armor/combat/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_combatarmor",
             pickup_name: "Combat Armor",
             quantity: 0,
@@ -280,6 +285,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_armor_jacket",
             pickup_sound: "misc/ar1_pkup.wav",
             world_model: "models/items/armor/jacket/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_jacketarmor",
             pickup_name: "Jacket Armor",
             quantity: 0,
@@ -296,6 +302,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_armor_shard",
             pickup_sound: "misc/ar2_pkup.wav",
             world_model: "models/items/armor/shard/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_jacketarmor",
             pickup_name: "Armor Shard",
             quantity: 2,
@@ -312,6 +319,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_power_screen",
             pickup_sound: "misc/ar3_pkup.wav",
             world_model: "models/items/armor/screen/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_powerscreen",
             pickup_name: "Power Screen",
             quantity: 60,
@@ -328,6 +336,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_power_shield",
             pickup_sound: "misc/ar3_pkup.wav",
             world_model: "models/items/armor/shield/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_powershield",
             pickup_name: "Power Shield",
             quantity: 60,
@@ -344,6 +353,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_blaster",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "",
+            world_model_flags: 0,
             icon: "w_blaster",
             pickup_name: "Blaster",
             quantity: 0,
@@ -360,6 +370,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_shotgun",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_shotg/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_shotgun",
             pickup_name: "Shotgun",
             quantity: 1,
@@ -376,6 +387,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_supershotgun",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_shotg2/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_sshotgun",
             pickup_name: "Super Shotgun",
             quantity: 2,
@@ -392,6 +404,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_machinegun",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_machn/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_machinegun",
             pickup_name: "Machinegun",
             quantity: 1,
@@ -408,6 +421,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_chaingun",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_chain/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_chaingun",
             pickup_name: "Chaingun",
             quantity: 1,
@@ -424,6 +438,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_grenades",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/grenades/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_grenades",
             pickup_name: "Grenades",
             quantity: 5,
@@ -440,6 +455,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_grenadelauncher",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_launch/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_glauncher",
             pickup_name: "Grenade Launcher",
             quantity: 1,
@@ -456,6 +472,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_rocketlauncher",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_rocket/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_rlauncher",
             pickup_name: "Rocket Launcher",
             quantity: 1,
@@ -472,6 +489,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_hyperblaster",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_hyperb/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_hyperblaster",
             pickup_name: "HyperBlaster",
             quantity: 1,
@@ -488,6 +506,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_railgun",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_rail/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_railgun",
             pickup_name: "Railgun",
             quantity: 1,
@@ -504,6 +523,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "weapon_bfg",
             pickup_sound: "misc/w_pkup.wav",
             world_model: "models/weapons/g_bfg/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "w_bfg",
             pickup_name: "BFG10K",
             quantity: 50,
@@ -520,6 +540,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_shells",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/shells/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_shells",
             pickup_name: "Shells",
             quantity: 10,
@@ -536,6 +557,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_bullets",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/bullets/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_bullets",
             pickup_name: "Bullets",
             quantity: 50,
@@ -552,6 +574,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_cells",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/cells/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_cells",
             pickup_name: "Cells",
             quantity: 50,
@@ -568,6 +591,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_rockets",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/rockets/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_rockets",
             pickup_name: "Rockets",
             quantity: 5,
@@ -584,6 +608,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "ammo_slugs",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/slugs/medium/tris.md2",
+            world_model_flags: 0,
             icon: "a_slugs",
             pickup_name: "Slugs",
             quantity: 10,
@@ -600,6 +625,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_quad",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/quaddama/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_quad",
             pickup_name: "Quad Damage",
             quantity: 60,
@@ -616,6 +642,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_invulnerability",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/invulner/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_invulnerability",
             pickup_name: "Invulnerability",
             quantity: 300,
@@ -632,6 +659,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_silencer",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/silencer/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_silencer",
             pickup_name: "Silencer",
             quantity: 60,
@@ -648,6 +676,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_breather",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/breather/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_rebreather",
             pickup_name: "Rebreather",
             quantity: 60,
@@ -664,6 +693,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_enviro",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/enviro/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_envirosuit",
             pickup_name: "Environment Suit",
             quantity: 60,
@@ -680,6 +710,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_ancient_head",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/c_head/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_fixme",
             pickup_name: "Ancient Head",
             quantity: 60,
@@ -696,6 +727,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_adrenaline",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/adrenal/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_adrenaline",
             pickup_name: "Adrenaline",
             quantity: 60,
@@ -712,6 +744,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_bandolier",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/band/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "p_bandolier",
             pickup_name: "Bandolier",
             quantity: 60,
@@ -728,6 +761,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_pack",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/pack/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_pack",
             pickup_name: "Ammo Pack",
             quantity: 180,
@@ -744,6 +778,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_data_cd",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/data_cd/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_datacd",
             pickup_name: "Data CD",
             quantity: 0,
@@ -759,6 +794,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_power_cube",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/power/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_powercube",
             pickup_name: "Power Cube",
             quantity: 0,
@@ -774,6 +810,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_pyramid",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/pyramid/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_pyramid",
             pickup_name: "Pyramid Key",
             quantity: 0,
@@ -789,6 +826,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_data_spinner",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/spinner/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_dataspin",
             pickup_name: "Data Spinner",
             quantity: 0,
@@ -804,6 +842,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_pass",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/pass/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_security",
             pickup_name: "Security Pass",
             quantity: 0,
@@ -819,6 +858,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_blue_key",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/key/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_bluekey",
             pickup_name: "Blue Key",
             quantity: 0,
@@ -834,6 +874,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_red_key",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/red_key/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_redkey",
             pickup_name: "Red Key",
             quantity: 0,
@@ -849,6 +890,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_commander_head",
             pickup_sound: "items/pkup.wav",
             world_model: "models/monsters/commandr/head/tris.md2",
+            world_model_flags: q2_shared::constants::EF_GIB,
             icon: "k_comhead",
             pickup_name: "Commander's Head",
             quantity: 0,
@@ -864,6 +906,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "key_airstrike_target",
             pickup_sound: "items/pkup.wav",
             world_model: "models/items/keys/target/tris.md2",
+            world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_airstrike",
             pickup_name: "Airstrike Marker",
             quantity: 0,
@@ -880,6 +923,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             classname: "item_health",
             pickup_sound: "items/pkup.wav",
             world_model: "",
+            world_model_flags: 0,
             icon: "i_health",
             pickup_name: "Health",
             quantity: 0,
@@ -1209,16 +1253,6 @@ const ITEM_TARGETS_USED: i32 = 0x0004_0000;
 /// C `EV_ITEM_RESPAWN` (shared.h `entity_event_t`).
 const EV_ITEM_RESPAWN: i32 = 1;
 
-/// C `world_model_flags`: everything except ammo and health spins.
-fn world_model_flags(item: &ItemDef) -> u32 {
-    let spins = ItemFlags::WEAPON | ItemFlags::ARMOR | ItemFlags::POWERUP | ItemFlags::KEY;
-    if item.flags.intersects(spins) {
-        q2_shared::constants::EF_ROTATE
-    } else {
-        0
-    }
-}
-
 /// C's health spawns (SP_item_health*): the "Health" item with a model and
 /// amount of its own.
 pub fn health_spawn(classname: &str) -> Option<(&'static str, i32)> {
@@ -1235,7 +1269,7 @@ impl GameWorld {
     /// Make `key` a world item that drops to the floor once the other
     /// solids are in. C ref: `SpawnItem`.
     pub fn spawn_item(&mut self, key: EntityKey, item: usize) {
-        let flags = self.items.get(item).map_or(0, world_model_flags);
+        let flags = self.items.get(item).map_or(0, |it| it.world_model_flags);
         let time = self.level.time;
         let Some(ent) = self.entities.get_mut(key) else {
             return;
@@ -1455,7 +1489,7 @@ impl GameWorld {
     pub fn drop_item(&mut self, owner: EntityKey, item: usize) -> Option<EntityKey> {
         let (classname, world_model, effects) = {
             let it = self.items.get(item)?;
-            (it.classname, it.world_model, world_model_flags(it))
+            (it.classname, it.world_model, it.world_model_flags)
         };
         let owner_ent = self.entities.get(owner)?;
         let origin = owner_ent.state.origin;
@@ -1620,6 +1654,31 @@ mod tests {
         );
         assert_eq!(ent.state.effects & EF_ROTATE, EF_ROTATE);
         assert_eq!(ent.state.renderfx & RF_GLOW, RF_GLOW);
+    }
+
+    #[test]
+    fn world_model_flags_match_the_c_item_table() {
+        use q2_shared::constants::{EF_GIB, EF_ROTATE};
+        let still = [
+            "",
+            "item_health",
+            "weapon_blaster",
+            "ammo_grenades",
+            "ammo_shells",
+            "ammo_bullets",
+            "ammo_cells",
+            "ammo_rockets",
+            "ammo_slugs",
+        ];
+        for item in build_item_list() {
+            // C names no Health classname; its entry has no flags.
+            let expected = match item.classname {
+                c if still.contains(&c) => 0,
+                "key_commander_head" => EF_GIB,
+                _ => EF_ROTATE,
+            };
+            assert_eq!(item.world_model_flags, expected, "{}", item.pickup_name);
+        }
     }
 
     #[test]
