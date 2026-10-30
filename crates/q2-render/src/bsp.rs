@@ -319,7 +319,7 @@ impl BspData {
         let surface_edges = load_surface_edges(&header, data)?;
         let models = load_models(&header, data)?;
 
-        Ok(BspData {
+        let bsp = BspData {
             planes,
             vertices,
             visibility,
@@ -332,7 +332,69 @@ impl BspData {
             edges,
             surface_edges,
             models,
-        })
+        };
+        bsp.validate_references()?;
+        Ok(bsp)
+    }
+
+    /// The index checks C makes while loading, each an ERR_DROP with C's
+    /// message: gl3_model.c `Mod_LoadFaces`, `Mod_LoadLeafs`,
+    /// `Mod_LoadMarksurfaces` and `Mod_LoadSubmodels`, models.c
+    /// `Mod_LoadNodes`. C checks no face's surfedge range nor a submodel's
+    /// face range; the consumers skip those indices when they are out of
+    /// range, where C would read past its arrays.
+    fn validate_references(&self) -> Q2Result<()> {
+        let drop = |msg: String| Err(Q2Error::Drop(msg));
+        let in_range = |index: i64, len: usize| (0..len as i64).contains(&index);
+        for face in &self.faces {
+            if !in_range(i64::from(face.plane_idx), self.planes.len()) {
+                return drop(format!(
+                    "Mod_LoadFaces: Incorrect {} planenum.",
+                    face.plane_idx
+                ));
+            }
+            if !in_range(i64::from(face.texinfo_idx), self.texinfo.len()) {
+                return drop("Mod_LoadFaces: bad texinfo number".into());
+            }
+        }
+        for node in &self.nodes {
+            if !in_range(i64::from(node.plane_idx), self.planes.len()) {
+                return drop(format!(
+                    "Mod_LoadNodes: Incorrect {} < {} planenum.",
+                    node.plane_idx,
+                    self.planes.len()
+                ));
+            }
+            for &child in &node.children {
+                if child >= 0 && !in_range(i64::from(child), self.nodes.len()) {
+                    return drop(format!("Mod_LoadNodes: Incorrect {child} nodenum as leaf."));
+                }
+                let leaf = -1 - i64::from(child);
+                if child < 0 && !in_range(leaf, self.leafs.len()) {
+                    return drop(format!("Mod_LoadNodes: Incorrect {leaf} leafnum."));
+                }
+            }
+        }
+        for leaf in &self.leafs {
+            let end = usize::from(leaf.first_leaf_face) + usize::from(leaf.num_leaf_faces);
+            if end > self.leaf_faces.len() {
+                return drop("Mod_LoadLeafs: wrong marksurfaces position".into());
+            }
+        }
+        // C reads each entry as a signed short.
+        for &face in &self.leaf_faces {
+            if !in_range(i64::from(face as i16), self.faces.len()) {
+                return drop("Mod_LoadMarksurfaces: bad surface number".into());
+            }
+        }
+        for (index, model) in self.models.iter().enumerate() {
+            if usize::try_from(model.head_node).is_ok_and(|node| node >= self.nodes.len()) {
+                return drop(format!(
+                    "Mod_LoadSubmodels: Inline model {index} has bad firstnode"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -360,7 +422,13 @@ pub(crate) fn test_bsp_bytes(models: usize) -> Vec<u8> {
         buf.extend_from_slice(&header_size.to_le_bytes());
         buf.extend_from_slice(&(length as u32).to_le_bytes());
     }
-    buf.resize(buf.len() + models * MODEL_SIZE, 0);
+    // Zeroed models but for head node -1: with no nodes, C rejects head
+    // node 0 ("bad firstnode").
+    for _ in 0..models {
+        let mut model = [0u8; MODEL_SIZE];
+        model[36..40].copy_from_slice(&(-1i32).to_le_bytes());
+        buf.extend_from_slice(&model);
+    }
     buf
 }
 
@@ -460,7 +528,7 @@ mod tests {
         for f in [0.0f32, 0.0, 0.0, 10.0, 10.0, 10.0, 5.0, 5.0, 5.0] {
             record.extend_from_slice(&f.to_le_bytes());
         }
-        for i in [0i32, 0, 1] {
+        for i in [-1i32, 0, 1] {
             record.extend_from_slice(&i.to_le_bytes());
         }
         let mut data = make_minimal_bsp();
@@ -508,5 +576,189 @@ mod tests {
         buf.extend_from_slice(&[0u8; 12]);
 
         assert!(BspData::load(&buf).is_err());
+    }
+
+    // -- cross-references C rejects with ERR_DROP --------------------------
+
+    /// One record of each cross-referenced lump, all pointing at index 0.
+    struct Refs {
+        face_plane: u16,
+        face_texinfo: i16,
+        node_plane: i32,
+        node_children: [i32; 2],
+        leaf_faces: (u16, u16),
+        leaf_face: u16,
+        head_node: i32,
+    }
+
+    impl Default for Refs {
+        fn default() -> Self {
+            Refs {
+                face_plane: 0,
+                face_texinfo: 0,
+                node_plane: 0,
+                node_children: [-1, -1],
+                leaf_faces: (0, 1),
+                leaf_face: 0,
+                head_node: 0,
+            }
+        }
+    }
+
+    fn refs_bsp(refs: &Refs) -> Vec<u8> {
+        use q2_common::bsp_file::{LUMP_LEAFS, LUMP_MODELS, LUMP_NODES, LUMP_PLANES, LUMP_TEXINFO};
+        let mut face = Vec::new();
+        face.extend_from_slice(&refs.face_plane.to_le_bytes());
+        face.extend_from_slice(&0u16.to_le_bytes()); // side
+        face.extend_from_slice(&0i32.to_le_bytes()); // first edge
+        face.extend_from_slice(&0i16.to_le_bytes()); // edges
+        face.extend_from_slice(&refs.face_texinfo.to_le_bytes());
+        face.extend_from_slice(&[255; 4]);
+        face.extend_from_slice(&(-1i32).to_le_bytes());
+        let mut node = refs.node_plane.to_le_bytes().to_vec();
+        for child in refs.node_children {
+            node.extend_from_slice(&child.to_le_bytes());
+        }
+        node.extend_from_slice(&[0; 12]); // mins, maxs
+        node.extend_from_slice(&[0; 4]); // first face, faces
+        let mut leaf = vec![0; 20]; // contents .. maxs
+        leaf.extend_from_slice(&refs.leaf_faces.0.to_le_bytes());
+        leaf.extend_from_slice(&refs.leaf_faces.1.to_le_bytes());
+        leaf.extend_from_slice(&[0; 4]); // leaf brushes
+        let mut model = vec![0; 36];
+        model.extend_from_slice(&refs.head_node.to_le_bytes());
+        model.extend_from_slice(&[0; 8]);
+        let lumps = [
+            (LUMP_PLANES, vec![0; 20]),
+            (LUMP_TEXINFO, vec![0; 76]),
+            (LUMP_FACES, face),
+            (LUMP_NODES, node),
+            (LUMP_LEAFS, leaf),
+            (LUMP_LEAFFACES, refs.leaf_face.to_le_bytes().to_vec()),
+            (LUMP_MODELS, model),
+        ];
+        let mut buf = make_minimal_bsp();
+        for (lump, bytes) in lumps {
+            let at = 8 + lump * 8;
+            let offset = buf.len() as u32;
+            buf[at..at + 4].copy_from_slice(&offset.to_le_bytes());
+            buf[at + 4..at + 8].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&bytes);
+        }
+        buf
+    }
+
+    #[test]
+    fn consistent_cross_references_load() {
+        BspData::load(&refs_bsp(&Refs::default())).expect("valid references");
+    }
+
+    fn rejected(refs: Refs, message: &str) {
+        match BspData::load(&refs_bsp(&refs)) {
+            Err(Q2Error::Drop(text)) => assert!(text.contains(message), "{text}"),
+            other => panic!("expected Drop({message}), got {other:?}"),
+        }
+    }
+
+    // gl3_model.c Mod_LoadFaces.
+    #[test]
+    fn a_face_with_a_bad_plane_or_texinfo_is_err_drop_like_c() {
+        let face_plane = 1;
+        rejected(
+            Refs {
+                face_plane,
+                ..Refs::default()
+            },
+            "planenum",
+        );
+        for face_texinfo in [1, -1] {
+            rejected(
+                Refs {
+                    face_texinfo,
+                    ..Refs::default()
+                },
+                "bad texinfo number",
+            );
+        }
+    }
+
+    // models.c Mod_LoadNodes.
+    #[test]
+    fn a_node_with_a_bad_plane_or_child_is_err_drop_like_c() {
+        rejected(
+            Refs {
+                node_plane: 1,
+                ..Refs::default()
+            },
+            "planenum",
+        );
+        rejected(
+            Refs {
+                node_plane: -1,
+                ..Refs::default()
+            },
+            "planenum",
+        );
+        let node_children = [1, -1];
+        rejected(
+            Refs {
+                node_children,
+                ..Refs::default()
+            },
+            "nodenum",
+        );
+        let node_children = [-1, -2]; // leaf 1 of 1
+        rejected(
+            Refs {
+                node_children,
+                ..Refs::default()
+            },
+            "leafnum",
+        );
+    }
+
+    // gl3_model.c Mod_LoadLeafs and Mod_LoadMarksurfaces.
+    #[test]
+    fn a_bad_leaf_face_range_or_entry_is_err_drop_like_c() {
+        let leaf_faces = (1, 1);
+        rejected(
+            Refs {
+                leaf_faces,
+                ..Refs::default()
+            },
+            "marksurfaces",
+        );
+        rejected(
+            Refs {
+                leaf_face: 1,
+                ..Refs::default()
+            },
+            "bad surface number",
+        );
+        // C reads the entry as a signed short.
+        rejected(
+            Refs {
+                leaf_face: 0x8000,
+                ..Refs::default()
+            },
+            "bad surface number",
+        );
+    }
+
+    // gl3_model.c Mod_LoadSubmodels checks only the upper bound.
+    #[test]
+    fn a_submodel_head_node_past_the_nodes_is_err_drop_like_c() {
+        rejected(
+            Refs {
+                head_node: 1,
+                ..Refs::default()
+            },
+            "bad firstnode",
+        );
+        BspData::load(&refs_bsp(&Refs {
+            head_node: -1,
+            ..Refs::default()
+        }))
+        .expect("C accepts a negative head node");
     }
 }
