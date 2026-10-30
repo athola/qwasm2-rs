@@ -353,6 +353,12 @@ pub fn plat_calc_accelerated_move(mi: &mut MoveInfo) {
     mi.decel_distance = decel_dist;
 }
 
+/// C `speed * (1.0 - ratio)`: the double 1.0 makes it a double
+/// expression, rounded to float once.
+fn one_minus(speed: f32, ratio: f32) -> f32 {
+    (f64::from(speed) * (1.0 - f64::from(ratio))) as f32
+}
+
 /// C ref: `plat_Accelerate`.
 pub fn plat_accelerate(mi: &mut MoveInfo) {
     // Decelerating?
@@ -375,7 +381,7 @@ pub fn plat_accelerate(mi: &mut MoveInfo) {
         && mi.remaining_distance - mi.current_speed < mi.decel_distance
     {
         let p1_distance = mi.remaining_distance - mi.decel_distance;
-        let p2_distance = mi.move_speed * (1.0 - (p1_distance / mi.move_speed));
+        let p2_distance = one_minus(mi.move_speed, p1_distance / mi.move_speed);
         let distance = p1_distance + p2_distance;
         mi.current_speed = mi.move_speed;
         mi.next_speed = mi.move_speed - mi.decel * (p2_distance / distance);
@@ -393,7 +399,7 @@ pub fn plat_accelerate(mi: &mut MoveInfo) {
         // use the average speed over the whole move.
         let p1_distance = mi.remaining_distance - mi.decel_distance;
         let p1_speed = (old_speed + mi.move_speed) / 2.0;
-        let p2_distance = mi.move_speed * (1.0 - (p1_distance / p1_speed));
+        let p2_distance = one_minus(mi.move_speed, p1_distance / p1_speed);
         let distance = p1_distance + p2_distance;
         mi.current_speed =
             (p1_speed * (p1_distance / distance)) + (mi.move_speed * (p2_distance / distance));
@@ -3091,6 +3097,81 @@ mod tests {
         let world = spawned(r#"{ "classname" "func_timer" "wait" "0.1" "random" "5" }"#);
         let timer = world.entities.get(by_class(&world, "func_timer")).unwrap();
         assert_eq!(timer.game.random, (f64::from(0.1f32) - 0.1) as f32); // 1.49e-9, not 0
+    }
+
+    /// (current_speed, remaining_distance, next_speed) bits after each
+    /// Think_AccelMove of a mover starting `distance` away.
+    fn accel_frames(speed: f32, accel: f32, decel: f32, distance: f32) -> Vec<(u32, u32, u32)> {
+        let (mut world, key) = moving(distance, speed);
+        if let Some(mi) = world.entities.get_mut(key).unwrap().moveinfo.as_deref_mut() {
+            mi.accel = accel;
+            mi.decel = decel;
+        }
+        let mut frames = Vec::new();
+        loop {
+            think_accel_move(&mut world, key);
+            let ent = world.entities.get(key).unwrap();
+            let mi = ent.moveinfo.as_ref().unwrap();
+            frames.push((
+                mi.current_speed.to_bits(),
+                mi.remaining_distance.to_bits(),
+                mi.next_speed.to_bits(),
+            ));
+            let again = ent.think.is_some_and(|t| {
+                std::ptr::fn_addr_eq(t, think_accel_move as crate::entity::ThinkFn)
+            });
+            if !again {
+                return frames;
+            }
+        }
+    }
+
+    fn speeds(frames: Vec<(u32, u32, u32)>) -> Vec<(u32, u32)> {
+        frames.into_iter().map(|(c, r, _)| (c, r)).collect()
+    }
+
+    #[test]
+    fn accelerated_moves_match_a_c_run_frame_by_frame() {
+        // From the C plat_CalcAcceleratedMove / plat_Accelerate /
+        // Think_AccelMove compiled with -ffp-contract=off.
+        #[rustfmt::skip]
+        let default_plat = [
+            (0x40a00000, 0x42f00000), (0x41200000, 0x42e60000), (0x41700000, 0x42d20000),
+            (0x41a00000, 0x42b40000), (0x41a00000, 0x428c0000), (0x41a00000, 0x42480000),
+            (0x41700000, 0x41f00000), (0x41200000, 0x41700000), (0x40a00000, 0x40a00000),
+        ];
+        assert_eq!(speeds(accel_frames(20.0, 5.0, 5.0, 120.0)), default_plat);
+        #[rustfmt::skip]
+        let short = [
+            (0x40a00000, 0x42140000), (0x41200000, 0x42000000), (0x4131eb51, 0x41b00000),
+            (0x40fcf014, 0x412e14af), (0x4039e028, 0x403e7294), (0x4039e028, 0x3d924d80),
+        ];
+        assert_eq!(speeds(accel_frames(20.0, 5.0, 5.0, 37.0)), short);
+        #[rustfmt::skip]
+        let odd = [
+            (0x40066666, 0x4226cccd), (0x40866666, 0x421e6667), (0x40c99999, 0x420d999a),
+            (0x40e9999a, 0x41e8ccce), (0x40e9999a, 0x41ae6668), (0x40c5a7a3, 0x41680003),
+            (0x408f413c, 0x41052c32), (0x4031b5ab, 0x40762e50), (0x3f89d1bc, 0x3f88f14a),
+        ];
+        assert_eq!(speeds(accel_frames(7.3, 2.1, 1.7, 41.7)), odd);
+        // The double 1.0 in plat_Accelerate's p2_distance rounds next_speed
+        // differently from float here.
+        let tenth = |v: f64| (v * 0.1) as f32;
+        #[rustfmt::skip]
+        let decelerating = [
+            (0x3f800000, 0x41a00000, 0), (0x3fc00000, 0x41980000, 0),
+            (0x3fc00000, 0x418c0000, 0), (0x3fc00000, 0x41800000, 0),
+            (0x3fc00000, 0x41680000, 0), (0x3fc00000, 0x41500000, 0),
+            (0x3fc00000, 0x41380000, 0), (0x3fc00000, 0x41200000, 0),
+            (0x3fc00000, 0x41080000, 0), (0x3fc00000, 0x40e00000, 0),
+            (0x3fc00000, 0x40b00000, 0), (0x3fc00000, 0x40800000, 0),
+            (0x3fc00000, 0x40200000, 0x3f6aaaab), (0x3f6aaaab, 0x3f800000, 0),
+            (0x3f6aaaab, 0x3daaaaa8, 0),
+        ];
+        assert_eq!(
+            accel_frames(tenth(15.0), tenth(10.0), tenth(10.0), 20.0),
+            decelerating
+        );
     }
 
     #[test]
