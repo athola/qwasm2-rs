@@ -751,12 +751,14 @@ impl GameWorld {
 
     /// `true` if the entity's box is stuck in something solid at its
     /// current origin. C ref: `SV_TestEntityPosition` (which returns the
-    /// world edict instead of `true`).
+    /// world edict instead of `true`). Dead bodies only collide with BSP,
+    /// so pushers carry them.
     fn test_entity_position(&self, key: EntityKey) -> bool {
         let Some(ent) = self.entities.get(key) else {
             return false;
         };
-        let mask = if ent.clipmask != 0 {
+        let dead = ent.svflags & q2_shared::constants::SVF_DEADMONSTER != 0;
+        let mask = if ent.clipmask != 0 && !dead {
             ent.clipmask
         } else {
             MASK_SOLID
@@ -1923,6 +1925,25 @@ mod tests {
         let masks = gi.trace_masks.borrow();
         assert!(!masks.is_empty());
         assert!(masks.iter().all(|&m| m == MASK_SOLID), "{masks:x?}");
+    }
+
+    #[test]
+    fn position_test_of_a_corpse_only_collides_with_bsp() {
+        // C SV_TestEntityPosition: dead bodies use MASK_SOLID during
+        // pushmoves, so a pusher carries a corpse overlapping a monster.
+        let (mut world, gi) = test_world_recording();
+        let corpse = world.spawn().unwrap();
+        let monster = world.spawn().unwrap();
+        for (key, svflags) in [
+            (corpse, q2_shared::constants::SVF_DEADMONSTER),
+            (monster, q2_shared::constants::SVF_MONSTER),
+        ] {
+            let e = world.entities.get_mut(key).unwrap();
+            e.clipmask = MASK_MONSTERSOLID;
+            e.svflags = svflags;
+            world.test_entity_position(key);
+        }
+        assert_eq!(*gi.trace_masks.borrow(), [MASK_SOLID, MASK_MONSTERSOLID]);
     }
 
     #[test]
