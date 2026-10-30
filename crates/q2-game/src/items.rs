@@ -1498,9 +1498,10 @@ impl GameWorld {
         let owner_number = self.number_of(owner);
 
         let dropped = self.spawn()?;
-        // C draws the sign first, then the size of the turn.
-        let left = self.frandk() > 0.5;
-        let turn = self.frandk() * 45.0;
+        // C draws the sign first, then the size of the turn, with frandk(),
+        // whose double n * (1.0/32767) rounds to the same float as random().
+        let left = self.random() > 0.5;
+        let turn = self.random() * 45.0;
         let yaw = if left { turn } else { -turn };
         let ent = self.entities.get_mut(dropped)?;
         ent.game.classname = classname.to_string();
@@ -1547,11 +1548,6 @@ impl GameWorld {
         ent.game.nextthink = time + 1.0;
         self.link_entity(dropped);
         Some(dropped)
-    }
-
-    /// C `frandk()`: uniform in [0, 1].
-    fn frandk(&mut self) -> f32 {
-        (self.random_u32() & 0x7fff) as f32 / 0x7fff as f32
     }
 }
 
