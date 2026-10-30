@@ -306,9 +306,15 @@ impl CVarSystem {
 
     /// Build a backslash-delimited info string from cvars that have the given
     /// flag, applying each pair the way C `Info_SetValueForKey` does.
+    ///
+    /// C ref: `Cvar_BitInfo` walks `cvar_vars`, which `Cvar_Get` keeps in
+    /// strcmp order, so keys appear sorted by name (and that order decides
+    /// which keys are dropped once `MAX_INFO_STRING` is reached).
     fn build_info_string(vars: &[CVar], flag: CVarFlags) -> String {
+        let mut flagged: Vec<&CVar> = vars.iter().filter(|c| c.flags.contains(flag)).collect();
+        flagged.sort_by(|a, b| a.name.cmp(&b.name));
         let mut info = String::new();
-        for cvar in vars.iter().filter(|c| c.flags.contains(flag)) {
+        for cvar in flagged {
             let (key, value) = (cvar.name.as_str(), cvar.string.as_str());
             if key.contains(['\\', '"', ';']) || value.contains(['\\', '"']) {
                 tracing::warn!("Can't use keys or values with a \\ or \" ({key})");
@@ -755,6 +761,18 @@ mod tests {
             .map(|line| line.split(' ').nth(1).unwrap().to_owned())
             .collect();
         assert_eq!(names, ["fov", "gl_mode", "name", "vid_mode"]);
+    }
+
+    #[test]
+    fn info_string_lists_keys_sorted_by_name_like_the_c_list() {
+        let mut cvars = CVarSystem::new();
+        for name in ["skin", "name", "rate", "hand"] {
+            cvars.get(name, "1", CVarFlags::USERINFO);
+        }
+        assert_eq!(
+            cvars.userinfo_string(),
+            "\\hand\\1\\name\\1\\rate\\1\\skin\\1"
+        );
     }
 
     #[test]
