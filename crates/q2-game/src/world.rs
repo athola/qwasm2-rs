@@ -1503,20 +1503,25 @@ impl GameWorld {
         };
 
         let mut inhibit = 0;
-        for fields in &parsed {
+        for (index, fields) in parsed.iter().enumerate() {
             let classname = match fields.get("classname") {
                 Some(cn) => cn.clone(),
                 None => continue,
             };
 
-            // C SpawnEntities: the first entity (worldspawn) is g_edicts[0].
-            let slot = if classname == "worldspawn" {
+            // C SpawnEntities: the first block (worldspawn) is g_edicts[0],
+            // every later one is G_Spawned.
+            let slot = if index == 0 {
                 self.entities.spawn_numbered(0)
             } else {
                 self.entities.spawn()
             };
             let Some(key) = slot else {
-                break; // Storage full.
+                // C G_Spawn raises ERR_DROP here; GameExport::spawn_entities
+                // cannot fail, so report it and stop parsing.
+                self.gi.dprintf("ED_Alloc: no free edicts\n");
+                tracing::error!("spawn_entities: no free edicts");
+                break;
             };
             let Some(ent) = self.entities.get_mut(key) else {
                 continue;
@@ -2188,6 +2193,43 @@ mod tests {
             world.entities.get(key).unwrap().game.classname,
             "worldspawn"
         );
+    }
+
+    #[test]
+    fn only_the_first_block_is_the_world_and_a_second_worldspawn_does_not_stop_the_map() {
+        // C SpawnEntities gives g_edicts[0] to the first block and G_Spawns
+        // every later one, whatever its classname.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "worldspawn" }
+               { "classname" "info_player_start" }"#,
+            "",
+        );
+        let second = world
+            .find_by_classname(world.entities.key_for_number(0), "worldspawn")
+            .expect("second worldspawn spawned");
+        assert!(world.number_of(second).unwrap() > 0);
+        assert!(world.find_by_classname(None, "info_player_start").is_some());
+    }
+
+    #[test]
+    fn running_out_of_edicts_while_spawning_is_reported() {
+        // C G_Spawn raises "ED_Alloc: no free edicts".
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        let lots = "{ \"classname\" \"info_notnull\" }\n".repeat(1100);
+        world.spawn_entities(
+            "base1",
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{lots}"),
+            "",
+        );
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "ED_Alloc: no free edicts\n"));
     }
 
     #[test]
