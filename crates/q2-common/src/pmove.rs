@@ -24,7 +24,9 @@ pub const PMF_NO_PREDICTION: u8 = 64;
 // ---------------------------------------------------------------------------
 
 pub const STEPSIZE: f32 = 18.0;
-pub const MIN_STEP_NORMAL: f32 = 0.7;
+/// A C `double` constant: `normal.z` is compared after widening to f64, so a
+/// stored 0.7f32 (0.69999998) counts as too steep.
+pub const MIN_STEP_NORMAL: f64 = 0.7;
 pub const MAX_CLIP_PLANES: usize = 5;
 pub const STOP_EPSILON: f32 = 0.1;
 
@@ -36,35 +38,21 @@ pub const PM_WATERACCELERATE: f32 = 10.0;
 pub const PM_FRICTION: f32 = 6.0;
 pub const PM_WATERFRICTION: f32 = 1.0;
 pub const PM_WATERSPEED: f32 = 400.0;
-pub const PM_AIRACCELERATE: f32 = 0.0;
 
 // ---------------------------------------------------------------------------
 // Content / surface flags needed by pmove (matches Quake 2 defines)
 // ---------------------------------------------------------------------------
 
-const CONTENTS_SOLID: i32 = 1;
-const CONTENTS_WATER: i32 = 0x00000020;
-const CONTENTS_SLIME: i32 = 0x00000010;
-const CONTENTS_LADDER: i32 = 0x20000000;
-const CONTENTS_CURRENT_0: i32 = 0x00040000;
-const CONTENTS_CURRENT_90: i32 = 0x00080000;
-const CONTENTS_CURRENT_180: i32 = 0x00100000;
-const CONTENTS_CURRENT_270: i32 = 0x00200000;
-const CONTENTS_CURRENT_UP: i32 = 0x00400000;
-const CONTENTS_CURRENT_DOWN: i32 = 0x00800000;
-const MASK_CURRENT: i32 = CONTENTS_CURRENT_0
-    | CONTENTS_CURRENT_90
-    | CONTENTS_CURRENT_180
-    | CONTENTS_CURRENT_270
-    | CONTENTS_CURRENT_UP
-    | CONTENTS_CURRENT_DOWN;
-const MASK_WATER: i32 = CONTENTS_WATER | CONTENTS_SLIME | 0x00000008; // lava = 0x8
+use q2_shared::constants::{
+    CONTENTS_CURRENT_0, CONTENTS_CURRENT_180, CONTENTS_CURRENT_270, CONTENTS_CURRENT_90,
+    CONTENTS_CURRENT_DOWN, CONTENTS_CURRENT_UP, CONTENTS_LADDER, CONTENTS_SLIME, CONTENTS_SOLID,
+    CONTENTS_WATER, MASK_CURRENT, MASK_WATER,
+};
 const SURF_SLICK: i32 = 0x02;
 
 // Angle indices
 const PITCH: usize = 0;
 const YAW: usize = 1;
-#[allow(dead_code)]
 const ROLL: usize = 2;
 
 // ---------------------------------------------------------------------------
@@ -76,10 +64,8 @@ struct PmLocal {
     velocity: Vec3f,
     forward: Vec3f,
     right: Vec3f,
-    up: Vec3f,
     frametime: f32,
     ground_surface: Option<Surface>,
-    ground_plane: Plane,
     ground_contents: i32,
     previous_origin: [i16; 3],
     ladder: bool,
@@ -92,10 +78,8 @@ impl Default for PmLocal {
             velocity: Vec3f::ZERO,
             forward: Vec3f::ZERO,
             right: Vec3f::ZERO,
-            up: Vec3f::ZERO,
             frametime: 0.0,
             ground_surface: None,
-            ground_plane: Plane::default(),
             ground_contents: 0,
             previous_origin: [0; 3],
             ladder: false,
@@ -117,6 +101,9 @@ pub type PointContentsFn = Box<dyn Fn(Vec3f) -> i32>;
 // The main Pmove interface
 // ---------------------------------------------------------------------------
 
+/// C `MAXTOUCH`: entities one pmove can report touching.
+pub const MAXTOUCH: usize = 32;
+
 pub struct Pmove {
     /// Networked player-movement state (modified in place).
     pub s: PmoveState,
@@ -132,13 +119,22 @@ pub struct Pmove {
     pub mins: Vec3f,
     /// Bounding box maxs.
     pub maxs: Vec3f,
-    /// True when standing on a ground entity.
-    pub ground_entity: bool,
+    /// Entity number stood on (C `groundentity`; the world is 0).
+    pub ground_entity: Option<usize>,
+    /// Entities the move ran into, up to `MAXTOUCH` (C `touchents`).
+    pub touchents: Vec<usize>,
     /// Water content flags at player position.
     pub watertype: i32,
     /// 0 = not in water, 1..3 = depth.
     pub waterlevel: i32,
-    /// Trace callback supplied by caller.
+    /// Air acceleration (C `pm_airaccelerate`). Set by the server from
+    /// `sv_airaccelerate` and by the client from `CS_AIRACCEL`; 0 disables
+    /// air control as in stock Quake 2.
+    pub airaccelerate: f32,
+    /// Trace callback supplied by caller. Like C `SV_Trace`, it must set
+    /// `ent_index` on a hit (the world is `Some(0)`): a trace with no entity
+    /// never counts as ground. `CollisionMap::world_trace` does this for the
+    /// world; `box_trace` leaves it `None`.
     pub trace: TraceFn,
     /// Point-contents callback supplied by caller.
     pub pointcontents: PointContentsFn,
@@ -154,15 +150,18 @@ fn short2angle(s: i16) -> f32 {
 }
 
 /// Compute forward / right / up unit vectors from Euler angles (degrees).
-/// Matches `AngleVectors(angles, forward, right, up)` in the C engine.
-fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let pitch = angles.x.to_radians();
-    let yaw = angles.y.to_radians();
-    let roll = angles.z.to_radians();
-
-    let (sp, cp) = (pitch.sin(), pitch.cos());
-    let (sy, cy) = (yaw.sin(), yaw.cos());
-    let (sr, cr) = (roll.sin(), roll.cos());
+/// Matches `AngleVectors(angles, forward, right, up)` in the C engine,
+/// including its precision: the radian conversion is a double multiply
+/// stored to float, and sin/cos run in double before rounding to float.
+pub fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+    let sin_cos = |degrees: f32| {
+        let radians = (f64::from(degrees) * (std::f64::consts::PI * 2.0 / 360.0)) as f32;
+        let radians = f64::from(radians);
+        (radians.sin() as f32, radians.cos() as f32)
+    };
+    let (sp, cp) = sin_cos(angles.x);
+    let (sy, cy) = sin_cos(angles.y);
+    let (sr, cr) = sin_cos(angles.z);
 
     let forward = Vec3f::new(cp * cy, cp * sy, -sp);
     let right = Vec3f::new(
@@ -170,12 +169,22 @@ fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
         -(sr * sp * sy) + -(cr * cy),
         -sr * cp,
     );
-    let up = Vec3f::new(
-        cr * sp * cy + -sr * -sy,
-        cr * sp * sy + -sr * cy,
-        cr * cp,
-    );
+    let up = Vec3f::new(cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp);
     (forward, right, up)
+}
+
+/// C `VectorNormalize`: scale by the reciprocal of the length (not divide,
+/// which rounds differently) and return the length. Zero vectors are left
+/// unchanged.
+fn vector_normalize(v: &mut Vec3f) -> f32 {
+    let length = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+    if length != 0.0 {
+        let ilength = 1.0 / length;
+        v.x *= ilength;
+        v.y *= ilength;
+        v.z *= ilength;
+    }
+    length
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +231,13 @@ fn pm_slide_move(pm: &mut Pmove, pml: &mut PmLocal) -> bool {
 
         if trace.fraction == 1.0 {
             break; // moved the entire distance
+        }
+
+        // Save the entity for contact.
+        if let Some(n) = trace.ent_index {
+            if pm.touchents.len() < MAXTOUCH {
+                pm.touchents.push(n);
+            }
         }
 
         blocked = true;
@@ -320,7 +336,7 @@ fn pm_step_slide_move(pm: &mut Pmove, pml: &mut PmLocal) {
     let down_dist = (down_o.x - start_o.x).powi(2) + (down_o.y - start_o.y).powi(2);
     let up_dist = (up_pos.x - start_o.x).powi(2) + (up_pos.y - start_o.y).powi(2);
 
-    if down_dist > up_dist || trace.plane.normal.z < MIN_STEP_NORMAL {
+    if down_dist > up_dist || f64::from(trace.plane.normal.z) < MIN_STEP_NORMAL {
         pml.origin = down_o;
         pml.velocity = down_v;
         return;
@@ -346,7 +362,7 @@ fn pm_friction(pm: &mut Pmove, pml: &mut PmLocal) {
     let mut drop = 0.0_f32;
 
     // Ground friction.
-    let on_ground_non_slick = pm.ground_entity
+    let on_ground_non_slick = pm.ground_entity.is_some()
         && pml
             .ground_surface
             .as_ref()
@@ -456,14 +472,14 @@ fn pm_add_currents(pm: &Pmove, pml: &PmLocal, wishvel: &mut Vec3f) {
         }
 
         let mut s = PM_WATERSPEED;
-        if pm.waterlevel == 1 && pm.ground_entity {
+        if pm.waterlevel == 1 && pm.ground_entity.is_some() {
             s /= 2.0;
         }
         *wishvel += v * s;
     }
 
     // Conveyor belts (ground currents)
-    if pm.ground_entity {
+    if pm.ground_entity.is_some() {
         let mut v = Vec3f::ZERO;
         if (pml.ground_contents & CONTENTS_CURRENT_0) != 0 {
             v.x += 1.0;
@@ -506,10 +522,7 @@ fn pm_water_move(pm: &mut Pmove, pml: &mut PmLocal) {
     pm_add_currents(pm, pml, &mut wishvel);
 
     let mut wishdir = wishvel;
-    let mut wishspeed = wishdir.length();
-    if wishspeed != 0.0 {
-        wishdir /= wishspeed;
-    }
+    let mut wishspeed = vector_normalize(&mut wishdir);
 
     if wishspeed > PM_MAXSPEED {
         wishvel *= PM_MAXSPEED / wishspeed;
@@ -536,10 +549,7 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
     pm_add_currents(pm, pml, &mut wishvel);
 
     let mut wishdir = wishvel;
-    let mut wishspeed = wishdir.length();
-    if wishspeed != 0.0 {
-        wishdir /= wishspeed;
-    }
+    let mut wishspeed = vector_normalize(&mut wishdir);
 
     let maxspeed = if (pm.s.pm_flags & PMF_DUCKED) != 0 {
         PM_DUCKSPEED
@@ -570,7 +580,7 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
         }
 
         pm_step_slide_move(pm, pml);
-    } else if pm.ground_entity {
+    } else if pm.ground_entity.is_some() {
         // Walking on ground.
         pml.velocity.z = 0.0;
         pm_accelerate(pml, wishdir, wishspeed, PM_ACCELERATE);
@@ -587,9 +597,10 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
 
         pm_step_slide_move(pm, pml);
     } else {
-        // In the air.
-        if PM_AIRACCELERATE != 0.0 {
-            pm_air_accelerate(pml, wishdir, wishspeed, PM_AIRACCELERATE);
+        // In the air. C passes pm_accelerate, not pm_airaccelerate, as the
+        // acceleration; the airaccelerate value only enables this path.
+        if pm.airaccelerate != 0.0 {
+            pm_air_accelerate(pml, wishdir, wishspeed, PM_ACCELERATE);
         } else {
             pm_accelerate(pml, wishdir, wishspeed, 1.0);
         }
@@ -600,7 +611,9 @@ fn pm_air_move(pm: &mut Pmove, pml: &mut PmLocal) {
     }
 }
 
-fn pm_fly_move(pm: &mut Pmove, pml: &mut PmLocal, do_clip: bool) {
+/// C `PM_FlyMove(false)`: the only caller (spectators) never clips, so the
+/// C `doclip` trace branch is not ported.
+fn pm_fly_move(pm: &mut Pmove, pml: &mut PmLocal) {
     pm.viewheight = 22.0;
 
     // Friction
@@ -628,17 +641,14 @@ fn pm_fly_move(pm: &mut Pmove, pml: &mut PmLocal, do_clip: bool) {
     let fmove = pm.cmd.forwardmove as f32;
     let smove = pm.cmd.sidemove as f32;
 
-    let fwd = pml.forward.normalize_or_zero();
-    let rgt = pml.right.normalize_or_zero();
+    vector_normalize(&mut pml.forward);
+    vector_normalize(&mut pml.right);
 
-    let mut wishvel = fwd * fmove + rgt * smove;
+    let mut wishvel = pml.forward * fmove + pml.right * smove;
     wishvel.z += pm.cmd.upmove as f32;
 
     let mut wishdir = wishvel;
-    let mut wishspeed = wishdir.length();
-    if wishspeed != 0.0 {
-        wishdir /= wishspeed;
-    }
+    let mut wishspeed = vector_normalize(&mut wishdir);
 
     if wishspeed > PM_MAXSPEED {
         wishvel *= PM_MAXSPEED / wishspeed;
@@ -648,14 +658,7 @@ fn pm_fly_move(pm: &mut Pmove, pml: &mut PmLocal, do_clip: bool) {
     let currentspeed = pml.velocity.dot(wishdir);
     let addspeed = wishspeed - currentspeed;
     if addspeed <= 0.0 {
-        // Already at or above wish speed — just move.
-        if do_clip {
-            let end = pml.origin + pml.velocity * pml.frametime;
-            let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, end);
-            pml.origin = trace.endpos;
-        } else {
-            pml.origin += pml.velocity * pml.frametime;
-        }
+        // C PM_FlyMove returns here without moving this frame.
         return;
     }
 
@@ -665,14 +668,7 @@ fn pm_fly_move(pm: &mut Pmove, pml: &mut PmLocal, do_clip: bool) {
     }
 
     pml.velocity += wishdir * accelspeed;
-
-    if do_clip {
-        let end = pml.origin + pml.velocity * pml.frametime;
-        let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, end);
-        pml.origin = trace.endpos;
-    } else {
-        pml.origin += pml.velocity * pml.frametime;
-    }
+    pml.origin += pml.velocity * pml.frametime;
 }
 
 // ---------------------------------------------------------------------------
@@ -685,24 +681,22 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
 
     if pml.velocity.z > 180.0 {
         pm.s.pm_flags &= !PMF_ON_GROUND;
-        pm.ground_entity = false;
+        pm.ground_entity = None;
     } else {
         let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, point);
-        pml.ground_plane = trace.plane.clone();
-        pml.ground_surface = trace.surface.clone();
+        pml.ground_surface = trace.surface;
         pml.ground_contents = trace.contents;
 
-        let has_ent = trace.ent_index.is_some();
-        if !has_ent || (trace.plane.normal.z < 0.7 && !trace.startsolid) {
-            pm.ground_entity = false;
+        if trace.ent_index.is_none() || (f64::from(trace.plane.normal.z) < 0.7 && !trace.startsolid)
+        {
+            pm.ground_entity = None;
             pm.s.pm_flags &= !PMF_ON_GROUND;
         } else {
-            pm.ground_entity = true;
+            pm.ground_entity = trace.ent_index;
 
             // Hitting solid ground ends a waterjump.
             if (pm.s.pm_flags & PMF_TIME_WATERJUMP) != 0 {
-                pm.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                pm.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 pm.s.pm_time = 0;
             }
 
@@ -718,6 +712,12 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
                         pm.s.pm_time = 18;
                     }
                 }
+            }
+        }
+
+        if let Some(n) = trace.ent_index {
+            if pm.touchents.len() < MAXTOUCH {
+                pm.touchents.push(n);
             }
         }
     }
@@ -769,9 +769,7 @@ fn pm_check_duck(pm: &mut Pmove, pml: &PmLocal) {
 
     pm.mins.z = -24.0;
 
-    if pm.s.pm_type == PmType::Dead
-        || (pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0)
-    {
+    if pm.s.pm_type == PmType::Dead || (pm.cmd.upmove < 0 && (pm.s.pm_flags & PMF_ON_GROUND) != 0) {
         pm.s.pm_flags |= PMF_DUCKED;
     } else {
         // Try to stand up if currently ducked.
@@ -798,7 +796,7 @@ fn pm_check_duck(pm: &mut Pmove, pml: &PmLocal) {
 // ---------------------------------------------------------------------------
 
 fn pm_dead_move(pm: &Pmove, pml: &mut PmLocal) {
-    if !pm.ground_entity {
+    if pm.ground_entity.is_none() {
         return;
     }
 
@@ -807,8 +805,10 @@ fn pm_dead_move(pm: &Pmove, pml: &mut PmLocal) {
     if forward <= 0.0 {
         pml.velocity = Vec3f::ZERO;
     } else {
-        let dir = pml.velocity.normalize_or_zero();
-        pml.velocity = dir * forward;
+        // C VectorNormalize + VectorScale; vector_normalize keeps C's
+        // multiply-by-reciprocal rounding.
+        vector_normalize(&mut pml.velocity);
+        pml.velocity *= forward;
     }
 }
 
@@ -825,10 +825,7 @@ fn pm_check_special_movement(pm: &mut Pmove, pml: &mut PmLocal) {
 
     // Check for ladder.
     let mut flatforward = Vec3f::new(pml.forward.x, pml.forward.y, 0.0);
-    let len = flatforward.length();
-    if len != 0.0 {
-        flatforward /= len;
-    }
+    vector_normalize(&mut flatforward);
 
     let spot = pml.origin + flatforward;
     let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, spot);
@@ -887,7 +884,7 @@ fn pm_check_jump(pm: &mut Pmove, pml: &mut PmLocal) {
     }
 
     if pm.waterlevel >= 2 {
-        pm.ground_entity = false;
+        pm.ground_entity = None;
 
         if pml.velocity.z <= -300.0 {
             return;
@@ -904,12 +901,12 @@ fn pm_check_jump(pm: &mut Pmove, pml: &mut PmLocal) {
         return;
     }
 
-    if !pm.ground_entity {
+    if pm.ground_entity.is_none() {
         return;
     }
 
     pm.s.pm_flags |= PMF_JUMP_HELD;
-    pm.ground_entity = false;
+    pm.ground_entity = None;
     pml.velocity.z += 270.0;
 
     if pml.velocity.z < 270.0 {
@@ -938,9 +935,10 @@ fn pm_good_position(pm: &Pmove) -> bool {
 fn pm_snap_position(pm: &mut Pmove, pml: &PmLocal) {
     static JITTERBITS: [i32; 8] = [0, 4, 1, 2, 3, 5, 6, 7];
 
-    // Snap velocity to eighths.
+    // Snap velocity to eighths. C stores `(int)(x * 8)` into a short, which
+    // keeps the low 16 bits; a direct `as i16` would saturate instead.
     for (dst, src) in pm.s.velocity.iter_mut().zip(pml.velocity.as_ref().iter()) {
-        *dst = (*src * 8.0) as i16;
+        *dst = (*src * 8.0) as i32 as i16;
     }
 
     // Compute sign for each axis and snap origin.
@@ -953,7 +951,7 @@ fn pm_snap_position(pm: &mut Pmove, pml: &PmLocal) {
             *s = -1;
         }
 
-        pm.s.origin[i] = (*orig * 8.0) as i16;
+        pm.s.origin[i] = (*orig * 8.0) as i32 as i16;
 
         if pm.s.origin[i] as f32 * 0.125 == *orig {
             *s = 0;
@@ -968,7 +966,7 @@ fn pm_snap_position(pm: &mut Pmove, pml: &PmLocal) {
 
         for (i, &s) in sign.iter().enumerate() {
             if (bits & (1 << i)) != 0 {
-                pm.s.origin[i] += s;
+                pm.s.origin[i] = pm.s.origin[i].wrapping_add(s);
             }
         }
 
@@ -987,11 +985,11 @@ fn pm_initial_snap_position(pm: &mut Pmove, pml: &mut PmLocal) {
     let base = pm.s.origin;
 
     for &oz in &OFFSET {
-        pm.s.origin[2] = base[2] + oz;
+        pm.s.origin[2] = base[2].wrapping_add(oz);
         for &oy in &OFFSET {
-            pm.s.origin[1] = base[1] + oy;
+            pm.s.origin[1] = base[1].wrapping_add(oy);
             for &ox in &OFFSET {
-                pm.s.origin[0] = base[0] + ox;
+                pm.s.origin[0] = base[0].wrapping_add(ox);
 
                 if pm_good_position(pm) {
                     pml.origin.x = pm.s.origin[0] as f32 * 0.125;
@@ -1004,7 +1002,8 @@ fn pm_initial_snap_position(pm: &mut Pmove, pml: &mut PmLocal) {
         }
     }
 
-    // If no valid position found, keep the original.
+    // No valid position: like C, pm.s.origin keeps the last candidate
+    // (base + 1 on every axis) and pml.origin is left as it was.
     tracing::debug!("Bad InitialSnapPosition");
 }
 
@@ -1014,11 +1013,11 @@ fn pm_initial_snap_position(pm: &mut Pmove, pml: &mut PmLocal) {
 
 fn pm_clamp_angles(pm: &mut Pmove, pml: &mut PmLocal) {
     if (pm.s.pm_flags & PMF_TIME_TELEPORT) != 0 {
-        pm.viewangles.y = short2angle(
-            pm.cmd.angles[YAW].wrapping_add(pm.s.delta_angles[YAW]),
-        );
-        pm.viewangles.x = 0.0;
-        pm.viewangles.z = 0.0;
+        // C sums in int here (no short temp), so the angle is not wrapped.
+        let yaw = i32::from(pm.cmd.angles[YAW]) + i32::from(pm.s.delta_angles[YAW]);
+        pm.viewangles[YAW] = yaw as f32 * (360.0 / 65536.0);
+        pm.viewangles[PITCH] = 0.0;
+        pm.viewangles[ROLL] = 0.0;
     } else {
         for i in 0..3 {
             let temp = pm.cmd.angles[i].wrapping_add(pm.s.delta_angles[i]);
@@ -1033,10 +1032,10 @@ fn pm_clamp_angles(pm: &mut Pmove, pml: &mut PmLocal) {
         }
     }
 
-    let (fwd, rgt, up) = angle_vectors(pm.viewangles);
+    // C also stores `up` in pml, but nothing reads it.
+    let (fwd, rgt, _up) = angle_vectors(pm.viewangles);
     pml.forward = fwd;
     pml.right = rgt;
-    pml.up = up;
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,7 +1049,8 @@ impl Pmove {
         // Clear per-frame outputs.
         self.viewangles = Vec3f::ZERO;
         self.viewheight = 0.0;
-        self.ground_entity = false;
+        self.ground_entity = None;
+        self.touchents.clear();
         self.watertype = 0;
         self.waterlevel = 0;
 
@@ -1074,7 +1074,7 @@ impl Pmove {
         pm_clamp_angles(self, &mut pml);
 
         if self.s.pm_type == PmType::Spectator {
-            pm_fly_move(self, &mut pml, false);
+            pm_fly_move(self, &mut pml);
             pm_snap_position(self, &pml);
             return;
         }
@@ -1114,8 +1114,7 @@ impl Pmove {
             }
 
             if msec >= self.s.pm_time {
-                self.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                self.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 self.s.pm_time = 0;
             } else {
                 self.s.pm_time -= msec;
@@ -1128,8 +1127,7 @@ impl Pmove {
             // Waterjump — no control, but falls.
             pml.velocity.z -= self.s.gravity as f32 * pml.frametime;
             if pml.velocity.z < 0.0 {
-                self.s.pm_flags &=
-                    !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
+                self.s.pm_flags &= !(PMF_TIME_WATERJUMP | PMF_TIME_LAND | PMF_TIME_TELEPORT);
                 self.s.pm_time = 0;
             }
             pm_step_slide_move(self, &mut pml);
@@ -1146,10 +1144,9 @@ impl Pmove {
                 }
                 angles[PITCH] /= 3.0;
 
-                let (fwd, rgt, up) = angle_vectors(angles);
+                let (fwd, rgt, _up) = angle_vectors(angles);
                 pml.forward = fwd;
                 pml.right = rgt;
-                pml.up = up;
 
                 pm_air_move(self, &mut pml);
             }
@@ -1192,63 +1189,39 @@ mod tests {
             viewheight: 0.0,
             mins: Vec3f::new(-16.0, -16.0, -24.0),
             maxs: Vec3f::new(16.0, 16.0, 32.0),
-            ground_entity: true,
+            ground_entity: Some(0),
+            touchents: Vec::new(),
             watertype: 0,
             waterlevel: 0,
-            trace: Box::new(|_start, _mins, _maxs, end| {
-                Trace {
-                    allsolid: false,
-                    startsolid: false,
-                    fraction: 1.0,
-                    endpos: end,
-                    plane: Plane::default(),
-                    surface: None,
-                    contents: 0,
-                    ent_index: None,
-                }
+            airaccelerate: 0.0,
+            trace: Box::new(|_start, _mins, _maxs, end| Trace {
+                allsolid: false,
+                startsolid: false,
+                fraction: 1.0,
+                endpos: end,
+                plane: Plane::default(),
+                surface: None,
+                contents: 0,
+                ent_index: None,
             }),
             pointcontents: Box::new(|_| 0),
         }
     }
 
     #[test]
-    fn fixed_point_roundtrip() {
-        // Convert float -> fixed -> float; verify precision within 0.125.
-        let values = [0.0f32, 1.0, -1.0, 123.456, -99.9, 0.125, 0.0625];
-        for &v in &values {
-            let fixed = (v * 8.0) as i16;
-            let back = fixed as f32 * 0.125;
-            assert!(
-                (back - v).abs() <= 0.125,
-                "roundtrip failed for {v}: got {back}"
-            );
-        }
-    }
-
-    #[test]
     fn clip_velocity_floor() {
-        // Clip velocity against a floor normal (0, 0, 1).
+        // C PM_ClipVelocity: backoff = -300 * 1.01 = -303, z = -300 + 303.
         let in_vel = Vec3f::new(100.0, 200.0, -300.0);
-        let normal = Vec3f::new(0.0, 0.0, 1.0);
-        let out = pm_clip_velocity(in_vel, normal, 1.01);
-        // Horizontal components should be preserved.
-        assert!((out.x - 100.0).abs() < 0.01);
-        assert!((out.y - 200.0).abs() < 0.01);
-        // Vertical should be near zero (was going into the floor).
-        assert!(out.z.abs() < 5.0, "z should be clipped, got {}", out.z);
+        let out = pm_clip_velocity(in_vel, Vec3f::Z, 1.01);
+        assert_eq!(out, Vec3f::new(100.0, 200.0, 3.0));
     }
 
     #[test]
     fn clip_velocity_wall() {
-        // Clip against a wall facing +X.
-        let in_vel = Vec3f::new(-200.0, 50.0, 0.0);
-        let normal = Vec3f::new(1.0, 0.0, 0.0);
-        let out = pm_clip_velocity(in_vel, normal, 1.01);
-        // X component (into the wall) should be zeroed or positive.
-        assert!(out.x >= 0.0, "x should be clipped, got {}", out.x);
-        // Y and Z should be preserved.
-        assert!((out.y - 50.0).abs() < 0.01);
-        assert!(out.z.abs() < 0.01);
+        // backoff = -200 * 1.01 = -202, x = -200 + 202; |z| < STOP_EPSILON -> 0.
+        let in_vel = Vec3f::new(-200.0, 50.0, 0.05);
+        let out = pm_clip_velocity(in_vel, Vec3f::X, 1.01);
+        assert_eq!(out, Vec3f::new(2.0, 50.0, 0.0));
     }
 
     #[test]
@@ -1259,16 +1232,16 @@ mod tests {
             frametime: 0.016,
             ..PmLocal::default()
         };
-        pm.ground_entity = true;
+        pm.ground_entity = Some(0);
 
-        let speed_before = pml.velocity.length();
         pm_friction(&mut pm, &mut pml);
-        let speed_after = pml.velocity.length();
 
-        assert!(
-            speed_after < speed_before,
-            "friction should reduce speed: {speed_before} -> {speed_after}"
-        );
+        // C PM_Friction on ground: control = speed (>= stopspeed),
+        // drop = control * pm_friction * frametime, scale = (speed - drop) / speed.
+        let speed = 200.0f32;
+        let scale = (speed - speed * PM_FRICTION * 0.016) / speed;
+        assert_eq!(pml.velocity, Vec3f::new(200.0 * scale, 0.0, 0.0));
+        assert!((pml.velocity.x - 180.8).abs() < 1e-3);
     }
 
     #[test]
@@ -1282,11 +1255,11 @@ mod tests {
         let wishdir = Vec3f::new(1.0, 0.0, 0.0);
         pm_accelerate(&mut pml, wishdir, 300.0, PM_ACCELERATE);
 
-        assert!(
-            pml.velocity.length() > 0.0,
-            "acceleration should add speed"
-        );
-        assert!(pml.velocity.x > 0.0, "should accelerate in +X");
+        // C PM_Accelerate: accelspeed = accel * frametime * wishspeed (48),
+        // below addspeed (300).
+        let accelspeed = PM_ACCELERATE * 0.016 * 300.0;
+        assert_eq!(pml.velocity, Vec3f::new(accelspeed, 0.0, 0.0));
+        assert!((accelspeed - 48.0).abs() < 1e-4);
     }
 
     #[test]
@@ -1323,7 +1296,7 @@ mod tests {
         pm_snap_position(&mut pm, &pml);
 
         // Verify origin snapped to 1/8 grid.
-        assert_eq!(pm.s.origin[0], 80);  // 10.0 * 8
+        assert_eq!(pm.s.origin[0], 80); // 10.0 * 8
         assert_eq!(pm.s.origin[1], 160); // 20.0 * 8
         assert_eq!(pm.s.origin[2], 0);
         assert_eq!(pm.s.velocity[0], 800); // 100.0 * 8
@@ -1363,5 +1336,777 @@ mod tests {
         assert_eq!(pm.cmd.forwardmove, 0);
         assert_eq!(pm.cmd.sidemove, 0);
         assert_eq!(pm.cmd.upmove, 0);
+        // PM_CheckDuck always ducks a dead player.
+        assert_ne!(pm.s.pm_flags & PMF_DUCKED, 0);
+        assert_eq!(pm.maxs.z, 4.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Branch coverage, values from pmove.c
+    // -----------------------------------------------------------------------
+
+    fn pml_facing_x(frametime: f32) -> PmLocal {
+        PmLocal {
+            forward: Vec3f::X,
+            right: Vec3f::NEG_Y,
+            frametime,
+            ..PmLocal::default()
+        }
+    }
+
+    /// Open-air trace that records nothing; panics if a test path must not trace.
+    fn no_trace() -> TraceFn {
+        Box::new(|_, _, _, _| panic!("unexpected trace"))
+    }
+
+    #[test]
+    fn water_move_without_input_drifts_down_at_half_of_60() {
+        let mut pm = make_test_pmove();
+        let mut pml = pml_facing_x(0.1);
+        pm_water_move(&mut pm, &mut pml);
+        // wishvel z = -60, wishspeed 60 * 0.5 = 30; accelspeed 10*0.1*30 = 30.
+        assert_eq!(pml.velocity, Vec3f::new(0.0, 0.0, -30.0));
+    }
+
+    #[test]
+    fn water_move_with_input_caps_wishspeed_at_maxspeed_then_halves_it() {
+        let mut pm = make_test_pmove();
+        pm.cmd.forwardmove = 400;
+        let mut pml = pml_facing_x(0.1);
+        pm_water_move(&mut pm, &mut pml);
+        // 400 -> PM_MAXSPEED 300 -> * 0.5 = 150; accelspeed 10*0.1*150 = 150.
+        assert_eq!(pml.velocity, Vec3f::new(150.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn water_currents_push_at_waterspeed_halved_when_wading_on_ground() {
+        let mut pm = make_test_pmove();
+        pm.watertype = CONTENTS_WATER | CONTENTS_CURRENT_0 | CONTENTS_CURRENT_UP;
+        pm.waterlevel = 1;
+        let pml = PmLocal::default();
+        let mut wishvel = Vec3f::ZERO;
+        pm_add_currents(&pm, &pml, &mut wishvel);
+        assert_eq!(wishvel, Vec3f::new(200.0, 0.0, 200.0));
+
+        pm.waterlevel = 2;
+        pm.watertype = CONTENTS_CURRENT_180 | CONTENTS_CURRENT_270 | CONTENTS_CURRENT_DOWN;
+        let mut wishvel = Vec3f::ZERO;
+        pm_add_currents(&pm, &pml, &mut wishvel);
+        assert_eq!(wishvel, Vec3f::new(-400.0, -400.0, -400.0));
+    }
+
+    #[test]
+    fn conveyor_ground_contents_push_at_100_only_on_ground() {
+        let mut pm = make_test_pmove();
+        let pml = PmLocal {
+            ground_contents: CONTENTS_CURRENT_90 | CONTENTS_CURRENT_DOWN,
+            ..PmLocal::default()
+        };
+        let mut wishvel = Vec3f::ZERO;
+        pm_add_currents(&pm, &pml, &mut wishvel);
+        assert_eq!(wishvel, Vec3f::new(0.0, 100.0, -100.0));
+
+        pm.ground_entity = None;
+        let mut wishvel = Vec3f::ZERO;
+        pm_add_currents(&pm, &pml, &mut wishvel);
+        assert_eq!(wishvel, Vec3f::ZERO);
+    }
+
+    #[test]
+    fn ladder_sets_climb_speed_from_pitch_or_upmove_and_clamps_sideways() {
+        let cases = [
+            (-20.0, 400, 0, 200.0),
+            (20.0, 400, 0, -200.0),
+            (0.0, 0, 10, 200.0),
+            (0.0, 0, -10, -200.0),
+            (0.0, 400, 0, 0.0),
+        ];
+        for (pitch, forward, up, climb) in cases {
+            let mut pm = make_test_pmove();
+            pm.viewangles.x = pitch;
+            pm.cmd.forwardmove = forward;
+            pm.cmd.upmove = up;
+            let pml = PmLocal {
+                ladder: true,
+                ..PmLocal::default()
+            };
+            let mut wishvel = Vec3f::new(300.0, -300.0, 0.0);
+            pm_add_currents(&pm, &pml, &mut wishvel);
+            assert_eq!(
+                wishvel,
+                Vec3f::new(25.0, -25.0, climb),
+                "pitch {pitch} up {up}"
+            );
+        }
+        // Moving faster than 200 vertically: the ladder leaves wishvel alone.
+        let pm = make_test_pmove();
+        let pml = PmLocal {
+            ladder: true,
+            velocity: Vec3f::new(0.0, 0.0, 250.0),
+            ..PmLocal::default()
+        };
+        let mut wishvel = Vec3f::new(300.0, 0.0, 0.0);
+        pm_add_currents(&pm, &pml, &mut wishvel);
+        assert_eq!(wishvel, Vec3f::new(300.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn special_movement_finds_a_ladder_in_front() {
+        let mut pm = make_test_pmove();
+        pm.trace = Box::new(|start, _, _, end| Trace {
+            fraction: 0.5,
+            endpos: start + (end - start) * 0.5,
+            contents: CONTENTS_LADDER,
+            ..Trace::default()
+        });
+        let mut pml = pml_facing_x(0.1);
+        pm_check_special_movement(&mut pm, &mut pml);
+        assert!(pml.ladder);
+
+        // pm_time set: C returns before touching pml.ladder.
+        pm.s.pm_time = 5;
+        pm.trace = no_trace();
+        pm_check_special_movement(&mut pm, &mut pml);
+        assert!(pml.ladder);
+    }
+
+    #[test]
+    fn special_movement_waterjumps_onto_a_ledge_with_room_above() {
+        let mut pm = make_test_pmove();
+        pm.waterlevel = 2;
+        // Solid 30 units ahead at z+4, empty at z+20.
+        pm.pointcontents = Box::new(|p| if p.z < 10.0 { CONTENTS_SOLID } else { 0 });
+        let mut pml = pml_facing_x(0.1);
+        pm_check_special_movement(&mut pm, &mut pml);
+        assert_eq!(pml.velocity, Vec3f::new(50.0, 0.0, 350.0));
+        assert_ne!(pm.s.pm_flags & PMF_TIME_WATERJUMP, 0);
+        assert_eq!(pm.s.pm_time, 255);
+
+        // Blocked above the ledge: no jump.
+        let mut pm = make_test_pmove();
+        pm.waterlevel = 2;
+        pm.pointcontents = Box::new(|_| CONTENTS_SOLID);
+        let mut pml = pml_facing_x(0.1);
+        pm_check_special_movement(&mut pm, &mut pml);
+        assert_eq!(pml.velocity, Vec3f::ZERO);
+        assert_eq!(pm.s.pm_flags & PMF_TIME_WATERJUMP, 0);
+    }
+
+    #[test]
+    fn waterjump_frame_falls_with_gravity_and_ends_once_moving_down() {
+        for (vz_fixed, ends) in [(8i16, true), (3200, false)] {
+            let mut pm = make_test_pmove();
+            pm.ground_entity = None;
+            pm.s.pm_flags = PMF_TIME_WATERJUMP;
+            pm.s.pm_time = 255;
+            pm.s.velocity = [0, 0, vz_fixed];
+            pm.cmd.msec = 16;
+            pm.cmd.forwardmove = 400; // ignored: no control during a waterjump
+            pm.run();
+            // pm_time drops by msec >> 3 = 2 unless the jump ended.
+            assert_eq!(pm.s.pm_flags & PMF_TIME_WATERJUMP == 0, ends);
+            assert_eq!(pm.s.pm_time, if ends { 0 } else { 253 });
+            // vz - gravity * frametime, snapped to eighths.
+            let vz = f32::from(vz_fixed) * 0.125 - 800.0 * 0.016;
+            assert_eq!(pm.s.velocity, [0, 0, (vz * 8.0) as i16]);
+        }
+    }
+
+    #[test]
+    fn dead_move_slides_with_20_units_of_extra_friction() {
+        let pm = make_test_pmove();
+        let mut pml = PmLocal {
+            velocity: Vec3f::new(30.0, 40.0, 0.0),
+            ..PmLocal::default()
+        };
+        pm_dead_move(&pm, &mut pml);
+        // C: VectorNormalize (multiply by 1/len), then scale by len - 20.
+        let ilength = 1.0f32 / 50.0;
+        assert_eq!(
+            pml.velocity,
+            Vec3f::new(30.0 * ilength * 30.0, 40.0 * ilength * 30.0, 0.0)
+        );
+
+        // In the air nothing changes.
+        let mut pm = make_test_pmove();
+        pm.ground_entity = None;
+        let mut pml = PmLocal {
+            velocity: Vec3f::new(30.0, 40.0, 0.0),
+            ..PmLocal::default()
+        };
+        pm_dead_move(&pm, &mut pml);
+        assert_eq!(pml.velocity, Vec3f::new(30.0, 40.0, 0.0));
+    }
+
+    #[test]
+    fn gib_uses_the_small_hull_and_low_view() {
+        let mut pm = make_test_pmove();
+        pm.s.pm_type = PmType::Gib;
+        pm.trace = no_trace();
+        pm_check_duck(&mut pm, &PmLocal::default());
+        assert_eq!((pm.mins.z, pm.maxs.z, pm.viewheight), (0.0, 16.0, 8.0));
+        assert_eq!((pm.mins.x, pm.maxs.y), (-16.0, 16.0));
+    }
+
+    #[test]
+    fn freeze_returns_before_any_movement_or_trace() {
+        let mut pm = make_test_pmove();
+        pm.s.pm_type = PmType::Freeze;
+        pm.s.origin = [80, 160, 240];
+        pm.s.velocity = [800, 0, 0];
+        pm.cmd.forwardmove = 400;
+        pm.cmd.msec = 16;
+        pm.trace = no_trace();
+        pm.run();
+        assert_eq!(pm.s.origin, [80, 160, 240]);
+        assert_eq!(pm.s.velocity, [800, 0, 0]);
+        assert_eq!(pm.cmd.forwardmove, 0);
+    }
+
+    #[test]
+    fn initial_snap_failure_leaves_the_last_candidate_like_c() {
+        let mut pm = make_test_pmove();
+        pm.s.origin = [80, 160, 240];
+        pm.trace = Box::new(|_, _, _, end| Trace {
+            allsolid: true,
+            startsolid: true,
+            fraction: 0.0,
+            endpos: end,
+            ..Trace::default()
+        });
+        let mut pml = PmLocal {
+            origin: Vec3f::new(1.0, 2.0, 3.0),
+            ..PmLocal::default()
+        };
+        pm_initial_snap_position(&mut pm, &mut pml);
+        // All 27 candidates fail; the loop's last write was offsets (1, 1, 1).
+        assert_eq!(pm.s.origin, [81, 161, 241]);
+        assert_eq!(pml.origin, Vec3f::new(1.0, 2.0, 3.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // C parity: float paths
+    // -----------------------------------------------------------------------
+
+    /// C AngleVectors (shared.c): `deg * (M_PI*2/360)` in double stored to a
+    /// float, then `(float)sin((double)angle)`; products in float.
+    fn c_angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+        let trig = |deg: f32| {
+            let angle = (f64::from(deg) * (std::f64::consts::PI * 2.0 / 360.0)) as f32;
+            (f64::from(angle).sin() as f32, f64::from(angle).cos() as f32)
+        };
+        let (sy, cy) = trig(angles.y);
+        let (sp, cp) = trig(angles.x);
+        let (sr, cr) = trig(angles.z);
+        (
+            Vec3f::new(cp * cy, cp * sy, -sp),
+            Vec3f::new(
+                -sr * sp * cy + -cr * -sy,
+                -sr * sp * sy + -cr * cy,
+                -sr * cp,
+            ),
+            Vec3f::new(cr * sp * cy + -sr * -sy, cr * sp * sy + -sr * cy, cr * cp),
+        )
+    }
+
+    fn bits(v: Vec3f) -> [u32; 3] {
+        [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]
+    }
+
+    #[test]
+    fn angle_vectors_match_c_double_path_for_all_short_angles() {
+        let mut mismatches = 0;
+        for s in i16::MIN..=i16::MAX {
+            let deg = short2angle(s);
+            // Full view angles, and the pitch/3 path used by Pmove::run.
+            for angles in [Vec3f::new(deg, deg, deg), Vec3f::new(deg / 3.0, deg, 0.0)] {
+                let (f, r, u) = angle_vectors(angles);
+                let (cf, cr, cu) = c_angle_vectors(angles);
+                if bits(f) != bits(cf) || bits(r) != bits(cr) || bits(u) != bits(cu) {
+                    mismatches += 1;
+                }
+            }
+        }
+        assert_eq!(mismatches, 0);
+    }
+
+    #[test]
+    fn vector_normalize_multiplies_by_reciprocal_like_c() {
+        let mut v = Vec3f::new(3.0, 7.0, 0.0);
+        let len = vector_normalize(&mut v);
+        let expected_len = (3.0f32 * 3.0 + 7.0 * 7.0 + 0.0 * 0.0).sqrt();
+        let il = 1.0 / expected_len;
+        assert_eq!(len.to_bits(), expected_len.to_bits());
+        assert_eq!(bits(v), bits(Vec3f::new(3.0 * il, 7.0 * il, 0.0)));
+
+        let mut zero = Vec3f::ZERO;
+        assert_eq!(vector_normalize(&mut zero), 0.0);
+        assert_eq!(zero, Vec3f::ZERO);
+    }
+
+    #[test]
+    fn ground_accelerate_wishdir_uses_reciprocal_normalize() {
+        // Find a move where `v / len` and `v * (1/len)` round differently;
+        // C VectorNormalize multiplies by the reciprocal.
+        let frametime = 0.016f32;
+        let expected_velocity = |f: f32, s: f32| {
+            let len = (f * f + s * s).sqrt();
+            let il = 1.0 / len;
+            let accelspeed = PM_ACCELERATE * frametime * len.min(PM_MAXSPEED);
+            Vec3f::new(f * il * accelspeed, s * il * accelspeed, 0.0)
+        };
+        let divided_velocity = |f: f32, s: f32| {
+            let len = (f * f + s * s).sqrt();
+            let accelspeed = PM_ACCELERATE * frametime * len.min(PM_MAXSPEED);
+            Vec3f::new(f / len * accelspeed, s / len * accelspeed, 0.0)
+        };
+        let (fmove, smove) = (1..200i16)
+            .flat_map(|f| (1..200i16).map(move |s| (f, s)))
+            .find(|&(f, s)| {
+                let (f, s) = (f32::from(f), -f32::from(s));
+                bits(expected_velocity(f, s)) != bits(divided_velocity(f, s))
+            })
+            .expect("a divergent move exists");
+
+        let mut pm = make_test_pmove();
+        pm.cmd.forwardmove = fmove;
+        pm.cmd.sidemove = smove;
+        let mut pml = PmLocal {
+            forward: Vec3f::new(1.0, 0.0, 0.0),
+            right: Vec3f::new(0.0, -1.0, 0.0),
+            frametime,
+            ..PmLocal::default()
+        };
+        pm_air_move(&mut pm, &mut pml);
+        let expected = expected_velocity(f32::from(fmove), -f32::from(smove));
+        assert_eq!(
+            bits(pml.velocity),
+            bits(expected),
+            "move ({fmove}, {smove})"
+        );
+    }
+
+    /// Ground trace that always hits a plane with the given normal z.
+    fn ground_trace(normal_z: f32) -> TraceFn {
+        let normal_y = (1.0 - normal_z * normal_z).sqrt();
+        Box::new(move |start, _mins, _maxs, _end| Trace {
+            allsolid: false,
+            startsolid: false,
+            fraction: 0.0,
+            endpos: start,
+            plane: Plane {
+                normal: Vec3f::new(0.0, normal_y, normal_z),
+                dist: 0.0,
+                plane_type: 3,
+                sign_bits: 0,
+            },
+            surface: None,
+            contents: CONTENTS_SOLID,
+            ent_index: Some(0),
+        })
+    }
+
+    #[test]
+    fn plane_normal_z_exactly_0_7f_is_not_ground() {
+        // C compares `normal[2] < 0.7` in double: 0.7f32 (0.69999998) < 0.7.
+        let mut pm = make_test_pmove();
+        pm.trace = ground_trace(0.7);
+        let mut pml = PmLocal::default();
+        pm_categorize_position(&mut pm, &mut pml);
+        assert!(pm.ground_entity.is_none());
+        assert_eq!(pm.s.pm_flags & PMF_ON_GROUND, 0);
+
+        pm.trace = ground_trace(0.7000001);
+        pm_categorize_position(&mut pm, &mut pml);
+        assert!(pm.ground_entity.is_some());
+    }
+
+    #[test]
+    fn step_up_onto_plane_with_normal_z_0_7f_is_rejected() {
+        // Blocked at floor level, free once raised; the push-down lands on a
+        // plane whose normal z is 0.7f32, which C treats as too steep.
+        let mut pm = make_test_pmove();
+        pm.trace = Box::new(|start, _mins, _maxs, end| {
+            let mut t = Trace {
+                fraction: 1.0,
+                endpos: end,
+                ent_index: Some(0),
+                ..Trace::default()
+            };
+            if start == end {
+                return t;
+            }
+            if end.z < start.z {
+                t.fraction = 0.5;
+                t.endpos = start + (end - start) * 0.5;
+                t.plane.normal = Vec3f::new(0.0, (1.0f32 - 0.49).sqrt(), 0.7);
+            } else if start.z < 1.0 {
+                t.fraction = 0.0;
+                t.endpos = start;
+                t.plane.normal = Vec3f::new(-1.0, 0.0, 0.0);
+            }
+            t
+        });
+        let mut pml = PmLocal {
+            velocity: Vec3f::new(100.0, 0.0, 0.0),
+            frametime: 0.1,
+            ..PmLocal::default()
+        };
+        pm_step_slide_move(&mut pm, &mut pml);
+        assert_eq!(pml.origin, Vec3f::ZERO);
+    }
+
+    // -----------------------------------------------------------------------
+    // C parity: control flow and integer wrapping
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn spectator_without_input_does_not_coast() {
+        // C PM_FlyMove returns before moving when addspeed <= 0.
+        let mut pm = make_test_pmove();
+        pm.s.pm_type = PmType::Spectator;
+        pm.s.velocity = [200 * 8, 0, 0];
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.s.origin, [0, 0, 0]);
+        // Friction only: 200 - 200 * 9 * 0.016 = 171.2 u/s.
+        assert_eq!(pm.s.velocity[0], (171.2f32 * 8.0) as i16);
+    }
+
+    #[test]
+    fn snap_velocity_and_origin_wrap_like_c_short() {
+        let mut pm = make_test_pmove();
+        let pml = PmLocal {
+            origin: Vec3f::new(4096.0, 0.0, 0.0),
+            velocity: Vec3f::new(0.0, 0.0, -5000.0),
+            ..PmLocal::default()
+        };
+        pm_snap_position(&mut pm, &pml);
+        assert_eq!(pm.s.velocity[2], (-40000i32) as i16);
+        assert_eq!(pm.s.origin[0], i16::MIN);
+    }
+
+    #[test]
+    fn snap_jitter_at_i16_max_wraps_instead_of_panicking() {
+        let mut pm = make_test_pmove();
+        // Only the wrapped position is free, so the +1 jitter must be tried.
+        pm.trace = Box::new(|start, _mins, _maxs, end| Trace {
+            allsolid: start.x != -4096.0,
+            endpos: end,
+            ..Trace::default()
+        });
+        let pml = PmLocal {
+            origin: Vec3f::new(4095.9, 0.0, 0.0),
+            ..PmLocal::default()
+        };
+        pm_snap_position(&mut pm, &pml);
+        assert_eq!(pm.s.origin[0], i16::MIN);
+    }
+
+    #[test]
+    fn initial_snap_at_i16_max_wraps_instead_of_panicking() {
+        let mut pm = make_test_pmove();
+        pm.trace = Box::new(|start, _mins, _maxs, end| Trace {
+            allsolid: start.x != -4096.0,
+            endpos: end,
+            ..Trace::default()
+        });
+        pm.s.origin = [i16::MAX, 0, 0];
+        let mut pml = PmLocal::default();
+        pm_initial_snap_position(&mut pm, &mut pml);
+        assert_eq!(pm.s.origin[0], i16::MIN);
+        assert_eq!(pml.origin.x, -4096.0);
+    }
+
+    #[test]
+    fn snap_falls_back_to_previous_origin_when_all_jitters_are_solid() {
+        let mut pm = make_test_pmove();
+        pm.trace = Box::new(|_start, _mins, _maxs, end| Trace {
+            allsolid: true,
+            endpos: end,
+            ..Trace::default()
+        });
+        let pml = PmLocal {
+            origin: Vec3f::new(10.06, 20.0, 30.0),
+            previous_origin: [1, 2, 3],
+            ..PmLocal::default()
+        };
+        pm_snap_position(&mut pm, &pml);
+        assert_eq!(pm.s.origin, [1, 2, 3]);
+    }
+
+    #[test]
+    fn teleport_yaw_uses_full_int_sum_like_c() {
+        let mut pm = make_test_pmove();
+        pm.s.pm_flags |= PMF_TIME_TELEPORT;
+        pm.cmd.angles[YAW] = 30000;
+        pm.s.delta_angles[YAW] = 30000;
+        let mut pml = PmLocal::default();
+        pm_clamp_angles(&mut pm, &mut pml);
+        assert_eq!(pm.viewangles.y, 60000.0 * (360.0 / 65536.0));
+        assert_eq!(pm.viewangles.x, 0.0);
+    }
+
+    #[test]
+    fn clamp_angles_limits_downward_pitch_to_89() {
+        let mut pm = make_test_pmove();
+        let mut pml = PmLocal::default();
+        pm.cmd.angles[PITCH] = (100.0f32 * 65536.0 / 360.0) as i16;
+        pm_clamp_angles(&mut pm, &mut pml);
+        assert_eq!(pm.viewangles.x, 89.0);
+        // A short angle is never >= 180 degrees, so C leaves upward pitch
+        // (negative) alone; the 271 branch is unreachable from a usercmd.
+        pm.cmd.angles[PITCH] = -18204;
+        pm_clamp_angles(&mut pm, &mut pml);
+        assert_eq!(pm.viewangles.x, short2angle(-18204));
+    }
+
+    #[test]
+    fn air_accelerate_uses_pm_accelerate_when_enabled() {
+        // C PM_AirMove: `if (pm_airaccelerate) PM_AirAccelerate(wishdir,
+        // wishspeed, pm_accelerate)`; wishspd is capped at 30.
+        let mut pm = make_test_pmove();
+        pm.ground_entity = None;
+        pm.airaccelerate = 1.0;
+        pm.cmd.forwardmove = 300;
+        let mut pml = PmLocal {
+            forward: Vec3f::new(1.0, 0.0, 0.0),
+            right: Vec3f::new(0.0, -1.0, 0.0),
+            frametime: 0.016,
+            ..PmLocal::default()
+        };
+        pm_air_move(&mut pm, &mut pml);
+        // min(addspeed 30, 10 * 300 * 0.016 = 48) = 30
+        assert_eq!(pml.velocity.x, 30.0);
+    }
+
+    #[test]
+    fn air_move_without_airaccelerate_uses_accel_1() {
+        let mut pm = make_test_pmove();
+        pm.ground_entity = None;
+        pm.cmd.forwardmove = 300;
+        let mut pml = PmLocal {
+            forward: Vec3f::new(1.0, 0.0, 0.0),
+            right: Vec3f::new(0.0, -1.0, 0.0),
+            frametime: 0.016,
+            ..PmLocal::default()
+        };
+        pm_air_move(&mut pm, &mut pml);
+        assert_eq!(pml.velocity.x, 1.0 * 0.016 * 300.0);
+        assert_eq!(pml.velocity.z, -800.0 * 0.016);
+    }
+
+    #[test]
+    fn pm_time_counts_down_in_eighths_of_msec() {
+        let mut pm = make_test_pmove();
+        pm.trace = ground_trace(1.0);
+        pm.s.pm_flags = PMF_ON_GROUND | PMF_TIME_LAND;
+        pm.s.pm_time = 10;
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.s.pm_time, 8);
+        pm.cmd.msec = 4; // 4 >> 3 == 0, C still counts 1
+        pm.run();
+        assert_eq!(pm.s.pm_time, 7);
+        pm.s.pm_time = 1;
+        pm.run();
+        assert_eq!(pm.s.pm_time, 0);
+        assert_eq!(pm.s.pm_flags & PMF_TIME_LAND, 0);
+    }
+
+    #[test]
+    fn landing_sets_land_time_18_or_25_by_fall_speed() {
+        for (vz, expected) in [(-300.0, 18), (-500.0, 25)] {
+            let mut pm = make_test_pmove();
+            pm.s.pm_flags = 0;
+            pm.trace = ground_trace(1.0);
+            let mut pml = PmLocal {
+                velocity: Vec3f::new(0.0, 0.0, vz),
+                ..PmLocal::default()
+            };
+            pm_categorize_position(&mut pm, &mut pml);
+            assert_ne!(pm.s.pm_flags & PMF_TIME_LAND, 0);
+            assert_eq!(pm.s.pm_time, expected);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pmove::run over real BSP collision
+    // -----------------------------------------------------------------------
+
+    use crate::collision::tests::build_floor_bsp;
+    use crate::collision::CollisionMap;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use q2_shared::constants::MASK_PLAYERSOLID;
+
+    /// Resting height on the floor BSP in 1/8 units. A hull exactly touching
+    /// the floor (z = 24.0) counts as inside it for C CM_TestBoxInBrush, so
+    /// PM_SnapPosition settles one eighth higher.
+    const REST_Z: i16 = 24 * 8 + 1;
+
+    /// Pmove on the floor BSP (solid below z=0). World hits report the world
+    /// entity via `world_trace`, as C CL_PMTrace does. `step` adds a box
+    /// entity, merged the way SV_ClipMoveToEntities merges entity traces.
+    fn pmove_on_floor(origin_z: i16, step: Option<(Vec3f, Vec3f)>) -> Pmove {
+        let mut cm = CollisionMap::new();
+        cm.load_map(&build_floor_bsp()).unwrap();
+        let cm = Rc::new(RefCell::new(cm));
+        let cm2 = cm.clone();
+        let mut pm = make_test_pmove();
+        pm.s.pm_flags = 0;
+        pm.ground_entity = None;
+        pm.s.origin = [0, 0, origin_z];
+        pm.trace = Box::new(move |start, mins, maxs, end| {
+            let mut cm = cm2.borrow_mut();
+            let mut t = cm.world_trace(start, mins, maxs, end, MASK_PLAYERSOLID);
+            if let Some((bmins, bmaxs)) = step {
+                let h = cm.headnode_for_box(bmins, bmaxs);
+                let tb = cm.box_trace(start, end, mins, maxs, h, MASK_PLAYERSOLID);
+                if tb.allsolid || tb.fraction < t.fraction {
+                    let world_startsolid = t.startsolid;
+                    t = tb;
+                    t.startsolid |= world_startsolid;
+                    t.ent_index = Some(1); // the step entity
+                } else if tb.startsolid {
+                    t.startsolid = true;
+                }
+            }
+            t
+        });
+        pm.pointcontents = Box::new(move |p| cm.borrow().point_contents(p, 0));
+        pm
+    }
+
+    #[test]
+    fn run_standing_on_floor_sets_on_ground_and_stays_put() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.run();
+        assert!(pm.ground_entity.is_some());
+        assert_ne!(pm.s.pm_flags & PMF_ON_GROUND, 0);
+        assert_eq!(pm.s.origin, [0, 0, REST_Z]);
+        assert_eq!(pm.viewheight, 22.0);
+    }
+
+    #[test]
+    fn run_on_the_floor_reports_the_world_as_ground_entity_and_touch() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.ground_entity, Some(0));
+        assert!(pm.touchents.contains(&0), "{:?}", pm.touchents);
+    }
+
+    #[test]
+    fn run_standing_on_an_entity_reports_its_number_as_ground_entity() {
+        let top = 16.0;
+        let rest = ((top + 24.0) * 8.0) as i16 + 1;
+        let step = (Vec3f::new(-64.0, -64.0, -8.0), Vec3f::new(64.0, 64.0, top));
+        let mut pm = pmove_on_floor(rest, Some(step));
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_eq!(pm.ground_entity, Some(1));
+        assert!(pm.touchents.contains(&1));
+    }
+
+    #[test]
+    fn run_walking_into_an_entity_adds_it_to_the_touch_list_once_per_hit() {
+        // A wall entity just ahead in +x, taller than a step.
+        let wall = (Vec3f::new(24.0, -64.0, 0.0), Vec3f::new(64.0, 64.0, 128.0));
+        let mut pm = pmove_on_floor(REST_Z, Some(wall));
+        pm.cmd.msec = 50;
+        pm.cmd.forwardmove = 400;
+        let mut touched = false;
+        for _ in 0..20 {
+            pm.run();
+            assert!(pm.touchents.len() <= MAXTOUCH);
+            touched |= pm.touchents.contains(&1);
+        }
+        assert!(touched, "the wall entity was touched");
+        assert_eq!(pm.ground_entity, Some(0), "still on the world floor");
+    }
+
+    #[test]
+    fn run_clears_last_frames_touches() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.touchents = vec![7; MAXTOUCH];
+        pm.cmd.msec = 16;
+        pm.run();
+        assert!(!pm.touchents.contains(&7));
+    }
+
+    #[test]
+    fn run_walking_accelerates_toward_maxspeed() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.cmd.forwardmove = 400;
+        pm.run();
+        // First frame from rest: accel = 10 * 0.016 * 300 = 48 u/s.
+        assert_eq!(pm.s.velocity[0], 48 * 8);
+        for _ in 0..60 {
+            pm.run();
+        }
+        assert_eq!(pm.s.velocity[0], 300 * 8);
+        assert!(pm.s.origin[0] > 0);
+        assert_eq!(pm.s.origin[2], REST_Z);
+    }
+
+    #[test]
+    fn run_jump_leaves_ground_with_270_minus_one_frame_of_gravity() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.run(); // settle on ground
+        pm.cmd.upmove = 200;
+        pm.run();
+        assert_eq!(pm.s.pm_flags & PMF_ON_GROUND, 0);
+        assert_ne!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        assert_eq!(pm.s.velocity[2], ((270.0f32 - 800.0 * 0.016) * 8.0) as i16);
+        // Holding jump does not jump again after landing.
+        assert!(pm.ground_entity.is_none());
+    }
+
+    #[test]
+    fn run_falling_player_lands_on_floor() {
+        let mut pm = pmove_on_floor(100 * 8, None);
+        pm.cmd.msec = 16;
+        for _ in 0..100 {
+            pm.run();
+        }
+        assert_ne!(pm.s.pm_flags & PMF_ON_GROUND, 0);
+        assert_eq!(pm.s.origin[2], REST_Z);
+        assert_eq!(pm.s.velocity[2], 0);
+    }
+
+    #[test]
+    fn run_walks_up_a_16_unit_step() {
+        let step = (
+            Vec3f::new(32.0, -500.0, 0.0),
+            Vec3f::new(500.0, 500.0, 16.0),
+        );
+        let mut pm = pmove_on_floor(REST_Z, Some(step));
+        pm.cmd.msec = 16;
+        pm.cmd.forwardmove = 400;
+        for _ in 0..40 {
+            pm.run();
+        }
+        assert!(pm.s.origin[0] > 48 * 8, "x = {}", pm.s.origin[0]);
+        assert_eq!(pm.s.origin[2], REST_Z + 16 * 8);
+    }
+
+    #[test]
+    fn run_ducking_on_ground_shrinks_hull() {
+        let mut pm = pmove_on_floor(REST_Z, None);
+        pm.cmd.msec = 16;
+        pm.run();
+        pm.cmd.upmove = -200;
+        pm.run();
+        assert_ne!(pm.s.pm_flags & PMF_DUCKED, 0);
+        assert_eq!(pm.maxs.z, 4.0);
+        assert_eq!(pm.viewheight, -2.0);
+        pm.cmd.upmove = 0;
+        pm.run();
+        assert_eq!(pm.s.pm_flags & PMF_DUCKED, 0);
     }
 }

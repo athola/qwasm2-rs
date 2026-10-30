@@ -26,6 +26,9 @@ pub enum ServerState {
     Loading,
     /// Actively running.
     Game,
+    /// Showing a `.pcx` level such as `victory.pcx` (C `ss_pic`): no map,
+    /// no player in the game, but game frames still run.
+    Pic,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,18 +122,16 @@ pub struct Server {
     pub state: ServerState,
     /// Map name (e.g. `"base1"`).
     pub name: String,
-    /// Precached model paths.
-    pub models: Vec<String>,
     /// Configstrings indexed by the CS_* offsets from `q2-shared`.
     pub configstrings: Vec<String>,
     /// Entity baselines for delta compression.
     pub baselines: Vec<EntityState>,
     /// Frame counter, incremented each server frame.
     pub framenum: i32,
-    /// Current server time in seconds.
-    pub time: f32,
-    /// Duration of one server frame in seconds.
-    pub frametime: f32,
+    /// Game time in milliseconds of the last game frame (`framenum * 100`),
+    /// or the time the next frame is due right after a map load. Integer
+    /// milliseconds like C `sv.time`, so it never drifts.
+    pub time: u32,
 }
 
 impl Default for Server {
@@ -138,12 +139,10 @@ impl Default for Server {
         Self {
             state: ServerState::Dead,
             name: String::new(),
-            models: Vec::new(),
             configstrings: Vec::new(),
             baselines: Vec::new(),
             framenum: 0,
-            time: 0.0,
-            frametime: 0.0,
+            time: 0,
         }
     }
 }
@@ -156,30 +155,19 @@ impl Default for Server {
 ///
 /// Corresponds to `server_static_t` in the C reference. Challenge tracking,
 /// demo recording, and network entity ring-buffer fields are omitted for now.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ServerStatic {
     /// `true` once `SV_InitGame` has completed.
     pub initialized: bool,
-    /// Wall-clock time in seconds (always increasing).
-    pub realtime: f32,
+    /// Wall-clock time in milliseconds, clamped to stay within one game
+    /// frame of `Server::time` (C `svs.realtime`).
+    pub realtime: u32,
     /// The map command string (e.g. `"*intro.cin+base1"`).
     pub mapcmd: String,
     /// Per-slot client data; length == `max_clients`.
     pub clients: Vec<ServerClient>,
     /// Maximum number of client slots.
     pub max_clients: usize,
-}
-
-impl Default for ServerStatic {
-    fn default() -> Self {
-        Self {
-            initialized: false,
-            realtime: 0.0,
-            mapcmd: String::new(),
-            clients: Vec::new(),
-            max_clients: 0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +190,7 @@ mod tests {
 
         sv.state = ServerState::Game;
         sv.framenum = 1;
-        sv.time = 0.1;
+        sv.time = 100;
         assert_eq!(sv.state, ServerState::Game);
         assert_eq!(sv.framenum, 1);
     }
@@ -252,24 +240,11 @@ mod tests {
     }
 
     #[test]
-    fn server_frame_accumulation() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
-        sv.frametime = 0.1;
-
-        for _ in 0..10 {
-            sv.framenum += 1;
-            sv.time += sv.frametime;
-        }
-
-        assert_eq!(sv.framenum, 10);
-        assert!((sv.time - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
     fn server_configstrings_and_baselines() {
-        let mut sv = Server::default();
-        sv.configstrings = vec![String::new(); 64];
+        let mut sv = Server {
+            configstrings: vec![String::new(); 64],
+            ..Default::default()
+        };
         sv.configstrings[0] = "base1".into();
         sv.configstrings[1] = "models/world.bsp".into();
 

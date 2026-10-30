@@ -1,8 +1,10 @@
 //! Entity system — `SlotMap`-backed entity storage.
 //!
 //! Replaces the flat `edict_t` array from the C engine with a safe,
-//! generational-index `SlotMap` that gives O(1) insert / remove / lookup
-//! and catches use-after-free at the type level.
+//! generational-index `SlotMap` that gives O(1) insert / remove / lookup.
+//! Freeing is soft, as in C G_FreeEdict: a freed entity keeps its slot and
+//! key (with `in_use == false`) until its number is reused, so code that
+//! must notice a free checks `is_live`, not whether the key resolves.
 
 use q2_shared::types::*;
 use slotmap::{new_key_type, SlotMap};
@@ -90,30 +92,27 @@ pub struct MoveInfo {
 /// A single animation frame callback.
 pub type AnimFrameFn = fn(&mut GameWorld, EntityKey, f32);
 
-/// Monster animation move definition (mmove_t).
-/// Specifies a range of frames with per-frame callbacks.
-#[derive(Debug, Clone)]
+/// One animation frame of a move. C ref: `mframe_t` (local.h).
+#[derive(Debug, Clone, Copy)]
+pub struct MonsterFrame {
+    /// AI movement for this frame (e.g., ai_walk, ai_run, ai_charge).
+    pub aifunc: Option<AnimFrameFn>,
+    /// Distance passed to `aifunc`, before `monsterinfo.scale`.
+    pub dist: f32,
+    /// Called after `aifunc` on this frame (fire, sounds, refire checks).
+    pub thinkfunc: Option<ThinkFn>,
+}
+
+/// Monster animation move definition. C ref: `mmove_t` (local.h).
+/// `frames[i]` belongs to frame `firstframe + i`; the tables are statics,
+/// like C's, so callbacks stay plain `fn` pointers.
+#[derive(Debug, Clone, Default)]
 pub struct MonsterMove {
     pub firstframe: i32,
     pub lastframe: i32,
-    /// Per-frame AI callback (e.g., ai_walk, ai_run, ai_charge).
-    pub frame_fn: Option<AnimFrameFn>,
-    /// Distance argument passed to frame_fn each frame.
-    pub dist: f32,
+    pub frames: &'static [MonsterFrame],
     /// Called when animation sequence completes.
     pub endfunc: Option<ThinkFn>,
-}
-
-impl Default for MonsterMove {
-    fn default() -> Self {
-        Self {
-            firstframe: 0,
-            lastframe: 0,
-            frame_fn: None,
-            dist: 0.0,
-            endfunc: None,
-        }
-    }
 }
 
 /// Monster AI callback types.
@@ -153,6 +152,13 @@ pub struct MonsterInfo {
     pub lefty: bool,
     pub idle_time: f32,
     pub linkcount: i32,
+    /// Until when other monsters notice this one is angry (C
+    /// `edict_t.show_hostile`). C keeps it on every edict, but only
+    /// monsters set it; a player reads as C's zero.
+    pub show_hostile: f32,
+    /// When the monster starts to drown or suffocate (C
+    /// `edict_t.air_finished`, which only monster code sets here).
+    pub air_finished: f32,
 
     pub power_armor_type: i32,
     pub power_armor_power: i32,
@@ -171,9 +177,18 @@ pub struct ClientPersistent {
     pub health: i32,
     pub max_health: i32,
     pub selected_item: i32,
-    pub inventory: [i32; 256], // MAX_ITEMS
-    pub weapon: Option<EntityKey>,
-    pub last_weapon: Option<EntityKey>,
+    pub inventory: [i32; crate::constants::MAX_ITEMS],
+    /// C `max_bullets`..`max_slugs`; Bandolier and Ammo Pack raise them.
+    pub ammo_max: crate::items::AmmoMax,
+    /// Item indices (C `gitem_t *`): an `EntityKey` would dangle once
+    /// `spawn_entities` rebuilds the storage.
+    pub weapon: Option<usize>,
+    pub last_weapon: Option<usize>,
+    /// C `savedFlags`: the FL_GODMODE, FL_NOTARGET and FL_POWER_ARMOR bits
+    /// SaveClientData carries to the next level.
+    pub saved_flags: crate::constants::EntityFlags,
+    /// C `pers.score`: a coop score carried across levels.
+    pub score: i32,
 }
 
 impl Default for ClientPersistent {
@@ -185,9 +200,13 @@ impl Default for ClientPersistent {
             health: 0,
             max_health: 0,
             selected_item: 0,
-            inventory: [0; 256],
+            inventory: [0; crate::constants::MAX_ITEMS],
+            // C InitClientPersistant.
+            ammo_max: crate::items::AMMO_MAX_DEFAULT,
             weapon: None,
             last_weapon: None,
+            saved_flags: crate::constants::EntityFlags::empty(),
+            score: 0,
         }
     }
 }
@@ -206,9 +225,24 @@ pub struct ClientRespawn {
 #[derive(Debug, Clone, Default)]
 pub struct ClientData {
     pub ps: PlayerState,
+    /// Last pmove result, to tell pmove to snap when something else moved
+    /// the player (C `gclient_t.old_pmove`).
+    pub old_pmove: PmoveState,
     pub ping: i32,
+    /// Until when the HUD shows the last pickup (C `pickup_msg_time`).
+    pub pickup_msg_time: f32,
     pub pers: ClientPersistent,
     pub resp: ClientRespawn,
+    /// Shots the silencer still muffles (C `silencer_shots`).
+    pub silencer_shots: i32,
+    /// Animation class playing; a higher one is not interrupted (C
+    /// `anim_priority`, `ANIM_*`).
+    pub anim_priority: i32,
+    /// Frame the playing animation stops on (C `anim_end`).
+    pub anim_end: i32,
+    /// Where the view bob cycle is; off the ground it does not change
+    /// (C `bobtime`).
+    pub bobtime: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +255,8 @@ pub struct GameEntityData {
     pub flags: EntityFlags,
     pub freetime: f32,
     pub classname: String,
+    /// Map "model" key (C `ent->model`): `*n` for brush entities.
+    pub model: String,
     pub spawnflags: i32,
     pub timestamp: f32,
 
@@ -228,13 +264,23 @@ pub struct GameEntityData {
     pub target: String,
     pub targetname: String,
     pub killtarget: String,
+    /// Fired instead of `target` when a monster dies (C `ent->deathtarget`).
+    pub deathtarget: String,
     pub message: String,
     pub team: String,
+    /// Map to change to (C `ent->map`, target_changelevel).
+    pub map: String,
     pub pathtarget: String,
     pub combattarget: String,
+    /// The entity `target` resolved to, for those that hold on to it (C
+    /// `target_ent`): the path_corner a func_train drives to.
+    pub target_ent: Option<EntityKey>,
 
     // -- entity references -------------------------------------------------
     pub ground_entity: Option<EntityKey>,
+    /// The ground entity's `linkcount` when it was stood on (C
+    /// `groundentity_linkcount`), to notice it moving.
+    pub groundentity_linkcount: i32,
     pub enemy: Option<EntityKey>,
     pub oldenemy: Option<EntityKey>,
     pub activator: Option<EntityKey>,
@@ -247,6 +293,9 @@ pub struct GameEntityData {
     // -- combat / health ---------------------------------------------------
     pub health: i32,
     pub max_health: i32,
+    /// Health at or below which a monster's die callback gibs instead of
+    /// playing a death. C ref: `edict_t.gib_health` (local.h).
+    pub gib_health: i32,
     pub deadflag: DeadFlag,
     pub takedamage: TakeDamage,
     pub dmg: i32,
@@ -262,6 +311,11 @@ pub struct GameEntityData {
     pub yaw_speed: f32,
     pub move_origin: Vec3f,
     pub move_angles: Vec3f,
+    /// Unit direction a mover opens along (C `movedir`, G_SetMovedir).
+    pub movedir: Vec3f,
+    /// C `pos1` / `pos2`: a turret breach's pitch and yaw limits.
+    pub pos1: Vec3f,
+    pub pos2: Vec3f,
 
     // -- timing ------------------------------------------------------------
     pub pain_debounce_time: f32,
@@ -270,6 +324,9 @@ pub struct GameEntityData {
     pub last_move_time: f32,
     pub nextthink: f32,
     pub touch_debounce_time: f32,
+    /// Until when power armor shows it took a hit (C `powerarmor_time`,
+    /// set by `CheckPowerArmor`, read by `M_SetEffects`).
+    pub powerarmor_time: f32,
 
     // -- sound -------------------------------------------------------------
     pub noise_index: i32,
@@ -287,6 +344,17 @@ pub struct GameEntityData {
     pub gravity: f32,        // per-entity gravity multiplier
     pub watertype: i32,
     pub waterlevel: i32,
+    /// Eye height above the origin (C `edict_t.viewheight`).
+    pub viewheight: f32,
+    /// How lit the entity is for monster sight: a player's from its
+    /// usercmd, 128 for a monster that just saw one (C `light_level`).
+    pub light_level: i32,
+    /// The player's own noise markers, made on first use (C `mynoise`
+    /// for PNOISE_SELF/WEAPON, `mynoise2` for PNOISE_IMPACT).
+    pub mynoise: Option<EntityKey>,
+    pub mynoise2: Option<EntityKey>,
+    /// When a player noise marker was last made (C `last_sound_time`).
+    pub last_sound_time: f32,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +383,11 @@ pub struct Entity {
 
     pub clipmask: i32,
     pub owner: Option<EntityKey>,
+    /// The areas the server put the entity in at its last link, 0 for
+    /// none (C `areanum`/`areanum2`, written by SV_LinkEdict); a door may
+    /// straddle two.
+    pub areanum: i32,
+    pub areanum2: i32,
 
     // -- physics --
     pub velocity: Vec3f,
@@ -335,8 +408,9 @@ pub struct Entity {
     // -- monster AI state --
     pub monsterinfo: Option<Box<MonsterInfo>>,
 
-    /// Only `Some` for player entities.
-    pub client: Option<ClientData>,
+    /// Slot in `GameWorld::clients` (entity number - 1), only `Some` for
+    /// player entities: C `ent->client` pointing into `game.clients`.
+    pub client: Option<usize>,
 
     /// Game-specific data from `local.h`.
     pub game: GameEntityData,
@@ -357,6 +431,8 @@ impl Default for Entity {
             size: Vec3f::ZERO,
             clipmask: 0,
             owner: None,
+            areanum: 0,
+            areanum2: 0,
             velocity: Vec3f::ZERO,
             avelocity: Vec3f::ZERO,
             prethink: None,
@@ -392,39 +468,165 @@ impl std::fmt::Debug for Entity {
 // Entity storage
 // ---------------------------------------------------------------------------
 
-/// `SlotMap`-backed entity storage.
+/// `SlotMap`-backed entity storage with C edict numbering.
 ///
-/// Provides O(1) insert, remove, and lookup with generational indices so
-/// stale keys are detected automatically.
+/// Every live entity also has a wire number (`state.number`, C's index into
+/// `g_edicts`): 0 is the world and `1..=max_clients` are the client slots,
+/// which `spawn` never hands out. Generational keys mean a key held across a
+/// slot's reuse goes stale instead of aliasing the new entity.
 pub struct EntityStorage {
     entities: SlotMap<EntityKey, Entity>,
     max_entities: usize,
+    /// Entity number -> key (C `g_edicts[n]`).
+    numbers: Vec<Option<EntityKey>>,
+    max_clients: usize,
+    /// `level.time`, for G_Spawn's "freed more than 0.5 s ago" reuse rule.
+    level_time: f32,
+}
+
+/// C G_FindFreeEdict policies.
+#[derive(Clone, Copy, PartialEq)]
+enum FreePolicy {
+    Default,
+    Desperate,
 }
 
 impl EntityStorage {
-    /// Create storage with room for up to `max_entities` entities.
+    /// Create storage with room for up to `max_entities` entity numbers,
+    /// including the world (number 0).
     pub fn new(max_entities: usize) -> Self {
         Self {
             entities: SlotMap::with_capacity_and_key(max_entities),
             max_entities,
+            numbers: vec![None; max_entities],
+            max_clients: 0,
+            level_time: 0.0,
         }
     }
 
-    /// Spawn a new default entity. Returns `None` if the storage is full.
+    /// Reserve numbers `1..=max_clients` for client entities.
+    pub fn set_max_clients(&mut self, max_clients: usize) {
+        self.max_clients = max_clients;
+    }
+
+    /// Current `level.time`, consulted when reusing freed slots.
+    pub fn set_level_time(&mut self, time: f32) {
+        self.level_time = time;
+    }
+
+    /// Spawn a new entity in the first free number above the client slots
+    /// (C G_Spawn). Returns `None` if every number is taken.
     pub fn spawn(&mut self) -> Option<EntityKey> {
-        if self.entities.len() >= self.max_entities {
+        let first = self.max_clients + 1;
+        let number = self
+            .find_free(first, FreePolicy::Default)
+            .or_else(|| (first..self.max_entities).find(|&n| self.numbers[n].is_none()))
+            .or_else(|| self.find_free(first, FreePolicy::Desperate))?;
+        self.init_at(number)
+    }
+
+    /// Spawn into a specific number: 0 for the world, `1..=max_clients` for
+    /// a client. `None` if the number is out of range or still in use.
+    pub fn spawn_numbered(&mut self, number: usize) -> Option<EntityKey> {
+        if number >= self.max_entities {
             return None;
+        }
+        if let Some(key) = self.numbers[number] {
+            if self.entities.get(key).is_some_and(|e| e.in_use) {
+                return None;
+            }
+        }
+        self.init_at(number)
+    }
+
+    /// First soft-freed number at or above `first` that `policy` allows.
+    fn find_free(&self, first: usize, policy: FreePolicy) -> Option<usize> {
+        (first..self.max_entities).find(|&n| {
+            let Some(ent) = self.numbers[n].and_then(|k| self.entities.get(k)) else {
+                return false;
+            };
+            !ent.in_use
+                && (policy == FreePolicy::Desperate
+                    || ent.game.freetime < 2.0
+                    || self.level_time - ent.game.freetime > 0.5)
+        })
+    }
+
+    /// C G_InitEdict on number `n`, replacing any freed entity there.
+    fn init_at(&mut self, number: usize) -> Option<EntityKey> {
+        if let Some(old) = self.numbers[number].take() {
+            self.entities.remove(old);
         }
         let ent = Entity {
             in_use: true,
+            state: EntityState {
+                number: number as i32,
+                ..Default::default()
+            },
+            game: GameEntityData {
+                gravity: 1.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        Some(self.entities.insert(ent))
+        let key = self.entities.insert(ent);
+        self.numbers[number] = Some(key);
+        Some(key)
     }
 
-    /// Remove an entity and free its slot for reuse.
+    /// C G_FreeEdict: clear the entity but keep its number until G_Spawn
+    /// reuses it, so clients don't see a freed entity morph into a new one.
+    pub fn soft_free(&mut self, key: EntityKey) {
+        let level_time = self.level_time;
+        if let Some(ent) = self.entities.get_mut(key) {
+            let number = ent.state.number;
+            *ent = Entity {
+                state: EntityState {
+                    number,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            ent.game.classname = "freed".to_string();
+            ent.game.freetime = level_time;
+        }
+    }
+
+    /// Remove an entity outright and release its number: a test helper for
+    /// a key that no longer names anything. C has no counterpart (G_FreeEdict
+    /// is `soft_free`), and lowering `num_edicts` here would break what
+    /// `GameExport` promises the server.
+    #[cfg(test)]
     pub fn free(&mut self, key: EntityKey) {
-        self.entities.remove(key);
+        if let Some(ent) = self.entities.remove(key) {
+            if let Some(slot) = usize::try_from(ent.state.number)
+                .ok()
+                .and_then(|n| self.numbers.get_mut(n))
+            {
+                if *slot == Some(key) {
+                    *slot = None;
+                }
+            }
+        }
+    }
+
+    /// The key holding entity number `n` (in use or soft-freed), if any.
+    /// `state.number` is public, so debug builds check here that it still
+    /// names this slot.
+    pub fn key_for_number(&self, n: usize) -> Option<EntityKey> {
+        let key = self.numbers.get(n).copied().flatten();
+        debug_assert!(
+            key.and_then(|k| self.entities.get(k))
+                .is_none_or(|e| usize::try_from(e.state.number) == Ok(n)),
+            "entity {n}'s state.number is out of step with its slot"
+        );
+        key
+    }
+
+    /// Keys of occupied numbers from `first` upward, in entity-number order
+    /// (C walks `g_edicts`). Includes soft-freed entities.
+    pub fn keys_from(&self, first: usize) -> impl Iterator<Item = EntityKey> + '_ {
+        self.numbers.iter().skip(first).filter_map(|k| *k)
     }
 
     /// Immutable lookup by key.
@@ -437,17 +639,23 @@ impl EntityStorage {
         self.entities.get_mut(key)
     }
 
-    /// Number of entities currently alive.
+    /// Number of occupied slots, including soft-freed entities whose number
+    /// has not been reused yet.
     pub fn count(&self) -> usize {
         self.entities.len()
     }
 
-    /// Iterate over all live entities.
+    /// `true` if `key` names an entity that is in use (C `ent->inuse`).
+    pub fn is_live(&self, key: EntityKey) -> bool {
+        self.entities.get(key).is_some_and(|e| e.in_use)
+    }
+
+    /// Iterate over every occupied slot (in use or soft-freed), in slot order.
     pub fn iter(&self) -> impl Iterator<Item = (EntityKey, &Entity)> {
         self.entities.iter()
     }
 
-    /// Mutably iterate over all live entities.
+    /// Mutably iterate over every occupied slot (in use or soft-freed).
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (EntityKey, &mut Entity)> {
         self.entities.iter_mut()
     }
@@ -460,6 +668,18 @@ impl EntityStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "state.number")]
+    fn a_number_out_of_step_with_its_slot_is_caught_on_lookup() {
+        // copy_to_body_que-style state copies must put the number back.
+        let mut storage = EntityStorage::new(16);
+        let key = storage.spawn().unwrap();
+        let number = storage.get(key).unwrap().state.number as usize;
+        storage.get_mut(key).unwrap().state.number = 9;
+        storage.key_for_number(number);
+    }
 
     #[test]
     fn entity_create_and_lookup() {
@@ -491,10 +711,90 @@ mod tests {
 
     #[test]
     fn entity_max_limit() {
-        let mut storage = EntityStorage::new(2);
+        // Number 0 is the world, which G_Spawn never hands out, so a
+        // three-slot table holds two spawned entities.
+        let mut storage = EntityStorage::new(3);
         let _k1 = storage.spawn().unwrap();
         let _k2 = storage.spawn().unwrap();
         assert!(storage.spawn().is_none(), "should return None when full");
+    }
+
+    fn number_of(storage: &EntityStorage, key: EntityKey) -> i32 {
+        storage.get(key).unwrap().state.number
+    }
+
+    #[test]
+    fn spawn_numbers_start_above_reserved_client_slots_like_g_spawn() {
+        let mut storage = EntityStorage::new(16);
+        storage.set_max_clients(4);
+        let a = storage.spawn().unwrap();
+        let b = storage.spawn().unwrap();
+        assert_eq!((number_of(&storage, a), number_of(&storage, b)), (5, 6));
+        assert_eq!(storage.key_for_number(5), Some(a));
+        assert_eq!(storage.key_for_number(6), Some(b));
+        assert_eq!(storage.key_for_number(1), None);
+    }
+
+    #[test]
+    fn spawn_numbered_places_world_and_clients_in_their_slots() {
+        let mut storage = EntityStorage::new(16);
+        storage.set_max_clients(4);
+        let world = storage.spawn_numbered(0).unwrap();
+        let client = storage.spawn_numbered(3).unwrap();
+        assert_eq!(number_of(&storage, world), 0);
+        assert_eq!(number_of(&storage, client), 3);
+        assert!(storage.get(client).unwrap().in_use);
+        // An in-use slot is not handed out twice; out of range is refused.
+        assert!(storage.spawn_numbered(3).is_none());
+        assert!(storage.spawn_numbered(16).is_none());
+    }
+
+    #[test]
+    fn soft_freed_slot_is_reused_only_after_half_a_second_like_g_spawn() {
+        let mut storage = EntityStorage::new(3);
+        let old = storage.spawn().unwrap();
+        storage.set_level_time(5.0);
+        storage.soft_free(old);
+        assert!(!storage.get(old).unwrap().in_use);
+
+        // Freed 0.4 s ago (and after the first 2 s): number 1 stays retired,
+        // so the next spawn takes number 2.
+        storage.set_level_time(5.4);
+        let fresh = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, fresh), 2);
+
+        // Table full now; the desperate policy reuses number 1 at once and
+        // the old key goes stale instead of aliasing the new entity.
+        let reused = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, reused), 1);
+        assert!(storage.get(old).is_none());
+        assert_eq!(storage.key_for_number(1), Some(reused));
+    }
+
+    #[test]
+    fn slot_freed_in_first_two_seconds_or_long_ago_is_reused_first() {
+        let mut storage = EntityStorage::new(8);
+        let early = storage.spawn().unwrap();
+        storage.set_level_time(1.0);
+        storage.soft_free(early); // freetime 1.0 < 2
+        let again = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, again), 1);
+
+        storage.set_level_time(10.0);
+        storage.soft_free(again);
+        storage.set_level_time(10.6);
+        let later = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, later), 1);
+    }
+
+    #[test]
+    fn free_releases_the_number_for_reuse() {
+        let mut storage = EntityStorage::new(8);
+        let key = storage.spawn().unwrap();
+        storage.free(key);
+        assert_eq!(storage.key_for_number(1), None);
+        let next = storage.spawn().unwrap();
+        assert_eq!(number_of(&storage, next), 1);
     }
 
     // -- Callback tests --
@@ -572,8 +872,11 @@ mod tests {
         let mm = MonsterMove {
             firstframe: 0,
             lastframe: 10,
-            frame_fn: None,
-            dist: 8.0,
+            frames: &[MonsterFrame {
+                aifunc: None,
+                dist: 8.0,
+                thinkfunc: None,
+            }],
             endfunc: None,
         };
         let mi = MonsterInfo {
@@ -583,7 +886,7 @@ mod tests {
         let cm = mi.currentmove.as_ref().unwrap();
         assert_eq!(cm.firstframe, 0);
         assert_eq!(cm.lastframe, 10);
-        assert_eq!(cm.dist, 8.0);
+        assert_eq!(cm.frames[0].dist, 8.0);
     }
 
     // -- LevelLocals / GameLocals tests --
@@ -599,7 +902,7 @@ mod tests {
     #[test]
     fn game_locals_default() {
         let gl = crate::world::GameLocals::default();
-        assert_eq!(gl.maxclients, 1);
+        assert_eq!(gl.maxclients(), 1);
         assert_eq!(gl.maxentities, 1024);
     }
 }

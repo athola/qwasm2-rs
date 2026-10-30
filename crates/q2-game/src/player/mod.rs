@@ -4,6 +4,7 @@
 //! `player/view.c` (1,426), `player/hud.c` (657), `player/trail.c` (175).
 
 pub mod client;
-pub mod view;
 pub mod hud;
 pub mod trail;
+pub mod view;
+pub mod weapon;

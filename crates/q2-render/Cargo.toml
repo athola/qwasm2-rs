@@ -1,13 +1,15 @@
 [package]
 name = "q2-render"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 q2-shared = { path = "../q2-shared" }
 q2-common = { path = "../q2-common" }
 q2-render-api = { path = "../q2-render-api" }
 glow = { workspace = true }
+bytemuck = "1.25"
 tracing = { workspace = true }
 
 [lints]

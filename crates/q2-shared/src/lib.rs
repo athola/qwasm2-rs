@@ -1,20 +1,17 @@
-pub mod types;
-pub mod constants;
-pub mod protocol;
+//! Qwasm2-rs: types, constants and protocol definitions shared by every crate
+//!
+//! # Unsafe Audit Status
+//! - Total unsafe blocks: 0
+//! - c2rust mechanical: 0
+//! - FFI boundary: 0
+//! - Performance: 0
+//! - Inherent: 0
 
-pub use types::*;
+pub mod constants;
+pub mod error;
+pub mod protocol;
+pub mod types;
+
 pub use constants::*;
 pub use protocol::*;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vec3_add() {
-        let a = Vec3f::new(1.0, 2.0, 3.0);
-        let b = Vec3f::new(4.0, 5.0, 6.0);
-        let c = a + b;
-        assert_eq!(c, Vec3f::new(5.0, 7.0, 9.0));
-    }
-}
+pub use types::*;

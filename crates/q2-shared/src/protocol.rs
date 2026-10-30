@@ -144,15 +144,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn svc_op_values() {
-        assert_eq!(SvcOp::Bad as u8, 0);
-        assert_eq!(SvcOp::Frame as u8, 20);
+    fn svc_op_values_follow_c_svc_ops_e() {
+        use SvcOp::*;
+        let c_order = [
+            Bad,
+            MuzzleFlash,
+            MuzzleFlash2,
+            TempEntity,
+            Layout,
+            Inventory,
+            Nop,
+            Disconnect,
+            Reconnect,
+            Sound,
+            Print,
+            StuffText,
+            ServerData,
+            ConfigString,
+            SpawnBaseline,
+            CenterPrint,
+            Download,
+            PlayerInfo,
+            PacketEntities,
+            DeltaPacketEntities,
+            Frame,
+        ];
+        for (c_value, op) in c_order.into_iter().enumerate() {
+            assert_eq!(op as usize, c_value, "{op:?}");
+            assert_eq!(SvcOp::try_from(c_value as u8), Ok(op));
+        }
     }
 
     #[test]
-    fn clc_op_values() {
-        assert_eq!(ClcOp::Bad as u8, 0);
-        assert_eq!(ClcOp::StringCmd as u8, 4);
+    fn clc_op_values_follow_c_clc_ops_e() {
+        use ClcOp::*;
+        for (c_value, op) in [Bad, Nop, Move, UserInfo, StringCmd]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(op as usize, c_value, "{op:?}");
+            assert_eq!(ClcOp::try_from(c_value as u8), Ok(op));
+        }
+    }
+
+    #[test]
+    fn update_flag_bits_match_c_u_defines() {
+        // (flag, bit) from common.h U_*; bit 13 is unused.
+        let c_bits = [
+            (UpdateFlags::ORIGIN1, 0),
+            (UpdateFlags::ORIGIN2, 1),
+            (UpdateFlags::ANGLE2, 2),
+            (UpdateFlags::ANGLE3, 3),
+            (UpdateFlags::FRAME8, 4),
+            (UpdateFlags::EVENT, 5),
+            (UpdateFlags::REMOVE, 6),
+            (UpdateFlags::MOREBITS1, 7),
+            (UpdateFlags::NUMBER16, 8),
+            (UpdateFlags::ORIGIN3, 9),
+            (UpdateFlags::ANGLE1, 10),
+            (UpdateFlags::MODEL, 11),
+            (UpdateFlags::RENDERFX8, 12),
+            (UpdateFlags::EFFECTS8, 14),
+            (UpdateFlags::MOREBITS2, 15),
+            (UpdateFlags::SKIN8, 16),
+            (UpdateFlags::FRAME16, 17),
+            (UpdateFlags::RENDERFX16, 18),
+            (UpdateFlags::EFFECTS16, 19),
+            (UpdateFlags::MODEL2, 20),
+            (UpdateFlags::MODEL3, 21),
+            (UpdateFlags::MODEL4, 22),
+            (UpdateFlags::MOREBITS3, 23),
+            (UpdateFlags::OLDORIGIN, 24),
+            (UpdateFlags::SKIN16, 25),
+            (UpdateFlags::SOUND, 26),
+            (UpdateFlags::SOLID, 27),
+        ];
+        for (flag, bit) in c_bits {
+            assert_eq!(flag.bits(), 1 << bit, "{flag:?}");
+        }
+        assert!(!UpdateFlags::all().contains(UpdateFlags::from_bits_retain(1 << 13)));
+    }
+
+    #[test]
+    fn player_state_flag_bits_match_c_ps_defines() {
+        let c_order = [
+            PlayerStateFlags::M_TYPE,
+            PlayerStateFlags::M_ORIGIN,
+            PlayerStateFlags::M_VELOCITY,
+            PlayerStateFlags::M_TIME,
+            PlayerStateFlags::M_FLAGS,
+            PlayerStateFlags::M_GRAVITY,
+            PlayerStateFlags::M_DELTA_ANGLES,
+            PlayerStateFlags::VIEWOFFSET,
+            PlayerStateFlags::VIEWANGLES,
+            PlayerStateFlags::KICKANGLES,
+            PlayerStateFlags::BLEND,
+            PlayerStateFlags::FOV,
+            PlayerStateFlags::WEAPONINDEX,
+            PlayerStateFlags::WEAPONFRAME,
+            PlayerStateFlags::RDFLAGS,
+        ];
+        for (bit, flag) in c_order.into_iter().enumerate() {
+            assert_eq!(flag.bits(), 1 << bit, "{flag:?}");
+        }
     }
 
     #[test]

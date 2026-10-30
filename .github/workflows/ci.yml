@@ -1,15 +1,98 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main, feat/playable-prototype]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Read by the Makefile: fail if Cargo.lock is out of date instead of rewriting it.
+  CARGO_FLAGS: --locked
+
 jobs:
-  check:
+  rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # Installs the toolchain, components and wasm32 target pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: make fmt-check
+      - run: make lint
+      - run: make check
+      # The map-data tests (map_load, player_move, PVS, gl3 stock maps) return
+      # early without pak0.pak, so fetch the demo pak before running them.
+      - name: Read demo pak checksum
+        id: demo
+        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+      - name: Restore demo pak0.pak
+        id: pak
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          targets: wasm32-unknown-unknown
-          components: clippy
-      - run: cargo check --workspace
-      - run: cargo check --workspace --target wasm32-unknown-unknown --lib --exclude q2-net
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test --workspace
+          path: gamedata/baseq2/pak0.pak
+          key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
+      - name: Download demo pak0.pak
+        if: steps.pak.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          make gamedata-demo
+      # Fail loudly rather than let the map-data tests skip as green no-ops.
+      - run: test -f gamedata/baseq2/pak0.pak
+      - run: make test
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-audit@0.22.1
+      - run: cargo audit
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: wasm-pack@0.14.0
+      # The map-loading spec routes the pak request to the demo pak0.pak.
+      - name: Read demo pak checksum
+        id: demo
+        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+      - name: Restore demo pak0.pak
+        id: pak
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: gamedata/baseq2/pak0.pak
+          key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
+      - name: Download demo pak0.pak
+        if: steps.pak.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y p7zip-full
+          make gamedata-demo
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('tests/browser/package-lock.json') }}
+      # Builds the release wasm bundle (exercising the bundler's glue patching) and runs Playwright.
+      - run: make test-browser PLAYWRIGHT_INSTALL_FLAGS=--with-deps
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: playwright-test-results
+          path: tests/browser/test-results
