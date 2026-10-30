@@ -7,16 +7,11 @@
 //! and `gl3/gl3_model.c` / `files/models.c` for the loading logic.
 
 use q2_common::bsp_file::{
-    BspHeader, LUMP_EDGES, LUMP_FACES, LUMP_LEAFFACES, LUMP_LIGHTING, LUMP_SURFEDGES,
-    LUMP_VERTEXES, LUMP_VISIBILITY,
+    BspHeader, DEDGE_SIZE, DFACE_SIZE, DVERTEX_SIZE, LUMP_EDGES, LUMP_FACES, LUMP_LEAFFACES,
+    LUMP_LIGHTING, LUMP_SURFEDGES, LUMP_VERTEXES, LUMP_VISIBILITY,
 };
 use q2_common::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
-
-// On-disk struct sizes (bytes). Used for lump validation.
-const DISK_VERTEX_SIZE: usize = 12; // 3 * f32
-const DISK_EDGE_SIZE: usize = 4; // 2 * u16
-const DISK_FACE_SIZE: usize = 20; // u16 + i16 + i32 + i16 + i16 + 4*u8 + i32
 
 // ---------------------------------------------------------------------------
 // Parsed BSP types
@@ -146,28 +141,6 @@ fn try_read_vec3(data: &[u8], off: usize) -> Q2Result<Vec3f> {
 }
 
 // ---------------------------------------------------------------------------
-// Lump records
-// ---------------------------------------------------------------------------
-
-/// The fixed-size records of lump `idx`. `BspHeader::parse` already checked
-/// that every lump lies inside the file; a length that is not a whole number
-/// of records is C's "funny lump size" ERR_DROP, as `BspHeader` reports it
-/// for the lumps it decodes itself.
-fn lump_records<'a>(
-    header: &BspHeader,
-    data: &'a [u8],
-    idx: usize,
-    size: usize,
-    name: &str,
-) -> Q2Result<std::slice::ChunksExact<'a, u8>> {
-    let raw = header.lump(data, idx);
-    if !raw.len().is_multiple_of(size) {
-        return Err(Q2Error::Drop(format!("BSP {name} lump has funny size")));
-    }
-    Ok(raw.chunks_exact(size))
-}
-
-// ---------------------------------------------------------------------------
 // Individual lump loaders
 // ---------------------------------------------------------------------------
 
@@ -184,13 +157,11 @@ fn load_planes(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspPlane>> {
 }
 
 fn load_vertices(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspVertex>> {
-    lump_records(header, data, LUMP_VERTEXES, DISK_VERTEX_SIZE, "vertices")?
-        .map(|r| {
-            Ok(BspVertex {
-                position: try_read_vec3(r, 0)?,
-            })
+    header.records(data, LUMP_VERTEXES, DVERTEX_SIZE, "vertices", |r| {
+        Ok(BspVertex {
+            position: try_read_vec3(r, 0)?,
         })
-        .collect()
+    })
 }
 
 fn load_nodes(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspNode>> {
@@ -223,19 +194,17 @@ fn load_texinfo(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspTexInfo>> {
 }
 
 fn load_faces(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspFace>> {
-    lump_records(header, data, LUMP_FACES, DISK_FACE_SIZE, "faces")?
-        .map(|r| {
-            Ok(BspFace {
-                plane_idx: try_read_u16(r, 0)?,
-                side: try_read_u16(r, 2)?,
-                first_edge: try_read_i32(r, 4)?,
-                num_edges: try_read_i16(r, 8)?,
-                texinfo_idx: try_read_i16(r, 10)?,
-                styles: [r[12], r[13], r[14], r[15]],
-                light_ofs: try_read_i32(r, 16)?,
-            })
+    header.records(data, LUMP_FACES, DFACE_SIZE, "faces", |r| {
+        Ok(BspFace {
+            plane_idx: try_read_u16(r, 0)?,
+            side: try_read_u16(r, 2)?,
+            first_edge: try_read_i32(r, 4)?,
+            num_edges: try_read_i16(r, 8)?,
+            texinfo_idx: try_read_i16(r, 10)?,
+            styles: [r[12], r[13], r[14], r[15]],
+            light_ofs: try_read_i32(r, 16)?,
         })
-        .collect()
+    })
 }
 
 fn load_leafs(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspLeaf>> {
@@ -255,25 +224,23 @@ fn load_leafs(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspLeaf>> {
 }
 
 fn load_leaf_faces(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<u16>> {
-    lump_records(header, data, LUMP_LEAFFACES, 2, "leaf_faces")?
-        .map(|r| try_read_u16(r, 0))
-        .collect()
+    header.records(data, LUMP_LEAFFACES, 2, "leaf_faces", |r| {
+        try_read_u16(r, 0)
+    })
 }
 
 fn load_edges(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspEdge>> {
-    lump_records(header, data, LUMP_EDGES, DISK_EDGE_SIZE, "edges")?
-        .map(|r| {
-            Ok(BspEdge {
-                v: [try_read_u16(r, 0)?, try_read_u16(r, 2)?],
-            })
+    header.records(data, LUMP_EDGES, DEDGE_SIZE, "edges", |r| {
+        Ok(BspEdge {
+            v: [try_read_u16(r, 0)?, try_read_u16(r, 2)?],
         })
-        .collect()
+    })
 }
 
 fn load_surface_edges(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<i32>> {
-    lump_records(header, data, LUMP_SURFEDGES, 4, "surface_edges")?
-        .map(|r| try_read_i32(r, 0))
-        .collect()
+    header.records(data, LUMP_SURFEDGES, 4, "surface_edges", |r| {
+        try_read_i32(r, 0)
+    })
 }
 
 fn load_models(header: &BspHeader, data: &[u8]) -> Q2Result<Vec<BspModel>> {
@@ -494,7 +461,7 @@ mod tests {
         // Vertex data will live right after header.
         // We place 2 vertices (24 bytes) for the vertex lump and leave everything else empty.
         let vert_offset = header_size;
-        let vert_length: u32 = 2 * DISK_VERTEX_SIZE as u32;
+        let vert_length: u32 = 2 * DVERTEX_SIZE as u32;
 
         for i in 0..HEADER_LUMPS {
             if i == LUMP_VERTEXES {

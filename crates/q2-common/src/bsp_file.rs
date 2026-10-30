@@ -104,6 +104,12 @@ pub struct DModel {
 }
 
 pub const DPLANE_SIZE: usize = 20;
+/// `dvertex_t`: 3 floats.
+pub const DVERTEX_SIZE: usize = 12;
+/// `dedge_t`: 2 shorts.
+pub const DEDGE_SIZE: usize = 4;
+/// `dface_t`: plane, side, first edge, edge count, texinfo, 4 styles, light offset.
+pub const DFACE_SIZE: usize = 20;
 const DNODE_SIZE: usize = 28;
 const DLEAF_SIZE: usize = 28;
 const TEXINFO_SIZE: usize = 76;
@@ -175,7 +181,7 @@ impl BspHeader {
 
     /// Decode lump `idx` as fixed-size records. A length that is not a whole
     /// number of records is C's "funny lump size" ERR_DROP.
-    fn records<T>(
+    pub fn records<T>(
         &self,
         data: &[u8],
         idx: usize,
