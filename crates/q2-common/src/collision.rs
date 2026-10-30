@@ -162,6 +162,10 @@ struct TraceState {
     maxs: Vec3f,
     extents: Vec3f,
     trace: Trace,
+    /// Index into the map's surfaces of the closest hit's lead side. C
+    /// keeps a csurface_t pointer; the owned `Surface` is built once when
+    /// the sweep ends instead of on every closer brush.
+    surface_idx: Option<usize>,
 }
 
 /// One pending call of C `CM_RecursiveHullCheck`: sweep `p1`..`p2`
@@ -1230,6 +1234,7 @@ impl CollisionMap {
             maxs,
             extents: Vec3f::ZERO,
             trace: Trace::default(),
+            surface_idx: None,
         };
 
         if self.nodes.is_empty() || !self.head_node_valid(head_node) {
@@ -1272,6 +1277,14 @@ impl CollisionMap {
 
         // General sweeping through world
         self.hull_check(head_node, start, end, &mut state);
+        state.trace.surface = state.surface_idx.map(|idx| {
+            let surf = &self.surfaces[idx];
+            Surface {
+                name: surf.name.clone(),
+                flags: surf.flags,
+                value: surf.value,
+            }
+        });
 
         if state.trace.fraction == 1.0 {
             state.trace.endpos = end;
@@ -1449,19 +1462,10 @@ impl CollisionMap {
             }
 
             if let Some(sidx) = lead_side_idx {
-                // C stores a pointer to the map's csurface_t; Trace owns its
-                // Surface (q2-shared), so a closer hit clones the name.
                 let side = &brush_sides[sidx];
-                if side.surface_idx >= 0 && (side.surface_idx as usize) < surfaces.len() {
-                    let surf = &surfaces[side.surface_idx as usize];
-                    state.trace.surface = Some(Surface {
-                        name: surf.name.clone(),
-                        flags: surf.flags,
-                        value: surf.value,
-                    });
-                } else {
-                    state.trace.surface = None;
-                }
+                state.surface_idx = usize::try_from(side.surface_idx)
+                    .ok()
+                    .filter(|&idx| idx < surfaces.len());
             }
 
             state.trace.contents = brush.contents;
