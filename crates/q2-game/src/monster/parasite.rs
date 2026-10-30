@@ -960,9 +960,15 @@ mod tests {
     fn parasite_drain_attack_tries_the_enemy_head_and_feet_before_giving_up() {
         // Origin too steep, the top of the box (z + 32 - 8) too, the
         // bottom (z - 24 + 8) shallow enough: the drain still hits.
-        let (mut world, _gi, key, player) = drain_setup(80.0, 50.0);
+        let (mut world, gi, key, player) = drain_setup(80.0, 50.0);
         parasite_drain_attack(&mut world, key);
         assert_eq!(health(&world, player), 98);
+        // C resets end to the enemy origin for the trace and the beam,
+        // whichever point passed the check.
+        assert_eq!(
+            gi.wire.borrow()[4],
+            format!("position {:?}", Vec3f::new(80.0, 0.0, 74.0))
+        );
         // Every point too steep: no drain.
         let (mut world, _gi, key, player) = drain_setup(20.0, 100.0);
         parasite_drain_attack(&mut world, key);
@@ -971,6 +977,19 @@ mod tests {
         let (mut world, _gi, key, player) = drain_setup(300.0, 0.0);
         parasite_drain_attack(&mut world, key);
         assert_eq!(health(&world, player), 100);
+    }
+
+    #[test]
+    fn parasite_drain_attack_does_not_push_the_enemy() {
+        // C: T_Damage(..., damage, 0, DAMAGE_NO_KNOCKBACK, MOD_UNKNOWN).
+        let (mut world, _gi, key, player) = drain_setup(100.0, 0.0);
+        let p = world.entities.get_mut(player).unwrap();
+        p.game.movetype = MoveType::Walk; // a mover knockback can push
+        p.game.mass = 200;
+        world.entities.get_mut(key).unwrap().state.frame = FRAME_DRAIN03;
+        parasite_drain_attack(&mut world, key);
+        assert_eq!(health(&world, player), 95);
+        assert_eq!(world.entities.get(player).unwrap().velocity, Vec3f::ZERO);
     }
 
     #[test]
