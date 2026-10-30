@@ -6,11 +6,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::flash::project_source;
+use crate::monster::{frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -40,20 +38,8 @@ const SOUNDS: [&str; 11] = [
     SOUND_SEARCH,
 ];
 
-/// C `g_monsterfootsteps` (default "0"). The cvar is not ported, so
-/// footsteps stay at C's default: silent.
-const MONSTER_FOOTSTEPS: bool = false;
-
 /// C `MODEL_SCALE` (parasite.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -351,23 +337,6 @@ pub static PARASITE_MOVE_DEATH: MonsterMove = MonsterMove {
 // Callbacks. C ref: parasite.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn stands_ground(world: &GameWorld, key: EntityKey) -> bool {
     world
         .entities
@@ -396,9 +365,15 @@ pub fn parasite_tap(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_BODY, SOUND_TAP, ATTN_IDLE);
 }
 
-/// C ref: `parasite_footstep`.
+/// C ref: `parasite_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn parasite_footstep(world: &mut GameWorld, key: EntityKey) {
-    if MONSTER_FOOTSTEPS {
+    parasite_step(world, key, MONSTER_FOOTSTEPS);
+}
+
+/// The `parasite_footstep` body: the tap, without a `randk()`, when
+/// `enabled`.
+fn parasite_step(world: &mut GameWorld, key: EntityKey, enabled: bool) {
+    if enabled {
         parasite_tap(world, key);
     }
 }
@@ -625,34 +600,7 @@ pub fn parasite_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -721,6 +669,7 @@ pub fn finish_parasite(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 
@@ -855,6 +804,21 @@ mod tests {
             }
         }
         assert!((750..850).contains(&again), "{again}");
+    }
+
+    #[test]
+    fn parasite_footstep_taps_without_randk_only_when_the_cvar_is_on() {
+        let (mut world, gi) = test_world_recording();
+        let key = parasite(&mut world);
+        let rand = world.level.rand_state;
+        parasite_step(&mut world, key, false);
+        assert!(sounds_of(&world, &gi, key).is_empty());
+        parasite_step(&mut world, key, true);
+        assert_eq!(
+            sounds_of(&world, &gi, key),
+            [(CHAN_BODY, SOUND_TAP.into(), ATTN_IDLE)]
+        );
+        assert_eq!(world.level.rand_state, rand, "no randk() drawn");
     }
 
     #[test]

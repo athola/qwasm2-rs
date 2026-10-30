@@ -5,10 +5,9 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -32,14 +31,6 @@ const SOUNDS: [&str; 8] = [
 
 /// C `MODEL_SCALE` (flipper.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -174,21 +165,9 @@ pub static FLIPPER_MOVE_DEATH: MonsterMove = MonsterMove {
 // Callbacks. C ref: flipper.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, ATTN_NORM, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
+/// Every flipper sound plays at `ATTN_NORM`.
+fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str) {
+    crate::monster::sound(world, key, channel, name, ATTN_NORM);
 }
 
 /// C ref: `flipper_stand`.
@@ -394,6 +373,7 @@ pub fn finish_flipper(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 

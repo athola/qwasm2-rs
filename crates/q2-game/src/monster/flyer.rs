@@ -7,11 +7,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::become_explosion1;
 use crate::monster::{fire::monster_fire_blaster, flash::monster_flash_source};
+use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -39,14 +38,6 @@ const SOUND_IDLE_LOOP: &str = "flyer/flyidle1.wav";
 
 /// C `MODEL_SCALE` (flyer.h).
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: the `mframe_t`/`mmove_t` tables, frame by frame.
@@ -298,23 +289,6 @@ pub static FLYER_MOVE_LOOP_MELEE: MonsterMove = MonsterMove {
 // Callbacks. C ref: flyer.c.
 // ---------------------------------------------------------------------------
 
-fn sound(world: &mut GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
-}
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 /// C ref: `flyer_sight`.
 pub fn flyer_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SIGHT, ATTN_NORM);
@@ -551,6 +525,7 @@ pub fn finish_flyer(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::ThinkFn;
     use crate::monster::test_support::*;
     use crate::world::{test_world, test_world_recording};
 

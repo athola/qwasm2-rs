@@ -14,25 +14,16 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::{monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::monster_flash_source;
 use crate::monster::movement::vectoyaw;
 use crate::monster::supertank::boss_explode;
+use crate::monster::{frame, set_move};
 use crate::world::GameWorld;
 
 /// C boss2.h `MODEL_SCALE`.
 const MODEL_SCALE: f32 = 1.0;
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: boss2.c `boss2_frames_*` / `boss2_move_*`.
 const FRAME_STAND30: i32 = 0;
@@ -226,16 +217,6 @@ static BOSS2_MOVE_DEATH: MonsterMove = MonsterMove {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
 
 /// C `gi.sound(self, CHAN_VOICE, gi.soundindex(name), 1, ATTN_NONE, 0)`.
 fn voice(world: &GameWorld, key: EntityKey, name: &str) {
@@ -594,6 +575,17 @@ pub fn boss2_precache(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (boss2_attack_mg, "boss2_attack_mg"),
+        (boss2_machine_gun, "boss2_machine_gun"),
+        (boss2_reattack_mg, "boss2_reattack_mg"),
+        (boss2_run, "boss2_run"),
+        (boss2_rocket, "boss2_rocket"),
+        (boss_explode, "boss_explode"),
+        (boss2_dead, "boss2_dead"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::WireImport;
     use crate::monster::test_support::*;
     use std::rc::Rc;
@@ -602,145 +594,22 @@ mod tests {
         monster_world(sp_monster_boss2)
     }
 
-    fn mi(world: &GameWorld, key: EntityKey) -> &MonsterInfo {
-        world
-            .entities
-            .get(key)
-            .unwrap()
-            .monsterinfo
-            .as_ref()
-            .unwrap()
-    }
-
     #[test]
     fn boss2_moves_match_c_boss2_c() {
-        let charge = Some(ai::ai_charge as AnimFrameFn);
-        let mv = Some(ai::ai_move as AnimFrameFn);
-        let mg: ThinkFn = boss2_machine_gun;
-        let mut rocket = vec![1.0; 21];
-        rocket[12] = -20.0;
-        let moves: Vec<(&str, &MonsterMove, CMove)> = vec![
-            (
-                "stand",
-                &BOSS2_MOVE_STAND,
-                CMove {
-                    bounds: (0, 20),
-                    ai: vec![(21, Some(ai::ai_stand as AnimFrameFn))],
-                    dists: zeros(21),
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "walk",
-                &BOSS2_MOVE_WALK,
-                CMove {
-                    bounds: (50, 69),
-                    ai: vec![(20, Some(ai::ai_walk as AnimFrameFn))],
-                    dists: vec![8.0; 20],
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "run",
-                &BOSS2_MOVE_RUN,
-                CMove {
-                    bounds: (50, 69),
-                    ai: vec![(20, Some(ai::ai_run as AnimFrameFn))],
-                    dists: vec![8.0; 20],
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "attack_pre_mg",
-                &BOSS2_MOVE_ATTACK_PRE_MG,
-                CMove {
-                    bounds: (70, 78),
-                    ai: vec![(9, charge)],
-                    dists: vec![1.0; 9],
-                    thinks: vec![(8, boss2_attack_mg)],
-                    end: None,
-                },
-            ),
-            (
-                "attack_mg",
-                &BOSS2_MOVE_ATTACK_MG,
-                CMove {
-                    bounds: (79, 84),
-                    ai: vec![(6, charge)],
-                    dists: vec![1.0; 6],
-                    thinks: vec![
-                        (0, mg),
-                        (1, mg),
-                        (2, mg),
-                        (3, mg),
-                        (4, mg),
-                        (5, boss2_reattack_mg),
-                    ],
-                    end: None,
-                },
-            ),
-            (
-                "attack_post_mg",
-                &BOSS2_MOVE_ATTACK_POST_MG,
-                CMove {
-                    bounds: (85, 88),
-                    ai: vec![(4, charge)],
-                    dists: vec![1.0; 4],
-                    thinks: vec![],
-                    end: Some(boss2_run),
-                },
-            ),
-            (
-                "attack_rocket",
-                &BOSS2_MOVE_ATTACK_ROCKET,
-                CMove {
-                    bounds: (89, 109),
-                    ai: vec![(12, charge), (1, mv), (8, charge)],
-                    dists: rocket,
-                    thinks: vec![(12, boss2_rocket)],
-                    end: Some(boss2_run),
-                },
-            ),
-            (
-                "pain_heavy",
-                &BOSS2_MOVE_PAIN_HEAVY,
-                CMove {
-                    bounds: (110, 127),
-                    ai: vec![(18, mv)],
-                    dists: zeros(18),
-                    thinks: vec![],
-                    end: Some(boss2_run),
-                },
-            ),
-            (
-                "pain_light",
-                &BOSS2_MOVE_PAIN_LIGHT,
-                CMove {
-                    bounds: (128, 131),
-                    ai: vec![(4, mv)],
-                    dists: zeros(4),
-                    thinks: vec![],
-                    end: Some(boss2_run),
-                },
-            ),
-            (
-                "death",
-                &BOSS2_MOVE_DEATH,
-                CMove {
-                    bounds: (132, 180),
-                    ai: vec![(49, mv)],
-                    dists: zeros(49),
-                    thinks: vec![(48, boss_explode)],
-                    end: Some(boss2_dead),
-                },
-            ),
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&BOSS2_MOVE_STAND, 0, 20, "-", "stand:0:-*21"),
+            (&BOSS2_MOVE_WALK, 50, 69, "-", "walk:8:-*20"),
+            (&BOSS2_MOVE_RUN, 50, 69, "-", "run:8:-*20"),
+            (&BOSS2_MOVE_ATTACK_PRE_MG, 70, 78, "-", "charge:1:-*8 charge:1:boss2_attack_mg"),
+            (&BOSS2_MOVE_ATTACK_MG, 79, 84, "-", "charge:1:boss2_machine_gun*5 charge:1:boss2_reattack_mg"),
+            (&BOSS2_MOVE_ATTACK_POST_MG, 85, 88, "boss2_run", "charge:1:-*4"),
+            (&BOSS2_MOVE_ATTACK_ROCKET, 89, 109, "boss2_run", "charge:1:-*12 move:-20:boss2_rocket charge:1:-*8"),
+            (&BOSS2_MOVE_PAIN_HEAVY, 110, 127, "boss2_run", "move:0:-*18"),
+            (&BOSS2_MOVE_PAIN_LIGHT, 128, 131, "boss2_run", "move:0:-*4"),
+            (&BOSS2_MOVE_DEATH, 132, 180, "boss2_dead", "move:0:-*48 move:0:boss_explode"),
         ];
-        for (name, mv, c) in moves {
-            assert_move(name, mv, c);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]
@@ -924,11 +793,6 @@ mod tests {
             enemy_aim(&world, key, -0.2),
             Some(Vec3f::new(600.0, -20.0, 22.0))
         );
-    }
-
-    /// A pain callback that keeps the kick it was handed in `game.count`.
-    fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
-        world.entities.get_mut(key).unwrap().game.count = kick as i32;
     }
 
     #[test]

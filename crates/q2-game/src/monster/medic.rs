@@ -1,10 +1,6 @@
 //! Medic: shoots a blaster, and hooks dead monsters with its cable to
 //! bring them back.
 //! C ref: `~/Qwasm2/src/game/monster/medic/medic.c`
-//!
-//! C's `medic_footstep` plays only when the `g_monsterfootsteps` cvar
-//! (default 0) is set; there is no such cvar here, so its frame slots are
-//! empty, marked with the C name.
 
 use q2_shared::constants::{EF_BLASTER, EF_HYPERBLASTER, MZ2_MEDIC_BLASTER_1};
 use q2_shared::protocol::SvcOp;
@@ -13,12 +9,10 @@ use std::collections::HashMap;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_blaster;
 use crate::monster::flash::{monster_flash_source, project_source};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 
 // C's sound_* names, one per file, shared by the call sites and
@@ -35,6 +29,7 @@ const SOUND_HOOK_HEAL: &str = "medic/medatck4.wav";
 const SOUND_HOOK_RETRACT: &str = "medic/medatck5.wav";
 /// C precaches it but plays it nowhere.
 const SOUND_ATTACK1: &str = "medic/medatck1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["medic/step1.wav", "medic/step2.wav"];
 
 /// C medic.h `MODEL_SCALE`.
 const MODEL_SCALE: f32 = 1.0;
@@ -67,14 +62,6 @@ static MEDIC_CABLE_OFFSETS: [[f32; 3]; 10] = [
     [32.7, -19.7, 10.4],
     [32.7, -19.7, 10.4],
 ];
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 // Moves. C ref: medic.c `medic_frames_*` / `medic_move_*`.
 const FRAME_WALK1: i32 = 0;
@@ -199,13 +186,13 @@ static MEDIC_MOVE_STAND: MonsterMove = MonsterMove {
 
 static MEDIC_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 6.2, None),
-    frame(ai::ai_walk, 18.1, None), // C: medic_footstep
+    frame(ai::ai_walk, 18.1, Some(medic_footstep)),
     frame(ai::ai_walk, 1.0, None),
     frame(ai::ai_walk, 9.0, None),
     frame(ai::ai_walk, 10.0, None),
     frame(ai::ai_walk, 9.0, None),
     frame(ai::ai_walk, 11.0, None),
-    frame(ai::ai_walk, 11.6, None), // C: medic_footstep
+    frame(ai::ai_walk, 11.6, Some(medic_footstep)),
     frame(ai::ai_walk, 2.0, None),
     frame(ai::ai_walk, 9.9, None),
     frame(ai::ai_walk, 14.0, None),
@@ -219,11 +206,11 @@ static MEDIC_MOVE_WALK: MonsterMove = MonsterMove {
 };
 
 static MEDIC_FRAMES_RUN: [MonsterFrame; 6] = [
-    frame(ai::ai_run, 18.0, None), // C: medic_footstep
+    frame(ai::ai_run, 18.0, Some(medic_footstep)),
     frame(ai::ai_run, 22.5, None),
     frame(ai::ai_run, 25.4, None),
     frame(ai::ai_run, 23.4, None),
-    frame(ai::ai_run, 24.0, None), // C: medic_footstep
+    frame(ai::ai_run, 24.0, Some(medic_footstep)),
     frame(ai::ai_run, 35.6, None),
 ];
 static MEDIC_MOVE_RUN: MonsterMove = MonsterMove {
@@ -245,7 +232,7 @@ static MEDIC_FRAMES_PAIN2: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None), // C: medic_footstep
+    frame(ai::ai_move, 0.0, Some(medic_footstep)),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
@@ -256,7 +243,7 @@ static MEDIC_FRAMES_PAIN2: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None), // C: medic_footstep
+    frame(ai::ai_move, 0.0, Some(medic_footstep)),
 ];
 static MEDIC_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINB1,
@@ -354,7 +341,7 @@ static MEDIC_FRAMES_ATTACK_CABLE: [MonsterFrame; 28] = [
     frame(ai::ai_charge, 4.7, None),
     frame(ai::ai_charge, 5.0, None),
     frame(ai::ai_charge, 6.0, None),
-    frame(ai::ai_charge, 4.0, None), // C: medic_footstep
+    frame(ai::ai_charge, 4.0, Some(medic_footstep)),
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_move, 0.0, Some(medic_hook_launch)),
     frame(ai::ai_move, 0.0, Some(medic_cable_attack)),
@@ -368,7 +355,7 @@ static MEDIC_FRAMES_ATTACK_CABLE: [MonsterFrame; 28] = [
     frame(ai::ai_move, 0.0, Some(medic_cable_attack)),
     frame(ai::ai_move, -15.0, Some(medic_hook_retract)),
     frame(ai::ai_move, -1.5, None),
-    frame(ai::ai_move, -1.2, None), // C: medic_footstep
+    frame(ai::ai_move, -1.2, Some(medic_footstep)),
     frame(ai::ai_move, -3.0, None),
     frame(ai::ai_move, -2.0, None),
     frame(ai::ai_move, 0.3, None),
@@ -387,16 +374,6 @@ static MEDIC_MOVE_ATTACK_CABLE: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = world
-        .entities
-        .get_mut(key)
-        .and_then(|e| e.monsterinfo.as_mut())
-    {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn mi_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world.entities.get_mut(key)?.monsterinfo.as_deref_mut()
 }
@@ -407,14 +384,6 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
         .get(key)
         .and_then(|e| e.monsterinfo.as_ref())
         .map_or(AiFlags::empty(), |mi| mi.aiflags)
-}
-
-/// C `gi.sound(ent, channel, gi.soundindex(name), 1, attenuation, 0)`.
-fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str, attenuation: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
 fn enemy_of(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
@@ -483,6 +452,11 @@ fn take_patient(world: &mut GameWorld, key: EntityKey, patient: EntityKey, keep_
         mi.aiflags |= AiFlags::MEDIC;
     }
     ai::found_target(world, key);
+}
+
+/// C ref: `medic_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn medic_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `medic_idle`.
@@ -652,34 +626,7 @@ pub fn medic_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -986,6 +933,22 @@ pub fn medic_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+    const NAMES: &[(ThinkFn, &str)] = &[
+        (medic_footstep, "medic_footstep"),
+        (medic_idle, "medic_idle"),
+        (medic_run, "medic_run"),
+        (medic_dead, "medic_dead"),
+        (medic_duck_down, "medic_duck_down"),
+        (medic_duck_hold, "medic_duck_hold"),
+        (medic_duck_up, "medic_duck_up"),
+        (medic_fire_blaster, "medic_fire_blaster"),
+        (medic_continue, "medic_continue"),
+        (medic_hook_launch, "medic_hook_launch"),
+        (medic_cable_attack, "medic_cable_attack"),
+        (medic_hook_retract, "medic_hook_retract"),
+    ];
+
+    use crate::entity::ThinkFn;
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
     use std::rc::Rc;
@@ -1028,143 +991,20 @@ mod tests {
 
     #[test]
     fn medic_moves_match_c_medic_c() {
-        let stand = Some(ai::ai_stand as AnimFrameFn);
-        let walk = Some(ai::ai_walk as AnimFrameFn);
-        let run = Some(ai::ai_run as AnimFrameFn);
-        let mv = Some(ai::ai_move as AnimFrameFn);
-        let charge = Some(ai::ai_charge as AnimFrameFn);
-        let fire: ThinkFn = medic_fire_blaster;
-        let hyper: Vec<(usize, ThinkFn)> = (4..16).map(|i| (i, fire)).collect();
-        let mut cable_thinks: Vec<(usize, ThinkFn)> = vec![(9, medic_hook_launch as ThinkFn)];
-        cable_thinks.extend((10..19).map(|i| (i, medic_cable_attack as ThinkFn)));
-        cable_thinks.push((19, medic_hook_retract));
-        let cable = vec![
-            2.0, 3.0, 5.0, 4.4, 4.7, 5.0, 6.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, -15.0, -1.5, -1.2, -3.0, -2.0, 0.3, 0.7, 1.2, 1.3,
+        #[rustfmt::skip]
+        let c: &[CMoveRow] = &[
+            (&MEDIC_MOVE_STAND, 12, 101, "-", "stand:0:medic_idle stand:0:-*89"),
+            (&MEDIC_MOVE_WALK, 0, 11, "-", "walk:6.2:- walk:18.1:medic_footstep walk:1:- walk:9:- walk:10:- walk:9:- walk:11:- walk:11.6:medic_footstep walk:2:- walk:9.9:- walk:14:- walk:9.3:-"),
+            (&MEDIC_MOVE_RUN, 102, 107, "-", "run:18:medic_footstep run:22.5:- run:25.4:- run:23.4:- run:24:medic_footstep run:35.6:-"),
+            (&MEDIC_MOVE_PAIN1, 108, 115, "medic_run", "move:0:-*8"),
+            (&MEDIC_MOVE_PAIN2, 116, 130, "medic_run", "move:0:-*3 move:0:medic_footstep move:0:-*10 move:0:medic_footstep"),
+            (&MEDIC_MOVE_DEATH, 147, 176, "medic_dead", "move:0:-*30"),
+            (&MEDIC_MOVE_DUCK, 131, 146, "medic_run", "move:-1:-*2 move:-1:medic_duck_down move:-1:medic_duck_hold move:-1:-*2 move:-1:medic_duck_up move:-1:-*9"),
+            (&MEDIC_MOVE_ATTACK_HYPER_BLASTER, 191, 206, "medic_run", "charge:0:-*4 charge:0:medic_fire_blaster*12"),
+            (&MEDIC_MOVE_ATTACK_BLASTER, 177, 190, "medic_run", "charge:0:- charge:5:-*2 charge:3:- charge:2:- charge:0:-*3 charge:0:medic_fire_blaster charge:0:-*2 charge:0:medic_fire_blaster charge:0:- charge:0:medic_continue"),
+            (&MEDIC_MOVE_ATTACK_CABLE, 209, 236, "medic_run", "move:2:- move:3:- move:5:- move:4.4:- charge:4.7:- charge:5:- charge:6:- charge:4:medic_footstep charge:0:- move:0:medic_hook_launch move:0:medic_cable_attack*9 move:-15:medic_hook_retract move:-1.5:- move:-1.2:medic_footstep move:-3:- move:-2:- move:0.3:- move:0.7:- move:1.2:- move:1.3:-"),
         ];
-        let moves: Vec<(&str, &MonsterMove, CMove)> = vec![
-            (
-                "stand",
-                &MEDIC_MOVE_STAND,
-                CMove {
-                    bounds: (12, 101),
-                    ai: vec![(90, stand)],
-                    dists: zeros(90),
-                    thinks: vec![(0, medic_idle)],
-                    end: None,
-                },
-            ),
-            (
-                "walk",
-                &MEDIC_MOVE_WALK,
-                CMove {
-                    bounds: (0, 11),
-                    ai: vec![(12, walk)],
-                    dists: vec![
-                        6.2, 18.1, 1.0, 9.0, 10.0, 9.0, 11.0, 11.6, 2.0, 9.9, 14.0, 9.3,
-                    ],
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "run",
-                &MEDIC_MOVE_RUN,
-                CMove {
-                    bounds: (102, 107),
-                    ai: vec![(6, run)],
-                    dists: vec![18.0, 22.5, 25.4, 23.4, 24.0, 35.6],
-                    thinks: vec![],
-                    end: None,
-                },
-            ),
-            (
-                "pain1",
-                &MEDIC_MOVE_PAIN1,
-                CMove {
-                    bounds: (108, 115),
-                    ai: vec![(8, mv)],
-                    dists: zeros(8),
-                    thinks: vec![],
-                    end: Some(medic_run),
-                },
-            ),
-            (
-                "pain2",
-                &MEDIC_MOVE_PAIN2,
-                CMove {
-                    bounds: (116, 130),
-                    ai: vec![(15, mv)],
-                    dists: zeros(15),
-                    thinks: vec![],
-                    end: Some(medic_run),
-                },
-            ),
-            (
-                "death",
-                &MEDIC_MOVE_DEATH,
-                CMove {
-                    bounds: (147, 176),
-                    ai: vec![(30, mv)],
-                    dists: zeros(30),
-                    thinks: vec![],
-                    end: Some(medic_dead),
-                },
-            ),
-            (
-                "duck",
-                &MEDIC_MOVE_DUCK,
-                CMove {
-                    bounds: (131, 146),
-                    ai: vec![(16, mv)],
-                    dists: vec![-1.0; 16],
-                    thinks: vec![
-                        (2, medic_duck_down),
-                        (3, medic_duck_hold),
-                        (6, medic_duck_up),
-                    ],
-                    end: Some(medic_run),
-                },
-            ),
-            (
-                "attack_hyper_blaster",
-                &MEDIC_MOVE_ATTACK_HYPER_BLASTER,
-                CMove {
-                    bounds: (191, 206),
-                    ai: vec![(16, charge)],
-                    dists: zeros(16),
-                    thinks: hyper,
-                    end: Some(medic_run),
-                },
-            ),
-            (
-                "attack_blaster",
-                &MEDIC_MOVE_ATTACK_BLASTER,
-                CMove {
-                    bounds: (177, 190),
-                    ai: vec![(14, charge)],
-                    dists: vec![
-                        0.0, 5.0, 5.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                    ],
-                    thinks: vec![(8, fire), (11, fire), (13, medic_continue)],
-                    end: Some(medic_run),
-                },
-            ),
-            (
-                "attack_cable",
-                &MEDIC_MOVE_ATTACK_CABLE,
-                CMove {
-                    bounds: (209, 236),
-                    ai: vec![(4, mv), (5, charge), (19, mv)],
-                    dists: cable,
-                    thinks: cable_thinks,
-                    end: Some(medic_run),
-                },
-            ),
-        ];
-        for (name, mv, c) in moves {
-            assert_move(name, mv, c);
-        }
+        assert_moves_match_c(c, NAMES);
     }
 
     #[test]

@@ -6,12 +6,10 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{
-    AnimFrameFn, EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove, ThinkFn,
-};
-use crate::misc::{throw_gib, throw_head, GibType};
+use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_rocket;
 use crate::monster::flash::monster_flash_source;
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -76,6 +74,7 @@ const SOUND_PAIN2: &str = "chick/chkpain2.wav";
 const SOUND_PAIN3: &str = "chick/chkpain3.wav";
 const SOUND_SIGHT: &str = "chick/chksght1.wav";
 const SOUND_SEARCH: &str = "chick/chksrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["bitch/step1.wav", "bitch/step2.wav"];
 
 /// The sounds C `SP_monster_chick` precaches, in its order. C never plays
 /// the launch, melee hit, fall and search sounds.
@@ -100,14 +99,6 @@ const PRECACHE: [&str; 15] = [
 // ---------------------------------------------------------------------------
 // Moves. C ref: chick.c `chick_frames_*` / `chick_move_*`.
 // ---------------------------------------------------------------------------
-
-const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> MonsterFrame {
-    MonsterFrame {
-        aifunc: Some(aifunc),
-        dist,
-        thinkfunc,
-    }
-}
 
 static CHICK_FRAMES_FIDGET: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
@@ -494,22 +485,6 @@ static CHICK_MOVE_START_SLASH: MonsterMove = MonsterMove {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// C `gi.sound(self, chan, sound_x, 1, attn, 0)`. C keeps the index in a
-/// file static; the server's `SV_FindIndex` returns the precached one.
-fn sound(world: &mut GameWorld, key: EntityKey, chan: i32, name: &str, attn: f32) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), chan, index, 1.0, attn, 0.0);
-}
-
-/// C `self->monsterinfo.currentmove = &move`.
-fn set_move(world: &mut GameWorld, key: EntityKey, mv: &MonsterMove) {
-    if let Some(mi) = monsterinfo_mut(world, key) {
-        mi.currentmove = Some(mv.clone());
-    }
-}
-
 fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut MonsterInfo> {
     world
         .entities
@@ -549,10 +524,10 @@ fn live_enemy(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`bitch/step1.wav`, `step2.wav`) never play.
-/// C ref: `chick_footstep`.
-pub fn chick_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `chick_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn chick_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `ChickMoan`.
 pub fn chick_moan(world: &mut GameWorld, key: EntityKey) {
@@ -661,34 +636,7 @@ pub fn chick_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -924,6 +872,7 @@ pub fn sp_monster_chick_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{AnimFrameFn, ThinkFn};
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{monster_arena, run, sounds};
     use crate::world::{test_world, test_world_recording};
