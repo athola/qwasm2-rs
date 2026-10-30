@@ -9,7 +9,7 @@ use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_railgun;
 use crate::monster::flash::monster_flash_source;
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -52,6 +52,7 @@ const SOUND_CLEAVER_HIT: &str = "gladiator/melee2.wav";
 const SOUND_CLEAVER_MISS: &str = "gladiator/melee3.wav";
 const SOUND_IDLE: &str = "gladiator/gldidle1.wav";
 const SOUND_SEARCH: &str = "gladiator/gldsrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["gladiator/step1.wav", "gladiator/step2.wav"];
 const SOUND_SIGHT: &str = "gladiator/sight.wav";
 
 /// The sounds C `SP_monster_gladiator` precaches, in its order.
@@ -269,10 +270,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`gladiator/step1.wav`, `step2.wav`) never play.
-/// C ref: `gladiator_footstep`.
-pub fn gladiator_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `gladiator_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn gladiator_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `gladiator_idle`.
 pub fn gladiator_idle(world: &mut GameWorld, key: EntityKey) {

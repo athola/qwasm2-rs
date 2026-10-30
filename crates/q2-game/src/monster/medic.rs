@@ -1,10 +1,6 @@
 //! Medic: shoots a blaster, and hooks dead monsters with its cable to
 //! bring them back.
 //! C ref: `~/Qwasm2/src/game/monster/medic/medic.c`
-//!
-//! C's `medic_footstep` plays only when the `g_monsterfootsteps` cvar
-//! (default 0) is set; there is no such cvar here, so its frame slots are
-//! empty, marked with the C name.
 
 use q2_shared::constants::{EF_BLASTER, EF_HYPERBLASTER, MZ2_MEDIC_BLASTER_1};
 use q2_shared::protocol::SvcOp;
@@ -16,7 +12,7 @@ use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_blaster;
 use crate::monster::flash::{monster_flash_source, project_source};
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 
 // C's sound_* names, one per file, shared by the call sites and
@@ -33,6 +29,7 @@ const SOUND_HOOK_HEAL: &str = "medic/medatck4.wav";
 const SOUND_HOOK_RETRACT: &str = "medic/medatck5.wav";
 /// C precaches it but plays it nowhere.
 const SOUND_ATTACK1: &str = "medic/medatck1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["medic/step1.wav", "medic/step2.wav"];
 
 /// C medic.h `MODEL_SCALE`.
 const MODEL_SCALE: f32 = 1.0;
@@ -189,13 +186,13 @@ static MEDIC_MOVE_STAND: MonsterMove = MonsterMove {
 
 static MEDIC_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 6.2, None),
-    frame(ai::ai_walk, 18.1, None), // C: medic_footstep
+    frame(ai::ai_walk, 18.1, Some(medic_footstep)),
     frame(ai::ai_walk, 1.0, None),
     frame(ai::ai_walk, 9.0, None),
     frame(ai::ai_walk, 10.0, None),
     frame(ai::ai_walk, 9.0, None),
     frame(ai::ai_walk, 11.0, None),
-    frame(ai::ai_walk, 11.6, None), // C: medic_footstep
+    frame(ai::ai_walk, 11.6, Some(medic_footstep)),
     frame(ai::ai_walk, 2.0, None),
     frame(ai::ai_walk, 9.9, None),
     frame(ai::ai_walk, 14.0, None),
@@ -209,11 +206,11 @@ static MEDIC_MOVE_WALK: MonsterMove = MonsterMove {
 };
 
 static MEDIC_FRAMES_RUN: [MonsterFrame; 6] = [
-    frame(ai::ai_run, 18.0, None), // C: medic_footstep
+    frame(ai::ai_run, 18.0, Some(medic_footstep)),
     frame(ai::ai_run, 22.5, None),
     frame(ai::ai_run, 25.4, None),
     frame(ai::ai_run, 23.4, None),
-    frame(ai::ai_run, 24.0, None), // C: medic_footstep
+    frame(ai::ai_run, 24.0, Some(medic_footstep)),
     frame(ai::ai_run, 35.6, None),
 ];
 static MEDIC_MOVE_RUN: MonsterMove = MonsterMove {
@@ -235,7 +232,7 @@ static MEDIC_FRAMES_PAIN2: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None), // C: medic_footstep
+    frame(ai::ai_move, 0.0, Some(medic_footstep)),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
@@ -246,7 +243,7 @@ static MEDIC_FRAMES_PAIN2: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None), // C: medic_footstep
+    frame(ai::ai_move, 0.0, Some(medic_footstep)),
 ];
 static MEDIC_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINB1,
@@ -344,7 +341,7 @@ static MEDIC_FRAMES_ATTACK_CABLE: [MonsterFrame; 28] = [
     frame(ai::ai_charge, 4.7, None),
     frame(ai::ai_charge, 5.0, None),
     frame(ai::ai_charge, 6.0, None),
-    frame(ai::ai_charge, 4.0, None), // C: medic_footstep
+    frame(ai::ai_charge, 4.0, Some(medic_footstep)),
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_move, 0.0, Some(medic_hook_launch)),
     frame(ai::ai_move, 0.0, Some(medic_cable_attack)),
@@ -358,7 +355,7 @@ static MEDIC_FRAMES_ATTACK_CABLE: [MonsterFrame; 28] = [
     frame(ai::ai_move, 0.0, Some(medic_cable_attack)),
     frame(ai::ai_move, -15.0, Some(medic_hook_retract)),
     frame(ai::ai_move, -1.5, None),
-    frame(ai::ai_move, -1.2, None), // C: medic_footstep
+    frame(ai::ai_move, -1.2, Some(medic_footstep)),
     frame(ai::ai_move, -3.0, None),
     frame(ai::ai_move, -2.0, None),
     frame(ai::ai_move, 0.3, None),
@@ -455,6 +452,11 @@ fn take_patient(world: &mut GameWorld, key: EntityKey, patient: EntityKey, keep_
         mi.aiflags |= AiFlags::MEDIC;
     }
     ai::found_target(world, key);
+}
+
+/// C ref: `medic_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn medic_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `medic_idle`.
@@ -932,6 +934,7 @@ pub fn medic_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<
 mod tests {
     use super::*;
     const NAMES: &[(ThinkFn, &str)] = &[
+        (medic_footstep, "medic_footstep"),
         (medic_idle, "medic_idle"),
         (medic_run, "medic_run"),
         (medic_dead, "medic_dead"),
@@ -991,15 +994,15 @@ mod tests {
         #[rustfmt::skip]
         let c: &[CMoveRow] = &[
             (&MEDIC_MOVE_STAND, 12, 101, "-", "stand:0:medic_idle stand:0:-*89"),
-            (&MEDIC_MOVE_WALK, 0, 11, "-", "walk:6.2:- walk:18.1:- walk:1:- walk:9:- walk:10:- walk:9:- walk:11:- walk:11.6:- walk:2:- walk:9.9:- walk:14:- walk:9.3:-"),
-            (&MEDIC_MOVE_RUN, 102, 107, "-", "run:18:- run:22.5:- run:25.4:- run:23.4:- run:24:- run:35.6:-"),
+            (&MEDIC_MOVE_WALK, 0, 11, "-", "walk:6.2:- walk:18.1:medic_footstep walk:1:- walk:9:- walk:10:- walk:9:- walk:11:- walk:11.6:medic_footstep walk:2:- walk:9.9:- walk:14:- walk:9.3:-"),
+            (&MEDIC_MOVE_RUN, 102, 107, "-", "run:18:medic_footstep run:22.5:- run:25.4:- run:23.4:- run:24:medic_footstep run:35.6:-"),
             (&MEDIC_MOVE_PAIN1, 108, 115, "medic_run", "move:0:-*8"),
-            (&MEDIC_MOVE_PAIN2, 116, 130, "medic_run", "move:0:-*15"),
+            (&MEDIC_MOVE_PAIN2, 116, 130, "medic_run", "move:0:-*3 move:0:medic_footstep move:0:-*10 move:0:medic_footstep"),
             (&MEDIC_MOVE_DEATH, 147, 176, "medic_dead", "move:0:-*30"),
             (&MEDIC_MOVE_DUCK, 131, 146, "medic_run", "move:-1:-*2 move:-1:medic_duck_down move:-1:medic_duck_hold move:-1:-*2 move:-1:medic_duck_up move:-1:-*9"),
             (&MEDIC_MOVE_ATTACK_HYPER_BLASTER, 191, 206, "medic_run", "charge:0:-*4 charge:0:medic_fire_blaster*12"),
             (&MEDIC_MOVE_ATTACK_BLASTER, 177, 190, "medic_run", "charge:0:- charge:5:-*2 charge:3:- charge:2:- charge:0:-*3 charge:0:medic_fire_blaster charge:0:-*2 charge:0:medic_fire_blaster charge:0:- charge:0:medic_continue"),
-            (&MEDIC_MOVE_ATTACK_CABLE, 209, 236, "medic_run", "move:2:- move:3:- move:5:- move:4.4:- charge:4.7:- charge:5:- charge:6:- charge:4:- charge:0:- move:0:medic_hook_launch move:0:medic_cable_attack*9 move:-15:medic_hook_retract move:-1.5:- move:-1.2:- move:-3:- move:-2:- move:0.3:- move:0.7:- move:1.2:- move:1.3:-"),
+            (&MEDIC_MOVE_ATTACK_CABLE, 209, 236, "medic_run", "move:2:- move:3:- move:5:- move:4.4:- charge:4.7:- charge:5:- charge:6:- charge:4:medic_footstep charge:0:- move:0:medic_hook_launch move:0:medic_cable_attack*9 move:-15:medic_hook_retract move:-1.5:- move:-1.2:medic_footstep move:-3:- move:-2:- move:0.3:- move:0.7:- move:1.2:- move:1.3:-"),
         ];
         assert_moves_match_c(c, NAMES);
     }

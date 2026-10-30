@@ -6,7 +6,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -51,6 +51,7 @@ const SOUND_DIE: &str = "berserk/berdeth2.wav";
 const SOUND_IDLE: &str = "berserk/beridle1.wav";
 const SOUND_PUNCH: &str = "berserk/attack.wav";
 const SOUND_SEARCH: &str = "berserk/bersrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["berserk/step1.wav", "berserk/step2.wav"];
 const SOUND_SIGHT: &str = "berserk/sight.wav";
 
 /// The sounds C `SP_monster_berserk` precaches, in its order.
@@ -316,10 +317,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`berserk/step1.wav`, `step2.wav`) never play.
-/// C ref: `berserk_footstep`.
-pub fn berserk_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `berserk_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn berserk_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `berserk_sight`.
 pub fn berserk_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {

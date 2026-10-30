@@ -9,7 +9,7 @@ use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_rocket;
 use crate::monster::flash::monster_flash_source;
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -74,6 +74,7 @@ const SOUND_PAIN2: &str = "chick/chkpain2.wav";
 const SOUND_PAIN3: &str = "chick/chkpain3.wav";
 const SOUND_SIGHT: &str = "chick/chksght1.wav";
 const SOUND_SEARCH: &str = "chick/chksrch1.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["bitch/step1.wav", "bitch/step2.wav"];
 
 /// The sounds C `SP_monster_chick` precaches, in its order. C never plays
 /// the launch, melee hit, fall and search sounds.
@@ -523,10 +524,10 @@ fn live_enemy(world: &GameWorld, key: EntityKey) -> Option<EntityKey> {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`bitch/step1.wav`, `step2.wav`) never play.
-/// C ref: `chick_footstep`.
-pub fn chick_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `chick_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn chick_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `ChickMoan`.
 pub fn chick_moan(world: &mut GameWorld, key: EntityKey) {

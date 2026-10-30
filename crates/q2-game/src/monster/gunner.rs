@@ -9,7 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{fire, flash, throw_organic_gibs};
+use crate::monster::{fire, flash, footstep, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -59,10 +59,6 @@ const MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 const MASS: i32 = 200;
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0"; the game has no
-/// cvar access, so footsteps stay off as in a default C game.
-const G_MONSTERFOOTSTEPS: bool = false;
-
 const SOUND_DEATH: &str = "gunner/death1.wav";
 const SOUND_PAIN: &str = "gunner/gunpain2.wav";
 const SOUND_PAIN2: &str = "gunner/gunpain1.wav";
@@ -70,7 +66,7 @@ const SOUND_IDLE: &str = "gunner/gunidle1.wav";
 const SOUND_OPEN: &str = "gunner/gunatck1.wav";
 const SOUND_SEARCH: &str = "gunner/gunsrch1.wav";
 const SOUND_SIGHT: &str = "gunner/sight1.wav";
-const SOUND_STEPS: [&str; 2] = ["gunner/step1.wav", "gunner/step2.wav"];
+pub(crate) const SOUND_STEPS: [&str; 2] = ["gunner/step1.wav", "gunner/step2.wav"];
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: gunner.c `gunner_frames_*` / `gunner_move_*`, one entry
@@ -412,11 +408,7 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
 
 /// C ref: `gunner_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn gunner_footstep(world: &mut GameWorld, key: EntityKey) {
-    if !G_MONSTERFOOTSTEPS {
-        return;
-    }
-    let step = SOUND_STEPS[(world.random_u32() % 2) as usize];
-    sound(world, key, CHAN_BODY, step, ATTN_NORM);
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `gunner_idlesound`.

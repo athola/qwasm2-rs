@@ -9,7 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{fire, flash, throw_organic_gibs};
+use crate::monster::{fire, flash, footstep, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -54,10 +54,6 @@ const MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 const MASS: i32 = 200;
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0"; the game has no
-/// cvar access, so footsteps stay off as in a default C game.
-const G_MONSTERFOOTSTEPS: bool = false;
-
 const SOUND_PAIN1: &str = "infantry/infpain1.wav";
 const SOUND_PAIN2: &str = "infantry/infpain2.wav";
 const SOUND_DIE1: &str = "infantry/infdeth1.wav";
@@ -69,7 +65,7 @@ const SOUND_PUNCH_HIT: &str = "infantry/melee2.wav";
 const SOUND_SIGHT: &str = "infantry/infsght1.wav";
 const SOUND_SEARCH: &str = "infantry/infsrch1.wav";
 const SOUND_IDLE: &str = "infantry/infidle1.wav";
-const SOUND_STEPS: [&str; 2] = ["infantry/step1.wav", "infantry/step2.wav"];
+pub(crate) const SOUND_STEPS: [&str; 2] = ["infantry/step1.wav", "infantry/step2.wav"];
 
 // ---------------------------------------------------------------------------
 // Moves. C ref: infantry.c `infantry_frames_*` / `infantry_move_*`, one
@@ -384,11 +380,7 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `infantry_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn infantry_footstep(world: &mut GameWorld, key: EntityKey) {
-    if !G_MONSTERFOOTSTEPS {
-        return;
-    }
-    let step = SOUND_STEPS[(world.random_u32() % 2) as usize];
-    sound(world, key, CHAN_BODY, step, ATTN_NORM);
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `infantry_stand`.

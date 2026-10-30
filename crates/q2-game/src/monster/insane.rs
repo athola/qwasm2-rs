@@ -8,7 +8,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{frame, set_move, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -62,6 +62,12 @@ const SPAWNFLAG_ALWAYS_STAND: i32 = 32;
 const SOUND_FIST: &str = "insane/insane11.wav";
 const SOUND_SHAKE: &str = "insane/insane5.wav";
 const SOUND_MOAN: &str = "insane/insane7.wav";
+pub(crate) const SOUND_STEPS: [&str; 4] = [
+    "player/step1.wav",
+    "player/step2.wav",
+    "player/step3.wav",
+    "player/step4.wav",
+];
 const SOUND_SCREAM: [&str; 8] = [
     "insane/insane1.wav",
     "insane/insane2.wav",
@@ -562,10 +568,10 @@ fn is_down(frame: i32) -> bool {
         || (FRAME_STAND99..=FRAME_STAND160).contains(&frame)
 }
 
-/// C plays a footstep only with the `g_monsterfootsteps` cvar, which
-/// defaults to 0 and is not ported, so this is silent.
-/// C ref: `insane_footstep`.
-pub fn insane_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `insane_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn insane_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 0.7);
+}
 
 /// C ref: `insane_fist`.
 pub fn insane_fist(world: &mut GameWorld, key: EntityKey) {

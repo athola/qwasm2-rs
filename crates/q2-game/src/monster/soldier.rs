@@ -10,7 +10,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash};
+use crate::monster::{fire, flash, footstep, MONSTER_FOOTSTEPS};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -83,10 +83,6 @@ const SOLDIER_HEALTH: i32 = 30;
 const SOLDIER_SS_HEALTH: i32 = 40;
 const SOLDIER_MASS: i32 = 100;
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0"; the game has no
-/// cvar access, so footsteps stay off as in a default C game.
-const G_MONSTERFOOTSTEPS: bool = false;
-
 const SOUND_IDLE: &str = "soldier/solidle1.wav";
 const SOUND_SIGHT1: &str = "soldier/solsght1.wav";
 const SOUND_SIGHT2: &str = "soldier/solsrch1.wav";
@@ -97,7 +93,7 @@ const SOUND_DEATH_LIGHT: &str = "soldier/soldeth2.wav";
 const SOUND_DEATH: &str = "soldier/soldeth1.wav";
 const SOUND_DEATH_SS: &str = "soldier/soldeth3.wav";
 const SOUND_COCK: &str = "infantry/infatck3.wav";
-const SOUND_STEPS: [&str; 4] = [
+pub(crate) const SOUND_STEPS: [&str; 4] = [
     "player/step1.wav",
     "player/step2.wav",
     "player/step3.wav",
@@ -729,11 +725,7 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `soldier_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn soldier_footstep(world: &mut GameWorld, key: EntityKey) {
-    if !G_MONSTERFOOTSTEPS {
-        return;
-    }
-    let step = SOUND_STEPS[(world.random_u32() % 4) as usize];
-    sound(world, key, CHAN_BODY, step, ATTN_NORM);
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `soldier_idle`.

@@ -8,7 +8,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::flash::project_source;
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -37,10 +37,6 @@ const SOUNDS: [&str; 11] = [
     SOUND_SCRATCH,
     SOUND_SEARCH,
 ];
-
-/// C `g_monsterfootsteps` (default "0"). The cvar is not ported, so
-/// footsteps stay at C's default: silent.
-const MONSTER_FOOTSTEPS: bool = false;
 
 /// C `MODEL_SCALE` (parasite.h).
 const MODEL_SCALE: f32 = 1.0;
@@ -369,9 +365,15 @@ pub fn parasite_tap(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_BODY, SOUND_TAP, ATTN_IDLE);
 }
 
-/// C ref: `parasite_footstep`.
+/// C ref: `parasite_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn parasite_footstep(world: &mut GameWorld, key: EntityKey) {
-    if MONSTER_FOOTSTEPS {
+    parasite_step(world, key, MONSTER_FOOTSTEPS);
+}
+
+/// The `parasite_footstep` body: the tap, without a `randk()`, when
+/// `enabled`.
+fn parasite_step(world: &mut GameWorld, key: EntityKey, enabled: bool) {
+    if enabled {
         parasite_tap(world, key);
     }
 }
@@ -802,6 +804,21 @@ mod tests {
             }
         }
         assert!((750..850).contains(&again), "{again}");
+    }
+
+    #[test]
+    fn parasite_footstep_taps_without_randk_only_when_the_cvar_is_on() {
+        let (mut world, gi) = test_world_recording();
+        let key = parasite(&mut world);
+        let rand = world.level.rand_state;
+        parasite_step(&mut world, key, false);
+        assert!(sounds_of(&world, &gi, key).is_empty());
+        parasite_step(&mut world, key, true);
+        assert_eq!(
+            sounds_of(&world, &gi, key),
+            [(CHAN_BODY, SOUND_TAP.into(), ATTN_IDLE)]
+        );
+        assert_eq!(world.level.rand_state, rand, "no randk() drawn");
     }
 
     #[test]

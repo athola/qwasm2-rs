@@ -33,7 +33,7 @@ pub mod turret;
 
 use q2_shared::types::Vec3f;
 
-use crate::constants::DeadFlag;
+use crate::constants::{DeadFlag, ATTN_NORM, CHAN_BODY};
 use crate::entity::{AnimFrameFn, EntityKey, MonsterFrame, MonsterMove, ThinkFn};
 use crate::misc::{throw_gib, throw_head, GibType};
 use crate::world::GameWorld;
@@ -69,6 +69,35 @@ pub(crate) fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str,
     world
         .gi
         .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
+}
+
+/// C cvar `g_monsterfootsteps`, which defaults to "0". `GameImport` has no
+/// cvar reader, so monster footsteps stay off as in a default C game.
+pub(crate) const MONSTER_FOOTSTEPS: bool = false;
+
+/// The body of the C `<monster>_footstep`s: nothing (and no `randk()`)
+/// unless `enabled`, else `steps[randk() % steps.len()]` on `CHAN_BODY`
+/// at `ATTN_NORM`. Callers pass `MONSTER_FOOTSTEPS`; tests pass `true`.
+pub(crate) fn footstep(
+    world: &mut GameWorld,
+    key: EntityKey,
+    enabled: bool,
+    steps: &[&str],
+    volume: f32,
+) {
+    if !enabled {
+        return;
+    }
+    let step = steps[(world.random_u32() % steps.len() as u32) as usize];
+    let index = world.gi.sound_index(step);
+    world.gi.sound(
+        world.number_of(key),
+        CHAN_BODY,
+        index,
+        volume,
+        ATTN_NORM,
+        0.0,
+    );
 }
 
 /// The organic gib-out shared by the C `*_die` functions: two bones, four
@@ -114,8 +143,82 @@ pub(crate) fn enemy_eye(world: &GameWorld, key: EntityKey) -> Option<Vec3f> {
 
 #[cfg(test)]
 mod tests {
-    use crate::world::test_world;
-    use q2_shared::types::Vec3f;
+    use super::*;
+    use crate::world::{test_world, test_world_recording};
+
+    /// Each C `<monster>_footstep`, the steps its body picks from, its
+    /// volume, and the sound names C loads for those steps.
+    #[rustfmt::skip]
+    fn c_footsteps() -> Vec<(ThinkFn, &'static [&'static str], f32, [&'static str; 4])> {
+        let pair = |m: &'static str| -> [&'static str; 4] {
+            match m {
+                "berserk" => ["berserk/step1.wav", "berserk/step2.wav", "", ""],
+                "brain" => ["brain/step1.wav", "brain/step2.wav", "", ""],
+                "bitch" => ["bitch/step1.wav", "bitch/step2.wav", "", ""],
+                "gladiator" => ["gladiator/step1.wav", "gladiator/step2.wav", "", ""],
+                "gunner" => ["gunner/step1.wav", "gunner/step2.wav", "", ""],
+                "infantry" => ["infantry/step1.wav", "infantry/step2.wav", "", ""],
+                "medic" => ["medic/step1.wav", "medic/step2.wav", "", ""],
+                _ => ["player/step1.wav", "player/step2.wav", "player/step3.wav", "player/step4.wav"],
+            }
+        };
+        vec![
+            (berserker::berserk_footstep, &berserker::SOUND_STEPS, 1.0, pair("berserk")),
+            (brain::brain_footstep, &brain::SOUND_STEPS, 1.0, pair("brain")),
+            (chick::chick_footstep, &chick::SOUND_STEPS, 1.0, pair("bitch")),
+            (gladiator::gladiator_footstep, &gladiator::SOUND_STEPS, 1.0, pair("gladiator")),
+            (gunner::gunner_footstep, &gunner::SOUND_STEPS, 1.0, pair("gunner")),
+            (infantry::infantry_footstep, &infantry::SOUND_STEPS, 1.0, pair("infantry")),
+            (insane::insane_footstep, &insane::SOUND_STEPS, 0.7, pair("player")),
+            (medic::medic_footstep, &medic::SOUND_STEPS, 1.0, pair("medic")),
+            (soldier::soldier_footstep, &soldier::SOUND_STEPS, 1.0, pair("player")),
+        ]
+    }
+
+    #[test]
+    fn monster_footsteps_are_silent_and_draw_no_randk_with_the_default_cvar() {
+        let (mut world, gi) = test_world_recording();
+        let key = world.spawn().unwrap();
+        let fns = c_footsteps().into_iter().map(|(f, ..)| f);
+        for step in fns.chain([parasite::parasite_footstep as ThinkFn]) {
+            let rand = world.level.rand_state;
+            step(&mut world, key);
+            assert_eq!(world.level.rand_state, rand, "no randk() drawn");
+        }
+        assert!(gi.sound_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn monster_footsteps_play_the_c_step_randk_picks_when_the_cvar_is_on() {
+        for (_, steps, volume, c_names) in c_footsteps() {
+            let c_names: Vec<&str> = c_names.into_iter().filter(|n| !n.is_empty()).collect();
+            let (mut world, gi) = test_world_recording();
+            let key = world.spawn().unwrap();
+            let number = world.number_of(key);
+            let mut played = Vec::new();
+            for _ in 0..32 {
+                let before = world.level.rand_state;
+                let roll = world.random_u32();
+                let after = world.level.rand_state;
+                world.level.rand_state = before;
+                footstep(&mut world, key, true, steps, volume);
+                assert_eq!(world.level.rand_state, after, "one randk() per step");
+                let call = *gi.sound_calls.borrow().last().unwrap();
+                let name = gi.sounds.borrow()[call.2 as usize - 1].clone();
+                let want = c_names[(roll % c_names.len() as u32) as usize];
+                assert_eq!(name, want);
+                assert_eq!(
+                    (call.0, call.1, call.3, call.4, call.5),
+                    (number, CHAN_BODY, volume, ATTN_NORM, 0.0),
+                    "{want}"
+                );
+                played.push(name);
+            }
+            for name in &c_names {
+                assert!(played.iter().any(|p| p == name), "{name} never picked");
+            }
+        }
+    }
 
     #[test]
     fn register_monster_spawns() {

@@ -6,7 +6,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{frame, set_move, sound, throw_organic_gibs};
+use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -66,6 +66,7 @@ const SOUND_SIGHT: &str = "brain/brnsght1.wav";
 const SOUND_SEARCH: &str = "brain/brnsrch1.wav";
 const SOUND_MELEE1: &str = "brain/melee1.wav";
 const SOUND_MELEE2: &str = "brain/melee2.wav";
+pub(crate) const SOUND_STEPS: [&str; 2] = ["brain/step1.wav", "brain/step2.wav"];
 const SOUND_MELEE3: &str = "brain/melee3.wav";
 
 /// The sounds C `SP_monster_brain` precaches, in its order. C never plays
@@ -443,10 +444,10 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 // Callbacks
 // ---------------------------------------------------------------------------
 
-/// C `g_monsterfootsteps` defaults to 0 and is not ported, so the step
-/// sounds (`brain/step1.wav`, `step2.wav`) never play.
-/// C ref: `brain_footstep`.
-pub fn brain_footstep(_world: &mut GameWorld, _key: EntityKey) {}
+/// C ref: `brain_footstep`; silent unless `g_monsterfootsteps` is set.
+pub fn brain_footstep(world: &mut GameWorld, key: EntityKey) {
+    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+}
 
 /// C ref: `brain_sight`.
 pub fn brain_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
