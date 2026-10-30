@@ -215,46 +215,51 @@ impl Engine {
         );
     }
 
-    /// Follow a level exit (C `gamemap`): the server loads the next map
-    /// into the same game, then the client preps the renderer for it (C
-    /// `CL_PrepRefresh`) and starts from a clear state (C `CL_ClearState`
-    /// on the reconnect), so nothing interpolates from the old map.
-    fn change_map(&mut self, level: &str) -> q2_common::error::Q2Result<()> {
+    /// Follow a level exit (C `gamemap`): the server loads the next level
+    /// into the same game, then the client starts from a clear state (C
+    /// `CL_ClearState` on the reconnect, which stops all sounds) and, for a
+    /// game map, registers its sounds and preps the renderer (C
+    /// `CL_RegisterSounds`, `CL_PrepRefresh`). `sounds`, the old map's last
+    /// frame of sounds, go with the old map: their indices name its
+    /// `CS_SOUNDS`. The client is cleared before the renderer is prepped,
+    /// so a failed prep does not leave the old map's sounds and frames.
+    fn change_map(
+        &mut self,
+        level: &str,
+        sounds: &mut Vec<q2_server::game_iface::SoundEvent>,
+    ) -> q2_common::error::Q2Result<()> {
         use q2_server::init::{LevelKind, MapRequest};
         let request = MapRequest::parse(level);
         log(&format!("Level exit to {level}"));
-        // demo2 exits to victory.pcx: a picture level with no map or
-        // player, which `tick` draws (C SCR_PlayCinematic). There is no
-        // cinematic or demo playback; the current map keeps running.
-        match request.kind {
-            LevelKind::Game => {}
-            LevelKind::Pic => {
-                self.local.change_map(&request, &[])?;
-                self.frames = q2_client::frame::FrameHistory::default();
-                log(&format!("Picture: pics/{} shown", request.map));
-                return Ok(());
-            }
-            LevelKind::Cinematic | LevelKind::Demo => {
-                log(&format!(
-                    "{}: only game maps and pictures can be loaded",
-                    request.map
-                ));
-                return Ok(());
-            }
-        }
-        let bsp = self.fs.load_file(&format!("maps/{}.bsp", request.map))?;
+        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
+        // level with no map or player, which `tick` draws (C
+        // SCR_PlayCinematic). There is no cinematic or demo playback:
+        // LocalGame refuses one, or skips it to its next server.
+        let bsp = match request.kind {
+            LevelKind::Game => self.fs.load_file(&format!("maps/{}.bsp", request.map))?,
+            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Vec::new(),
+        };
         self.local.change_map(&request, &bsp)?;
+        if matches!(request.kind, LevelKind::Cinematic | LevelKind::Demo) {
+            log(&format!("{}: skipped, no cinematic playback", request.map));
+            return Ok(());
+        }
+        // C CL_ClearState -> S_StopAllSounds.
+        self.sound.stop_all();
+        sounds.clear();
+        self.frames = q2_client::frame::FrameHistory::default();
+        self.input.view_angles = q2_shared::types::Vec3f::ZERO;
+        if request.kind == LevelKind::Pic {
+            log(&format!("Picture: pics/{} shown", request.map));
+            return Ok(());
+        }
+        self.register_sounds();
         let local = &self.local;
         prep_refresh(
             self.renderer.as_mut(),
             |i| local.configstring(i),
             &mut self.models,
         )?;
-        // C CL_ClearState -> S_StopAllSounds, then CL_RegisterSounds.
-        self.sound.stop_all();
-        self.register_sounds();
-        self.frames = q2_client::frame::FrameHistory::default();
-        self.input.view_angles = q2_shared::types::Vec3f::ZERO;
         log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
     }
@@ -315,9 +320,9 @@ impl Engine {
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.
         self.local.frame(elapsed_us);
-        let sounds = self.local.take_sounds();
+        let mut sounds = self.local.take_sounds();
         if let Some(level) = self.local.take_map_change() {
-            if let Err(e) = self.change_map(&level) {
+            if let Err(e) = self.change_map(&level, &mut sounds) {
                 console::error_1(&q2err_to_js(e));
             }
         }
@@ -338,6 +343,13 @@ impl Engine {
 
         // A key press would send C's `nextserver`, which SV_Nextserver
         // ignores for a picture outside coop: the picture stays.
+        if self.local.picture().is_some() {
+            // C S_Update still runs: the stops the map change queued reach
+            // the output, and with no entities no loop is left playing. The
+            // client is not spawned, so C sends it no unreliable sounds.
+            let origin = q2_shared::types::Vec3f::ZERO;
+            self.mix_sounds(&[], origin, origin, 0.0);
+        }
         if let Some(name) = self.local.picture() {
             picture_frame(
                 self.renderer.as_mut(),
