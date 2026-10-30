@@ -240,6 +240,9 @@ pub struct ClientData {
     pub anim_priority: i32,
     /// Frame the playing animation stops on (C `anim_end`).
     pub anim_end: i32,
+    /// Where the view bob cycle is; off the ground it does not change
+    /// (C `bobtime`).
+    pub bobtime: f32,
 }
 
 // ---------------------------------------------------------------------------

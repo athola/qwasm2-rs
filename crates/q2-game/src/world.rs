@@ -93,6 +93,9 @@ pub struct GameLocals {
     /// single player, so both stay false there.
     pub deathmatch: bool,
     pub coop: bool,
+    /// How far the view bob cycle advances each frame on the ground; kept
+    /// while airborne (C view.c file static `bobmove`).
+    pub bobmove: f32,
 }
 
 impl Default for GameLocals {
@@ -107,6 +110,7 @@ impl Default for GameLocals {
             skill: 1, // C cvar default
             deathmatch: false,
             coop: false,
+            bobmove: 0.0,
         }
     }
 }
