@@ -1031,6 +1031,12 @@ mod tests {
             .aiflags = AiFlags::STAND_GROUND;
         seed_random(&mut world, |r| (0.4..0.41).contains(&r));
         assert!(!boss2_checkattack(&mut world, key));
+
+        let (mut world, _, key) = checker(300.0);
+        mi_mut(&mut world, key).aiflags = AiFlags::STAND_GROUND;
+        seed_random(&mut world, |r| (0.39..0.4).contains(&r));
+        assert!(boss2_checkattack(&mut world, key));
+        assert_eq!(mi(&world, key).attack_state, AttackState::Missile);
     }
 
     #[test]
