@@ -484,8 +484,9 @@ pub fn infantry_pain(
 // Attacks
 // ---------------------------------------------------------------------------
 
-/// How far (pitch, yaw) below and right of its facing each dying burst
-/// fires, frame by frame from `FRAME_death211`. C ref: `aimangles`.
+/// How far (pitch, yaw) above and right of its facing each dying burst
+/// fires, frame by frame from `FRAME_death211`: C subtracts them from
+/// `s.angles`, and a negative pitch looks up. C ref: `aimangles`.
 const AIMANGLES: [[f32; 3]; 12] = [
     [0.0, 5.0, 0.0],
     [10.0, 15.0, 0.0],
@@ -1242,7 +1243,7 @@ mod tests {
 
     #[test]
     fn infantry_dying_machine_gun_sweeps_by_the_c_aim_angles() {
-        // death216 fires flash MACHINEGUN_7, 30 down and 45 right of ahead.
+        // death216 fires flash MACHINEGUN_7, 30 up and 45 right of ahead.
         let (mut world, gi, key, player) = in_arena(200.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
         world.entities.get_mut(key).unwrap().state.frame = FRAME_DEATH211 + 5;
