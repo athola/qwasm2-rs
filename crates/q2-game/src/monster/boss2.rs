@@ -556,7 +556,6 @@ pub fn sp_monster_boss2(
     ent.maxs = Vec3f::new(56.0, 56.0, 80.0);
     ent.game.health = 2000;
     ent.game.gib_health = -200;
-    ent.game.max_health = 2000;
     ent.game.mass = 1000;
     ent.game.flags |= EntityFlags::IMMUNE_LASER;
     ent.pain = Some(boss2_pain);
@@ -749,6 +748,7 @@ mod tests {
         let (world, _, key) = boss2();
         let ent = world.entities.get(key).unwrap();
         assert_eq!((ent.game.health, ent.game.mass), (2000, 1000));
+        assert_eq!(ent.game.max_health, 0, "C leaves it to monster_start");
         assert_eq!(
             (ent.mins, ent.maxs),
             (Vec3f::new(-56.0, -56.0, 0.0), Vec3f::new(56.0, 56.0, 80.0))
@@ -876,6 +876,13 @@ mod tests {
     #[test]
     fn boss2_pain_sets_the_damaged_skin_below_half_health() {
         let (mut world, _, key) = boss2();
+        // C monster_start fills max_health from health; the test world
+        // never runs it.
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.max_health = 2000;
+        ent.game.health = 1000;
+        boss2_pain(&mut world, key, key, 0.0, 1);
+        assert_eq!(world.entities.get(key).unwrap().state.skinnum, 0);
         world.entities.get_mut(key).unwrap().game.health = 999;
         boss2_pain(&mut world, key, key, 0.0, 1);
         assert_eq!(world.entities.get(key).unwrap().state.skinnum, 1);
