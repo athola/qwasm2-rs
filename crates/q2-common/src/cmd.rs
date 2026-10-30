@@ -93,9 +93,14 @@ impl CmdSystem {
         self.buffer.push_str(text);
     }
 
-    /// Insert text at the beginning of the command buffer. Shares the
-    /// `cbuf_add_text` cap, as C `Cbuf_InsertText` goes through
-    /// `Cbuf_AddText`.
+    /// Insert text at the beginning of the command buffer.
+    ///
+    /// C ref: `Cbuf_InsertText` clears the buffer, passes only the inserted
+    /// text to `Cbuf_AddText` (checked against the empty buffer), then
+    /// `SZ_Write`s the old text back; `cmd_text` has no `allowoverflow`, so
+    /// a combined size past the buffer is `ERR_FATAL`. This port instead
+    /// drops the insert, with a warning, whenever the combined text would
+    /// reach the `cbuf_add_text` cap, and keeps the old text.
     pub fn cbuf_insert_text(&mut self, text: &str) {
         if self.would_overflow(text) {
             return;
@@ -135,7 +140,9 @@ impl CmdSystem {
         self.defer_buffer = std::mem::take(&mut self.buffer);
     }
 
-    /// Restore the defer buffer to the main buffer.
+    /// Restore the defer buffer to the main buffer. Goes through
+    /// `cbuf_insert_text`, so deferred commands that would overflow the
+    /// buffer are dropped where C would `ERR_FATAL`.
     pub fn cbuf_insert_from_defer(&mut self) {
         let deferred = std::mem::take(&mut self.defer_buffer);
         self.cbuf_insert_text(&deferred);
@@ -635,7 +642,8 @@ mod tests {
 
     #[test]
     fn cbuf_insert_text_shares_the_add_text_cap() {
-        // C Cbuf_InsertText goes through Cbuf_AddText.
+        // C would ERR_FATAL once old + inserted text exceeds the buffer;
+        // the port drops the insert instead (cbuf_insert_text doc).
         let mut cmd = CmdSystem::new();
         cmd.cbuf_add_text(&"a".repeat(CBUF_MAX_SIZE - 2));
         cmd.cbuf_insert_text("bb");
