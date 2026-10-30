@@ -865,18 +865,28 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
     canvas_el.set_attribute(ENGINE_MARK, "")?;
 
-    let started = run_engine(canvas_id, pak_url).await;
-    if started.is_err() {
-        // Allow a retry after a failed start (e.g. the pak fetch failed).
-        if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
-            console::error_1(&e);
+    let (engine, map_name) = match load_engine(canvas_id, pak_url).await {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            // Nothing is attached to the page yet: allow a retry after a
+            // failed start (e.g. the pak fetch failed).
+            if let Err(e) = canvas_el.remove_attribute(ENGINE_MARK) {
+                console::error_1(&e);
+            }
+            return Err(e);
         }
-    }
-    started
+    };
+    // From here on the input and audio listeners are leaked for the page's
+    // lifetime, so a failure keeps the mark: a retry would attach a second
+    // set.
+    run_engine(engine, &map_name)
 }
 
+/// Every fallible start step that attaches nothing to the page: the GL
+/// context, the pak, the renderer, the server and the client. Returns the
+/// engine and the map it loaded.
 #[cfg(target_arch = "wasm32")]
-async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, String), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
@@ -974,10 +984,14 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
         .and_then(|w| w.location().search().ok())
         .unwrap_or_default();
     engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
+    Ok((engine, map_name.to_string()))
+}
 
-    // 9. Input, last of the fallible steps before the loop: the listeners
-    //    are leaked for the page's lifetime, so a failed start that is
-    //    retried must not have attached them already.
+/// Attach input and audio to the canvas and start the game loop.
+#[cfg(target_arch = "wasm32")]
+fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
+    // 9. Input: the listeners are leaked for the page's lifetime.
+    let canvas = engine.canvas.clone();
     let input_state =
         q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
     log("Input listeners attached (click canvas for pointer lock)");
