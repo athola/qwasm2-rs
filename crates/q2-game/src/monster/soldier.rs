@@ -840,7 +840,8 @@ pub fn soldier_run(world: &mut GameWorld, key: EntityKey) {
 // ---------------------------------------------------------------------------
 
 /// Bloody skin below half health; a hit while flying up knocks the
-/// soldier over (pain4), even during the debounce. C ref: `soldier_pain`.
+/// soldier over (pain4), and during the debounce does so only while it
+/// is already in pain1-3. C ref: `soldier_pain`.
 pub fn soldier_pain(
     world: &mut GameWorld,
     key: EntityKey,
@@ -1190,6 +1191,8 @@ pub fn soldier_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
     };
     sound(world, key, CHAN_VOICE, shout, ATTN_NORM);
 
+    // C calls range(self, self->enemy) unchecked; with no enemy there
+    // is nothing to range, so the port only shouts.
     let Some(enemy) = world.entities.get(key).and_then(|e| e.game.enemy) else {
         return;
     };
