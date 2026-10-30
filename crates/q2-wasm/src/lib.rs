@@ -1021,13 +1021,8 @@ fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
     // leave it borrowed for the listeners, which would then panic on every
     // event and bury the first panic.
     let frame_callback = Box::new(move |timestamp: f64| {
-        let input = {
-            let mut shared = input_state.borrow_mut();
-            let input = shared.clone();
-            shared.mouse_dx = 0.0;
-            shared.mouse_dy = 0.0;
-            input
-        };
+        // take_frame keeps a key tapped between frames down for this one.
+        let input = input_state.borrow_mut().take_frame();
         engine.borrow_mut().tick(timestamp, &input);
     }) as Box<dyn FnMut(f64)>;
 
