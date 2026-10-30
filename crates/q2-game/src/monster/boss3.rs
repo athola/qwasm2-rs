@@ -894,8 +894,8 @@ fn damaged_skin(world: &mut GameWorld, key: EntityKey) {
 
 /// Jorg and Makron's `checkattack`: like `M_CheckAttack` but with fixed
 /// chances (0.4 near or standing ground, 0.2 mid, never far), no skill
-/// scaling, always melee in melee range, and a shot check that ignores
-/// windows. C ref: `Jorg_CheckAttack` / `Makron_CheckAttack`, identical.
+/// scaling, always attacking in melee range (with the missile, since
+/// neither boss has a melee), and a shot check that ignores windows. C ref: `Jorg_CheckAttack` / `Makron_CheckAttack`, identical.
 fn boss3_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
     let Some((enemy, enemy_origin, enemy_viewheight, _)) = enemy_of(world, key) else {
         return false;
@@ -1128,8 +1128,9 @@ pub fn jorg_attack1(world: &mut GameWorld, key: EntityKey) {
     set_move(world, key, &JORG_MOVE_ATTACK1);
 }
 
-/// Little damage, and the attacks, rarely interrupt him; then a pain
-/// move by damage, none in nightmare. C ref: `jorg_pain`.
+/// Hits of 40 or less are ignored 60% of the time; attack frames add
+/// only a negligible extra chance (0.5% or 0.005%) to ignore pain. Then
+/// a pain move by damage, none in nightmare. C ref: `jorg_pain`.
 pub fn jorg_pain(
     world: &mut GameWorld,
     key: EntityKey,
@@ -1400,8 +1401,8 @@ pub fn makron_bfg(world: &mut GameWorld, key: EntityKey) {
     monster_fire_bfg(world, key, start, dir, 50, 300, 100, 300.0, MZ2_MAKRON_BFG);
 }
 
-/// Remember where the enemy's eyes are for the railgun shot two frames
-/// later. `game.move_origin` stands in for C `pos1`, which the entity
+/// Remember where the enemy's eyes are for the railgun shot on the next
+/// frame. `game.move_origin` stands in for C `pos1`, which the entity
 /// does not carry. C ref: `MakronSaveloc`.
 pub fn makron_saveloc(world: &mut GameWorld, key: EntityKey) {
     let Some((_, enemy_origin, viewheight, _)) = enemy_of(world, key) else {
