@@ -3,9 +3,7 @@
 //!
 //! Port of `g_ai.c` and of `g_monster.c` except `monster_fire_*`; monsters
 //! step, turn and chase through `monster::movement` (C `m_move.c`).
-//! Deviations from C: a player is always lit well enough to be seen (C
-//! `light_level`, which nothing sets yet), heard noises skip the area
-//! portal check (no `AreasConnected` import).
+//! Deviations from C are documented on the functions that have them.
 //!
 //! # AI state machine
 //! Monsters cycle: stand → (spot player) → run → (in range) → attack → pain → die.
@@ -430,7 +428,8 @@ pub fn ai_move(world: &mut GameWorld, key: EntityKey, dist: f32) {
     movement::m_walkmove(world, key, yaw, dist);
 }
 
-/// Face the enemy and close in. C ref: `ai_charge` (g_ai.c).
+/// Face the enemy and close in. C ref: `ai_charge` (g_ai.c); where C
+/// reads an unset vector when there is no enemy, `ideal_yaw` is kept.
 pub fn ai_charge(world: &mut GameWorld, key: EntityKey, dist: f32) {
     let enemy_origin = world
         .entities
@@ -573,8 +572,7 @@ pub fn hunt_target(world: &mut GameWorld, key: EntityKey) {
 
 /// The monster has a new enemy: wake other monsters, remember where it
 /// was seen, and hunt it or first run to the combat point the mapper set.
-/// C ref: `FoundTarget` (g_ai.c), without lighting up the sighting
-/// monster (`light_level`, not ported).
+/// C ref: `FoundTarget` (g_ai.c).
 pub fn found_target(world: &mut GameWorld, key: EntityKey) {
     let Some(enemy) = world
         .entities
@@ -648,9 +646,8 @@ pub fn found_target(world: &mut GameWorld, key: EntityKey) {
 /// a player made, or this frame's sight client, within range, in light
 /// and line of sight, and in front unless it is close and hostile.
 /// Returns whether an enemy was found. C ref: `FindTarget` (g_ai.c).
-/// Deviations: no darkness check and no area portal check (see the
-/// module docs), and an unset sight or sound entity never takes its
-/// branch (C would follow a null pointer).
+/// Deviation: an unset sight or sound entity never takes its branch (C
+/// would follow a null pointer).
 pub fn find_target(world: &mut GameWorld, key: EntityKey) -> bool {
     let Some(ent) = world.entities.get(key) else {
         return false;
