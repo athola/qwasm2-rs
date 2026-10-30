@@ -11,7 +11,7 @@ use q2_shared::types::*;
 
 use crate::ai;
 use crate::constants::*;
-use crate::entity::{EntityKey, EntityStorage, MonsterInfo, MoveInfo};
+use crate::entity::{EntityKey, EntityStorage, MonsterInfo};
 use crate::monster::infantry;
 use crate::weapons::vectoangles;
 use crate::world::GameWorld;
@@ -45,16 +45,12 @@ pub fn snap_to_eights(x: f32) -> f32 {
     0.125 * (x as i32) as f32
 }
 
-/// C `pos1` / `pos2` (the breach's pitch and yaw limits). The entity has
-/// no such fields, so the breach keeps them in its `moveinfo`.
+/// C `pos1` / `pos2`: the breach's pitch and yaw limits.
 fn limits(world: &GameWorld, key: EntityKey) -> (Vec3f, Vec3f) {
     world
         .entities
         .get(key)
-        .and_then(|e| e.moveinfo.as_ref())
-        .map_or((Vec3f::ZERO, Vec3f::ZERO), |mi| {
-            (mi.start_angles, mi.end_angles)
-        })
+        .map_or((Vec3f::ZERO, Vec3f::ZERO), |e| (e.game.pos1, e.game.pos2))
 }
 
 /// Crush whatever blocks the turret, credited to the driver.
@@ -290,11 +286,8 @@ pub fn sp_turret_breach(
     let maxpitch = or(st_float(fields, "maxpitch"), 30.0);
     let minyaw = st_float(fields, "minyaw");
     let maxyaw = or(st_float(fields, "maxyaw"), 360.0);
-    ent.moveinfo = Some(Box::new(MoveInfo {
-        start_angles: Vec3f::new(-minpitch, minyaw, 0.0),
-        end_angles: Vec3f::new(-maxpitch, maxyaw, 0.0),
-        ..Default::default()
-    }));
+    ent.game.pos1 = Vec3f::new(-minpitch, minyaw, 0.0);
+    ent.game.pos2 = Vec3f::new(-maxpitch, maxyaw, 0.0);
     ent.game.ideal_yaw = ent.state.angles.y;
     ent.game.move_angles.y = ent.game.ideal_yaw;
     ent.blocked = Some(turret_blocked);
@@ -632,10 +625,12 @@ mod tests {
         assert!(ent.monsterinfo.is_none());
         assert_eq!((ent.solid, ent.game.movetype), (Solid::Bsp, MoveType::Push));
         assert_eq!((ent.game.speed, ent.game.dmg), (50.0, 10));
+        // C pos1 / pos2; C's breach has no moveinfo.
         assert_eq!(
-            limits(&world, key),
+            (ent.game.pos1, ent.game.pos2),
             (Vec3f::new(30.0, 0.0, 0.0), Vec3f::new(-30.0, 360.0, 0.0))
         );
+        assert!(ent.moveinfo.is_none());
         assert_eq!((ent.game.ideal_yaw, ent.game.move_angles.y), (90.0, 90.0));
         assert!(ent.blocked.is_some());
         assert!(std::ptr::fn_addr_eq(
@@ -662,7 +657,7 @@ mod tests {
         let ent = world.entities.get(key).unwrap();
         assert_eq!((ent.game.speed, ent.game.dmg), (20.0, 3));
         assert_eq!(
-            limits(&world, key),
+            (ent.game.pos1, ent.game.pos2),
             (Vec3f::new(10.0, 90.0, 0.0), Vec3f::new(-45.0, 270.0, 0.0))
         );
     }

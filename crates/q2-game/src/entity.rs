@@ -313,6 +313,9 @@ pub struct GameEntityData {
     pub move_angles: Vec3f,
     /// Unit direction a mover opens along (C `movedir`, G_SetMovedir).
     pub movedir: Vec3f,
+    /// C `pos1` / `pos2`: a turret breach's pitch and yaw limits.
+    pub pos1: Vec3f,
+    pub pos2: Vec3f,
 
     // -- timing ------------------------------------------------------------
     pub pain_debounce_time: f32,
