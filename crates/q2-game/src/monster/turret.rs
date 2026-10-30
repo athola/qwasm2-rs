@@ -523,8 +523,12 @@ pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
 /// then runs `monster_start`, which does the rest of C's inline monster
 /// setup (deathmatch removal, `total_monsters`, SVF_MONSTER, RF_FRAMELERP,
 /// DAMAGE_AIM, `monster_use`, MASK_MONSTERSOLID, `old_origin`) and keeps
-/// the `turret_driver_link` think. C's stand is `infantry_stand`, which
-/// nothing calls for a driver; it is not wired here.
+/// the `turret_driver_link` think. It also does what C's driver never
+/// gets: MOVETYPE_STEP until `turret_driver_link` puts PUSH back,
+/// `max_health`, `air_finished`, the `M_CheckAttack` checkattack, a
+/// forever `pausetime` and the SIGHT-to-AMBUSH spawnflag rewrite. The
+/// stand is `infantry_stand`, which C's HuntTarget calls for this
+/// STAND_GROUND monster once FindTarget succeeds.
 pub fn sp_turret_driver(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -545,6 +549,7 @@ pub fn sp_turret_driver(
     ent.game.flags |= EntityFlags::NO_KNOCKBACK;
     ent.monsterinfo = Some(Box::new(MonsterInfo {
         aiflags: AiFlags::STAND_GROUND | AiFlags::DUCKED,
+        stand: Some(infantry::infantry_stand),
         ..Default::default()
     }));
     ent.think = Some(turret_driver_link);
@@ -860,6 +865,11 @@ mod tests {
         assert!(ent.game.flags.contains(EntityFlags::NO_KNOCKBACK));
         let mi = ent.monsterinfo.as_ref().unwrap();
         assert_eq!(mi.aiflags, AiFlags::STAND_GROUND | AiFlags::DUCKED);
+        // HuntTarget calls it for a STAND_GROUND monster once FindTarget hits.
+        assert!(mi.stand.is_some_and(|f| std::ptr::fn_addr_eq(
+            f,
+            infantry::infantry_stand as crate::entity::MonsterStandFn
+        )));
         assert!(std::ptr::fn_addr_eq(
             ent.think.unwrap(),
             turret_driver_link as ThinkFn
