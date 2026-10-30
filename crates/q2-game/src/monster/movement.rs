@@ -16,9 +16,10 @@ use crate::world::GameWorld;
 /// C `DI_NODIR`.
 const DI_NODIR: f32 = -1.0;
 
-/// C `anglemod`: wrap to [0, 360) on the 16-bit angle grid.
+/// C `anglemod`: wrap to [0, 360) on the 16-bit angle grid. The scale
+/// constants are double literals in C, so both products are double.
 pub fn anglemod(a: f32) -> f32 {
-    (360.0 / 65536.0) * (((a * (65536.0 / 360.0)) as i32 & 65535) as f32)
+    ((360.0 / 65536.0) * f64::from((f64::from(a) * (65536.0 / 360.0)) as i32 & 65535)) as f32
 }
 
 /// C `vectoyaw` (g_utils.c), truncated to whole degrees like C.
@@ -733,6 +734,17 @@ mod tests {
 
         let origin = world.entities.get(key).unwrap().state.origin;
         assert!(origin.y > 100.0, "never turned toward the goal: {origin}");
+    }
+
+    #[test]
+    fn anglemod_scales_in_double_like_c() {
+        // Values from C's anglemod compiled on the host; an all-f32 port
+        // lands one 16-bit grid step lower on these.
+        assert_eq!(anglemod(-255.52), 104.48547);
+        assert_eq!(anglemod(-251.51), 108.49548);
+        assert_eq!(anglemod(-247.89), 112.11548);
+        assert_eq!(anglemod(-0.01), 359.9945);
+        assert_eq!(anglemod(704.37), 344.36646);
     }
 
     #[test]
