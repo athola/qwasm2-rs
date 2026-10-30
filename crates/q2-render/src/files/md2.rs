@@ -124,17 +124,13 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
     if num_st == 0 {
         return Err(malformed(WHAT, "no st vertices"));
     }
-    if num_tris == 0 || num_tris > MAX_TRIANGLES {
-        return Err(malformed(
-            WHAT,
-            format_args!("bad triangle count {num_tris}"),
-        ));
+    // C Mod_LoadMD2 caps neither count at MAX_TRIANGLES or MAX_FRAMES; the
+    // lists are checked against the file before anything is allocated.
+    if num_tris == 0 {
+        return Err(malformed(WHAT, "no triangles"));
     }
-    if num_frames == 0 || num_frames > MAX_FRAMES {
-        return Err(malformed(
-            WHAT,
-            format_args!("bad frame count {num_frames}"),
-        ));
+    if num_frames == 0 {
+        return Err(malformed(WHAT, "no frames"));
     }
     if frame_size < FRAME_HEADER_SIZE + num_xyz * FRAME_VERTEX_SIZE {
         return Err(malformed(WHAT, "framesize too small for num_xyz"));
@@ -162,7 +158,10 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
         ]);
     }
 
-    let tri_bytes = slice_at(WHAT, data, ofs_tris, num_tris * TRIANGLE_SIZE)?;
+    let tris_len = num_tris
+        .checked_mul(TRIANGLE_SIZE)
+        .ok_or_else(|| malformed(WHAT, "num_tris overflow"))?;
+    let tri_bytes = slice_at(WHAT, data, ofs_tris, tris_len)?;
     let mut triangles = Vec::with_capacity(num_tris);
     for index in 0..num_tris {
         let base = index * TRIANGLE_SIZE;
@@ -191,6 +190,10 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
         triangles.push(triangle);
     }
 
+    let frames_len = num_frames
+        .checked_mul(frame_size)
+        .ok_or_else(|| malformed(WHAT, "num_frames overflow"))?;
+    slice_at(WHAT, data, ofs_frames, frames_len)?;
     let mut frames = Vec::with_capacity(num_frames);
     for index in 0..num_frames {
         let start = index
@@ -395,7 +398,7 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_counts() {
-        // field index -> bad value: skinheight, num_xyz x3, num_st, num_tris x2, num_frames x2
+        // field index -> bad value: skinheight, num_xyz x3, num_st, num_tris, num_frames
         let cases = [
             (3, 481),
             (6, 0),
@@ -403,14 +406,44 @@ mod tests {
             (6, -1),
             (7, 0),
             (8, 0),
-            (8, i32::try_from(MAX_TRIANGLES).unwrap() + 1),
             (10, 0),
-            (10, i32::try_from(MAX_FRAMES).unwrap() + 1),
         ];
         for (field, bad) in cases {
             let mut bytes = build(&Spec::default());
             set_i32(&mut bytes, field, bad);
             assert!(load_md2(&bytes).is_err(), "field {field} = {bad}");
+        }
+    }
+
+    // yquake2 Mod_LoadMD2 enforces neither MAX_TRIANGLES nor MAX_FRAMES.
+    #[test]
+    fn more_triangles_and_frames_than_the_md2_limits_load_like_c() {
+        let mut bytes = build(&Spec::default());
+        let (tris, frames) = (MAX_TRIANGLES + 1, MAX_FRAMES + 1);
+        let len = i32::try_from(bytes.len()).unwrap();
+        set_i32(&mut bytes, 13, len);
+        set_i32(&mut bytes, 8, i32::try_from(tris).unwrap());
+        for _ in 0..tris {
+            for index in [0u16, 1, 2, 0, 1, 2] {
+                bytes.extend_from_slice(&index.to_le_bytes());
+            }
+        }
+        let len = i32::try_from(bytes.len()).unwrap();
+        set_i32(&mut bytes, 14, len);
+        set_i32(&mut bytes, 10, i32::try_from(frames).unwrap());
+        bytes.resize(bytes.len() + frames * FRAME_SIZE, 0);
+        let len = i32::try_from(bytes.len()).unwrap();
+        set_i32(&mut bytes, 16, len);
+        let model = load_md2(&bytes).unwrap();
+        assert_eq!((model.triangles.len(), model.frames.len()), (tris, frames));
+    }
+
+    #[test]
+    fn counts_larger_than_the_file_are_rejected_without_allocating() {
+        for field in [8, 10] {
+            let mut bytes = build(&Spec::default());
+            set_i32(&mut bytes, field, i32::MAX);
+            assert!(load_md2(&bytes).is_err(), "field {field}");
         }
     }
 

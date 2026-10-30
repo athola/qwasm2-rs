@@ -18,10 +18,15 @@ pub(crate) fn malformed(what: &str, why: impl std::fmt::Display) -> Q2Error {
     Q2Error::Drop(format!("{what}: {why}"))
 }
 
-/// Decode a NUL-terminated string from a fixed-size on-disk field.
+/// Decode a NUL-terminated string from a fixed-size on-disk field, one char
+/// per byte (Latin-1) as q2-common decodes texinfo and pak names, so a
+/// high-bit name is the same string in the renderer and in collision.
 pub(crate) fn fixed_cstring(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
+    bytes
+        .iter()
+        .take_while(|&&b| b != 0)
+        .map(|&b| char::from(b))
+        .collect()
 }
 
 /// Convert an on-disk signed count or offset to `usize`, rejecting negatives.
@@ -44,6 +49,17 @@ pub(crate) fn slice_at<'a>(
                 format_args!("{len} bytes at offset {off} exceed file"),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixed_cstring;
+
+    #[test]
+    fn fixed_cstring_maps_each_byte_to_one_char_and_stops_at_nul() {
+        assert_eq!(fixed_cstring(b"e1/caf\xE9\0junk"), "e1/caf\u{e9}");
+        assert_eq!(fixed_cstring(b"\xFF\x80"), "\u{ff}\u{80}");
+    }
 }
 
 #[cfg(test)]

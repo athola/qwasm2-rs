@@ -289,12 +289,16 @@ document.addEventListener('keydown', (e) => {{
 // Log utilities
 window.copyLog = function() {{
   const text = document.getElementById('status').innerText;
-  navigator.clipboard.writeText(text).then(() => {{
-    const btn = document.querySelector('#status-toolbar button');
-    const orig = btn.textContent;
-    btn.textContent = 'Copied!';
+  const btn = document.querySelector('#status-toolbar button');
+  const orig = btn.textContent;
+  const flash = (label) => {{
+    btn.textContent = label;
     setTimeout(() => btn.textContent = orig, 1000);
-  }});
+  }};
+  // writeText rejects when the page is unfocused or clipboard access is denied.
+  navigator.clipboard.writeText(text).then(
+    () => flash('Copied!'),
+    (err) => {{ console.error('copy log failed:', err); flash('Copy failed'); }});
 }};
 
 window.saveLog = function() {{

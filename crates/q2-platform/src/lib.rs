@@ -8,6 +8,7 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+pub mod input_state;
 pub mod keymap;
 
 #[cfg(target_arch = "wasm32")]

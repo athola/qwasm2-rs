@@ -84,6 +84,13 @@ impl FrameHistory {
     /// the view offset and kick angles change only on server frames, so
     /// they are lerped between the last two by `lerp`. A dead player's
     /// angles are lerped too, as C stops using the predicted ones.
+    ///
+    /// Not ported: C's stair smoothing and prediction-error correction.
+    /// `CL_PredictMovement` records `predicted_step` when an on-ground,
+    /// moving command climbs 8, 12 or 16 units, and `CL_CalcViewValues`
+    /// lowers the view by it, decaying over 100 ms; here the view snaps up
+    /// the step. Both need the per-command prediction state, which the
+    /// networked client (#19) brings.
     pub fn view(&self, origin: Vec3f, live: &PlayerState, lerp: f32) -> (Vec3f, Vec3f) {
         let ps = &self.ps;
         // A teleport of more than 256 units on an axis is not lerped.

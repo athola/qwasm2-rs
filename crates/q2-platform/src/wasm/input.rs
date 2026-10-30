@@ -6,39 +6,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent};
 
+pub use crate::input_state::WasmInputState;
 pub use crate::keymap::key_code_to_q2;
-
-/// Shared input state that event listeners write to.
-#[derive(Debug, Clone)]
-pub struct WasmInputState {
-    pub keys: [bool; 256],
-    pub mouse_dx: f32,
-    pub mouse_dy: f32,
-    pub mouse_buttons: u8,
-}
-
-impl WasmInputState {
-    /// Release every key and button. Called when the page can no longer
-    /// see the matching key-up or mouse-up (focus lost, pointer lock
-    /// changed), so nothing stays held.
-    fn release_all(&mut self) {
-        self.keys = [false; 256];
-        self.mouse_buttons = 0;
-        self.mouse_dx = 0.0;
-        self.mouse_dy = 0.0;
-    }
-}
-
-impl Default for WasmInputState {
-    fn default() -> Self {
-        Self {
-            keys: [false; 256],
-            mouse_dx: 0.0,
-            mouse_dy: 0.0,
-            mouse_buttons: 0,
-        }
-    }
-}
 
 /// Set up keyboard and mouse event listeners on a canvas.
 /// Returns a shared reference to the input state.
@@ -57,7 +26,7 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
         let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
             if let Some(key) = key_code_to_q2(&event.code()) {
-                state.borrow_mut().keys[key as usize] = true;
+                state.borrow_mut().key_down(key);
                 if lock_doc.pointer_lock_element().is_some() {
                     event.prevent_default();
                 }
@@ -75,7 +44,7 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
         let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |event: KeyboardEvent| {
             if let Some(key) = key_code_to_q2(&event.code()) {
-                state.borrow_mut().keys[key as usize] = false;
+                state.borrow_mut().key_up(key);
                 if lock_doc.pointer_lock_element().is_some() {
                     event.prevent_default();
                 }
@@ -151,8 +120,8 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
     {
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
-            let mut s = state.borrow_mut();
-            s.mouse_buttons |= 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            let mask = 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            state.borrow_mut().button_down(mask);
         }) as Box<dyn FnMut(_)>);
         canvas
             .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
@@ -163,8 +132,8 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
     {
         let state = state.clone();
         let closure = Closure::wrap(Box::new(move |event: MouseEvent| {
-            let mut s = state.borrow_mut();
-            s.mouse_buttons &= !(1u8.checked_shl(event.button() as u32).unwrap_or(0));
+            let mask = 1u8.checked_shl(event.button() as u32).unwrap_or(0);
+            state.borrow_mut().button_up(mask);
         }) as Box<dyn FnMut(_)>);
         // On the document: a button pressed on the canvas may be released
         // after the cursor has left it.

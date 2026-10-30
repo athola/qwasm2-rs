@@ -1,7 +1,9 @@
 //! Entities to draw between two server frames. C ref: `CL_AddPacketEntities`
 //! (client/cl_entities.c) and the no-lerp rules of `CL_ParseEntity`
 //! (client/cl_parse.c). Not done: particle and light effects, shells
-//! (EF_QUAD and friends), beams' colour and player skins.
+//! (EF_QUAD and friends), beams' colour, player skins with the custom
+//! weapon model (`modelindex2` 255), and the Rogue defender sphere's
+//! translucent linked shell.
 
 use q2_shared::constants::{
     EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_ROTATE, EV_OTHER_TELEPORT,
@@ -100,7 +102,7 @@ pub fn entity_views(
     current
         .iter()
         .filter(|s| s.modelindex != 0)
-        .map(|s| {
+        .flat_map(|s| {
             let reset;
             let prev = match previous
                 .binary_search_by_key(&s.number, |p| p.number)
@@ -142,7 +144,7 @@ pub fn entity_views(
                 let origin = prev.origin + (s.origin - prev.origin) * lerpfrac;
                 (origin, origin)
             };
-            EntityView {
+            let view = EntityView {
                 modelindex: s.modelindex,
                 frame: anim_frame(s, time_ms),
                 oldframe: prev.frame,
@@ -157,7 +159,22 @@ pub fn entity_views(
                 } else {
                     1.0
                 },
-            }
+            };
+            // C "duplicate for linked models", which it skips for the own
+            // player. modelindex2 255 is the player's weapon model from
+            // clientinfo, not ported with player skins.
+            let linked = [s.modelindex2, s.modelindex3, s.modelindex4]
+                .into_iter()
+                .filter(|&m| m != 0 && m != 255 && s.number != playernum + 1)
+                .map(|modelindex| EntityView {
+                    modelindex,
+                    skinnum: 0,
+                    flags: 0,
+                    alpha: 1.0,
+                    ..view.clone()
+                })
+                .collect::<Vec<_>>();
+            std::iter::once(view).chain(linked)
         })
         .collect()
 }
@@ -247,6 +264,34 @@ mod tests {
         let mut sound_only = state(4, Vec3f::ZERO, 0);
         sound_only.modelindex = 0;
         assert!(entity_views(&[sound_only], &[], 1.0, 0, 0).is_empty());
+    }
+
+    // C CL_AddPacketEntities "duplicate for linked models": modelindex2..4
+    // are drawn as copies of the entity with skin 0, no flags and no alpha.
+    #[test]
+    fn linked_models_are_drawn_as_plain_copies_of_the_entity() {
+        let mut s = state(4, Vec3f::new(1.0, 2.0, 3.0), 6);
+        s.modelindex2 = 7;
+        s.modelindex4 = 9;
+        s.skinnum = 2;
+        s.renderfx = RF_TRANSLUCENT;
+        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        let models: Vec<i32> = views.iter().map(|v| v.modelindex).collect();
+        assert_eq!(models, vec![3, 7, 9]);
+        for linked in &views[1..] {
+            assert_eq!((linked.skinnum, linked.flags, linked.alpha), (0, 0, 1.0));
+            assert_eq!((linked.origin, linked.frame), (views[0].origin, 6));
+        }
+    }
+
+    #[test]
+    fn custom_weapon_and_own_player_links_are_not_drawn() {
+        let mut other = state(4, Vec3f::ZERO, 0);
+        other.modelindex2 = 255; // the weapon model from clientinfo
+        let mut own = state(1, Vec3f::ZERO, 0);
+        own.modelindex3 = 7; // C skips the own player before its links
+        let views = entity_views(&[own, other], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 2);
     }
 
     #[test]

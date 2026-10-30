@@ -167,32 +167,39 @@ mod tests {
         assert_eq!(key_code_to_q2("KeyA"), Some(b'a'));
         assert_eq!(key_code_to_q2("KeyS"), Some(b's'));
         assert_eq!(key_code_to_q2("KeyD"), Some(b'd'));
+
         // Movement keys from default.cfg
         assert_eq!(key_code_to_q2("KeyC"), Some(b'c')); // +movedown
         assert_eq!(key_code_to_q2("Space"), Some(K_SPACE)); // +moveup
         assert_eq!(key_code_to_q2("KeyZ"), Some(b'z')); // +lookdown
-                                                        // Modifiers
+
+        // Modifiers
         assert_eq!(key_code_to_q2("ControlLeft"), Some(K_CTRL)); // +attack
         assert_eq!(key_code_to_q2("ShiftLeft"), Some(K_SHIFT)); // +speed
         assert_eq!(key_code_to_q2("AltLeft"), Some(K_ALT)); // +strafe
-                                                            // Arrows
+
+        // Arrows
         assert_eq!(key_code_to_q2("ArrowUp"), Some(K_UPARROW)); // +forward
         assert_eq!(key_code_to_q2("ArrowDown"), Some(K_DOWNARROW)); // +back
         assert_eq!(key_code_to_q2("ArrowLeft"), Some(K_LEFTARROW)); // +left
         assert_eq!(key_code_to_q2("ArrowRight"), Some(K_RIGHTARROW)); // +right
-                                                                      // Special
+
+        // Special
         assert_eq!(key_code_to_q2("Escape"), Some(K_ESCAPE));
         assert_eq!(key_code_to_q2("Backquote"), Some(b'`'));
         assert_eq!(key_code_to_q2("Tab"), Some(K_TAB)); // inven
-                                                        // Weapons
+
+        // Weapons
         assert_eq!(key_code_to_q2("Digit1"), Some(b'1'));
         assert_eq!(key_code_to_q2("Digit9"), Some(b'9'));
+
         // Punctuation
         assert_eq!(key_code_to_q2("Comma"), Some(b',')); // +moveleft
         assert_eq!(key_code_to_q2("Period"), Some(b'.')); // +moveright
         assert_eq!(key_code_to_q2("BracketLeft"), Some(b'[')); // invprev
         assert_eq!(key_code_to_q2("BracketRight"), Some(b']')); // invnext
-                                                                // Unknown
+
+        // Unknown
         assert_eq!(key_code_to_q2("UnknownKey"), None);
     }
 

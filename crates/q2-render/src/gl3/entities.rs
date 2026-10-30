@@ -185,6 +185,47 @@ fn vec3(v: q2_shared::types::Vec3f) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
+/// Draw the `filter` batches of `entity` if it is a brush model.
+fn draw_brush(
+    scene: &EntityScene,
+    entity: &RenderEntity,
+    filter: BatchFilter,
+    translucent_entity: bool,
+) {
+    let Some(Model::Brush { submodel }) = scene.models.get(entity.model) else {
+        return;
+    };
+    let Some(world) = scene.world else {
+        return;
+    };
+    let Some(batches) = world.model_batches(*submodel) else {
+        return;
+    };
+    let matrix = brush_matrix(vec3(entity.origin), vec3(entity.angles));
+    let view_proj = mat4_mul(&scene.view_proj, &matrix);
+    let draw = BatchDraw {
+        view_proj: &view_proj,
+        time: scene.refdef.time,
+        frame: entity.frame,
+        filter,
+        translucent_entity,
+        areabits: None,
+    };
+    draw_batches(scene.gl, scene.world_uniforms, world, batches, &draw);
+}
+
+/// The SURF_TRANS33/66 faces of every brush entity, in the final alpha pass
+/// after all entities (C `DrawInlineBModel` chains them on
+/// `gl3_alpha_surfaces`, whatever the entity's own flags). Deliberate
+/// deviation: C draws that chain with the identity matrix, so a moved or
+/// rotated brush entity's glass stays where the entity spawned; here it
+/// keeps the entity's matrix.
+pub fn draw_brush_alpha_faces(scene: &EntityScene, entities: &[RenderEntity]) {
+    for entity in entities.iter().filter(|e| e.flags & RF_VIEWERMODEL == 0) {
+        draw_brush(scene, entity, BatchFilter::Translucent, false);
+    }
+}
+
 /// Draw the opaque (`translucent == false`) or `RF_TRANSLUCENT` entities.
 /// The world program must be bound; it is bound again on return. The viewer's
 /// own model is never drawn here.
@@ -193,27 +234,9 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
         entity.flags & RF_VIEWERMODEL == 0 && (entity.flags & RF_TRANSLUCENT != 0) == translucent
     };
 
+    // A brush entity's SURF_TRANS33/66 faces wait for `draw_brush_alpha_faces`.
     for entity in entities.iter().filter(wanted) {
-        let Some(Model::Brush { submodel }) = scene.models.get(entity.model) else {
-            continue;
-        };
-        let Some(world) = scene.world else {
-            continue;
-        };
-        let Some(batches) = world.model_batches(*submodel) else {
-            continue;
-        };
-        let matrix = brush_matrix(vec3(entity.origin), vec3(entity.angles));
-        let view_proj = mat4_mul(&scene.view_proj, &matrix);
-        let draw = BatchDraw {
-            view_proj: &view_proj,
-            time: scene.refdef.time,
-            frame: entity.frame,
-            filter: BatchFilter::All,
-            translucent_entity: translucent,
-            areabits: None,
-        };
-        draw_batches(scene.gl, scene.world_uniforms, world, batches, &draw);
+        draw_brush(scene, entity, BatchFilter::Opaque, translucent);
     }
 
     let mut alias_program_bound = false;
