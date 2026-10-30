@@ -110,6 +110,18 @@ pub fn setup_input_listeners(
         closure.forget();
     }
 
+    // The page's Keys button (`qwasm2-legend`), read once by the next frame.
+    {
+        let state = state.clone();
+        let closure = Closure::wrap(Box::new(move |_: Event| {
+            state.borrow_mut().legend_requested = true;
+        }) as Box<dyn FnMut(_)>);
+        document
+            .add_event_listener_with_callback("qwasm2-legend", closure.as_ref().unchecked_ref())
+            .map_err(|e| fatal(format!("qwasm2-legend listener: {:?}", e)))?;
+        closure.forget();
+    }
+
     // Log pointer lock errors to the browser console for diagnostics.
     {
         let closure = Closure::wrap(Box::new(move |_: Event| {

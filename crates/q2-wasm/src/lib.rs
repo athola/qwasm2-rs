@@ -83,6 +83,8 @@ struct Engine {
     /// C cvar `cl_gun` (`?cl_gun=`): 0 no gun, 1 none in a wide view, 2
     /// always.
     cl_gun: f32,
+    /// The keys legend (F4, C `menu_keys`, or the page's Keys button).
+    show_legend: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -117,6 +119,7 @@ impl Engine {
             game: String::new(),
             hand: 0,
             cl_gun: 2.0,
+            show_legend: false,
         };
         engine.register_sounds();
         engine
@@ -399,6 +402,11 @@ impl Engine {
             self.text
                 .draws(self.view.width, self.view.height, self.frames.time()),
         );
+        if self.show_legend {
+            let ((x, y, w, h), legend) = legend_draws(self.view.width, self.view.height);
+            self.renderer.draw_fill(x, y, w, h, 0);
+            draws.extend(legend);
+        }
         for draw in draws {
             match draw {
                 HudDraw::Pic { x, y, name } => self.renderer.draw_pic(x, y, &name),
@@ -431,6 +439,9 @@ impl Engine {
         );
         apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
         self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
+        if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
+            self.show_legend = !self.show_legend;
+        }
         for command in bound_commands(&self.last_keys, &input.keys) {
             self.local.client_command(command);
         }
@@ -1127,6 +1138,152 @@ fn step_vid_gamma(vid_gamma: f32, step: i32) -> f32 {
     (tenths / 10.0).clamp(VID_GAMMA_MIN, VID_GAMMA_MAX)
 }
 
+/// F4 went down this frame: Q2's default.cfg binds it to `menu_keys`,
+/// the controls screen the keys legend stands in for.
+#[cfg(any(target_arch = "wasm32", test))]
+fn legend_key_pressed(last_keys: &[bool; 256], keys: &[bool; 256]) -> bool {
+    use q2_platform::keymap::K_F4;
+    keys[K_F4 as usize] && !last_keys[K_F4 as usize]
+}
+
+/// A key's name as C's `Key_KeynumToString` gives it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn key_name(key: u8) -> String {
+    use q2_platform::keymap::*;
+    let named = match key {
+        K_TAB => "TAB",
+        K_ENTER => "ENTER",
+        K_ESCAPE => "ESCAPE",
+        K_SPACE => "SPACE",
+        K_BACKSPACE => "BACKSPACE",
+        K_UPARROW => "UPARROW",
+        K_DOWNARROW => "DOWNARROW",
+        K_LEFTARROW => "LEFTARROW",
+        K_RIGHTARROW => "RIGHTARROW",
+        K_ALT => "ALT",
+        K_CTRL => "CTRL",
+        K_SHIFT => "SHIFT",
+        K_INS => "INS",
+        K_DEL => "DEL",
+        K_PGDN => "PGDN",
+        K_PGUP => "PGUP",
+        K_HOME => "HOME",
+        K_END => "END",
+        K_MOUSE1 => "MOUSE1",
+        K_F1..=K_F12 => return format!("F{}", key - K_F1 + 1),
+        _ => return char::from(key).to_ascii_uppercase().to_string(),
+    };
+    named.to_string()
+}
+
+/// The keys legend: (action, keys) in the order of C's controls menu
+/// (`bindnames` in menu.c, its names where it has one), then the bound
+/// commands of `BINDS`, then the page's own keys.
+#[cfg(any(target_arch = "wasm32", test))]
+fn key_legend() -> Vec<(String, String)> {
+    use q2_platform::keymap::*;
+    let keys = |ks: &[u8]| {
+        ks.iter()
+            .map(|&k| key_name(k))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut legend: Vec<(String, String)> = [
+        ("attack", format!("{}, MOUSE1", key_name(K_CTRL))),
+        ("walk forward", keys(&[b'w', K_UPARROW])),
+        ("backpedal", keys(&[b's', K_DOWNARROW])),
+        ("turn left", keys(&[K_LEFTARROW])),
+        ("turn right", keys(&[K_RIGHTARROW])),
+        ("run", keys(&[K_SHIFT])),
+        ("step left", keys(b"a,")),
+        ("step right", keys(b"d.")),
+        ("sidestep", keys(&[K_ALT])),
+        ("look up", keys(&[K_PGDN])),
+        ("look down", keys(&[K_DEL])),
+        ("up / jump", keys(&[K_SPACE])),
+        ("down / crouch", keys(b"c")),
+        ("mouse look", "MOUSE".to_string()),
+    ]
+    .into_iter()
+    .map(|(label, keys)| (label.to_string(), keys))
+    .collect();
+    for (key, command) in BINDS {
+        let label = match command {
+            "weapnext" => "next weapon".to_string(),
+            "invuse" => "use item".to_string(),
+            "invdrop" => "drop item".to_string(),
+            "invprev" => "prev item".to_string(),
+            "invnext" => "next item".to_string(),
+            "help" => "help computer".to_string(),
+            other => other
+                .strip_prefix("use ")
+                .unwrap_or(other)
+                .to_ascii_lowercase(),
+        };
+        match legend.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, keys)) => {
+                keys.push_str(", ");
+                keys.push_str(&key_name(key));
+            }
+            None => legend.push((label, key_name(key))),
+        }
+    }
+    for (label, key) in [
+        ("gamma darker", "F7"),
+        ("gamma brighter", "F8"),
+        ("keys", "F4"),
+        ("console", "`"),
+    ] {
+        legend.push((label.to_string(), key.to_string()));
+    }
+    legend
+}
+
+/// The keys legend centred on a `width` x `height` screen: its backing
+/// rectangle (x, y, w, h) and its characters, title "KEYS" in the
+/// alternate colour, each action right-aligned against its keys.
+#[cfg(any(target_arch = "wasm32", test))]
+fn legend_draws(
+    width: i32,
+    height: i32,
+) -> ((i32, i32, i32, i32), Vec<q2_client::layout::HudDraw>) {
+    use q2_client::layout::HudDraw;
+    const CHAR: i32 = 8;
+    const LINE: i32 = 10;
+    let legend = key_legend();
+    let label_cols = legend.iter().map(|(l, _)| l.len()).max().unwrap_or(0) as i32;
+    let key_cols = legend.iter().map(|(_, k)| k.len()).max().unwrap_or(0) as i32;
+    // Two columns of padding each side, two between: an even width.
+    let cols = (label_cols + key_cols + 6 + 1) & !1;
+    let (w, h) = (cols * CHAR, (legend.len() as i32 + 3) * LINE);
+    let (x, y) = (width / 2 - w / 2, (height - h).max(0) / 2);
+    let mut draws = Vec::new();
+    let mut text = |tx: i32, ty: i32, s: &str, alt: bool| {
+        for (i, b) in s.bytes().enumerate() {
+            let ch = if alt { b | 0x80 } else { b };
+            draws.push(HudDraw::Char {
+                x: tx + i as i32 * CHAR,
+                y: ty,
+                ch,
+            });
+        }
+    };
+    let title = "KEYS";
+    text(
+        x + w / 2 - title.len() as i32 * CHAR / 2,
+        y + LINE / 2,
+        title,
+        true,
+    );
+    let split = x + (2 + label_cols) * CHAR;
+    for (row, (label, keys)) in legend.iter().enumerate() {
+        let ty = y + LINE / 2 + (row as i32 + 2) * LINE;
+        text(split - label.len() as i32 * CHAR, ty, label, false);
+        text(split + 2 * CHAR, ty, keys, true);
+    }
+    ((x, y, w, h), draws)
+}
+
 /// +1 when F8 (brighter) went down this frame, -1 for F7 (darker). Q2's
 /// default.cfg leaves both unbound; `[`/`]` are invprev/invnext.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -1463,13 +1620,7 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     // leave it borrowed for the listeners, which would then panic on every
     // event and bury the first panic.
     let frame_callback = Box::new(move |timestamp: f64| {
-        let input = {
-            let mut shared = input_state.borrow_mut();
-            let input = shared.clone();
-            shared.mouse_dx = 0.0;
-            shared.mouse_dy = 0.0;
-            input
-        };
+        let input = input_state.borrow_mut().take_frame();
         engine.borrow_mut().tick(timestamp, &input);
     }) as Box<dyn FnMut(f64)>;
 
@@ -2149,6 +2300,73 @@ mod tests {
     fn randk_is_never_negative_like_c() {
         let mut state = 0x8000_0000;
         assert!((0..1000).all(|_| xorshift(&mut state) <= i32::MAX as u32));
+    }
+
+    #[test]
+    fn the_key_legend_lists_every_bound_key_with_c_menu_names() {
+        let legend = key_legend();
+        let row = |label: &str| {
+            legend
+                .iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, keys)| keys.clone())
+                .unwrap_or_else(|| panic!("no {label} row"))
+        };
+        // C menu.c bindnames, with this port's keys.
+        assert_eq!(row("attack"), "CTRL, MOUSE1");
+        assert_eq!(row("walk forward"), "W, UPARROW");
+        assert_eq!(row("up / jump"), "SPACE");
+        assert_eq!(row("next weapon"), "/");
+        assert_eq!(row("drop item"), "', BACKSPACE");
+        assert_eq!(row("help computer"), "F1");
+        assert_eq!(row("grenades"), "G");
+        assert_eq!(row("keys"), "F4");
+        // Every bound command key is listed somewhere.
+        for (key, _) in BINDS {
+            let name = key_name(key);
+            assert!(
+                legend
+                    .iter()
+                    .any(|(_, keys)| keys.split(", ").any(|k| k == name)),
+                "{name} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_toggles_the_legend_once_per_press_like_menu_keys() {
+        use q2_platform::keymap::K_F4;
+        let up = [false; 256];
+        let f4 = pressed(&[K_F4]);
+        assert!(legend_key_pressed(&up, &f4));
+        assert!(!legend_key_pressed(&f4, &f4), "held");
+        // F4 is the page's, not a game command.
+        assert!(bound_commands(&up, &f4).is_empty());
+    }
+
+    #[test]
+    fn the_legend_is_centred_on_screen_with_its_title() {
+        let (rect, draws) = legend_draws(640, 480);
+        let (x, y, w, h) = rect;
+        assert!(x >= 0 && y >= 0 && x + w <= 640 && y + h <= 480, "{rect:?}");
+        assert_eq!(x + w / 2, 320);
+        let chars: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                q2_client::layout::HudDraw::Char { x, y, ch } => Some((*x, *y, *ch)),
+                _ => None,
+            })
+            .collect();
+        // Title in the alternate (bit 7) colour, then a row per action.
+        assert!(chars.iter().any(|&(_, _, c)| c == b'K' | 0x80));
+        assert!(chars
+            .iter()
+            .all(|&(cx, cy, _)| cx >= x && cx + 8 <= x + w && cy >= y && cy + 8 <= y + h));
+        let rows = chars
+            .iter()
+            .map(|&(_, cy, _)| cy)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.len(), key_legend().len() + 1);
     }
 
     #[test]

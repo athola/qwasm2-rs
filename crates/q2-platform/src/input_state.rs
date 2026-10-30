@@ -8,6 +8,8 @@ pub struct WasmInputState {
     pub mouse_dx: f32,
     pub mouse_dy: f32,
     pub mouse_buttons: u8,
+    /// The page's Keys button was pressed since the last frame.
+    pub legend_requested: bool,
 }
 
 impl WasmInputState {
@@ -19,6 +21,16 @@ impl WasmInputState {
         self.mouse_buttons = 0;
         self.mouse_dx = 0.0;
         self.mouse_dy = 0.0;
+    }
+
+    /// This frame's input: a copy, after which the motion and the legend
+    /// request start over (held keys and buttons stay).
+    pub fn take_frame(&mut self) -> Self {
+        let frame = self.clone();
+        self.mouse_dx = 0.0;
+        self.mouse_dy = 0.0;
+        self.legend_requested = false;
+        frame
     }
 
     /// Pointer lock was gained (`locked`) or lost. Motion from before is
@@ -63,6 +75,7 @@ impl Default for WasmInputState {
             mouse_dx: 0.0,
             mouse_dy: 0.0,
             mouse_buttons: 0,
+            legend_requested: false,
         }
     }
 }
@@ -121,6 +134,18 @@ mod tests {
             }
         );
         assert_eq!(ask(true, true, true), ClickRequests::default());
+    }
+
+    #[test]
+    fn a_frame_takes_the_motion_and_legend_request_and_keeps_held_keys() {
+        let mut state = held();
+        state.legend_requested = true;
+        let frame = state.take_frame();
+        assert_eq!((frame.mouse_dx, frame.mouse_dy), (40.0, -3.0));
+        assert!(frame.legend_requested);
+        assert_eq!((state.mouse_dx, state.mouse_dy), (0.0, 0.0));
+        assert!(!state.legend_requested, "one toggle per click");
+        assert!(state.keys[b'w' as usize] && state.mouse_buttons == 1);
     }
 
     #[test]

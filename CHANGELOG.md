@@ -145,6 +145,9 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- A keys legend: F4 (Q2's `default.cfg` binds it to `menu_keys`, the
+  controls screen) or the page's Keys button lists every action and its
+  keys, named as C's controls menu names them
 - More of Q2's `default.cfg` binds: `g` hand grenades, `/` next
   weapon, Backspace drop item, and `q`/`b`/`e`/`i`/`p` for quad,
   rebreather, environment suit, invulnerability and power shield (`s`,

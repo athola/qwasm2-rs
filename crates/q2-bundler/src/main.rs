@@ -238,6 +238,12 @@ fn generate_html(inlined_js: &str) -> String {
     pointer-events: none;
   }}
   #click-prompt.hidden {{ display: none; }}
+  #legend-button {{
+    position: absolute; top: 8px; right: 12px; z-index: 20;
+    background: rgba(0, 0, 0, 0.6); color: #aaa; border: 1px solid #444;
+    padding: 2px 8px; font-size: 11px; font-family: inherit; cursor: pointer;
+  }}
+  #legend-button:hover {{ background: #444; color: #fff; }}
 </style>
 </head>
 <body>
@@ -245,7 +251,8 @@ fn generate_html(inlined_js: &str) -> String {
   <canvas id="canvas"></canvas>
   <div id="crosshair"></div>
   <div id="hud"></div>
-  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
+  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console &middot; F4 keys</span></div>
+  <button id="legend-button" onclick="document.dispatchEvent(new Event('qwasm2-legend')); this.blur()">Keys (F4)</button>
   <div id="status-container" class="hidden">
     <div id="status-toolbar">
       <button onclick="copyLog()">Copy to clipboard</button>
@@ -434,6 +441,14 @@ mod tests {
         let html = generate_html("");
         assert!(html.contains(r#"<div id="status-container" class="hidden">"#));
         assert!(html.contains("if (e.code === 'Backquote')"));
+    }
+
+    #[test]
+    fn the_keys_button_asks_the_game_for_its_legend() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<button id="legend-button""#));
+        assert!(html.contains("new Event('qwasm2-legend')"));
+        assert!(html.contains("F4 keys"), "the click prompt names the key");
     }
 
     #[test]
