@@ -22,18 +22,6 @@ use std::collections::HashMap;
 
 use q2_shared::constants::{EF_GIB, EF_TELEPORTER, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT};
 
-/// C `vectoyaw`.
-fn vectoyaw(v: Vec3f) -> f32 {
-    if v.y == 0.0 && v.x == 0.0 {
-        return 0.0;
-    }
-    let mut yaw = v.y.atan2(v.x).to_degrees().trunc();
-    if yaw < 0.0 {
-        yaw += 360.0;
-    }
-    yaw
-}
-
 /// Move a touching client to the teleporter's destination, hold it briefly
 /// and reset its view, telefragging whatever is at the destination.
 /// C ref: `teleporter_touch`.
@@ -180,7 +168,9 @@ fn path_corner_touch(
                 stand(world, other_key);
             }
         }
-        (None, Some(goal)) => other.game.ideal_yaw = vectoyaw(goal - other.state.origin),
+        (None, Some(goal)) => {
+            other.game.ideal_yaw = crate::monster::movement::vectoyaw(goal - other.state.origin)
+        }
         (None, None) => {}
     }
 }
@@ -1142,6 +1132,28 @@ mod tests {
             Some(enemy)
         );
         assert_eq!(world.entities.get(point).unwrap().game.target, "");
+    }
+
+    #[test]
+    fn path_corner_straight_down_y_faces_minus_90_as_c_vectoyaw() {
+        // C vectoyaw special-cases x == 0: y < 0 gives -90, not 270.
+        let mut world = test_world();
+        let c1 = world.spawn().unwrap();
+        let c2 = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(c1).unwrap();
+            e.game.targetname = "p1".into();
+            e.game.target = "p2".into();
+        }
+        {
+            let e = world.entities.get_mut(c2).unwrap();
+            e.game.targetname = "p2".into();
+            e.state.origin = Vec3f::new(0.0, -100.0, 0.0);
+        }
+        let monster = world.spawn().unwrap();
+        world.entities.get_mut(monster).unwrap().game.movetarget = Some(c1);
+        path_corner_touch(&mut world, c1, monster, None, None);
+        assert_eq!(world.entities.get(monster).unwrap().game.ideal_yaw, -90.0);
     }
 
     #[test]
