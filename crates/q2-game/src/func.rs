@@ -220,7 +220,7 @@ pub fn move_final(world: &mut GameWorld, key: EntityKey) {
         return;
     }
     ent.velocity = mi.dir * ((f64::from(mi.remaining_distance) / FRAMETIME_C) as f32);
-    ent.think = Some(move_done_think);
+    ent.think = Some(move_done);
     ent.game.nextthink = time_plus(time, FRAMETIME_C);
 }
 
@@ -237,10 +237,6 @@ pub fn move_done(world: &mut GameWorld, key: EntityKey) {
     if let Some(func) = endfunc {
         func(world, key);
     }
-}
-
-pub fn move_done_think(world: &mut GameWorld, key: EntityKey) {
-    move_done(world, key);
 }
 
 /// Start turning toward `end_angles` (state UP) or `start_angles`,
