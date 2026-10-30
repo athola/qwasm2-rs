@@ -1008,8 +1008,8 @@ mod tests {
         world.entities.get_mut(key).unwrap().state.frame = frame;
     }
 
-    /// A finished-dying soldier corpse at `at` with `max_health`, as
-    /// `soldier_die` and `monster_dead` leave it.
+    /// A finished-dying tank corpse at `at` with `max_health`, as
+    /// `tank_die` and `tank_dead` leave it.
     fn corpse(world: &mut GameWorld, at: Vec3f, max_health: i32) -> EntityKey {
         let key = world.spawn().unwrap();
         crate::monster::tank::sp_monster_tank(&mut world.entities, key, &HashMap::new());
