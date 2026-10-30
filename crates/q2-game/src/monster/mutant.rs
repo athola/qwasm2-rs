@@ -405,9 +405,10 @@ pub fn mutant_run(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// A claw for 10 to 14 from the `right` side of the box.
-fn mutant_hit(world: &mut GameWorld, key: EntityKey, right: f32, hit_sound: &str) {
-    let aim = Vec3f::new(ai::MELEE_DISTANCE, right, 8.0);
+/// A claw for 10 to 14, `side` along the right axis: `mins.x` (negative)
+/// for the left claw, `maxs.x` for the right.
+fn mutant_hit(world: &mut GameWorld, key: EntityKey, side: f32, hit_sound: &str) {
+    let aim = Vec3f::new(ai::MELEE_DISTANCE, side, 8.0);
     let damage = 10 + (world.random_u32() % 5) as i32;
     if world.fire_hit(key, aim, damage, 100) {
         sound(world, key, CHAN_WEAPON, hit_sound, ATTN_NORM);
