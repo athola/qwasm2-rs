@@ -188,6 +188,49 @@ fn registering_a_new_map_drops_the_old_precache_but_keeps_loaded_sounds() {
     assert!(sys.sound(a).is_some());
 }
 
+// C CL_ParseConfigString: a CS_SOUNDS string that changes after the map
+// was prepped is registered then (gi.soundindex during play).
+#[test]
+fn a_sound_index_allocated_during_play_is_registered_by_sync() {
+    let mut sys = system();
+    let later = |i: usize| {
+        if i == CS_SOUNDS + 7 {
+            "b.wav"
+        } else {
+            strings("")(i)
+        }
+    };
+    sys.sync_sounds(later, |p| files().get(p).cloned());
+    assert_eq!(sys.name(sys.precache[7].unwrap()), "b.wav");
+    sys.start_sound(&sound(2, 1, 7), later, |p| files().get(p).cloned());
+    assert_eq!(plays(&update(&mut sys, 0.0)).len(), 1);
+}
+
+#[test]
+fn sync_reregisters_changed_slots_and_clears_emptied_ones() {
+    let mut sys = system();
+    let changed = |i: usize| match i {
+        _ if i == CS_SOUNDS + 1 => "b.wav",
+        _ if i == CS_SOUNDS + 2 => "",
+        _ => strings("")(i),
+    };
+    sys.sync_sounds(changed, |p| files().get(p).cloned());
+    assert_eq!(sys.name(sys.precache[1].unwrap()), "b.wav");
+    assert_eq!(sys.precache[2], None);
+    assert_eq!(sys.name(sys.precache[3].unwrap()), "loop.wav");
+}
+
+#[test]
+fn sync_does_not_reload_unchanged_slots() {
+    let mut sys = system();
+    let mut loads = 0;
+    sys.sync_sounds(strings(""), |_| {
+        loads += 1;
+        None
+    });
+    assert_eq!(loads, 0);
+}
+
 // -- starting sounds (C S_StartSound, S_IssuePlaysound) ----------------------
 
 #[test]

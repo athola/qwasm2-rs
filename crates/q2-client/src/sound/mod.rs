@@ -316,6 +316,32 @@ impl SoundSystem {
         }
     }
 
+    /// C `CL_ParseConfigString` for `CS_SOUNDS` after the map was prepped:
+    /// register each slot whose name changed, such as an index the game
+    /// allocates during play. Call it each server frame. An emptied slot is
+    /// cleared, where C's `S_FindName` would stop with "empty name".
+    pub fn sync_sounds<'a>(
+        &mut self,
+        configstring: impl Fn(usize) -> &'a str,
+        mut load: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) {
+        use q2_shared::constants::CS_SOUNDS;
+        for i in 1..MAX_SOUNDS {
+            let name = configstring(CS_SOUNDS + i);
+            let current = self.precache[i].map_or("", |id| self.known[id].name.as_str());
+            if current == name {
+                continue;
+            }
+            self.precache[i] = if name.is_empty() {
+                None
+            } else {
+                let id = self.find_or_add(name);
+                self.load(id, &mut load);
+                Some(id)
+            };
+        }
+    }
+
     /// C `S_RegisterSexedSound`: `*name` played by `entnum` is
     /// `players/<model>/name` for the model in its `CS_PLAYERSKINS`
     /// string (`name\model/skin`, male if none), or the male sound when
