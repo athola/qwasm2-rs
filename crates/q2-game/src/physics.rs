@@ -687,9 +687,15 @@ impl GameWorld {
         }
 
         if ent.velocity != Vec3f::ZERO {
-            // Apply friction. C also lets dead monsters that are not
-            // completely on ground slide (M_CheckBottom, not ported yet).
-            if was_on_ground || is_flying || is_swimming {
+            // Apply friction, but let dead monsters that are not
+            // completely on ground slide.
+            let dead = ent.game.health <= 0;
+            let friction = (was_on_ground || is_flying || is_swimming)
+                && !(dead && !crate::monster::movement::m_check_bottom(self, key));
+            let Some(ent) = self.entities.get_mut(key) else {
+                return;
+            };
+            if friction {
                 let speed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
                 if speed != 0.0 {
                     let control = speed.max(STOPSPEED);
@@ -1566,6 +1572,7 @@ mod tests {
             let ent = world.entities.get_mut(key).unwrap();
             ent.game.movetype = MoveType::Step;
             ent.game.ground_entity = Some(ground);
+            ent.game.health = 100;
             ent.velocity = Vec3f::new(500.0, 0.0, 0.0);
         }
 
@@ -1575,6 +1582,26 @@ mod tests {
         // Friction should have reduced horizontal velocity.
         assert!(vx < 500.0);
         assert!(vx > 0.0);
+    }
+
+    #[test]
+    fn physics_step_lets_a_dead_monster_off_its_ledge_slide() {
+        // C: no friction when health <= 0 and !M_CheckBottom. The mock
+        // world has no floor under the box, so M_CheckBottom fails.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        let ground = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.movetype = MoveType::Step;
+            ent.game.ground_entity = Some(ground);
+            ent.game.health = -5;
+            ent.velocity = Vec3f::new(500.0, 0.0, 0.0);
+        }
+
+        world.physics_step(key);
+
+        assert_eq!(world.entities.get(key).unwrap().velocity.x, 500.0);
     }
     // -- C-parity regressions --
 
@@ -1888,6 +1915,8 @@ mod tests {
             let ent = world.entities.get_mut(key).unwrap();
             ent.game.movetype = MoveType::Step;
             ent.game.flags = EntityFlags::FLY;
+            // Alive, so friction skips M_CheckBottom and its monster-mask traces.
+            ent.game.health = 100;
             ent.velocity = Vec3f::new(50.0, 0.0, 0.0);
         }
         world.physics_step(key);
