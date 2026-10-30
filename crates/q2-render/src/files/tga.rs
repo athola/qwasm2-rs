@@ -5,7 +5,8 @@
 //! first row at the top, matching the other loaders. stb also decodes
 //! colour-mapped (1/9), greyscale (3/11) and 16-bit TGAs; none ship with the
 //! game, so those are rejected and a sky in such a format draws the checker.
-//! Like stb, descriptor bit 4 (right-to-left columns) is ignored.
+//! Like stb, descriptor bit 4 (right-to-left columns) is ignored, and an RLE
+//! packet running past the last pixel is clipped.
 
 use super::{malformed, slice_at};
 use q2_common::error::Q2Result;
@@ -82,7 +83,7 @@ pub fn load_tga(data: &[u8]) -> Q2Result<TgaImage> {
     })
 }
 
-/// Expand RLE packets to raw pixels; a packet running past the image is malformed.
+/// Expand RLE packets to raw pixels, clipping the packet that runs past the image.
 fn decode_rle(
     data: &[u8],
     start: usize,
@@ -97,10 +98,9 @@ fn decode_rle(
     while out.len() < total {
         let packet = slice_at(WHAT, data, at, 1)?[0];
         at += 1;
-        let run = usize::from(packet & 0x7f) + 1;
-        if out.len() + run * bytes_per_pixel > total {
-            return Err(malformed(WHAT, "rle packet overruns image"));
-        }
+        // stb stops at the last pixel, so a packet running past the image
+        // is clipped and only the pixels kept are read.
+        let run = (usize::from(packet & 0x7f) + 1).min((total - out.len()) / bytes_per_pixel);
         if packet & 0x80 != 0 {
             let pixel = slice_at(WHAT, data, at, bytes_per_pixel)?;
             at += bytes_per_pixel;
@@ -160,10 +160,15 @@ mod tests {
     }
 
     #[test]
-    fn rle_packet_past_image_end_is_rejected() {
+    fn rle_packet_past_image_end_is_clipped_like_stb() {
+        // stbi__tga_load reads pixels up to width * height and drops the rest.
         let mut file = header(10, 1, 1, 24, TOP_ORIGIN_BIT);
         file.extend_from_slice(&[0x81, 3, 2, 1]); // run of 2 into 1 pixel
-        assert!(load_tga(&file).is_err());
+        assert_eq!(load_tga(&file).unwrap().rgba, vec![1, 2, 3, 255]);
+        // A raw packet of 3 into 1 pixel needs only the first pixel's bytes.
+        let mut file = header(10, 1, 1, 24, TOP_ORIGIN_BIT);
+        file.extend_from_slice(&[0x02, 3, 2, 1]);
+        assert_eq!(load_tga(&file).unwrap().rgba, vec![1, 2, 3, 255]);
     }
 
     #[test]
