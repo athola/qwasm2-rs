@@ -982,10 +982,16 @@ pub fn think_spawn_door_trigger(world: &mut GameWorld, key: EntityKey) {
 // Button callbacks
 // ---------------------------------------------------------------------------
 
+use q2_shared::constants::{EF_ANIM01, EF_ANIM23};
+
 /// C ref: `button_done`.
 pub fn button_done(world: &mut GameWorld, key: EntityKey) {
     if let Some(mi) = moveinfo_mut(world, key) {
         mi.state = STATE_BOTTOM;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.state.effects &= !EF_ANIM23;
+        ent.state.effects |= EF_ANIM01;
     }
 }
 
@@ -1015,6 +1021,10 @@ pub fn button_wait(world: &mut GameWorld, key: EntityKey) {
         .unwrap_or(key);
     if let Some(mi) = moveinfo_mut(world, key) {
         mi.state = STATE_TOP;
+    }
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.state.effects &= !EF_ANIM01;
+        ent.state.effects |= EF_ANIM23;
     }
     world.use_targets(key, activator);
     if let Some(ent) = world.entities.get_mut(key) {
@@ -1869,6 +1879,7 @@ pub fn sp_func_button(
     let pos1 = ent.state.origin;
     let pos2 = pos1 + movedir * move_distance(movedir, ent.maxs - ent.mins, lip);
 
+    ent.state.effects |= EF_ANIM01;
     ent.use_fn = Some(button_use);
     if ent.game.health != 0 {
         ent.game.max_health = ent.game.health;
@@ -2970,6 +2981,20 @@ mod tests {
             .unwrap()
             .state;
         assert_eq!(state, STATE_TOP);
+        // C: pressed shows the ANIM23 frames, back out the ANIM01 ones.
+        use q2_shared::constants::{EF_ANIM01, EF_ANIM23};
+        let effects = |world: &GameWorld| world.entities.get(button).unwrap().state.effects;
+        assert_eq!(effects(&world) & (EF_ANIM01 | EF_ANIM23), EF_ANIM23);
+        run_for(&mut world, 1.5);
+        assert_eq!(mover(&world, button).1, STATE_BOTTOM);
+        assert_eq!(effects(&world) & (EF_ANIM01 | EF_ANIM23), EF_ANIM01);
+    }
+
+    #[test]
+    fn func_button_spawns_showing_its_idle_frames() {
+        let world = spawned(r#"{ "classname" "func_button" "model" "*1" }"#);
+        let button = world.entities.get(by_class(&world, "func_button")).unwrap();
+        assert_ne!(button.state.effects & q2_shared::constants::EF_ANIM01, 0);
     }
 
     #[test]
