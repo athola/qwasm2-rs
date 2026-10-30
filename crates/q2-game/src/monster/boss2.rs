@@ -904,6 +904,7 @@ mod tests {
             ]
         );
         let rocket = world.entities.get(all_of(&world, "rocket")[0]).unwrap();
+        assert_eq!((rocket.game.dmg, rocket.game.radius_dmg), (50, 50));
         let (start, _, _) = monster_flash_source(&world, key, MZ2_BOSS2_ROCKET_1).unwrap();
         let want = (Vec3f::new(600.0, 0.0, 22.0) - start).normalize() * 500.0;
         assert!((rocket.velocity - want).length() < 0.01);
@@ -923,6 +924,25 @@ mod tests {
             enemy_aim(&world, key, -0.2),
             Some(Vec3f::new(600.0, -20.0, 22.0))
         );
+    }
+
+    /// A pain callback that keeps the kick it was handed in `game.count`.
+    fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
+        world.entities.get_mut(key).unwrap().game.count = kick as i32;
+    }
+
+    #[test]
+    fn boss2_machine_gun_bullets_hit_the_enemy_for_6_with_kick_4() {
+        // Close enough that the default spread stays inside the player.
+        let (mut world, _, player) = player_arena(100.0);
+        let key = world.spawn().unwrap();
+        sp_monster_boss2(&mut world.entities, key, &std::collections::HashMap::new());
+        world.entities.get_mut(key).unwrap().game.enemy = Some(player);
+        world.entities.get_mut(player).unwrap().pain = Some(keep_kick);
+        boss2_machine_gun(&mut world, key);
+        let ent = world.entities.get(player).unwrap();
+        assert_eq!(ent.game.health, 100 - 2 * 6);
+        assert_eq!(ent.game.count, 4, "kick");
     }
 
     #[test]
