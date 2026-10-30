@@ -1237,7 +1237,8 @@ impl GameWorld {
     /// C ref: `G_RunFrame` (g_main.c:447-514).
     pub fn run_frame(&mut self) {
         self.level.framenum += 1;
-        self.level.time = self.level.framenum as f32 * crate::constants::FRAMETIME;
+        // C FRAMETIME is a double, so the product is rounded once.
+        self.level.time = (f64::from(self.level.framenum) * 0.1) as f32;
         self.entities.set_level_time(self.level.time);
         self.level.gibs_this_frame = 0;
         self.level.debris_this_frame = 0;
@@ -2265,6 +2266,21 @@ mod tests {
                 "",
             );
             assert_eq!(world.find_by_classname(None, "light").is_some(), kept);
+        }
+    }
+
+    #[test]
+    fn level_time_is_framenum_times_the_double_frametime() {
+        // C G_RunFrame: level.time = level.framenum * FRAMETIME (a double).
+        // Frames 9 and 13 round differently from a float multiply.
+        let mut world = test_world();
+        for frame in 1..=13 {
+            world.run_frame();
+            assert_eq!(
+                world.level.time,
+                (f64::from(frame) * 0.1) as f32,
+                "frame {frame}"
+            );
         }
     }
 
