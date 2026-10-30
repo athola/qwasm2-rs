@@ -1051,12 +1051,17 @@ mod tests {
         );
         let barrel = world.find_by_classname(None, "misc_explobox").unwrap();
         let ent = world.entities.get(barrel).unwrap();
-        assert!(ent.touch == Some(barrel_touch as crate::entity::TouchFn));
+        assert!(ent
+            .touch
+            .is_some_and(|f| std::ptr::fn_addr_eq(f, barrel_touch as crate::entity::TouchFn)));
         assert!(ent
             .monsterinfo
             .as_ref()
             .is_some_and(|m| m.aiflags.contains(AiFlags::NOSTEP)));
-        assert!(ent.think == Some(crate::ai::m_droptofloor as crate::entity::ThinkFn));
+        assert!(ent.think.is_some_and(|f| std::ptr::fn_addr_eq(
+            f,
+            crate::ai::m_droptofloor as crate::entity::ThinkFn
+        )));
         assert!((ent.game.nextthink - (world.level.time + 0.2)).abs() < 1e-5);
         assert_eq!(world.level.total_monsters, 0, "not a monster");
     }
@@ -1097,7 +1102,10 @@ mod tests {
         let (mut world, barrel, player) = barrel_and_pusher(-40.0);
         barrel_touch(&mut world, barrel, player, None, None);
         let origin = world.entities.get(barrel).unwrap().state.origin;
-        assert!((origin - Vec3f::new(1.0, 0.0, 0.0)).length() < 0.01, "{origin}");
+        assert!(
+            (origin - Vec3f::new(1.0, 0.0, 0.0)).length() < 0.01,
+            "{origin}"
+        );
     }
 
     #[test]
@@ -1105,10 +1113,16 @@ mod tests {
         let (mut world, barrel, player) = barrel_and_pusher(-40.0);
         world.entities.get_mut(player).unwrap().game.ground_entity = None;
         barrel_touch(&mut world, barrel, player, None, None);
-        assert_eq!(world.entities.get(barrel).unwrap().state.origin, Vec3f::ZERO);
+        assert_eq!(
+            world.entities.get(barrel).unwrap().state.origin,
+            Vec3f::ZERO
+        );
         world.entities.get_mut(player).unwrap().game.ground_entity = Some(barrel);
         barrel_touch(&mut world, barrel, player, None, None);
-        assert_eq!(world.entities.get(barrel).unwrap().state.origin, Vec3f::ZERO);
+        assert_eq!(
+            world.entities.get(barrel).unwrap().state.origin,
+            Vec3f::ZERO
+        );
     }
 
     #[test]
