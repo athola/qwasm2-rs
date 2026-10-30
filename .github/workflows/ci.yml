@@ -36,7 +36,7 @@ jobs:
         run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: gamedata/baseq2/pak0.pak
           key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
@@ -76,7 +76,7 @@ jobs:
         run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: gamedata/baseq2/pak0.pak
           key: q2-demo-pak-${{ steps.demo.outputs.sha256 }}
@@ -85,7 +85,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y p7zip-full
           make gamedata-demo
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('tests/browser/package-lock.json') }}
