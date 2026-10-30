@@ -20,6 +20,7 @@ use q2_shared::types::*;
 
 use crate::constants::*;
 use crate::entity::EntityKey;
+use crate::physics::angle_vectors;
 use crate::player::weapon::PlayerNoise;
 use crate::world::GameWorld;
 
@@ -423,13 +424,12 @@ impl GameWorld {
             hspread,
             vspread,
             means_of_death,
-            0,
         );
         self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// C `fire_lead` without the water re-trace, splashes and impact
-    /// effects. `pellet` varies the spread between shotgun pellets.
+    /// effects.
     #[allow(clippy::too_many_arguments)]
     fn fire_lead(
         &mut self,
@@ -441,7 +441,6 @@ impl GameWorld {
         hspread: i32,
         vspread: i32,
         means_of_death: MeansOfDeath,
-        pellet: u32,
     ) {
         let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
             return;
@@ -457,8 +456,10 @@ impl GameWorld {
             MASK_SHOT,
         );
         if trace.fraction >= 1.0 {
-            let spread_dir = apply_spread(dir, hspread, vspread, self.level.time, pellet);
-            let end = start + spread_dir * 8192.0;
+            let (forward, right, up) = angle_vectors(vectoangles(dir));
+            let r = self.crandom() * hspread as f32;
+            let u = self.crandom() * vspread as f32;
+            let end = start + forward * 8192.0 + right * r + up * u;
             trace = self
                 .gi
                 .trace(start, Vec3f::ZERO, Vec3f::ZERO, end, pass, MASK_SHOT);
@@ -509,7 +510,7 @@ impl GameWorld {
         count: i32,
         means_of_death: MeansOfDeath,
     ) {
-        for pellet in 0..count.max(0) as u32 {
+        for _ in 0..count.max(0) {
             self.fire_lead(
                 owner,
                 start,
@@ -519,7 +520,6 @@ impl GameWorld {
                 hspread,
                 vspread,
                 means_of_death,
-                pellet,
             );
         }
         self.player_noise(owner, start, PlayerNoise::Weapon);
@@ -850,46 +850,6 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
     Vec3f::new(-pitch, yaw, 0.0)
 }
 
-/// C `AngleVectors` (shared.c): forward, right, up.
-fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let (sy, cy) = angles.y.to_radians().sin_cos();
-    let (sp, cp) = angles.x.to_radians().sin_cos();
-    let (sr, cr) = angles.z.to_radians().sin_cos();
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
-    let up = Vec3f::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
-    (forward, right, up)
-}
-
-/// Seed for one spread value. There is no game RNG, so C's `crandom()`
-/// is replaced by a hash of the level time, the pellet and the axis: the
-/// same shot spreads the same way every time.
-fn spread_seed(time: f32, pellet: u32, axis: u32) -> u32 {
-    ((time * 1000.0) as u32)
-        .wrapping_mul(0x9E37_79B9)
-        .wrapping_add(pellet.wrapping_mul(0x85EB_CA6B))
-        .wrapping_add(axis.wrapping_mul(0xC2B2_AE35))
-}
-
-/// A value in [-1, 1) from `seed`, standing in for C `crandom()`.
-fn crandom(seed: u32) -> f32 {
-    let x = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345) >> 16;
-    x as f32 / 32768.0 - 1.0
-}
-
-/// Spread a bullet direction like C `fire_lead`: `crandom() * spread`
-/// units along right and up at 8192 units out.
-fn apply_spread(dir: Vec3f, hspread: i32, vspread: i32, time: f32, pellet: u32) -> Vec3f {
-    if hspread == 0 && vspread == 0 {
-        return dir;
-    }
-
-    let (forward, right, up) = angle_vectors(vectoangles(dir));
-    let r = crandom(spread_seed(time, pellet, 0)) * hspread as f32;
-    let u = crandom(spread_seed(time, pellet, 1)) * vspread as f32;
-    (forward * 8192.0 + right * r + up * u).normalize_or_zero()
-}
-
 // ==========================================================================
 // Tests
 // ==========================================================================
@@ -1217,23 +1177,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_spread_zero_returns_original() {
-        let dir = Vec3f::new(1.0, 0.0, 0.0);
-        let result = apply_spread(dir, 0, 0, 0.0, 0);
-        assert_eq!(result, dir);
-    }
-
-    #[test]
-    fn apply_spread_nonzero_changes_direction() {
-        let dir = Vec3f::new(1.0, 0.0, 0.0);
-        let result = apply_spread(dir, 500, 500, 1.234, 0);
-        // Should be different from original (spread applied).
-        assert!((result - dir).length() > 0.001 || result == dir);
-        // Should still be normalized.
-        assert!((result.length() - 1.0).abs() < 0.01);
-    }
-
-    #[test]
     fn projectile_timeout_frees_entity() {
         let mut world = test_world();
         let ent = world.spawn().unwrap();
@@ -1423,16 +1366,75 @@ mod tests {
         assert_eq!(world.entities.get(enemy).unwrap().game.health, 100);
     }
 
+    /// The two `crandom()` values a fresh shot draws from a world whose
+    /// RNG is at `rand_state`.
+    fn next_two_crandoms(rand_state: u32) -> (f32, f32) {
+        let mut twin = test_world();
+        twin.level.rand_state = rand_state;
+        (twin.crandom(), twin.crandom())
+    }
+
     #[test]
-    fn spread_offsets_stay_within_the_spread_and_differ_per_pellet() {
-        for pellet in 0..64 {
-            let r = crandom(spread_seed(1.234, pellet, 0));
-            assert!((-1.0..=1.0).contains(&r), "{r}");
-        }
-        assert_ne!(
-            apply_spread(Vec3f::X, 500, 500, 1.0, 0),
-            apply_spread(Vec3f::X, 500, 500, 1.0, 1)
+    fn fire_lead_spreads_with_game_crandom_at_c_end_point() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        world.level.rand_state = 12_345;
+        let (cr, cu) = next_two_crandoms(12_345);
+        let start = Vec3f::new(0.0, 0.0, 16.0);
+        let dir = Vec3f::new(1.0, 1.0, 0.0).normalize();
+
+        world.fire_bullet(owner, start, dir, 1, 0, 300, 500, MeansOfDeath::Machinegun);
+
+        // C fire_lead: end = start + 8192 forward + r right + u up.
+        let (forward, right, up) = angle_vectors(vectoangles(dir));
+        let end = start + forward * 8192.0 + right * (cr * 300.0) + up * (cu * 500.0);
+        assert_eq!(gi.trace_ends.borrow()[1], end);
+    }
+
+    #[test]
+    fn fire_lead_draws_its_two_crandoms_even_without_spread() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        world.level.rand_state = 99;
+        let mut twin = test_world();
+        twin.level.rand_state = 99;
+        twin.crandom();
+        twin.crandom();
+
+        world.fire_bullet(
+            owner,
+            Vec3f::ZERO,
+            Vec3f::X,
+            1,
+            0,
+            0,
+            0,
+            MeansOfDeath::Machinegun,
         );
+
+        assert_eq!(world.level.rand_state, twin.level.rand_state);
+        assert_eq!(gi.trace_ends.borrow()[1], Vec3f::new(8192.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn shots_fired_in_the_same_frame_spread_differently() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        for _ in 0..2 {
+            world.fire_bullet(
+                owner,
+                Vec3f::ZERO,
+                Vec3f::X,
+                1,
+                0,
+                500,
+                500,
+                MeansOfDeath::Machinegun,
+            );
+        }
+        let ends = gi.trace_ends.borrow();
+        // Each shot traces the muzzle, then the spread line.
+        assert_ne!(ends[1], ends[3]);
     }
 
     #[test]
