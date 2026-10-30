@@ -617,10 +617,9 @@ impl GameWorld {
             None => return,
         };
 
-        // Collect all entity keys to avoid borrow issues during iteration.
-        let all_keys: Vec<EntityKey> = self.entities.iter().map(|(k, _)| k).collect();
-
-        for key in all_keys {
+        let mut found = None;
+        while let Some(key) = self.find_radius(found, inf_origin, radius) {
+            found = Some(key);
             if Some(key) == ignore {
                 continue;
             }
@@ -629,22 +628,14 @@ impl GameWorld {
                 let Some(ent) = self.entities.get(key) else {
                     continue;
                 };
-                // C findradius skips free and SOLID_NOT edicts.
-                if !ent.in_use || ent.solid == Solid::Not || ent.game.takedamage == TakeDamage::No {
+                if ent.game.takedamage == TakeDamage::No {
                     continue;
                 }
                 (ent.state.origin, ent.mins, ent.maxs)
             };
 
-            // Calculate distance to entity's bounding box center.
-            let center = ent_origin + (ent_mins + ent_maxs) * 0.5;
-            let diff = inf_origin - center;
-            let dist = diff.length();
-
-            // Check if within radius.
-            if dist > radius {
-                continue;
-            }
+            // Distance to the entity's bounding box center.
+            let dist = (inf_origin - (ent_origin + (ent_mins + ent_maxs) * 0.5)).length();
 
             // Linear falloff: damage - 0.5 * distance.
             let mut points = damage - 0.5 * dist;
@@ -1416,6 +1407,36 @@ mod tests {
     }
 
     // -- t_radius_damage tests --
+
+    #[test]
+    fn radius_damage_walks_entities_in_number_order() {
+        // C findradius walks g_edicts by number; a client spawned after a
+        // map entity takes a later slot but a lower number.
+        let mut world = test_world();
+        let inflictor = world.spawn().unwrap();
+        let map_ent = world.spawn().unwrap();
+        let client = world.spawn_test_client(Default::default());
+        for key in [map_ent, client] {
+            let e = world.entities.get_mut(key).unwrap();
+            e.game.health = 100;
+            e.game.takedamage = TakeDamage::Yes;
+            e.solid = Solid::Bbox;
+            e.pain = Some(|w, s, _, _, _| {
+                w.level.killed_monsters += 1;
+                w.entities.get_mut(s).unwrap().game.count = w.level.killed_monsters;
+            });
+        }
+        world.t_radius_damage(
+            inflictor,
+            inflictor,
+            50.0,
+            None,
+            100.0,
+            MeansOfDeath::Rocket,
+        );
+        let hit_order = |k| world.entities.get(k).unwrap().game.count;
+        assert_eq!((hit_order(client), hit_order(map_ent)), (1, 2));
+    }
 
     #[test]
     fn radius_damage_hits_nearby() {
