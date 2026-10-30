@@ -1296,9 +1296,9 @@ pub(crate) fn start_func_timer(
 /// func_explosive spawnflag: invisible and non-solid until used.
 const EXPLOSIVE_TRIGGER_SPAWN: i32 = 1;
 
-/// Blow the brush up from its centre (bmodel origins are 0,0,0), fire its
-/// targets and remove it. C ref: `func_explosive_explode`; the debris and
-/// explosion effect are not ported.
+/// Blow the brush up from its centre (bmodel origins are 0,0,0) into
+/// debris flung away from the inflictor, fire its targets and remove it,
+/// with an explosion when it does damage. C ref: `func_explosive_explode`.
 pub fn func_explosive_die(
     world: &mut GameWorld,
     self_key: EntityKey,
@@ -1314,10 +1314,12 @@ pub fn func_explosive_die(
     let Some(ent) = world.entities.get_mut(self_key) else {
         return;
     };
-    ent.state.origin = ent.absmin + ent.size * 0.5;
+    // Bmodel origins are (0 0 0), so blow up from the centre.
+    let mut size = ent.size * 0.5;
+    let origin = ent.absmin + size;
+    ent.state.origin = origin;
     ent.game.takedamage = TakeDamage::No;
-    ent.velocity = (ent.state.origin - inflictor_origin).normalize_or_zero() * 150.0;
-    let dmg = ent.game.dmg;
+    let (dmg, mass) = (ent.game.dmg, ent.game.mass);
 
     if dmg != 0 {
         world.t_radius_damage(
@@ -1329,9 +1331,40 @@ pub fn func_explosive_die(
             MeansOfDeath::Explosive,
         );
     }
+    if let Some(ent) = world.entities.get_mut(self_key) {
+        ent.velocity = (ent.state.origin - inflictor_origin).normalize_or_zero() * 150.0;
+    }
+
+    // Start chunks towards the center.
+    size *= 0.5;
+    let mass = if mass == 0 { 75 } else { mass };
+    let chunk_origin = |world: &mut GameWorld| {
+        // C crandom() is a double, so each sum is a double.
+        let mut along = |c: f32, s: f32| {
+            (f64::from(c) + 2.0 * (f64::from(world.random()) - 0.5) * f64::from(s)) as f32
+        };
+        let x = along(origin.x, size.x);
+        let y = along(origin.y, size.y);
+        let z = along(origin.z, size.z);
+        Vec3f::new(x, y, z)
+    };
+    if mass >= 100 {
+        for _ in 0..(mass / 100).min(8) {
+            let at = chunk_origin(world);
+            crate::misc::throw_debris(world, self_key, "models/objects/debris1/tris.md2", 1.0, at);
+        }
+    }
+    for _ in 0..(mass / 25).min(16) {
+        let at = chunk_origin(world);
+        crate::misc::throw_debris(world, self_key, "models/objects/debris2/tris.md2", 2.0, at);
+    }
 
     world.use_targets(self_key, attacker);
-    world.free_entity(self_key);
+    if dmg != 0 {
+        crate::misc::become_explosion1(world, self_key);
+    } else {
+        world.free_entity(self_key);
+    }
 }
 
 /// C ref: `func_explosive_use`.
@@ -3018,6 +3051,33 @@ mod tests {
         let world = spawned(r#"{ "classname" "func_button" "model" "*1" }"#);
         let button = world.entities.get(by_class(&world, "func_button")).unwrap();
         assert_ne!(button.state.effects & q2_shared::constants::EF_ANIM01, 0);
+    }
+
+    #[test]
+    fn func_explosive_bursts_into_c_debris_and_explodes_only_with_dmg() {
+        // C func_explosive_explode: mass / 100 big chunks (at most 8) and
+        // mass / 25 small ones (at most 16), under ThrowDebris cap of 20 a
+        // frame; BecomeExplosion1 with dmg.
+        for (mass, dmg, chunks) in [(0, 0, 3), (250, 0, 2 + 10), (5000, 20, 20)] {
+            let (mut world, gi) = spawned_gi(&format!(
+                "{{ \"classname\" \"func_explosive\" \"model\" \"*1\" \"mass\" \"{mass}\" \"dmg\" \"{dmg}\" }}"
+            ));
+            let brush = by_class(&world, "func_explosive");
+            let p = player(&mut world);
+            func_explosive_die(&mut world, brush, p, p, 100, Vec3f::ZERO);
+            let debris = world
+                .entities
+                .iter()
+                .filter(|(_, e)| e.in_use && e.game.classname == "debris")
+                .count();
+            assert_eq!(debris, chunks, "mass {mass}");
+            assert_eq!(
+                gi.multicasts.borrow().len(),
+                usize::from(dmg != 0),
+                "dmg {dmg}"
+            );
+            assert!(!world.entities.is_live(brush));
+        }
     }
 
     #[test]
