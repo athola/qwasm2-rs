@@ -993,11 +993,12 @@ fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::inpu
     input.keys = *keys;
 }
 
-/// Command keys from Q2's default.cfg: weapons on the number row and the
-/// inventory keys. Each fires on the frame the key goes down (C key binds
-/// run on the down event).
+/// Command keys from Q2's default.cfg: weapons on the number row, the
+/// inventory keys, hand grenades, the next weapon and the powerups. Each
+/// fires on the frame the key goes down (C key binds run on the down
+/// event).
 #[cfg(any(target_arch = "wasm32", test))]
-const BINDS: [(u8, &str); 15] = [
+const BINDS: [(u8, &str); 23] = [
     (q2_platform::keymap::K_F1, "help"),
     (b'1', "use Blaster"),
     (b'2', "use Shotgun"),
@@ -1013,6 +1014,15 @@ const BINDS: [(u8, &str); 15] = [
     (b']', "invnext"),
     (b'\'', "invdrop"),
     (q2_platform::keymap::K_ENTER, "invuse"),
+    (q2_platform::keymap::K_BACKSPACE, "invdrop"),
+    (b'/', "weapnext"),
+    (b'g', "use grenades"),
+    // default.cfg's s (use silencer) is left out: s moves back here.
+    (b'q', "use quad damage"),
+    (b'b', "use rebreather"),
+    (b'e', "use environment suit"),
+    (b'i', "use invulnerability"),
+    (b'p', "use power shield"),
 ];
 
 /// The bound commands whose keys went down since `last_keys`, in key
@@ -2139,6 +2149,27 @@ mod tests {
     fn randk_is_never_negative_like_c() {
         let mut state = 0x8000_0000;
         assert!((0..1000).all(|_| xorshift(&mut state) <= i32::MAX as u32));
+    }
+
+    #[test]
+    fn item_keys_follow_q2_default_cfg_where_wasd_leaves_them_free() {
+        let none = [false; 256];
+        for (key, command) in [
+            (b'g', "use grenades"),
+            (b'/', "weapnext"),
+            (q2_platform::keymap::K_BACKSPACE, "invdrop"),
+            (b'q', "use quad damage"),
+            (b'b', "use rebreather"),
+            (b'e', "use environment suit"),
+            (b'i', "use invulnerability"),
+            (b'p', "use power shield"),
+        ] {
+            let mut keys = [false; 256];
+            keys[key as usize] = true;
+            assert_eq!(bound_commands(&none, &keys), [command], "{key}");
+        }
+        // default.cfg's s (silencer) would fire while moving back.
+        assert!(bound_commands(&none, &pressed(b"s")).is_empty());
     }
 
     #[test]
