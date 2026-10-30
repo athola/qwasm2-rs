@@ -1266,16 +1266,27 @@ pub(crate) fn start_func_timer(
     let pausetime = fields
         .get("pausetime")
         .map_or(0.0, |v| q2_common::cvar::parse_value(v));
-    let jitter = world.crandom();
+    let start_on = world
+        .entities
+        .get(key)
+        .is_some_and(|e| e.game.spawnflags & TIMER_START_ON != 0);
+    if !start_on {
+        return;
+    }
+    // C crandom() is the double 2.0 * (random() - 0.5), and the 1.0 makes
+    // the whole sum double.
+    let crandom = 2.0 * (f64::from(world.random()) - 0.5);
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
-    if ent.game.spawnflags & TIMER_START_ON != 0 {
-        ent.game.nextthink =
-            time + 1.0 + pausetime + ent.game.delay + ent.game.wait + jitter * ent.game.random;
-        ent.game.activator = Some(key);
-    }
+    ent.game.nextthink = (f64::from(time)
+        + 1.0
+        + f64::from(pausetime)
+        + f64::from(ent.game.delay)
+        + f64::from(ent.game.wait)
+        + crandom * f64::from(ent.game.random)) as f32;
+    ent.game.activator = Some(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -3131,6 +3142,27 @@ mod tests {
                 (18.0f64 * 0.1) as f32
             )
         );
+    }
+
+    #[test]
+    fn only_a_start_on_func_timer_draws_its_start_jitter() {
+        // C calls crandom() only inside `if (self->spawnflags & 1)`.
+        let mut world = test_world();
+        world.init_game();
+        world.level.rand_state = 9;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.wait = 1.0;
+        start_func_timer(&mut world, key, &HashMap::new());
+        assert_eq!(world.level.rand_state, 9);
+
+        world.entities.get_mut(key).unwrap().game.spawnflags = TIMER_START_ON;
+        world.entities.get_mut(key).unwrap().game.random = 0.3;
+        let mut rng = test_world();
+        rng.level.rand_state = 9;
+        let crandom = 2.0 * (f64::from(rng.random()) - 0.5); // C: a double
+        start_func_timer(&mut world, key, &HashMap::new());
+        let expected = (0.0 + 1.0 + 0.0 + 0.0 + 1.0 + crandom * f64::from(0.3f32)) as f32;
+        assert_eq!(world.entities.get(key).unwrap().game.nextthink, expected);
     }
 
     #[test]
