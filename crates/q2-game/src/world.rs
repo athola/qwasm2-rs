@@ -2208,10 +2208,15 @@ mod tests {
             "",
         );
         let key = world.entities.key_for_number(0).expect("world at 0");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.classname, "worldspawn");
+        // C SP_worldspawn: the world is a solid BSP pusher with model 1,
+        // so step monsters landing on it ground on it.
         assert_eq!(
-            world.entities.get(key).unwrap().game.classname,
-            "worldspawn"
+            (ent.game.movetype, ent.solid),
+            (crate::constants::MoveType::Push, Solid::Bsp)
         );
+        assert_eq!(ent.state.modelindex, 1);
     }
 
     #[test]

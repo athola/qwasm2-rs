@@ -445,9 +445,14 @@ pub fn sp_info_player_intermission(
 ) {
 }
 
-/// Spawn function for `worldspawn`.
+/// Spawn function for `worldspawn`: the world is a solid BSP pusher with
+/// the world model, index 1; `worldspawn_configstrings` does the rest.
+/// C ref: `SP_worldspawn`.
 pub fn sp_worldspawn(storage: &mut EntityStorage, key: EntityKey, props: &HashMap<String, String>) {
     if let Some(ent) = storage.get_mut(key) {
+        ent.game.movetype = crate::constants::MoveType::Push;
+        ent.solid = q2_shared::types::Solid::Bsp;
+        ent.state.modelindex = 1;
         ent.game.classname = "worldspawn".to_string();
         if let Some(msg) = props.get("message") {
             ent.game.message = msg.clone();
