@@ -199,7 +199,8 @@ impl Engine {
 
     /// Take the server's entities and player state when a new 10 Hz frame
     /// has run (C CL_ParseFrame keeps the previous one for interpolation),
-    /// and keep the renderer's models in step with the model configstrings.
+    /// and keep the renderer's models and the sounds in step with their
+    /// configstrings.
     fn sync_frame(&mut self) {
         let framenum = self.local.framenum();
         if self.frames.serverframe() == Some(framenum) {
@@ -216,6 +217,10 @@ impl Engine {
             |i| local.configstring(i),
             |name| renderer.register_model(name),
         );
+        // Sounds the game registers during play (C CL_ParseConfigString).
+        let fs = &self.fs;
+        self.sound
+            .sync_sounds(|i| local.configstring(i), |path| fs.load_file(path).ok());
     }
 
     /// Follow a level exit (C `gamemap`): the server loads the next level
