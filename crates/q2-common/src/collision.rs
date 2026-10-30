@@ -524,7 +524,9 @@ impl CollisionMap {
         self.surfaces.reserve(texinfo.len());
         for t in texinfo {
             self.surfaces.push(MapSurface {
-                name: t.texture,
+                // C ref: CMod_LoadSurfaces Q_strlcpy into csurface_t.name[16];
+                // game code compares trace surface names, so keep 15 chars.
+                name: t.texture.chars().take(15).collect(),
                 flags: t.flags,
                 value: t.value,
             });
@@ -2377,6 +2379,28 @@ pub(crate) mod tests {
         assert_eq!(
             trace.surface.as_ref().map(|s| s.name.as_str()),
             Some("solid")
+        );
+    }
+
+    #[test]
+    fn trace_surface_name_is_truncated_to_15_bytes_like_c() {
+        // C ref: CMod_LoadSurfaces Q_strlcpy's the name into
+        // csurface_t.name[16]; bytes map 1:1 to chars.
+        let mut bsp = build_minimal_bsp();
+        let at = lump(&bsp, LUMP_TEXINFO).0 + 40;
+        bsp[at..at + 32].copy_from_slice(b"e1u1/caf\xe9_long_texture_name_xyz!");
+        let mut cm = load(&bsp);
+        let trace = cm.box_trace(
+            Vec3f::new(50.0, 0.0, 0.0),
+            Vec3f::new(-50.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            0,
+            CONTENTS_SOLID,
+        );
+        assert_eq!(
+            trace.surface.map(|s| s.name),
+            Some("e1u1/caf\u{e9}_long_".to_owned())
         );
     }
 

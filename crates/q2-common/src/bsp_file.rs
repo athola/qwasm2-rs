@@ -86,7 +86,8 @@ pub struct DTexinfo {
     pub vecs: [[f32; 4]; 2],
     pub flags: i32,
     pub value: i32,
-    /// Texture name up to the first NUL of the 32-byte field.
+    /// Texture name up to the first NUL of the 32-byte field, one char per
+    /// byte like other Q2 strings.
     pub texture: String,
     pub next_texinfo: i32,
 }
@@ -242,7 +243,7 @@ impl BspHeader {
                 vecs,
                 flags: try_read_i32(r, 32)?,
                 value: try_read_i32(r, 36)?,
-                texture: String::from_utf8_lossy(&name[..end]).into_owned(),
+                texture: name[..end].iter().map(|&b| char::from(b)).collect(),
                 next_texinfo: try_read_i32(r, 72)?,
             })
         })
@@ -490,6 +491,18 @@ mod tests {
             header.entity_string(&buf).unwrap(),
             "{ \"message\" \"caf\u{e9}\" }"
         );
+    }
+
+    #[test]
+    fn texinfo_name_keeps_bytes_and_full_length() {
+        // Bytes map 1:1 to chars like entity_string; a name filling all 32
+        // bytes has no NUL and is kept whole for the renderer.
+        let mut tex = vec![0u8; 40];
+        tex.extend_from_slice(b"e1u1/caf\xe9_long_texture_name_xyz!");
+        tex.extend_from_slice(&(-1i32).to_le_bytes());
+        let buf = with_lump(LUMP_TEXINFO, &tex);
+        let infos = BspHeader::parse(&buf).unwrap().texinfo(&buf).unwrap();
+        assert_eq!(infos[0].texture, "e1u1/caf\u{e9}_long_texture_name_xyz!");
     }
 
     #[test]
