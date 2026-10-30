@@ -3,8 +3,9 @@
 //! Replaces C `filesystem.c`. Provides:
 //! - PAK file loading (Quake 2 `.pak` format)
 //! - Directory-based search paths
-//! - Unified `load_file` / `open_file` interface
-//! - Case-insensitive filename matching
+//! - A unified `load_file` / `file_exists` interface over both
+//! - Pak lookups that ignore ASCII case; loose files are tried with the
+//!   requested case, then lowercased (C `FS_FOpenFile`)
 //!
 //! # Backend design
 //!
