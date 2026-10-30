@@ -61,8 +61,19 @@ struct GiInner {
     /// Console text the game queued (C `gi.AddCommandString` ->
     /// `Cbuf_AddText`), for the server loop to run.
     commands: String,
+    /// Cvars set for the game to read (C's shared cvar table).
+    cvars: std::collections::HashMap<String, String>,
+    /// The local wall clock the engine last gave (hours, minutes, seconds).
+    local_time: Option<(u32, u32, u32)>,
     /// Sounds the game started since the last `take_sounds`.
     sounds: Vec<SoundEvent>,
+    /// The client command being run (C `Cmd_TokenizeString`'s `cmd_argv`
+    /// and `cmd_args`), for the game's `argv`/`args`.
+    command_argv: Vec<String>,
+    command_args: String,
+    /// Messages the game multicast since the last `take_messages`
+    /// (muzzle flashes, temp entities), whole.
+    messages: Vec<Vec<u8>>,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -106,7 +117,12 @@ impl GiInner {
             clusters: vec![EntityClusters::List(Vec::new()); MAX_EDICTS],
             areas: vec![(0, 0); MAX_EDICTS],
             commands: String::new(),
+            cvars: std::collections::HashMap::new(),
+            local_time: None,
             sounds: Vec::new(),
+            command_argv: Vec::new(),
+            command_args: String::new(),
+            messages: Vec::new(),
         }
     }
 
@@ -233,9 +249,56 @@ impl ServerGameImport {
         }
     }
 
+    /// Tokenize a client's command for the game to read (C
+    /// `SV_ExecuteUserCommand` -> `Cmd_TokenizeString`): `args` is the
+    /// raw rest of the line after the first token, trailing whitespace
+    /// cut.
+    pub fn set_client_command(&self, text: &str) {
+        let line = text.split('\n').next().unwrap_or_default();
+        let rest = line.trim_start_matches(|c: char| c <= ' ');
+        let rest = rest.trim_start_matches(|c: char| c > ' ');
+        let args = rest
+            .trim_start_matches(|c: char| c <= ' ')
+            .trim_end_matches(|c: char| c <= ' ');
+        let mut inner = self.inner.borrow_mut();
+        inner.command_argv = q2_common::cmd::tokenize(text);
+        inner.command_args = args.to_string();
+    }
+
+    /// The engine's local wall clock for the game (C's game calls
+    /// `localtime` itself; here the engine supplies it).
+    pub fn set_local_time(&self, hms: Option<(u32, u32, u32)>) {
+        self.inner.borrow_mut().local_time = hms;
+    }
+
+    /// Set cvar `name` for the game (C `Cvar_Set` on the shared table).
+    pub fn set_cvar(&self, name: &str, value: &str) {
+        self.inner
+            .borrow_mut()
+            .cvars
+            .insert(name.to_string(), value.to_string());
+    }
+
     /// The console text queued by `add_command_string` since the last call.
     pub fn take_commands(&self) -> String {
         std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// Queue an `svc_print` of `msg` at `level` for the local client.
+    fn queue_print(&self, level: i32, msg: &str) {
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::Print as i32);
+        message.write_byte(level);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
+    }
+
+    /// The messages the game multicast since the last call, in order.
+    pub fn take_messages(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.inner.borrow_mut().messages)
     }
 
     /// The sounds the game started since the last call, in order.
@@ -402,20 +465,34 @@ impl Default for ServerGameImport {
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
-    fn bprintf(&self, _printlevel: i32, msg: &str) {
+    /// C SV_BroadcastPrintf: every client gets an `svc_print`.
+    fn bprintf(&self, printlevel: i32, msg: &str) {
         tracing::info!("[bprintf] {}", msg.trim_end());
+        self.queue_print(printlevel, msg);
     }
 
     fn dprintf(&self, msg: &str) {
         tracing::debug!("[dprintf] {}", msg.trim_end());
     }
 
-    fn cprintf(&self, ent_idx: Option<usize>, _printlevel: i32, msg: &str) {
+    /// C PF_cprintf: to a client as `svc_print`, or the console for none.
+    fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
+        if ent_idx.is_some() {
+            self.queue_print(printlevel, msg);
+        }
     }
 
+    /// C PF_centerprintf: an `svc_centerprint` to the client.
     fn centerprintf(&self, ent_idx: Option<usize>, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[centerprintf] {}", msg.trim_end());
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
     }
 
     // -- sound ---------------------------------------------------------------
@@ -784,30 +861,60 @@ impl GameImport for ServerGameImport {
 
     // -- multicast / unicast (flush message buffer) -------------------------
 
+    /// C SV_Multicast. The one local client gets every message; the
+    /// PVS/PHS choice and reliable routing only pick network clients.
     fn multicast(&self, _origin: Vec3f, _to: Multicast) {
-        self.inner.borrow_mut().msg_buf.clear();
+        let mut inner = self.inner.borrow_mut();
+        if !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
+    /// C PF_Unicast: the one local client gets the message.
     fn unicast(&self, _ent_idx: usize, _reliable: bool) {
-        self.inner.borrow_mut().msg_buf.clear();
+        let mut inner = self.inner.borrow_mut();
+        if !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     // -- command args --------------------------------------------------------
 
     fn argc(&self) -> i32 {
-        0
+        self.inner.borrow().command_argv.len() as i32
     }
 
-    fn argv(&self, _n: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let inner = self.inner.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| inner.command_argv.get(n).cloned())
+            .unwrap_or_default()
     }
 
     fn args(&self) -> String {
-        String::new()
+        self.inner.borrow().command_args.clone()
     }
 
     fn add_command_string(&self, text: &str) {
         self.inner.borrow_mut().commands.push_str(text);
+    }
+
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.inner.borrow().local_time
+    }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.inner
+            .borrow()
+            .cvars
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -842,6 +949,76 @@ mod tests {
             time_ofs: 100.0 / 1000.0,
             origin,
         }
+    }
+
+    #[test]
+    fn prints_reach_the_local_client_as_svc_print_and_centerprint() {
+        use q2_shared::protocol::SvcOp;
+        let gi = ServerGameImport::new();
+        gi.bprintf(2, "Ann died.\n");
+        gi.cprintf(Some(1), 1, "No cells.\n");
+        gi.cprintf(None, 1, "console only\n");
+        gi.centerprintf(Some(1), "The door is locked");
+        let mut print = vec![SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"Ann died.\n\0");
+        let mut cprint = vec![SvcOp::Print as u8, 1];
+        cprint.extend_from_slice(b"No cells.\n\0");
+        let mut center = vec![SvcOp::CenterPrint as u8];
+        center.extend_from_slice(b"The door is locked\0");
+        assert_eq!(gi.take_messages(), vec![print, cprint, center]);
+    }
+
+    #[test]
+    fn a_unicast_message_is_queued_for_the_local_client() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(4);
+        gi.write_string("xv 0");
+        gi.unicast(1, true);
+        assert_eq!(gi.take_messages(), vec![vec![4, b'x', b'v', b' ', b'0', 0]]);
+    }
+
+    #[test]
+    fn a_multicast_message_is_queued_for_the_local_client() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(1);
+        gi.write_short(5);
+        gi.write_byte(7);
+        gi.multicast(Vec3f::ZERO, Multicast::PVS);
+        gi.write_byte(3);
+        gi.multicast(Vec3f::ZERO, Multicast::PHS);
+        assert_eq!(gi.take_messages(), vec![vec![1, 5, 0, 7], vec![3]]);
+        assert!(gi.take_messages().is_empty(), "taken once");
+        assert_eq!(gi.inner.borrow().msg_buf.len(), 0, "the buffer starts over");
+    }
+
+    #[test]
+    fn an_empty_multicast_queues_nothing() {
+        let gi = ServerGameImport::new();
+        gi.multicast(Vec3f::ZERO, Multicast::All);
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn a_client_command_is_tokenized_for_argv_and_args_like_c() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("use  Super Shotgun \n");
+        assert_eq!(gi.argc(), 3);
+        assert_eq!(gi.argv(0), "use");
+        assert_eq!(gi.argv(2), "Shotgun");
+        assert_eq!(gi.argv(3), "");
+        assert_eq!(gi.argv(-1), "");
+        // C Cmd_Args: the raw rest of the line, trailing whitespace cut.
+        assert_eq!(gi.args(), "Super Shotgun");
+    }
+
+    #[test]
+    fn args_keeps_quotes_as_typed() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("say \"hi there\"");
+        assert_eq!(gi.argv(1), "hi there");
+        assert_eq!(gi.args(), "\"hi there\"");
+        gi.set_client_command("weapnext");
+        assert_eq!((gi.argc(), gi.args()), (1, String::new()));
     }
 
     #[test]
@@ -936,6 +1113,22 @@ mod tests {
         // The limits themselves are allowed.
         gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
         assert_eq!(gi.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn the_game_reads_the_local_time_the_engine_set() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.local_time(), None);
+        gi.set_local_time(Some((23, 59, 1)));
+        assert_eq!(gi.local_time(), Some((23, 59, 1)));
+    }
+
+    #[test]
+    fn the_game_reads_a_set_cvar_and_otherwise_its_default() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.cvar("cl_gun", "2"), "2");
+        gi.set_cvar("cl_gun", "0");
+        assert_eq!(gi.cvar("cl_gun", "2"), "0");
     }
 
     #[test]

@@ -37,6 +37,9 @@ pub struct LevelLocals {
     pub changemap: String,
     pub intermission_time: f32,
     pub exitintermission: bool,
+    /// Where intermission puts everyone and which way they look.
+    pub intermission_origin: Vec3f,
+    pub intermission_angle: Vec3f,
     pub sight_client_key: Option<EntityKey>,
     /// A monster that just saw a player, which other monsters notice
     /// (C `level.sight_entity`, set by `FoundTarget`).
@@ -97,6 +100,16 @@ pub struct GameLocals {
     /// single player, so both stay false there.
     pub deathmatch: bool,
     pub coop: bool,
+    /// C `fraglimit` and `timelimit` (minutes) cvars, 0 for none, and
+    /// `sv_maplist`, the deathmatch rotation.
+    pub fraglimit: i32,
+    pub timelimit: f32,
+    pub maplist: String,
+    /// The help computer's objectives and how often they changed (C
+    /// `helpmessage1`, `helpmessage2`, `helpchanged`).
+    pub helpmessage1: String,
+    pub helpmessage2: String,
+    pub helpchanged: i32,
     /// How far the view bob cycle advances each frame on the ground; kept
     /// while airborne (C view.c file static `bobmove`).
     pub bobmove: f32,
@@ -121,6 +134,12 @@ impl Default for GameLocals {
             skill: 1, // C cvar default
             deathmatch: false,
             coop: false,
+            fraglimit: 0,
+            timelimit: 0.0,
+            maplist: String::new(),
+            helpmessage1: String::new(),
+            helpmessage2: String::new(),
+            helpchanged: 0,
             bobmove: 0.0,
         }
     }
@@ -144,6 +163,18 @@ pub struct GameWorld {
     /// outlives the edicts `spawn_entities` rebuilds.
     pub clients: Vec<ClientData>,
     pub items: Vec<ItemDef>,
+    /// What the last `t_damage` was from, for obituaries (C global
+    /// `meansOfDeath`).
+    pub means_of_death: crate::constants::MeansOfDeath,
+    /// Whether that damage came from a teammate (C `meansOfDeath`'s
+    /// `MOD_FRIENDLY_FIRE` bit).
+    pub friendly_fire: bool,
+    /// Frames left on a player-dropped quad being picked up, for
+    /// `use_quad` (C `quad_drop_timeout_hack`); 0 for a fresh one.
+    pub quad_drop_timeout_hack: i32,
+    /// Which of the three pain animations a hit starts next (C
+    /// `P_DamageFeedback`'s static counter).
+    pub pain_anim_cycle: i32,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -171,6 +202,10 @@ impl GameWorld {
             game,
             clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
+            means_of_death: crate::constants::MeansOfDeath::Unknown,
+            friendly_fire: false,
+            quad_drop_timeout_hack: 0,
+            pain_anim_cycle: 0,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),
@@ -938,6 +973,12 @@ pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
+    /// Cvars `cvar` answers; others give their default.
+    pub cvars: RefCell<HashMap<String, String>>,
+    /// What `local_time` answers.
+    pub local_time: std::cell::Cell<Option<(u32, u32, u32)>>,
+    /// What `point_contents` answers everywhere.
+    pub contents: std::cell::Cell<i32>,
     pub links: RefCell<Vec<EntityLink>>,
     pub unlinks: RefCell<Vec<usize>>,
     pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
@@ -971,6 +1012,10 @@ pub struct MockGameImport {
     pub sound_calls: RefCell<Vec<SoundCall>>,
     /// Every `centerprintf` call, in order.
     pub centerprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// Every `cprintf` call (entity, text), in order.
+    pub cprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// The client command `argv`/`args` read, already tokenized.
+    pub command: RefCell<Vec<String>>,
     /// Every `set_area_portal_state` call, in order.
     pub portal_states: RefCell<Vec<(i32, bool)>>,
     /// Every `bprintf` call as (print level, text).
@@ -979,6 +1024,11 @@ pub struct MockGameImport {
     pub writes: RefCell<Vec<i32>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
+    /// Every `write_position` and `write_dir`, in order.
+    pub vectors: RefCell<Vec<Vec3f>>,
+    /// Every `write_string`, and every `unicast` (entity, reliable).
+    pub strings: RefCell<Vec<String>>,
+    pub unicasts: RefCell<Vec<(usize, bool)>>,
     /// `entity_areas` by entity number; unlisted numbers are in no area.
     pub areas: RefCell<HashMap<usize, (i32, i32)>>,
     /// Area pairs `areas_connected` reports as cut off (either order).
@@ -993,7 +1043,9 @@ impl GameImport for MockGameImport {
     fn dprintf(&self, msg: &str) {
         self.dprints.borrow_mut().push(msg.to_string());
     }
-    fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
+    fn cprintf(&self, ent: Option<usize>, _: i32, msg: &str) {
+        self.cprints.borrow_mut().push((ent, msg.to_string()));
+    }
     fn centerprintf(&self, ent: Option<usize>, msg: &str) {
         self.centerprints.borrow_mut().push((ent, msg.to_string()));
     }
@@ -1087,7 +1139,7 @@ impl GameImport for MockGameImport {
     }
 
     fn point_contents(&self, _: Vec3f) -> i32 {
-        0
+        self.contents.get()
     }
     fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {
         true
@@ -1120,26 +1172,50 @@ impl GameImport for MockGameImport {
     }
     fn write_long(&self, _: i32) {}
     fn write_float(&self, _: f32) {}
-    fn write_string(&self, _: &str) {}
-    fn write_position(&self, _: Vec3f) {}
-    fn write_dir(&self, _: Vec3f) {}
+    fn write_string(&self, s: &str) {
+        self.strings.borrow_mut().push(s.to_string());
+    }
+    fn write_position(&self, pos: Vec3f) {
+        self.vectors.borrow_mut().push(pos);
+    }
+    fn write_dir(&self, dir: Vec3f) {
+        self.vectors.borrow_mut().push(dir);
+    }
     fn write_angle(&self, _: f32) {}
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));
     }
-    fn unicast(&self, _: usize, _: bool) {}
+    fn unicast(&self, ent: usize, reliable: bool) {
+        self.unicasts.borrow_mut().push((ent, reliable));
+    }
 
     fn argc(&self) -> i32 {
-        0
+        self.command.borrow().len() as i32
     }
-    fn argv(&self, _: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let command = self.command.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| command.get(n).cloned())
+            .unwrap_or_default()
     }
     fn args(&self) -> String {
-        String::new()
+        self.command.borrow().get(1..).unwrap_or_default().join(" ")
     }
     fn add_command_string(&self, text: &str) {
         self.commands.borrow_mut().push(text.to_string());
+    }
+
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.local_time.get()
+    }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.cvars
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -1156,8 +1232,7 @@ impl GameWorld {
     }
 
     /// The body queue, configstrings, images, sounds and models C
-    /// SP_worldspawn sets up. `sv_gravity`, `snd_fry` and
-    /// `PrecacheItem(Blaster)` are not ported.
+    /// SP_worldspawn sets up. `sv_gravity` and `snd_fry` are not ported.
     pub(crate) fn worldspawn_configstrings(
         &mut self,
         _key: EntityKey,
@@ -1207,8 +1282,14 @@ impl GameWorld {
         self.level.pic_health = self.gi.image_index("i_health");
         self.gi.image_index("help");
         self.gi.image_index("field_3");
-        for sound in WORLDSPAWN_SOUNDS {
+        for (i, sound) in WORLDSPAWN_SOUNDS.into_iter().enumerate() {
             self.gi.sound_index(sound);
+            if i == 0 {
+                // After snd_fry, as C does.
+                if let Some(blaster) = self.find_item_by_name("Blaster") {
+                    self.precache_item(blaster);
+                }
+            }
         }
         // Only coop and deathmatch show other players' weapons.
         if self.game.coop || self.game.deathmatch {
@@ -1322,6 +1403,9 @@ impl GameWorld {
             self.run_entity(key);
         }
 
+        // See if it is time to end a deathmatch.
+        self.check_dm_rules();
+
         // Build the player state each client is sent this frame.
         self.client_end_server_frames();
     }
@@ -1377,10 +1461,15 @@ impl GameWorld {
             self.set_model(key, model);
         }
 
-        let is_monster = self
-            .entities
-            .get(key)
-            .is_some_and(|e| e.monsterinfo.is_some());
+        // C runs monster_start from each monster's SP_* function; here the
+        // spawn function's monsterinfo marks a monster. The exception is
+        // misc_explobox, which C gives only AI_NOSTEP (the one user of it)
+        // so M_walkmove keeps the pushed barrel off steps.
+        let is_monster = self.entities.get(key).is_some_and(|e| {
+            e.monsterinfo
+                .as_ref()
+                .is_some_and(|mi| !mi.aiflags.contains(crate::constants::AiFlags::NOSTEP))
+        });
         if is_monster {
             if !crate::ai::monster_start(self, key) {
                 return; // Deathmatch freed the monster.
@@ -2062,6 +2151,24 @@ mod tests {
         world.game.coop = coop;
         world.spawn_entities("base1", entstring, "");
         (world, gi)
+    }
+
+    #[test]
+    fn worldspawn_precaches_the_blaster_after_the_lava_fry_sound() {
+        let (_, gi) = world_in_mode(false, false, "{ \"classname\" \"worldspawn\" }");
+        let sounds = gi.sounds.borrow();
+        let fry = sounds.iter().position(|s| s == "player/fry.wav").unwrap();
+        assert_eq!(
+            sounds[fry + 1],
+            "misc/w_pkup.wav",
+            "the blaster's pickup sound"
+        );
+        assert!(sounds.iter().any(|s| s == "weapons/blastf1a.wav"));
+        assert!(gi
+            .models
+            .borrow()
+            .iter()
+            .any(|m| m == "models/weapons/v_blast/tris.md2"));
     }
 
     #[test]

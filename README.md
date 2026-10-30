@@ -17,8 +17,12 @@ WebGL2, and runs player movement in the browser.
 > next map with the player's inventory. The renderer draws the world
 > textured and lightmapped with sky and warp surfaces, flickering light
 > styles and animated textures, brush entities and MD2 models, and the
-> status bar; game sounds play through WebAudio. The player's weapons
-> (#16) are not in yet.
+> status bar; game sounds play through WebAudio. The player carries,
+> switches and fires every weapon (number keys, `[` `]` `'` Enter, F7/F8
+> for gamma), with the first-person gun, gunfire sounds and muzzle
+> flashes; powerups, drowning and lava work. Explosions, impacts and
+> particles are not drawn yet, and a dead player cannot restart until
+> savegames (#15).
 > Expect breaking changes.
 
 ## Progress

@@ -12,7 +12,7 @@ use crate::monster::{
     infantry, insane, medic, mutant, parasite, soldier, supertank, tank, turret,
 };
 use crate::world::GameWorld;
-use crate::{func, misc, targets, triggers};
+use crate::{func, misc, misc_func, misc_models, targets, triggers};
 
 // ---------------------------------------------------------------------------
 // Entity-string parser
@@ -186,9 +186,9 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("func_water", func::sp_func_water, None, Some(func::finish_water)),
     ("func_conveyor", func::sp_func_conveyor, None, None),
     ("func_areaportal", func::sp_func_areaportal, None, None),
-    ("func_clock", func::sp_func_nonsolid, None, None),
-    ("func_wall", func::sp_func_generic, None, None),
-    ("func_object", func::sp_func_generic, None, None),
+    ("func_clock", misc_func::sp_func_clock, None, Some(misc_func::finish_func_clock)),
+    ("func_wall", misc_func::sp_func_wall, None, None),
+    ("func_object", misc_func::sp_func_object, None, Some(misc_func::finish_func_object)),
     ("func_timer", func::sp_func_timer, None, Some(func::start_func_timer)),
     ("func_explosive", func::sp_func_explosive, None, None),
     ("func_killbox", func::sp_func_killbox, None, None),
@@ -216,15 +216,15 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("target_blaster", targets::sp_target_generic, None, None),
     ("target_crosslevel_trigger", targets::sp_target_generic, None, None),
     ("target_crosslevel_target", targets::sp_target_generic, None, None),
-    ("target_laser", targets::sp_target_generic, None, None),
-    ("target_help", targets::sp_target_generic, None, None),
+    ("target_laser", targets::sp_target_generic, None, Some(targets::finish_target_laser)),
+    ("target_help", targets::sp_target_generic, None, Some(targets::finish_target_help)),
     ("target_lightramp", targets::sp_target_generic, None, None),
     ("target_earthquake", targets::sp_target_generic, None, None),
-    ("target_character", misc::sp_misc_generic, None, None),
-    ("target_string", misc::sp_misc_generic, None, None),
+    ("target_character", misc_func::sp_target_character, None, None),
+    ("target_string", misc_func::sp_target_string, None, None),
 
     ("worldspawn", sp_worldspawn, None, Some(GameWorld::worldspawn_configstrings)),
-    ("viewthing", misc::sp_misc_generic, None, None),
+    ("viewthing", misc_models::sp_viewthing, Some("models/objects/banner/tris.md2"), Some(misc_models::finish_viewthing)),
 
     ("light", sp_light, None, Some(GameWorld::spawn_light)),
     ("light_mine1", misc::sp_light_mine, Some("models/objects/minelite/light1/tris.md2"), None),
@@ -235,24 +235,24 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("path_corner", misc::sp_path_corner, None, None),
     ("point_combat", misc::sp_point_combat, None, Some(misc::finish_point_combat)),
 
-    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), None),
-    ("misc_banner", misc::sp_misc_generic, Some("models/objects/banner/tris.md2"), None),
-    ("misc_satellite_dish", misc::sp_misc_generic, Some("models/objects/satellite/tris.md2"), None),
+    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), Some(misc::finish_misc_explobox)),
+    ("misc_banner", misc_models::sp_misc_banner, Some("models/objects/banner/tris.md2"), Some(misc_models::finish_misc_banner)),
+    ("misc_satellite_dish", misc_models::sp_misc_satellite_dish, Some("models/objects/satellite/tris.md2"), None),
     ("misc_gib_arm", misc::sp_misc_gib, Some("models/objects/gibs/arm/tris.md2"), None),
     ("misc_gib_leg", misc::sp_misc_gib, Some("models/objects/gibs/leg/tris.md2"), None),
     ("misc_gib_head", misc::sp_misc_gib, Some("models/objects/gibs/head/tris.md2"), None),
     ("misc_insane", insane::sp_monster_insane, Some("models/monsters/insane/tris.md2"), Some(insane::insane_finish)),
-    ("misc_deadsoldier", misc::sp_misc_generic, Some("models/deadbods/dude/tris.md2"), None),
-    ("misc_viper", misc::sp_misc_generic, Some("models/ships/viper/tris.md2"), None),
-    ("misc_viper_bomb", misc::sp_misc_generic, Some("models/objects/bomb/tris.md2"), None),
-    ("misc_bigviper", misc::sp_misc_generic, Some("models/ships/bigviper/tris.md2"), None),
-    ("misc_strogg_ship", misc::sp_misc_generic, Some("models/ships/strogg1/tris.md2"), None),
+    ("misc_deadsoldier", misc_models::sp_misc_deadsoldier, Some("models/deadbods/dude/tris.md2"), Some(misc_models::finish_misc_deadsoldier)),
+    ("misc_viper", misc_models::sp_misc_viper, Some("models/ships/viper/tris.md2"), Some(misc_models::finish_think_next_frame)),
+    ("misc_viper_bomb", misc_models::sp_misc_viper_bomb, Some("models/objects/bomb/tris.md2"), None),
+    ("misc_bigviper", misc_models::sp_misc_bigviper, Some("models/ships/bigviper/tris.md2"), None),
+    ("misc_strogg_ship", misc_models::sp_misc_strogg_ship, Some("models/ships/strogg1/tris.md2"), Some(misc_models::finish_think_next_frame)),
     ("misc_teleporter", misc::sp_misc_teleporter, Some("models/objects/dmspot/tris.md2"), None),
     ("misc_teleporter_dest", misc::sp_misc_teleporter_dest, Some("models/objects/dmspot/tris.md2"), None),
-    ("misc_blackhole", misc::sp_misc_generic, Some("models/objects/black/tris.md2"), None),
-    ("misc_eastertank", misc::sp_misc_generic, Some("models/monsters/tank/tris.md2"), None),
-    ("misc_easterchick", misc::sp_misc_generic, Some("models/monsters/bitch/tris.md2"), None),
-    ("misc_easterchick2", misc::sp_misc_generic, Some("models/monsters/bitch/tris.md2"), None),
+    ("misc_blackhole", misc_models::sp_misc_blackhole, Some("models/objects/black/tris.md2"), Some(misc_models::finish_think_in_two_frames)),
+    ("misc_eastertank", misc_models::sp_misc_eastertank, Some("models/monsters/tank/tris.md2"), Some(misc_models::finish_think_in_two_frames)),
+    ("misc_easterchick", misc_models::sp_misc_easterchick, Some("models/monsters/bitch/tris.md2"), Some(misc_models::finish_think_in_two_frames)),
+    ("misc_easterchick2", misc_models::sp_misc_easterchick2, Some("models/monsters/bitch/tris.md2"), Some(misc_models::finish_think_in_two_frames)),
 
     ("monster_berserk", berserker::sp_monster_berserker, Some("models/monsters/berserk/tris.md2"), Some(berserker::sp_monster_berserker_finish)),
     ("monster_gladiator", gladiator::sp_monster_gladiator, Some("models/monsters/gladiatr/tris.md2"), Some(gladiator::sp_monster_gladiator_finish)),
@@ -278,7 +278,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("monster_makron", boss3::sp_monster_makron, Some("models/monsters/boss3/rider/tris.md2"), Some(boss3::makron_finish)),
     ("monster_jorg", boss3::sp_monster_jorg, Some("models/monsters/boss3/jorg/tris.md2"), Some(boss3::jorg_finish)),
 
-    ("monster_commander_body", misc::sp_misc_generic, Some("models/monsters/commandr/tris.md2"), None),
+    ("monster_commander_body", misc_models::sp_monster_commander_body, Some("models/monsters/commandr/tris.md2"), Some(misc_models::finish_commander_body)),
 
     ("turret_breach", turret::sp_turret_breach, None, Some(turret::turret_breach_finish)),
     ("turret_base", turret::sp_turret_base, None, None),

@@ -69,16 +69,27 @@ pub const AREA_TRIGGERS: i32 = 2;
 /// Bonus items spin.
 pub const EF_ROTATE: u32 = 0x0000_0001;
 /// Drawn only through a mirror or third-person camera: the viewer's own body.
+pub const RF_MINLIGHT: i32 = 1;
 pub const RF_VIEWERMODEL: i32 = 2;
 pub const RF_WEAPONMODEL: i32 = 4;
 pub const RF_FULLBRIGHT: i32 = 8;
+pub const RF_DEPTHHACK: i32 = 16;
 pub const RF_TRANSLUCENT: i32 = 32;
 /// Pulse lighting for bonus items.
 pub const RF_GLOW: i32 = 512;
-pub const RF_FRAMELERP: i32 = 64;
-pub const RF_BEAM: i32 = 128;
+pub const RF_SHELL_RED: i32 = 1024;
+pub const RF_SHELL_GREEN: i32 = 2048;
+pub const RF_SHELL_BLUE: i32 = 4096;
 /// Don't draw a shadow.
 pub const RF_NOSHADOW: i32 = 8192;
+pub const RF_IR_VISIBLE: i32 = 0x0000_8000;
+/// Mission-pack shells: yellow (double damage) and grey-green (half damage).
+pub const RF_SHELL_DOUBLE: i32 = 0x0001_0000;
+pub const RF_SHELL_HALF_DAM: i32 = 0x0002_0000;
+/// `rdflags`: the view is under water, slime or lava.
+pub const RDF_UNDERWATER: i32 = 1;
+pub const RF_FRAMELERP: i32 = 64;
+pub const RF_BEAM: i32 = 128;
 /// Leave a blood trail.
 pub const EF_GIB: u32 = 0x0000_0002;
 /// Projectile effects: dynamic light and trail per weapon.
@@ -87,6 +98,12 @@ pub const EF_ROCKET: u32 = 0x0000_0010;
 pub const EF_GRENADE: u32 = 0x0000_0020;
 pub const EF_HYPERBLASTER: u32 = 0x0000_0040;
 pub const EF_BFG: u32 = 0x0000_0080;
+/// Colour shell (`RF_SHELL_*` picks the colours) and power screen.
+pub const EF_COLOR_SHELL: u32 = 0x0000_0100;
+pub const EF_POWERSCREEN: u32 = 0x0000_0200;
+/// Quad damage and invulnerability glows.
+pub const EF_QUAD: u32 = 0x0000_8000;
+pub const EF_PENT: u32 = 0x0001_0000;
 /// Client-side frame cycling: 0/1 and 2/3 at 2 Hz, all frames at 2 or 10 Hz.
 pub const EF_ANIM01: u32 = 0x0000_0400;
 pub const EF_ANIM23: u32 = 0x0000_0800;
@@ -94,10 +111,137 @@ pub const EF_ANIM_ALL: u32 = 0x0000_1000;
 pub const EF_ANIM_ALLFAST: u32 = 0x0000_2000;
 /// Particle fountain.
 pub const EF_TELEPORTER: u32 = 0x0002_0000;
+/// A fly swarm.
+pub const EF_FLIES: u32 = 0x0000_4000;
+/// Mission-pack and CTF effects: flag carriers' trails, the ion ripper,
+/// green gibs, the blue hyperblaster, spinning lights, plasma, traps, the
+/// tracker and its trail, double and half damage, translucent spheres and
+/// the tag carrier's trail.
+pub const EF_FLAG1: u32 = 0x0004_0000;
+pub const EF_FLAG2: u32 = 0x0008_0000;
+pub const EF_IONRIPPER: u32 = 0x0010_0000;
+pub const EF_GREENGIB: u32 = 0x0020_0000;
+pub const EF_BLUEHYPERBLASTER: u32 = 0x0040_0000;
+pub const EF_SPINNINGLIGHTS: u32 = 0x0080_0000;
+pub const EF_PLASMA: u32 = 0x0100_0000;
+pub const EF_TRAP: u32 = 0x0200_0000;
+pub const EF_TRACKER: u32 = 0x0400_0000;
+pub const EF_DOUBLE: u32 = 0x0800_0000;
+pub const EF_SPHERETRANS: u32 = 0x1000_0000;
+pub const EF_TAGTRAIL: u32 = 0x2000_0000;
+pub const EF_HALF_DAMAGE: u32 = 0x4000_0000;
+pub const EF_TRACKERTRAIL: u32 = 0x8000_0000;
 
 // entity_state_t events (shared.h entity_event_t)
+pub const EV_ITEM_RESPAWN: i32 = 1;
+pub const EV_FOOTSTEP: i32 = 2;
+pub const EV_FALLSHORT: i32 = 3;
+pub const EV_FALL: i32 = 4;
+pub const EV_FALLFAR: i32 = 5;
 pub const EV_PLAYER_TELEPORT: i32 = 6;
 pub const EV_OTHER_TELEPORT: i32 = 7;
+
+// Temp entity types (shared.h temp_event_t), the byte after
+// svc_temp_entity; numbered in order, TE_BOSSTPORT is 22 in maps.
+pub const TE_GUNSHOT: i32 = 0;
+pub const TE_BLOOD: i32 = 1;
+pub const TE_BLASTER: i32 = 2;
+pub const TE_RAILTRAIL: i32 = 3;
+pub const TE_SHOTGUN: i32 = 4;
+pub const TE_EXPLOSION1: i32 = 5;
+pub const TE_EXPLOSION2: i32 = 6;
+pub const TE_ROCKET_EXPLOSION: i32 = 7;
+pub const TE_GRENADE_EXPLOSION: i32 = 8;
+pub const TE_SPARKS: i32 = 9;
+pub const TE_SPLASH: i32 = 10;
+pub const TE_BUBBLETRAIL: i32 = 11;
+pub const TE_SCREEN_SPARKS: i32 = 12;
+pub const TE_SHIELD_SPARKS: i32 = 13;
+pub const TE_BULLET_SPARKS: i32 = 14;
+pub const TE_LASER_SPARKS: i32 = 15;
+pub const TE_PARASITE_ATTACK: i32 = 16;
+pub const TE_ROCKET_EXPLOSION_WATER: i32 = 17;
+pub const TE_GRENADE_EXPLOSION_WATER: i32 = 18;
+pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
+pub const TE_BFG_EXPLOSION: i32 = 20;
+pub const TE_BFG_BIGEXPLOSION: i32 = 21;
+pub const TE_BOSSTPORT: i32 = 22;
+pub const TE_BFG_LASER: i32 = 23;
+pub const TE_GRAPPLE_CABLE: i32 = 24;
+pub const TE_WELDING_SPARKS: i32 = 25;
+pub const TE_GREENBLOOD: i32 = 26;
+pub const TE_BLUEHYPERBLASTER: i32 = 27;
+pub const TE_PLASMA_EXPLOSION: i32 = 28;
+pub const TE_TUNNEL_SPARKS: i32 = 29;
+pub const TE_BLASTER2: i32 = 30;
+pub const TE_RAILTRAIL2: i32 = 31;
+pub const TE_FLAME: i32 = 32;
+pub const TE_LIGHTNING: i32 = 33;
+pub const TE_DEBUGTRAIL: i32 = 34;
+pub const TE_PLAIN_EXPLOSION: i32 = 35;
+pub const TE_FLASHLIGHT: i32 = 36;
+pub const TE_FORCEWALL: i32 = 37;
+pub const TE_HEATBEAM: i32 = 38;
+pub const TE_MONSTER_HEATBEAM: i32 = 39;
+pub const TE_STEAM: i32 = 40;
+pub const TE_BUBBLETRAIL2: i32 = 41;
+pub const TE_MOREBLOOD: i32 = 42;
+pub const TE_HEATBEAM_SPARKS: i32 = 43;
+pub const TE_HEATBEAM_STEAM: i32 = 44;
+pub const TE_CHAINFIST_SMOKE: i32 = 45;
+pub const TE_ELECTRIC_SPARKS: i32 = 46;
+pub const TE_TRACKER_EXPLOSION: i32 = 47;
+pub const TE_TELEPORT_EFFECT: i32 = 48;
+pub const TE_DBALL_GOAL: i32 = 49;
+pub const TE_WIDOWBEAMOUT: i32 = 50;
+pub const TE_NUKEBLAST: i32 = 51;
+pub const TE_WIDOWSPLASH: i32 = 52;
+pub const TE_EXPLOSION1_BIG: i32 = 53;
+pub const TE_EXPLOSION1_NP: i32 = 54;
+pub const TE_FLECHETTE: i32 = 55;
+
+// TE_SPLASH colours (shared.h SPLASH_*).
+pub const SPLASH_UNKNOWN: i32 = 0;
+pub const SPLASH_SPARKS: i32 = 1;
+pub const SPLASH_BLUE_WATER: i32 = 2;
+pub const SPLASH_BROWN_WATER: i32 = 3;
+pub const SPLASH_SLIME: i32 = 4;
+pub const SPLASH_LAVA: i32 = 5;
+pub const SPLASH_BLOOD: i32 = 6;
+
+// Surface flags (shared.h SURF_*).
+pub const SURF_LIGHT: i32 = 0x1;
+pub const SURF_SLICK: i32 = 0x2;
+pub const SURF_SKY: i32 = 0x4;
+pub const SURF_WARP: i32 = 0x8;
+pub const SURF_TRANS33: i32 = 0x10;
+pub const SURF_TRANS66: i32 = 0x20;
+pub const SURF_FLOWING: i32 = 0x40;
+pub const SURF_NODRAW: i32 = 0x80;
+
+// usercmd_t buttons (shared.h BUTTON_*).
+pub const BUTTON_ATTACK: u8 = 1;
+pub const BUTTON_USE: u8 = 2;
+pub const BUTTON_ANY: u8 = 128;
+
+// Player muzzle flashes (shared.h MZ_*): the flash number in svc_muzzleflash.
+pub const MZ_BLASTER: i32 = 0;
+pub const MZ_MACHINEGUN: i32 = 1;
+pub const MZ_SHOTGUN: i32 = 2;
+pub const MZ_CHAINGUN1: i32 = 3;
+pub const MZ_CHAINGUN2: i32 = 4;
+pub const MZ_CHAINGUN3: i32 = 5;
+pub const MZ_RAILGUN: i32 = 6;
+pub const MZ_ROCKET: i32 = 7;
+pub const MZ_GRENADE: i32 = 8;
+pub const MZ_LOGIN: i32 = 9;
+pub const MZ_LOGOUT: i32 = 10;
+pub const MZ_RESPAWN: i32 = 11;
+pub const MZ_BFG: i32 = 12;
+pub const MZ_SSHOTGUN: i32 = 13;
+pub const MZ_HYPERBLASTER: i32 = 14;
+/// Bit ORed onto a flash number for a silenced shot.
+pub const MZ_SILENCED: i32 = 128;
 
 // Monster muzzle flashes (shared.h MZ2_*): the flash number in svc_muzzleflash2,
 // which also indexes monster_flash_offset.

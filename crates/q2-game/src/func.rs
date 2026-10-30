@@ -2515,24 +2515,9 @@ pub fn sp_func_killbox(
     }
 }
 
-pub fn sp_func_generic(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    fields: &HashMap<String, String>,
-) {
-    if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields
-            .get("classname")
-            .cloned()
-            .unwrap_or_else(|| "func".to_string());
-        ent.game.movetype = MoveType::Push;
-        ent.solid = Solid::Bsp;
-    }
-}
-
-/// func_areaportal (see `sp_func_areaportal`) and func_clock: C
-/// SP_func_areaportal never sets a solid (a solid portal brush would close
-/// every doorway it sits in), and func_clock is a point entity.
+/// func_areaportal (see `sp_func_areaportal`): C SP_func_areaportal
+/// never sets a solid (a solid portal brush would close every doorway it
+/// sits in).
 pub fn sp_func_nonsolid(
     storage: &mut EntityStorage,
     key: EntityKey,

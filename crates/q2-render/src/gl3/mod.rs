@@ -41,6 +41,7 @@ mod alias;
 mod draw;
 mod entities;
 mod entity;
+mod fx;
 mod images;
 mod light;
 mod lightmap;
@@ -64,28 +65,6 @@ use entities::{
     create_extra, draw_brush_alpha_faces, draw_entities, free_extra, EntityScene, ExtraGpu,
 };
 
-/// One step of a 3D frame after the sky.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pass {
-    WorldOpaque,
-    /// The opaque or the `RF_TRANSLUCENT` entities, brush entities without
-    /// their translucent faces.
-    Entities {
-        translucent: bool,
-    },
-    /// Every SURF_TRANS33/66 face (C `GL3_DrawAlphaSurfaces`): the brush
-    /// entities' first, then the world's, as C prepends the entities'
-    /// faces to the chain the world filled.
-    AlphaSurfaces,
-}
-
-/// C `GL3_RenderView` order.
-const FRAME_PASSES: [Pass; 4] = [
-    Pass::WorldOpaque,
-    Pass::Entities { translucent: false },
-    Pass::Entities { translucent: true },
-    Pass::AlphaSurfaces,
-];
 use images::ImageStore;
 use light::LightTree;
 use model::{Model, ModelRegistry};
@@ -126,6 +105,8 @@ pub struct Gl3Renderer {
     palette: Option<Palette>,
     /// MD2 and 2D programs, stream buffers and fallback textures.
     extra: Option<ExtraGpu>,
+    /// Particle, beam and sprite programs.
+    fx: Option<fx::FxGpu>,
     /// 2D pics and model skins.
     images: ImageStore,
     /// Registered models; handles are valid until the next registration.
@@ -140,6 +121,8 @@ pub struct Gl3Renderer {
     canvas: (i32, i32),
     /// C `vid_gamma`; every program's `u_gamma` is `1/vid_gamma`.
     vid_gamma: f32,
+    /// C cvar `hand`, which the renderer reads too (`gl_lefthand`).
+    hand: i32,
 }
 
 impl Gl3Renderer {
@@ -179,6 +162,7 @@ impl Gl3Renderer {
             world_name: None,
             palette,
             extra: None,
+            fx: None,
             images: ImageStore::default(),
             models: ModelRegistry::default(),
             model_count: None,
@@ -186,6 +170,7 @@ impl Gl3Renderer {
             ui_queue: Vec::new(),
             canvas: (0, 0),
             vid_gamma: 1.0,
+            hand: 0,
         }
     }
 
@@ -260,6 +245,33 @@ impl Gl3Renderer {
     }
 }
 
+/// One step of a frame's 3D drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Sky,
+    OpaqueWorld,
+    /// Beams, brush models, MD2s and sprites in list order.
+    OpaqueEntities,
+    TranslucentEntities,
+    Particles,
+    /// Every SURF_TRANS33/66 face (C `GL3_DrawAlphaSurfaces`): the brush
+    /// entities' first, then the world's, as C prepends the entities'
+    /// faces to the chain the world filled. Brush entities leave these
+    /// faces out of the entity passes.
+    AlphaSurfaces,
+}
+
+/// C `GL3_RenderView`: the world, entities, particles, then the world's
+/// translucent surfaces over them.
+const FRAME_PASSES: [Pass; 6] = [
+    Pass::Sky,
+    Pass::OpaqueWorld,
+    Pass::OpaqueEntities,
+    Pass::TranslucentEntities,
+    Pass::Particles,
+    Pass::AlphaSurfaces,
+];
+
 impl Drop for Gl3Renderer {
     /// Release GPU objects even if the caller never called `shutdown`.
     fn drop(&mut self) {
@@ -300,6 +312,11 @@ impl Renderer for Gl3Renderer {
         if let Some(old) = self.extra.replace(extra) {
             free_extra(gl, old);
         }
+        let effects = fx::create_fx(gl)
+            .map_err(|e| Q2Error::Drop(format!("Failed to set up particles and sprites: {e}")))?;
+        if let Some(old) = self.fx.replace(effects) {
+            fx::free_fx(gl, old);
+        }
         // A repeated init starts the image cache afresh.
         self.images.free(gl);
         self.models.clear();
@@ -332,6 +349,9 @@ impl Renderer for Gl3Renderer {
             }
             if let Some(extra) = self.extra.take() {
                 free_extra(gl, extra);
+            }
+            if let Some(effects) = self.fx.take() {
+                fx::free_fx(gl, effects);
             }
             self.images.free(gl);
             self.models.clear();
@@ -370,8 +390,9 @@ impl Renderer for Gl3Renderer {
         Ok(())
     }
 
-    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` is loaded
-    /// through the file loader with its skins. Anything else, or a failure,
+    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` and `*.sp2`
+    /// are loaded through the file loader with their skins or frame
+    /// images. Anything else, or a failure,
     /// returns `ModelHandle::NONE` (logged once per name). A model found
     /// again has its skins marked as used, like C `Mod_ReLoadSkins`.
     fn register_model(&mut self, name: &str) -> ModelHandle {
@@ -382,16 +403,24 @@ impl Renderer for Gl3Renderer {
         let images = &mut self.images;
         let loader = &self.file_loader;
         let handle = self.models.register(name, || {
-            let is_md2 = name.len() > 4 && name.to_ascii_lowercase().ends_with(".md2");
-            if !is_md2 {
-                return None;
+            let lower = name.to_ascii_lowercase();
+            if name.len() <= 4 {
+                None
+            } else if lower.ends_with(".md2") {
+                entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
+            } else if lower.ends_with(".sp2") {
+                fx::load_sprite_model(gl, loader, palette, images, name).map(Model::Sprite)
+            } else {
+                None
             }
-            entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
         });
-        if let Some(Model::Alias(model)) = self.models.get(handle) {
-            for &skin in model.skins.iter().flatten() {
-                self.images.touch(skin);
-            }
+        let used: Vec<usize> = match self.models.get(handle) {
+            Some(Model::Alias(model)) => model.skins.iter().flatten().copied().collect(),
+            Some(Model::Sprite(sprite)) => sprite.frames.iter().filter_map(|f| f.image).collect(),
+            _ => Vec::new(),
+        };
+        for image in used {
+            self.images.touch(image);
         }
         handle
     }
@@ -439,15 +468,26 @@ impl Renderer for Gl3Renderer {
         }
     }
 
-    /// Draw order: sky, then `FRAME_PASSES`. 2D draws are queued until
-    /// `end_frame`.
+    /// Draw order: `FRAME_PASSES`. 2D draws are queued until `end_frame`.
     fn render_frame(
         &mut self,
         fd: &RefDef,
         entities: &[RenderEntity],
         dlights: &[DLight],
-        _particles: &[Particle],
+        particles: &[Particle],
     ) {
+        // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
+        // goes over it.
+        if fd.blend[3] > 0.0 {
+            let [r, g, b, a] = fd.blend;
+            let scale = 1.0 / UI_INTENSITY_2D;
+            self.ui_queue.push(pics::quad(
+                pics::QuadImage::White,
+                (fd.x, fd.y, fd.width, fd.height),
+                [0.0, 0.0, 1.0, 1.0],
+                [r * scale, g * scale, b * scale, a],
+            ));
+        }
         let gl = match &self.gl {
             Some(gl) => gl,
             None => return,
@@ -474,10 +514,15 @@ impl Renderer for Gl3Renderer {
         // SAFETY: `uniforms.styles` belongs to the program bound above and
         // `lightstyles` holds exactly the 64 vec4s the shader declares.
         unsafe { gl.uniform_4_f32_slice(uniforms.styles.as_ref(), &fd.lightstyles) };
-
-        if let Some(sky) = &self.sky {
-            draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
+        let (origins, colors, count) = dlight_uniforms(dlights);
+        // SAFETY: the dlight uniforms belong to the program bound above;
+        // each slice holds the 32 vec4s the shader declares.
+        unsafe {
+            gl.uniform_4_f32_slice(uniforms.dlight_origin.as_ref(), &origins);
+            gl.uniform_4_f32_slice(uniforms.dlight_color.as_ref(), &colors);
+            gl.uniform_1_i32(uniforms.num_dlights.as_ref(), count);
         }
+
         let view_proj = build_view_projection(fd);
         let world_batches = |filter| {
             if let Some(world) = &self.world {
@@ -513,15 +558,32 @@ impl Renderer for Gl3Renderer {
                 fd.fov_x,
                 fd.fov_y,
             ),
+            gun_view_proj: gun_view_projection(fd, self.hand),
+            hand: self.hand,
             view_proj,
+            fx: self.fx.as_ref(),
+            palette: self.palette.as_ref(),
+            view_right_up: fx::view_right_up(fd),
         });
 
         for pass in FRAME_PASSES {
             match pass {
-                Pass::WorldOpaque => world_batches(BatchFilter::Opaque),
-                Pass::Entities { translucent } => {
+                Pass::Sky => {
+                    if let Some(sky) = &self.sky {
+                        draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
+                    }
+                }
+                Pass::OpaqueWorld => world_batches(BatchFilter::Opaque),
+                Pass::OpaqueEntities | Pass::TranslucentEntities => {
                     if let Some(scene) = &scene {
-                        draw_entities(scene, entities, translucent);
+                        draw_entities(scene, entities, pass == Pass::TranslucentEntities);
+                    }
+                }
+                Pass::Particles => {
+                    if let (Some(effects), Some(palette)) = (&self.fx, &self.palette) {
+                        fx::draw_particles(gl, effects, palette, fd, &view_proj, particles);
+                        // SAFETY: `program` was linked on this `gl` by init.
+                        unsafe { gl.use_program(Some(*program)) };
                     }
                 }
                 Pass::AlphaSurfaces => {
@@ -621,6 +683,10 @@ impl Renderer for Gl3Renderer {
         self.apply_gamma();
     }
 
+    fn set_hand(&mut self, hand: i32) {
+        self.hand = hand;
+    }
+
     fn end_frame(&mut self) {
         let queue = std::mem::take(&mut self.ui_queue);
         let (Some(gl), Some(extra)) = (&self.gl, &self.extra) else {
@@ -653,11 +719,15 @@ impl Gl3Renderer {
             return;
         };
         let extra = self.extra.as_ref();
-        let programs = self.program.into_iter().chain(
-            extra
-                .into_iter()
-                .flat_map(|extra| [extra.alias_program, extra.ui_program]),
-        );
+        let programs = self
+            .program
+            .into_iter()
+            .chain(
+                extra
+                    .into_iter()
+                    .flat_map(|extra| [extra.alias_program, extra.ui_program]),
+            )
+            .chain(self.fx.iter().flat_map(fx::FxGpu::programs));
         for program in programs {
             shader::set_gamma(gl, program, self.vid_gamma);
         }
@@ -688,6 +758,69 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let proj = perspective_matrix(fd);
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
+}
+
+/// The 2D shader's colour scale (C `gl3_intensity_2D`).
+const UI_INTENSITY_2D: f32 = 1.5;
+
+/// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
+const MAX_DLIGHTS: usize = 32;
+
+/// The world shader's dynamic light uniforms (C `GL3_UpdateUBOLights`):
+/// origins as xyz0 and colours as rgb + intensity, 32 vec4s each, and
+/// how many are used. Lights past 32 are dropped.
+fn dlight_uniforms(dlights: &[DLight]) -> (Vec<f32>, Vec<f32>, i32) {
+    let mut origins = vec![0.0; MAX_DLIGHTS * 4];
+    let mut colors = vec![0.0; MAX_DLIGHTS * 4];
+    let used = dlights.iter().take(MAX_DLIGHTS);
+    for (i, light) in used.clone().enumerate() {
+        origins[i * 4..i * 4 + 3].copy_from_slice(&light.origin.to_array());
+        colors[i * 4..i * 4 + 3].copy_from_slice(&light.color.to_array());
+        colors[i * 4 + 3] = light.intensity;
+    }
+    (origins, colors, used.count() as i32)
+}
+
+/// C `r_gunfov`: the gun's own vertical fov, so a wide view does not
+/// stretch it.
+const R_GUNFOV: f32 = 80.0;
+
+/// The view-projection the gun is drawn with: the view's, but with
+/// `R_GUNFOV` as the vertical fov, and for C cvar `hand` 1 mirrored by
+/// negating the projection's x column. C ref: `GL3_DrawAliasModel`'s
+/// `RF_WEAPONMODEL` projection.
+pub(crate) fn gun_view_projection(fd: &RefDef, hand: i32) -> [f32; 16] {
+    let fd = RefDef {
+        fov_y: R_GUNFOV,
+        ..fd.clone()
+    };
+    let mut proj = perspective_matrix(&fd);
+    if hand == 1 {
+        for value in &mut proj[0..4] {
+            *value = -*value;
+        }
+    }
+    mat4_mul(&proj, &view_matrix(&fd))
+}
+
+/// The face culled while drawing the gun: C culls the back of a mirrored
+/// (left-handed) gun and draws none for `hand` 2.
+pub(crate) fn gun_cull_face(hand: i32) -> Option<u32> {
+    match hand {
+        2 => None,
+        1 => Some(glow::BACK),
+        _ => Some(CULL_FACE),
+    }
+}
+
+/// Depth range for an alias draw: `RF_DEPTHHACK` keeps the gun in the
+/// front 30% so it never pokes into walls (C `GL3_DrawAliasModel`).
+pub(crate) fn alias_depth_range(flags: i32) -> (f32, f32) {
+    if flags & q2_shared::constants::RF_DEPTHHACK != 0 {
+        (0.0, 0.3)
+    } else {
+        (0.0, 1.0)
+    }
 }
 
 /// Standard perspective projection matrix.
@@ -833,6 +966,25 @@ mod tests {
         let err = r.init(800, 600).unwrap_err();
         assert!(matches!(err, q2_shared::error::Q2Error::Drop(_)));
         assert!(err.is_recoverable());
+    }
+
+    // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
+    // RF_TRANSLUCENT), GL3_DrawParticles, then GL3_DrawAlphaSurfaces for
+    // every SURF_TRANS33/66 face, the brush entities' included, so a
+    // monster behind a window is drawn before the glass.
+    #[test]
+    fn the_frame_is_drawn_in_c_gl3_renderview_order() {
+        assert_eq!(
+            FRAME_PASSES,
+            [
+                Pass::Sky,
+                Pass::OpaqueWorld,
+                Pass::OpaqueEntities,
+                Pass::TranslucentEntities,
+                Pass::Particles,
+                Pass::AlphaSurfaces,
+            ]
+        );
     }
 
     #[test]
@@ -981,6 +1133,76 @@ mod tests {
             [0.0, 0.0, -100.0],
             "world forward",
         );
+    }
+
+    #[test]
+    fn a_left_handed_gun_is_mirrored_across_the_view_like_c_hand_1() {
+        let fd = RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y: 73.74,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        let point = [40.0, 20.0, 10.0, 1.0];
+        let right = mat4_mul_vec4(&gun_view_projection(&fd, 0), point);
+        let left = mat4_mul_vec4(&gun_view_projection(&fd, 1), point);
+        assert!((left[0] + right[0]).abs() < 1e-4, "{left:?} {right:?}");
+        for i in 1..4 {
+            assert!((left[i] - right[i]).abs() < 1e-4);
+        }
+        // Centre-handed draws no gun; left-handed culls the mirrored side.
+        assert_eq!(gun_cull_face(0), Some(CULL_FACE));
+        assert_eq!(gun_cull_face(1), Some(glow::BACK));
+        assert_eq!(gun_cull_face(2), None);
+    }
+
+    #[test]
+    fn the_gun_is_projected_with_r_gunfov_80_whatever_the_view_fov() {
+        let fd = |fov_y: f32| RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            gun_view_projection(&fd(73.74), 0),
+            build_view_projection(&fd(80.0))
+        );
+        assert_eq!(
+            gun_view_projection(&fd(100.0), 0),
+            gun_view_projection(&fd(60.0), 0)
+        );
+    }
+
+    #[test]
+    fn dlights_pack_into_origin_and_color_intensity_uniforms_up_to_32() {
+        use q2_render_api::DLight;
+        let light = |x: f32| DLight {
+            origin: Vec3f::new(x, 2.0, 3.0),
+            color: Vec3f::new(1.0, 0.5, 0.0),
+            intensity: 200.0,
+        };
+        let (origins, colors, count) = dlight_uniforms(&[light(1.0), light(9.0)]);
+        assert_eq!(count, 2);
+        assert_eq!(&origins[..8], &[1.0, 2.0, 3.0, 0.0, 9.0, 2.0, 3.0, 0.0]);
+        assert_eq!(&colors[..4], &[1.0, 0.5, 0.0, 200.0]);
+        assert_eq!((origins.len(), colors.len()), (128, 128));
+        let many: Vec<DLight> = (0..40).map(|i| light(i as f32)).collect();
+        assert_eq!(dlight_uniforms(&many).2, 32);
+    }
+
+    #[test]
+    fn depth_hack_squeezes_the_gun_into_the_front_of_the_depth_range() {
+        use q2_shared::constants::{RF_DEPTHHACK, RF_WEAPONMODEL};
+        assert_eq!(alias_depth_range(RF_DEPTHHACK | RF_WEAPONMODEL), (0.0, 0.3));
+        assert_eq!(alias_depth_range(RF_WEAPONMODEL), (0.0, 1.0));
+        assert_eq!(alias_depth_range(0), (0.0, 1.0));
     }
 
     #[test]
@@ -1415,6 +1637,61 @@ mod tests {
         assert_eq!(model.skins, vec![None]);
     }
 
+    /// "IDS2" with one frame per `(name, width, height)`, hung from its centre.
+    fn synthetic_sp2(frames: &[(&str, i32, i32)]) -> Vec<u8> {
+        let mut bytes = b"IDS2".to_vec();
+        bytes.extend_from_slice(&2i32.to_le_bytes());
+        bytes.extend_from_slice(&(frames.len() as i32).to_le_bytes());
+        for &(name, width, height) in frames {
+            for value in [width, height, width / 2, height / 2] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let mut field = [0u8; 64];
+            field[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&field);
+        }
+        bytes
+    }
+
+    #[test]
+    fn register_model_loads_an_sp2_with_each_frames_image_like_c_mod_loadsp2() {
+        let pcx = images::tiny_pcx();
+        let mut r = Gl3Renderer::headless(Box::new(move |path| match path {
+            "sprites/s.sp2" => Some(synthetic_sp2(&[
+                ("sprites/a.pcx", 32, 16),
+                ("sprites/gone.pcx", 8, 8),
+            ])),
+            "sprites/a.pcx" => Some(pcx.clone()),
+            _ => None,
+        }));
+        let handle = r.register_model("sprites/s.sp2");
+        assert_ne!(handle, ModelHandle::NONE);
+        assert_eq!(r.register_model("sprites/s.sp2"), handle);
+        let Some(Model::Sprite(sprite)) = r.models.get(handle) else {
+            panic!("expected a sprite");
+        };
+        assert_eq!(sprite.frames.len(), 2);
+        assert_eq!(
+            sprite.frames[0].size,
+            fx::SpriteFrameSize {
+                width: 32,
+                height: 16,
+                origin_x: 16,
+                origin_y: 8
+            }
+        );
+        let image = sprite.frames[0].image.expect("frame image loaded");
+        assert_eq!(r.images.get(image).unwrap().width, 2);
+        // A frame whose image is missing stays empty and is not drawn.
+        assert_eq!(sprite.frames[1].image, None);
+        // Registered again this sequence, its images survive the sweep.
+        r.models.begin_sequence();
+        r.images.begin_sequence();
+        r.register_model("sprites/s.sp2");
+        r.end_registration();
+        assert!(r.images.get(image).is_some());
+    }
+
     #[test]
     fn inline_models_are_valid_only_for_the_loaded_bsp() {
         let (mut r, _) = map_renderer(&[("base1", 3), ("base2", 2)]);
@@ -1542,23 +1819,6 @@ mod tests {
         assert_eq!(&r.ui_queue[3].vertices[40..42], &[16.0, 24.0]);
     }
 
-    // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
-    // RF_TRANSLUCENT), then GL3_DrawAlphaSurfaces for every SURF_TRANS33/66
-    // face, the brush entities' included, so a monster behind a window is
-    // drawn before the glass.
-    #[test]
-    fn translucent_faces_are_drawn_after_every_entity_like_c() {
-        assert_eq!(
-            FRAME_PASSES,
-            [
-                Pass::WorldOpaque,
-                Pass::Entities { translucent: false },
-                Pass::Entities { translucent: true },
-                Pass::AlphaSurfaces,
-            ]
-        );
-    }
-
     #[test]
     fn begin_frame_sizes_the_2d_canvas_to_the_drawable_like_c_set_gl2d() {
         let mut r = Gl3Renderer::headless(no_files());
@@ -1580,6 +1840,43 @@ mod tests {
         assert!(r.ui_queue.is_empty());
         r.draw_char(0, -7, i32::from(b'A'));
         assert_eq!(r.ui_queue.len(), 1);
+    }
+
+    #[test]
+    fn a_view_blend_is_queued_as_a_full_view_flash_under_the_hud() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let fd = RefDef {
+            width: 100,
+            height: 50,
+            blend: [0.6, 0.3, 0.0, 0.5],
+            ..Default::default()
+        };
+        r.render_frame(&fd, &[], &[], &[]);
+        assert_eq!(r.ui_queue.len(), 1);
+        let flash = &r.ui_queue[0];
+        assert_eq!(flash.image, pics::QuadImage::White);
+        // The 2D shader scales colour by INTENSITY_2D; C's flash shader
+        // does not, so the colour is divided back out.
+        let color = &flash.vertices[4..8];
+        for (got, want) in color.iter().zip([0.4, 0.2, 0.0, 0.5]) {
+            assert!((got - want).abs() < 1e-6, "{color:?}");
+        }
+        assert_eq!((flash.vertices[0], flash.vertices[1]), (0.0, 0.0));
+        let right_bottom = &flash.vertices[5 * 8..5 * 8 + 2];
+        assert_eq!(right_bottom, &[100.0, 50.0]);
+
+        r.ui_queue.clear();
+        r.render_frame(
+            &RefDef {
+                width: 100,
+                height: 50,
+                ..Default::default()
+            },
+            &[],
+            &[],
+            &[],
+        );
+        assert!(r.ui_queue.is_empty(), "no alpha, no flash");
     }
 
     #[test]
@@ -1632,6 +1929,12 @@ mod tests {
         r.begin_registration("demo1")
             .expect("demo1 loads by its short name");
 
+        let explosion = r.register_model("sprites/s_explod.sp2");
+        let Some(Model::Sprite(sprite)) = r.models.get(explosion) else {
+            panic!("s_explod registers as a sprite");
+        };
+        assert!(!sprite.frames.is_empty());
+        assert!(sprite.frames.iter().all(|frame| frame.image.is_some()));
         let soldier = r.register_model("models/monsters/soldier/tris.md2");
         let Some(Model::Alias(model)) = r.models.get(soldier) else {
             panic!("soldier registers as an MD2 model");

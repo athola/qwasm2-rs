@@ -49,8 +49,8 @@ engine I/O goes through `GameImport`.
 In: the base Quake II entity set (107 spawn types), 11 weapons, the item
 table, 10 movement types, the base AI, 20 monster types, triggers, targets,
 functional entities, and the player subsystem. Out: mission packs, CTF, and
-anti-cheat. Deferred with issues: save/load (#15), the player weapon state
-machine (#16), and `SV_Push` rollback (#17).
+anti-cheat. Deferred with issues: save/load (#15) and `SV_Push` rollback
+(#17).
 
 ## Current state (2026-10-27)
 
@@ -75,7 +75,7 @@ worldspawn's configstrings (status bar, sky, item names, light styles),
 afterwards. Map items go through `SpawnItem` ahead of the table as in
 `ED_CallSpawn`. Doors, rotating and secret doors, water, plats, buttons,
 trains, elevators and conveyors follow C's `Move_Calc`/`AngleMove_Calc`
-movers. Remaining per-type spawn details are tracked in #14 and #16.
+movers.
 
 Client records outlive the map. `spawn_entities` runs C `SaveClientData`
 before it clears the entities; the records stay in `GameWorld::clients`,
@@ -112,6 +112,21 @@ uses to skip the world behind a shut door. The game's sounds reach the
 browser through a server event queue and a WebAudio backend. Picture
 levels (`victory.pcx`) show the picture as C's `ss_pic` does.
 
+### Player weapons and powerups (2026-10-28)
+
+The player's weapons are `p_weapon.c`: `Think_Weapon`, `Weapon_Generic`
+and every `Weapon_*`, run from `ClientThink` on a fresh attack press and
+from `ClientBeginServerFrame` otherwise. Weapons switch through
+`ClientCommand` (`use`, `weapnext`, `invuse`, ...), whose arguments come
+from `GameImport::argv`/`args` as in C. The client draws the gun
+(`CL_AddViewWeapon`) and plays muzzle flashes: in C the gunfire sounds of
+players and monsters come from the client's `CL_AddMuzzleFlash`/`2`, so
+the server hands its multicast messages to `LocalGame` and the client
+ports those functions and the dlight list; lit world faces add GL3's
+dynamic light term. Powerups and power armor are usable and droppable,
+`P_WorldEffects`, `SV_CalcBlend` and `G_SetClientEffects` give them their
+effects, and the deathmatch rules end matches through C's intermission.
+
 ### Known deviations from C (2026-10-28)
 
 - **Player trail nodes are data.** C keeps the eight trail nodes as
@@ -122,9 +137,46 @@ levels (`victory.pcx`) show the picture as C's `ss_pic` does.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
-- **Not ported:** the player's item-drop commands and weapon state
-  machine (#16), cinematic and demo playback (`.cin`/`.dm2` levels are
-  refused), savegames (#15), `SP_FixCoopSpots`, and power-armor sparks.
+- **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
+  2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
+  drawn) and heat beams; the game reads cvars such as `cl_gun` through
+  `GameImport::cvar`, which `LocalGame::set_cvar` fills; `aimfix`,
+  `g_swap_speed` and `coop_pickup_weapons` at their yquake2 defaults.
+  `CheckNeedPass` has nothing to do (it publishes password cvars, and
+  there are none); the player model's animation (`G_SetClientFrame`,
+  seen only by other players) is not run, though the weapon code sets
+  its frames (#32). Temp entities, entity events, trails and flash
+  smoke are drawn by the browser client (`q2_client::fx`, C
+  `cl_tempentities.c`, `cl_particles.c`, `cl_effects.c`) through the
+  renderer's particles, beams and sprites, mission-pack ones (rogue,
+  xatrix, CTF: `q2_client::newfx`, sustains, player beams, lightning)
+  included; colour shells and power screens draw as C's colour-only
+  models; their lights share the client's 32 dlights as in C. The
+  rogue shell combinations apply with C's `game` set to `rogue`
+  (`?game=rogue`), which only the client reads: no rogue game code or
+  data is loaded. The page starts on `?map=` (else demo1), and
+  `?vid_fullscreen=1` goes fullscreen with the keyboard locked to the
+  game where the browser allows it (Chromium), so Ctrl shortcuts do not
+  reach the browser. Brush models
+  moved by doors take dlights at their rest
+  position.
+- **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
+  refused), savegames (#15; a dead single player's press sends
+  `menu_loadgame`, which nothing handles), the random pick in an item
+  team's respawn, the inventory layout, the `fov`/`spectator` userinfo,
+  and `SP_FixCoopSpots`.
+- **Effects left out on purpose:** `CL_QuadTrail` and
+  `CL_Tracker_Explode` have no caller in yquake2 or id's 3.21 release,
+  so drawing them would change what valid input looks like. id's
+  `TE_TRACKER_EXPLOSION` has the `CL_Tracker_Explode` call commented out
+  in favour of the colour flash and `CL_ColorExplosionParticles` drawn
+  here, and `CL_QuadTrail` is `CL_FlagTrail` with the blue flag's colour
+  115, which quad carriers never get (they get the blue shell).
+- **Opt-in additions (ADR-005), off by default:** `?cl_fxextra=1` gives
+  C's otherwise unused `CL_SmokeTrail` a caller: rocket, grenade and
+  `TE_EXPLOSION1`/`TE_EXPLOSION2` blasts out of water leave a 64-unit
+  column of grey smoke (palette 4..11, every 4 units) rising from the
+  blast. C has no such effect; the trigger is this port's invention.
 
 ## Consequences
 

@@ -76,8 +76,9 @@ impl InputState {
             forwardmove: (self.forward_move.clamp(-1.0, 1.0) * CL_FORWARDSPEED * speed) as i16,
             sidemove: (self.side_move.clamp(-1.0, 1.0) * CL_SIDESPEED * speed) as i16,
             upmove: (up.clamp(-1.0, 1.0) * CL_UPSPEED * speed) as i16,
-            // No weapon-select or inventory input yet (#16): C `in_impulse`
-            // is not produced, and nothing sets `use_btn`.
+            // Weapon and inventory selection go through client commands
+            // (`LocalGame::client_command`); C `in_impulse` is not
+            // produced, and nothing sets `use_btn`.
             impulse: 0,
             lightlevel: 0,
         }

@@ -49,6 +49,11 @@ impl LocalGame {
     /// Load `bsp` as `maps/<map_name>.bsp`, spawn it, and put the local
     /// client in the game at the player start.
     pub fn start(map_name: &str, bsp: &[u8]) -> Q2Result<Self> {
+        Self::start_with_userinfo(map_name, bsp, "")
+    }
+
+    /// `start` with the local client's `userinfo` (C `hand` and the like).
+    pub fn start_with_userinfo(map_name: &str, bsp: &[u8], userinfo: &str) -> Q2Result<Self> {
         let gi = Rc::new(ServerGameImport::new());
         let mut world = GameWorld::new(gi.clone(), MAX_EDICTS);
         world.set_max_clients(1);
@@ -58,7 +63,7 @@ impl LocalGame {
         svs.init_game(1);
         let mut sv = Server::default();
         sv.map(&mut svs, map_name, bsp, "", &gi, game.as_mut())?;
-        svs.connect_local_client(game.as_mut())?;
+        svs.connect_local_client(game.as_mut(), userinfo)?;
         let next_map = Rc::new(RefCell::new(None));
         let mut cmd = CmdSystem::new();
         let requested = next_map.clone();
@@ -79,6 +84,26 @@ impl LocalGame {
         };
         local.send_client_frame();
         Ok(local)
+    }
+
+    /// Run a console command as the local player's (C
+    /// `SV_ExecuteUserCommand` for a command the server does not handle
+    /// itself): `use Shotgun`, `weapnext`, `invdrop`, ...
+    pub fn client_command(&mut self, text: &str) {
+        self.gi.set_client_command(text);
+        self.game.client_command(LOCAL_PLAYER);
+    }
+
+    /// The local wall clock (hours, minutes, seconds) the game's
+    /// time-of-day `func_clock` shows.
+    pub fn set_local_time(&self, hms: Option<(u32, u32, u32)>) {
+        self.gi.set_local_time(hms);
+    }
+
+    /// Set a cvar the game reads (C shares one cvar table between the
+    /// client and the game in a listen server).
+    pub fn set_cvar(&self, name: &str, value: &str) {
+        self.gi.set_cvar(name, value);
     }
 
     /// Build the frame the local client is sent, then clear the entity
@@ -155,6 +180,12 @@ impl LocalGame {
     /// reliable routing only decide which network client is sent one.
     pub fn take_sounds(&self) -> Vec<crate::game_iface::SoundEvent> {
         self.gi.take_sounds()
+    }
+
+    /// The messages the game multicast since the last call (C
+    /// `svc_muzzleflash`, `svc_temp_entity`, ...), each whole, in order.
+    pub fn take_messages(&self) -> Vec<Vec<u8>> {
+        self.gi.take_messages()
     }
 
     /// Load `level`'s map from `bsp` into the same game and put the local

@@ -1,13 +1,14 @@
 //! Entities to draw between two server frames. C ref: `CL_AddPacketEntities`
 //! (client/cl_entities.c) and the no-lerp rules of `CL_ParseEntity`
-//! (client/cl_parse.c). Not done: particle and light effects, shells
-//! (EF_QUAD and friends), beams' colour, player skins with the custom
-//! weapon model (`modelindex2` 255), and the Rogue defender sphere's
-//! translucent linked shell.
+//! (client/cl_parse.c). Particle trails and lights are `fx`'s. Not done:
+//! player skins with the custom weapon model (`modelindex2` 255) and the
+//! Rogue defender sphere's translucent linked shell (#35).
 
 use q2_shared::constants::{
-    EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_ROTATE, EV_OTHER_TELEPORT,
-    EV_PLAYER_TELEPORT, RF_BEAM, RF_FRAMELERP, RF_TRANSLUCENT, RF_VIEWERMODEL,
+    EF_ANIM01, EF_ANIM23, EF_ANIM_ALL, EF_ANIM_ALLFAST, EF_COLOR_SHELL, EF_DOUBLE, EF_HALF_DAMAGE,
+    EF_PENT, EF_QUAD, EF_ROTATE, EF_SPINNINGLIGHTS, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT, RF_BEAM,
+    RF_FRAMELERP, RF_SHELL_BLUE, RF_SHELL_DOUBLE, RF_SHELL_GREEN, RF_SHELL_HALF_DAM, RF_SHELL_RED,
+    RF_TRANSLUCENT, RF_VIEWERMODEL,
 };
 use q2_shared::types::{EntityState, Vec3f};
 
@@ -15,6 +16,9 @@ use q2_shared::types::{EntityState, Vec3f};
 /// model still as its `CS_MODELS` index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntityView {
+    /// The entity's number and `EF_*` effects, for what the effects add.
+    pub number: i32,
+    pub effects: u32,
     pub modelindex: i32,
     pub frame: i32,
     pub oldframe: i32,
@@ -45,14 +49,14 @@ pub(crate) fn lerp_angle(a2: f32, a1: f32, frac: f32) -> f32 {
 
 /// C `anglemod`, through 16-bit angle units like the original, scaled in
 /// double as C promotes it.
-fn anglemod(a: f32) -> f32 {
+pub(crate) fn anglemod(a: f32) -> f32 {
     (360.0 / 65536.0) * (((f64::from(a) * (65536.0 / 360.0)) as i32) & 65535) as f32
 }
 
 /// Whether `s` must not be lerped from `prev` (C `CL_ParseEntity` sets
 /// `serverframe = -99`): a model change, a teleport, or a jump of more than
 /// 512 units on an axis.
-fn breaks_lerp(prev: &EntityState, s: &EntityState) -> bool {
+pub(crate) fn breaks_lerp(prev: &EntityState, s: &EntityState) -> bool {
     let jump = (s.origin - prev.origin)
         .to_array()
         .iter()
@@ -92,6 +96,7 @@ fn anim_frame(s: &EntityState, time_ms: i32) -> i32 {
 /// `EF_ROTATE` and `EF_ANIM*`; `playernum` is the local client's slot (its
 /// entity is `playernum + 1`).
 pub fn entity_views(
+    game: &str,
     current: &[EntityState],
     previous: &[EntityState],
     lerpfrac: f32,
@@ -123,12 +128,17 @@ pub fn entity_views(
                     &reset
                 }
             };
-            let mut flags = s.renderfx;
-            if s.number == playernum + 1 {
+            let (shelled, renderfx) = shell_effects(s.effects, s.renderfx);
+            // C: the renderfx go on the colour shell entity.
+            let mut flags = if shelled { 0 } else { renderfx };
+            let viewer = s.number == playernum + 1;
+            if viewer {
                 flags |= RF_VIEWERMODEL; // only seen in mirrors / third person
             }
             let angles = if s.effects & EF_ROTATE != 0 {
                 Vec3f::new(0.0, autorotate, 0.0)
+            } else if s.effects & EF_SPINNINGLIGHTS != 0 {
+                Vec3f::new(0.0, anglemod((time_ms / 2) as f32) + s.angles.y, 180.0)
             } else {
                 Vec3f::new(
                     lerp_angle(prev.angles.x, s.angles.x, lerpfrac),
@@ -136,15 +146,25 @@ pub fn entity_views(
                     lerp_angle(prev.angles.z, s.angles.z, lerpfrac),
                 )
             };
-            // Frame-lerped models and beams step their origin: the frames
-            // animate the move.
-            let (origin, oldorigin) = if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
-                (s.origin, s.old_origin)
+            let origin = drawn_origin(prev.origin, s, lerpfrac);
+            let oldorigin = if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
+                s.old_origin
             } else {
-                let origin = prev.origin + (s.origin - prev.origin) * lerpfrac;
-                (origin, origin)
+                origin
             };
+            // C: "only used for black hole model right now".
+            let mut alpha = if renderfx & RF_TRANSLUCENT != 0 && renderfx & RF_BEAM == 0 {
+                0.70
+            } else {
+                1.0
+            };
+            if let Some(effect_alpha) = crate::fx::effect_alpha(s.effects) {
+                flags |= RF_TRANSLUCENT;
+                alpha = effect_alpha;
+            }
             let view = EntityView {
+                number: s.number,
+                effects: s.effects,
                 modelindex: s.modelindex,
                 frame: anim_frame(s, time_ms),
                 oldframe: prev.frame,
@@ -154,34 +174,116 @@ pub fn entity_views(
                 angles,
                 skinnum: s.skinnum,
                 flags,
-                alpha: if flags & RF_TRANSLUCENT != 0 {
-                    0.70
-                } else {
-                    1.0
-                },
+                alpha,
             };
+            // C skips the viewer before adding its entities; its own model is
+            // kept here, flagged, for the renderer to leave out.
+            let shell = (shelled && !viewer).then(|| EntityView {
+                flags: shell_combinations(renderfx, game == "rogue") | RF_TRANSLUCENT,
+                alpha: 0.30,
+                ..view.clone()
+            });
             // C "duplicate for linked models", which it skips for the own
             // player. modelindex2 255 is the player's weapon model from
-            // clientinfo, not ported with player skins.
+            // clientinfo, not ported with player skins (#35). The effects
+            // stay with the entity itself.
             let linked = [s.modelindex2, s.modelindex3, s.modelindex4]
                 .into_iter()
-                .filter(|&m| m != 0 && m != 255 && s.number != playernum + 1)
+                .filter(|&m| m != 0 && m != 255 && !viewer)
                 .map(|modelindex| EntityView {
                     modelindex,
+                    effects: 0,
                     skinnum: 0,
                     flags: 0,
                     alpha: 1.0,
                     ..view.clone()
                 })
                 .collect::<Vec<_>>();
-            std::iter::once(view).chain(linked)
+            std::iter::once(view).chain(shell).chain(linked)
         })
         .collect()
+}
+
+/// Where C `CL_AddPacketEntities` draws `s` between `prev_origin` and its
+/// origin: frame-lerped models and beams step to the new origin (the
+/// frames animate the move), the rest lerp by `lerpfrac`.
+pub(crate) fn drawn_origin(prev_origin: Vec3f, s: &EntityState, lerpfrac: f32) -> Vec3f {
+    if s.renderfx & (RF_FRAMELERP | RF_BEAM) != 0 {
+        s.origin
+    } else {
+        prev_origin + (s.origin - prev_origin) * lerpfrac
+    }
+}
+
+/// C's "quad and pent can do different things on client": `EF_PENT`,
+/// `EF_QUAD`, `EF_DOUBLE` and `EF_HALF_DAMAGE` become a red, blue, yellow
+/// or grey shell. Whether the entity has a colour shell, and its renderfx
+/// with the shell colours.
+fn shell_effects(effects: u32, renderfx: i32) -> (bool, i32) {
+    let mut renderfx = renderfx;
+    for (effect, shell) in [
+        (EF_PENT, RF_SHELL_RED),
+        (EF_QUAD, RF_SHELL_BLUE),
+        (EF_DOUBLE, RF_SHELL_DOUBLE),
+        (EF_HALF_DAMAGE, RF_SHELL_HALF_DAM),
+    ] {
+        if effects & effect != 0 {
+            renderfx |= shell;
+        }
+    }
+    let shelled = effects & (EF_COLOR_SHELL | EF_PENT | EF_QUAD | EF_DOUBLE | EF_HALF_DAMAGE) != 0;
+    (shelled, renderfx)
+}
+
+/// C's fix-ups of clashing shells, which it makes only when the game
+/// directory (C cvar `game`) is `rogue`: half damage gives
+/// way to any other shell, and double damage turns red purple and blue
+/// cyan, or green if green is on too.
+pub fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
+    let mut renderfx = renderfx;
+    if !rogue {
+        return renderfx;
+    }
+    if renderfx & RF_SHELL_HALF_DAM != 0
+        && renderfx & (RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_DOUBLE) != 0
+    {
+        renderfx &= !RF_SHELL_HALF_DAM;
+    }
+    if renderfx & RF_SHELL_DOUBLE != 0 {
+        if renderfx & (RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_GREEN) != 0 {
+            renderfx &= !RF_SHELL_DOUBLE;
+        }
+        if renderfx & RF_SHELL_RED != 0 {
+            renderfx |= RF_SHELL_BLUE;
+        } else if renderfx & RF_SHELL_BLUE != 0 {
+            if renderfx & RF_SHELL_GREEN != 0 {
+                renderfx &= !RF_SHELL_BLUE;
+            } else {
+                renderfx |= RF_SHELL_GREEN;
+            }
+        }
+    }
+    renderfx
+}
+
+/// C `CL_AddPacketEntities` for `RF_BEAM`: the four colours are packed in
+/// `skinnum`, and each frame draws one, picked by `randk`, at alpha 0.30
+/// with no model.
+pub fn pick_beam_colours(views: &mut [EntityView], randk: &mut impl FnMut() -> u32) {
+    for view in views.iter_mut().filter(|v| v.flags & RF_BEAM != 0) {
+        let shift = (randk() % 4) * 8;
+        view.skinnum = ((view.skinnum as u32 >> shift) & 0xff) as i32;
+        view.alpha = 0.30;
+        view.modelindex = 0;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use q2_shared::constants::{
+        EF_BFG, EF_PLASMA, EF_POWERSCREEN, EF_SPHERETRANS, EF_TRACKERTRAIL,
+    };
 
     /// A state as the server sends it: `old_origin` is where the entity
     /// was when the frame began, here where it is.
@@ -200,7 +302,7 @@ mod tests {
     fn moving_entity_is_drawn_between_frames_with_frame_lerp() {
         let prev = [state(5, Vec3f::ZERO, 1)];
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &prev, 0.25, 0, 0);
+        let views = entity_views("baseq2", &cur, &prev, 0.25, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(2.5, 0.0, 0.0));
         assert_eq!((views[0].frame, views[0].oldframe), (2, 1));
         assert_eq!(views[0].backlerp, 0.75);
@@ -209,7 +311,7 @@ mod tests {
     #[test]
     fn new_entity_is_drawn_where_it_is_now() {
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &[], 0.5, 0, 0);
+        let views = entity_views("baseq2", &cur, &[], 0.5, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(10.0, 0.0, 0.0));
         assert_eq!(views[0].oldframe, 2);
     }
@@ -219,7 +321,7 @@ mod tests {
         // C CL_DeltaEntity: prev.origin = state->old_origin.
         let mut cur = state(5, Vec3f::new(10.0, 0.0, 0.0), 2);
         cur.old_origin = Vec3f::new(2.0, 0.0, 0.0);
-        let views = entity_views(&[cur], &[], 0.5, 0, 0);
+        let views = entity_views("baseq2", &[cur], &[], 0.5, 0, 0);
         assert_eq!(views[0].origin, Vec3f::new(6.0, 0.0, 0.0));
     }
 
@@ -240,7 +342,7 @@ mod tests {
         a.angles.y = 350.0;
         let mut b = a.clone();
         b.angles.y = 10.0;
-        let views = entity_views(&[b], &[a], 0.5, 0, 0);
+        let views = entity_views("baseq2", &[b], &[a], 0.5, 0, 0);
         assert_eq!(views[0].angles.y, 360.0);
     }
 
@@ -249,7 +351,7 @@ mod tests {
         let mut item = state(9, Vec3f::ZERO, 0);
         item.effects = EF_ROTATE;
         let player = state(1, Vec3f::ZERO, 0);
-        let views = entity_views(&[player, item], &[], 1.0, 900, 0);
+        let views = entity_views("baseq2", &[player, item], &[], 1.0, 900, 0);
         assert_ne!(views[0].flags & RF_VIEWERMODEL, 0);
         assert!(
             (views[1].angles.y - 90.0).abs() < 0.01,
@@ -263,7 +365,151 @@ mod tests {
     fn entities_without_a_model_are_not_drawn() {
         let mut sound_only = state(4, Vec3f::ZERO, 0);
         sound_only.modelindex = 0;
-        assert!(entity_views(&[sound_only], &[], 1.0, 0, 0).is_empty());
+        assert!(entity_views("baseq2", &[sound_only], &[], 1.0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn a_beam_draws_one_of_its_four_colours_at_0_30_without_a_model() {
+        let mut laser = state(4, Vec3f::ZERO, 0);
+        laser.renderfx = RF_BEAM | RF_TRANSLUCENT;
+        laser.modelindex = 1;
+        laser.skinnum = 0xf2f2_f0f0_u32 as i32;
+        let plain = state(5, Vec3f::ZERO, 0);
+        let mut views = entity_views("baseq2", &[laser, plain], &[], 1.0, 0, 0);
+        // randk() % 4 picks the byte: 2 is bits 16..24.
+        pick_beam_colours(&mut views, &mut || 6);
+        assert_eq!(
+            (views[0].skinnum, views[0].alpha, views[0].modelindex),
+            (0xf2, 0.30, 0)
+        );
+        assert_eq!(views[1].skinnum, 0, "only beams");
+        assert_eq!(views[1].modelindex, plain_modelindex());
+    }
+
+    fn plain_modelindex() -> i32 {
+        state(5, Vec3f::ZERO, 0).modelindex
+    }
+
+    #[test]
+    fn spinning_lights_spin_on_client_time_upside_down() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_SPINNINGLIGHTS;
+        s.angles = Vec3f::new(10.0, 30.0, 0.0);
+        let view = &entity_views("baseq2", &[s], &[], 1.0, 200, 0)[0];
+        // C: (0, anglemod(cl.time / 2) + angles[1], 180).
+        assert!(
+            (view.angles - Vec3f::new(0.0, 130.0, 180.0)).length() < 0.01,
+            "{:?}",
+            view.angles
+        );
+    }
+
+    #[test]
+    fn bfg_plasma_and_sphere_effects_draw_translucent_at_their_alpha() {
+        for (effects, alpha) in [
+            (EF_BFG, 0.30),
+            (EF_PLASMA, 0.6),
+            (EF_SPHERETRANS, 0.3),
+            (EF_SPHERETRANS | EF_TRACKERTRAIL, 0.6),
+        ] {
+            let mut s = state(4, Vec3f::ZERO, 0);
+            s.effects = effects;
+            let view = &entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0];
+            assert_ne!(view.flags & RF_TRANSLUCENT, 0);
+            assert_eq!(view.alpha, alpha, "{effects:#x}");
+        }
+    }
+
+    #[test]
+    fn a_view_keeps_its_entity_number_and_effects() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_POWERSCREEN;
+        let view = &entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0];
+        assert_eq!((view.number, view.effects), (4, EF_POWERSCREEN));
+    }
+
+    #[test]
+    fn a_quad_entity_draws_plain_then_again_as_a_blue_shell() {
+        let mut s = state(4, Vec3f::ZERO, 3);
+        s.effects = EF_QUAD;
+        s.renderfx = RF_TRANSLUCENT;
+        let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 2);
+        // C: the renderfx go on the shell; the model keeps C's 0.70 alpha.
+        assert_eq!(views[0].flags, 0);
+        assert_eq!(
+            views[1].flags,
+            RF_SHELL_BLUE | RF_TRANSLUCENT,
+            "{:#x}",
+            views[1].flags
+        );
+        assert_eq!(views[1].alpha, 0.30);
+        assert_eq!(
+            (views[1].modelindex, views[1].frame),
+            (views[0].modelindex, views[0].frame)
+        );
+    }
+
+    #[test]
+    fn pent_double_half_damage_and_server_shells_each_pick_their_colour() {
+        for (effects, renderfx, shell) in [
+            (EF_PENT, 0, RF_SHELL_RED),
+            (EF_DOUBLE, 0, RF_SHELL_DOUBLE),
+            (EF_HALF_DAMAGE, 0, RF_SHELL_HALF_DAM),
+            (EF_COLOR_SHELL, RF_SHELL_GREEN, RF_SHELL_GREEN),
+        ] {
+            let mut s = state(4, Vec3f::ZERO, 0);
+            s.effects = effects;
+            s.renderfx = renderfx;
+            let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
+            assert_eq!(views[1].flags, shell | RF_TRANSLUCENT, "{effects:#x}");
+        }
+    }
+
+    #[test]
+    fn the_viewer_gets_no_shell() {
+        let mut s = state(1, Vec3f::ZERO, 0);
+        s.effects = EF_QUAD;
+        let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].flags, RF_VIEWERMODEL);
+    }
+
+    #[test]
+    fn under_the_rogue_game_a_quad_double_shell_turns_cyan() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_QUAD | EF_DOUBLE;
+        let shell = |game| entity_views(game, std::slice::from_ref(&s), &[], 1.0, 0, 0)[1].flags;
+        assert_eq!(
+            shell("rogue"),
+            RF_SHELL_BLUE | RF_SHELL_GREEN | RF_TRANSLUCENT
+        );
+        assert_eq!(
+            shell("baseq2"),
+            RF_SHELL_BLUE | RF_SHELL_DOUBLE | RF_TRANSLUCENT
+        );
+    }
+
+    #[test]
+    fn rogue_turns_clashing_shells_into_c_colours() {
+        let rogue = |fx| shell_combinations(fx, true);
+        assert_eq!(
+            rogue(RF_SHELL_RED | RF_SHELL_DOUBLE),
+            RF_SHELL_RED | RF_SHELL_BLUE
+        );
+        assert_eq!(
+            rogue(RF_SHELL_BLUE | RF_SHELL_DOUBLE),
+            RF_SHELL_BLUE | RF_SHELL_GREEN
+        );
+        assert_eq!(
+            rogue(RF_SHELL_BLUE | RF_SHELL_GREEN | RF_SHELL_DOUBLE),
+            RF_SHELL_GREEN
+        );
+        assert_eq!(rogue(RF_SHELL_HALF_DAM | RF_SHELL_RED), RF_SHELL_RED);
+        assert_eq!(rogue(RF_SHELL_DOUBLE), RF_SHELL_DOUBLE);
+        // Only the rogue game dir recombines them.
+        let mixed = RF_SHELL_RED | RF_SHELL_DOUBLE | RF_SHELL_HALF_DAM;
+        assert_eq!(shell_combinations(mixed, false), mixed);
     }
 
     // C CL_AddPacketEntities "duplicate for linked models": modelindex2..4
@@ -275,10 +521,14 @@ mod tests {
         s.modelindex4 = 9;
         s.skinnum = 2;
         s.renderfx = RF_TRANSLUCENT;
-        let views = entity_views(&[s], &[], 1.0, 0, 0);
+        s.effects = q2_shared::constants::EF_POWERSCREEN;
+        let views = entity_views("", &[s], &[], 1.0, 0, 0);
         let models: Vec<i32> = views.iter().map(|v| v.modelindex).collect();
         assert_eq!(models, vec![3, 7, 9]);
+        assert_eq!(views[0].effects, q2_shared::constants::EF_POWERSCREEN);
         for linked in &views[1..] {
+            // C adds the entity's effects (its power screen, say) once.
+            assert_eq!(linked.effects, 0);
             assert_eq!((linked.skinnum, linked.flags, linked.alpha), (0, 0, 1.0));
             assert_eq!((linked.origin, linked.frame), (views[0].origin, 6));
         }
@@ -290,7 +540,7 @@ mod tests {
         other.modelindex2 = 255; // the weapon model from clientinfo
         let mut own = state(1, Vec3f::ZERO, 0);
         own.modelindex3 = 7; // C skips the own player before its links
-        let views = entity_views(&[own, other], &[], 1.0, 0, 0);
+        let views = entity_views("", &[own, other], &[], 1.0, 0, 0);
         assert_eq!(views.len(), 2);
     }
 
@@ -298,7 +548,7 @@ mod tests {
     fn translucent_entities_draw_at_c_alpha() {
         let mut s = state(4, Vec3f::ZERO, 0);
         s.renderfx = RF_TRANSLUCENT;
-        assert_eq!(entity_views(&[s], &[], 1.0, 0, 0)[0].alpha, 0.70);
+        assert_eq!(entity_views("baseq2", &[s], &[], 1.0, 0, 0)[0].alpha, 0.70);
     }
 
     #[test]
@@ -309,7 +559,7 @@ mod tests {
             let mut cur = state(5, Vec3f::new(10.0, 0.0, 0.0), 2);
             cur.renderfx = renderfx;
             cur.old_origin = Vec3f::new(4.0, 0.0, 0.0);
-            let views = entity_views(&[cur], &prev, 0.25, 0, 0);
+            let views = entity_views("baseq2", &[cur], &prev, 0.25, 0, 0);
             assert_eq!(views[0].origin, Vec3f::new(10.0, 0.0, 0.0));
             assert_eq!(views[0].oldorigin, Vec3f::new(4.0, 0.0, 0.0));
             assert_eq!((views[0].oldframe, views[0].backlerp), (1, 0.75));
@@ -320,13 +570,13 @@ mod tests {
     fn lerped_entity_oldorigin_is_its_drawn_origin() {
         let prev = [state(5, Vec3f::ZERO, 1)];
         let cur = [state(5, Vec3f::new(10.0, 0.0, 0.0), 2)];
-        let views = entity_views(&cur, &prev, 0.5, 0, 0);
+        let views = entity_views("baseq2", &cur, &prev, 0.5, 0, 0);
         assert_eq!(views[0].oldorigin, views[0].origin);
     }
 
     /// The view of `cur` after `prev`, half way between them.
     fn half_way(prev: EntityState, cur: EntityState) -> EntityView {
-        entity_views(&[cur], &[prev], 0.5, 0, 0).remove(0)
+        entity_views("baseq2", &[cur], &[prev], 0.5, 0, 0).remove(0)
     }
 
     #[test]
@@ -371,7 +621,7 @@ mod tests {
         let frame = |effects: u32, time_ms: i32| {
             let mut s = state(5, Vec3f::ZERO, 9);
             s.effects = effects;
-            entity_views(&[s], &[], 1.0, time_ms, 0)[0].frame
+            entity_views("baseq2", &[s], &[], 1.0, time_ms, 0)[0].frame
         };
         assert_eq!((frame(EF_ANIM01, 400), frame(EF_ANIM01, 500)), (0, 1));
         assert_eq!((frame(EF_ANIM23, 400), frame(EF_ANIM23, 500)), (2, 3));

@@ -503,6 +503,68 @@ fn entity_origin_lerps_between_frames_and_is_none_for_absent_entities() {
     assert_eq!(at(4), None);
 }
 
+fn named(entnum: i32, name: &str) -> NamedSound<'_> {
+    NamedSound {
+        name,
+        entnum,
+        entchannel: 1,
+        volume: 1.0,
+        attenuation: 1.0,
+        timeofs: 0.0,
+        origin: None,
+    }
+}
+
+#[test]
+fn a_sound_started_by_name_registers_it_like_s_registersound() {
+    let mut sys = system();
+    let files = files();
+    sys.start_named_sound(&named(2, "b.wav"), strings(""), |p| files.get(p).cloned());
+    let mix = update(&mut sys, 0.0);
+    assert_eq!(plays(&mix).len(), 1);
+    assert_eq!(sys.name(plays(&mix)[0].1), "b.wav");
+}
+
+#[test]
+fn a_named_sound_that_does_not_load_is_dropped() {
+    let mut sys = system();
+    sys.start_named_sound(&named(2, "missing.wav"), strings(""), |_| None);
+    assert!(plays(&update(&mut sys, 0.0)).is_empty());
+}
+
+#[test]
+fn a_named_sound_at_a_fixed_origin_does_not_follow_its_entity() {
+    // Temp entity sounds play at their origin from entity 0.
+    let mut sys = system();
+    let files = files();
+    let sound = NamedSound {
+        origin: Some(Vec3f::new(0.0, 10.0, 0.0)),
+        ..named(0, "b.wav")
+    };
+    sys.start_named_sound(&sound, strings(""), |p| files.get(p).cloned());
+    sys.update(0.0, &listener(), |_| None, &[]);
+    let far = |_: i32| Some(Vec3f::new(5000.0, 0.0, 0.0));
+    let mix = sys.update(10.0, &listener(), far, &[]);
+    assert!(matches!(
+        mix.commands[..],
+        [MixCommand::Gain { channel: 0, .. }]
+    ));
+}
+
+#[test]
+fn a_sexed_named_sound_resolves_through_the_players_model() {
+    // Entity events start `*fall1.wav` and the like by name.
+    let mut sys = system();
+    let files = files();
+    sys.start_named_sound(
+        &named(PLAYER, "*jump1.wav"),
+        strings("Ann\\female/athena"),
+        |p| files.get(p).cloned(),
+    );
+    let mix = update(&mut sys, 0.0);
+    assert_eq!(sys.name(plays(&mix)[0].1), "#players/female/jump1.wav");
+}
+
 /// One update with entity 2 seen at (0, -1000, 0), then a sound started
 /// for it while it is absent; returns that sound's (left, right).
 fn gains_after_entity_left(between: impl FnOnce(&mut SoundSystem)) -> (f32, f32) {

@@ -34,8 +34,9 @@ pub struct SkyGpu {
     faces: Vec<glow::Texture>,
 }
 
-/// World vertex attributes: position, texture uv, lightmap uv, styles.
-const WORLD_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7)];
+/// World vertex attributes: position, texture uv, lightmap uv, styles,
+/// normal.
+const WORLD_ATTRIBUTES: [Attribute; 5] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7), (4, 3, 11)];
 /// Sky vertices stop after the lightmap uv the sky never reads.
 const SKY_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 2, 5)];
 
@@ -49,7 +50,7 @@ fn float_bytes(floats: &[f32]) -> &[u8] {
 /// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
 /// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
 /// WebGL canvas (alpha, premultiplied) would show the page through it.
-fn set_alpha_blend(gl: &glow::Context) {
+pub(super) fn set_alpha_blend(gl: &glow::Context) {
     // SAFETY: state-only call on the live context `gl`.
     unsafe {
         gl.blend_func_separate(
@@ -434,7 +435,7 @@ pub fn free_stream_buffer(gl: &glow::Context, stream: StreamBuffer) {
 }
 
 /// Replace the stream's contents and leave its VAO bound.
-fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
+pub(super) fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
     let bytes = float_bytes(floats);
     // SAFETY: `stream` objects belong to `gl`; `bytes` borrows `floats` and
     // `buffer_data_u8_slice` copies it before returning.
@@ -453,6 +454,8 @@ pub struct MeshDraw<'a> {
     pub texture: Option<glow::Texture>,
     pub mvp: &'a [f32; 16],
     pub blend: bool,
+    /// Draw the vertex colour alone (colour shells).
+    pub color_only: bool,
 }
 
 /// Draw one MD2 mesh under the world's cull state: MD2 triangles wind like
@@ -469,6 +472,7 @@ pub fn draw_mesh(
     // location belongs to the currently bound MD2 program.
     unsafe {
         gl.uniform_matrix_4_f32_slice(uniforms.mvp.as_ref(), false, draw.mvp);
+        gl.uniform_1_i32(uniforms.color_only.as_ref(), i32::from(draw.color_only));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, draw.texture);
         if draw.blend {

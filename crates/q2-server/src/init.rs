@@ -208,9 +208,14 @@ impl ServerStatic {
     /// Put an in-process client in the first free slot and into the game:
     /// C `SV_DirectConnect` (slot `Connected` once `ClientConnect`
     /// accepts) then `SV_Begin_f` (`ClientBegin`, slot `Spawned`).
-    /// Returns the client's entity number. A refused connection is an
-    /// error and leaves the slot free.
-    pub fn connect_local_client(&mut self, game: &mut dyn GameExport) -> Q2Result<usize> {
+    /// `userinfo` is what C's connect packet carries (the client's
+    /// `CVAR_USERINFO` cvars). Returns the client's entity number. A
+    /// refused connection is an error and leaves the slot free.
+    pub fn connect_local_client(
+        &mut self,
+        game: &mut dyn GameExport,
+        userinfo: &str,
+    ) -> Q2Result<usize> {
         let Some(client) = self
             .clients
             .iter_mut()
@@ -218,6 +223,7 @@ impl ServerStatic {
         else {
             return Err(Q2Error::Drop("Server is full.".into()));
         };
+        client.userinfo = userinfo.to_string();
         if !game.client_connect(client.edict_num, &client.userinfo) {
             return Err(Q2Error::Drop("Connection refused by the game.".into()));
         }
@@ -304,7 +310,8 @@ mod tests {
         svs.init_game(1);
         sv.map(&mut svs, "base1", &[], "", &gi, &mut NullGame::default())
             .unwrap();
-        svs.connect_local_client(&mut NullGame::default()).unwrap();
+        svs.connect_local_client(&mut NullGame::default(), "")
+            .unwrap();
         sv.pic(&mut svs, "victory.pcx", "", &gi, &mut NullGame::default())
             .expect("C SV_SpawnServer(ss_pic) loads the empty map");
         assert_eq!(sv.state, ServerState::Pic);
@@ -382,11 +389,21 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(2);
         let number = svs
-            .connect_local_client(&mut NullGame::default())
+            .connect_local_client(&mut NullGame::default(), "")
             .expect("accepted");
         assert_eq!(number, 1);
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Spawned);
         assert_eq!(svs.clients[1].state, crate::state::ClientState::Free);
+    }
+
+    #[test]
+    fn the_local_clients_userinfo_reaches_clientconnect_and_stays_on_the_slot() {
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        let mut game = NullGame::default();
+        svs.connect_local_client(&mut game, "\\hand\\1").unwrap();
+        assert_eq!(game.userinfo, "\\hand\\1");
+        assert_eq!(svs.clients[0].userinfo, "\\hand\\1");
     }
 
     #[test]
@@ -397,7 +414,7 @@ mod tests {
             refuse_connect: true,
             ..NullGame::default()
         };
-        assert!(svs.connect_local_client(&mut game).is_err());
+        assert!(svs.connect_local_client(&mut game, "").is_err());
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Free);
     }
 
@@ -406,7 +423,9 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(1);
         svs.clients[0].state = crate::state::ClientState::Spawned;
-        assert!(svs.connect_local_client(&mut NullGame::default()).is_err());
+        assert!(svs
+            .connect_local_client(&mut NullGame::default(), "")
+            .is_err());
     }
 
     #[test]
@@ -479,7 +498,7 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(3);
         let mut game = NullGame::default();
-        svs.connect_local_client(&mut game).unwrap();
+        svs.connect_local_client(&mut game, "").unwrap();
         svs.clients[1].state = crate::state::ClientState::Connected;
         let connects = game.connects;
         let mut sv = Server::default();

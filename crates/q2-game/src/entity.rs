@@ -177,6 +177,9 @@ pub struct ClientPersistent {
     pub health: i32,
     pub max_health: i32,
     pub selected_item: i32,
+    /// Which hand the weapon is in (userinfo `hand`: `RIGHT_HANDED`,
+    /// `LEFT_HANDED` or `CENTER_HANDED`).
+    pub hand: i32,
     pub inventory: [i32; crate::constants::MAX_ITEMS],
     /// C `max_bullets`..`max_slugs`; Bandolier and Ammo Pack raise them.
     pub ammo_max: crate::items::AmmoMax,
@@ -189,6 +192,11 @@ pub struct ClientPersistent {
     pub saved_flags: crate::constants::EntityFlags,
     /// C `pers.score`: a coop score carried across levels.
     pub score: i32,
+    /// Unseen help: counts the help beeps, 0 once the help computer was
+    /// read (C `helpchanged`), and the game's help count it last saw (C
+    /// `game_helpchanged`).
+    pub helpchanged: i32,
+    pub game_helpchanged: i32,
 }
 
 impl Default for ClientPersistent {
@@ -200,6 +208,7 @@ impl Default for ClientPersistent {
             health: 0,
             max_health: 0,
             selected_item: 0,
+            hand: crate::constants::RIGHT_HANDED,
             inventory: [0; crate::constants::MAX_ITEMS],
             // C InitClientPersistant.
             ammo_max: crate::items::AMMO_MAX_DEFAULT,
@@ -207,6 +216,8 @@ impl Default for ClientPersistent {
             last_weapon: None,
             saved_flags: crate::constants::EntityFlags::empty(),
             score: 0,
+            helpchanged: 0,
+            game_helpchanged: 0,
         }
     }
 }
@@ -240,9 +251,93 @@ pub struct ClientData {
     pub anim_priority: i32,
     /// Frame the playing animation stops on (C `anim_end`).
     pub anim_end: i32,
-    /// Where the view bob cycle is; off the ground it does not change
-    /// (C `bobtime`).
+    /// This and last command's buttons, and the presses since the last
+    /// server frame (C `buttons`, `oldbuttons`, `latched_buttons`).
+    pub buttons: u8,
+    pub oldbuttons: u8,
+    pub latched_buttons: u8,
+    /// The weapon already thought this frame from a command (C
+    /// `weapon_thunk`).
+    pub weapon_thunk: bool,
+    /// Aim direction (C `v_angle`); weapons fire along it.
+    pub v_angle: Vec3f,
+    /// Item index to switch to once the current weapon is down (C
+    /// `newweapon`).
+    pub newweapon: Option<usize>,
+    pub weaponstate: WeaponState,
+    /// Inventory index of the current weapon's ammo, 0 for none (C
+    /// `ammo_index`).
+    pub ammo_index: usize,
+    /// View kick from the last shot, cleared each server frame (C
+    /// `kick_origin`, `kick_angles`).
+    pub kick_origin: Vec3f,
+    pub kick_angles: Vec3f,
+    /// Level frame until which each powerup lasts (C `quad_framenum`,
+    /// `invincible_framenum`, `breather_framenum`, `enviro_framenum`).
+    pub quad_framenum: i32,
+    pub invincible_framenum: i32,
+    pub breather_framenum: i32,
+    pub enviro_framenum: i32,
+    /// Machinegun climb, 0..9 shots (C `machinegun_shots`).
+    pub machinegun_shots: i32,
+    /// When a cooked hand grenade goes off, 0 when none (C
+    /// `grenade_time`), and whether it already went off in the hand.
+    pub grenade_time: f32,
+    pub grenade_blew_up: bool,
+    /// Looping sound of the current weapon (C `weapon_sound`).
+    pub weapon_sound: i32,
+    /// The walk bob's phase (C `bobtime`) and last frame's view angles
+    /// (C `oldviewangles`), for the gun's sway and turn lag.
     pub bobtime: f32,
+    pub oldviewangles: Vec3f,
+    /// Damage this frame, by what took it, its total knockback and where
+    /// the last hit landed (C `damage_parmor`, `damage_armor`,
+    /// `damage_blood`, `damage_knockback`, `damage_from`), turned into
+    /// the view's damage tint (C `damage_alpha`, `damage_blend`) and kick
+    /// at the end of the frame.
+    pub damage_parmor: i32,
+    pub damage_armor: i32,
+    pub damage_blood: i32,
+    pub damage_knockback: i32,
+    pub damage_from: Vec3f,
+    pub damage_alpha: f32,
+    pub damage_blend: [f32; 3],
+    /// Death or gib sound to play at the end of the frame (C the player
+    /// edict's `sounds`).
+    pub death_sound: i32,
+    /// Which layout the player has up: the scoreboard, the help computer
+    /// or the inventory (C `showscores`, `showhelp`, `showinventory`).
+    pub showscores: bool,
+    pub showhelp: bool,
+    pub showinventory: bool,
+    /// When a dead player may respawn (C `respawn_time`).
+    pub respawn_time: f32,
+    /// Pickup flash on the view, fading a tenth a frame (C `bonus_alpha`).
+    pub bonus_alpha: f32,
+    /// When the air runs out under water (C the player edict's
+    /// `air_finished`).
+    pub air_finished: f32,
+    /// Last frame's `waterlevel`, next drowning hit and which breath the
+    /// rebreather plays next (C `old_waterlevel`, `next_drown_time`,
+    /// `breather_sound`).
+    pub old_waterlevel: i32,
+    pub next_drown_time: f32,
+    pub breather_sound: bool,
+    /// Fading damage kick on the view (C `v_dmg_pitch`, `v_dmg_roll`,
+    /// `v_dmg_time`).
+    pub v_dmg_pitch: f32,
+    pub v_dmg_roll: f32,
+    pub v_dmg_time: f32,
+}
+
+/// Where the gun is in its cycle (C `weaponstate_t`, same order).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WeaponState {
+    #[default]
+    Ready,
+    Activating,
+    Dropping,
+    Firing,
 }
 
 // ---------------------------------------------------------------------------

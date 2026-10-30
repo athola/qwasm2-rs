@@ -20,6 +20,14 @@ use wav::Sound;
 
 /// C `MAX_CHANNELS`.
 pub const MAX_CHANNELS: usize = 32;
+/// Sound channels (C `CHAN_*`).
+pub const CHAN_AUTO: i32 = 0;
+pub const CHAN_WEAPON: i32 = 1;
+pub const CHAN_BODY: i32 = 4;
+/// Attenuations (C `ATTN_*`).
+pub const ATTN_NONE: f32 = 0.0;
+pub const ATTN_NORM: f32 = 1.0;
+pub const ATTN_IDLE: f32 = 2.0;
 /// C `ATTN_STATIC`: attenuates twice as fast as the other attenuations.
 pub const ATTN_STATIC: f32 = 3.0;
 /// C `SDL_FULLVOLUME`: closer than this is full volume.
@@ -119,6 +127,19 @@ pub fn entity_origin(
     let now = find(current)?;
     let before = find(previous).unwrap_or(now);
     Some(before + (now - before) * lerpfrac)
+}
+
+/// A sound the client starts by name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NamedSound<'a> {
+    pub name: &'a str,
+    pub entnum: i32,
+    pub entchannel: i32,
+    pub volume: f32,
+    pub attenuation: f32,
+    pub timeofs: f32,
+    /// A fixed origin, or `None` to follow the entity.
+    pub origin: Option<Vec3f>,
 }
 
 /// A sound the server started (C `CL_ParseStartSoundPacket`'s fields).
@@ -412,6 +433,34 @@ impl SoundSystem {
             volume: start.volume,
             attenuation: start.attenuation,
             timeofs: start.timeofs,
+        });
+    }
+
+    /// C `S_RegisterSound(name)` (or `S_RegisterSexedSound` for a `*`
+    /// name) then `S_StartSound`: a sound the client starts itself, such
+    /// as a muzzle flash or a temp entity's.
+    pub fn start_named_sound<'a>(
+        &mut self,
+        sound: &NamedSound,
+        configstring: impl Fn(usize) -> &'a str,
+        mut load: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) {
+        let id = if sound.name.starts_with('*') {
+            self.sexed_sound(sound.entnum, sound.name, &configstring, &mut load)
+        } else {
+            self.find_or_add(sound.name)
+        };
+        if !self.load(id, &mut load) {
+            return;
+        }
+        self.pending.push(PlaySound {
+            sfx: id,
+            entnum: sound.entnum,
+            entchannel: sound.entchannel,
+            origin: sound.origin,
+            volume: sound.volume,
+            attenuation: sound.attenuation,
+            timeofs: sound.timeofs,
         });
     }
 

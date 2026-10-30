@@ -9,6 +9,7 @@
 
 pub mod constants;
 pub mod error;
+pub mod flash;
 pub mod protocol;
 pub mod types;
 

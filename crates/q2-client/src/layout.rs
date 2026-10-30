@@ -2,7 +2,9 @@
 //! are small programs over the player's stats. C ref:
 //! `SCR_ExecuteLayoutString` (client/cl_screen.c), at HUD scale 1.
 
-use q2_shared::constants::{CS_IMAGES, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH};
+use q2_shared::constants::{
+    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
+};
 
 /// One 2D draw the renderer performs, in screen pixels.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +150,20 @@ fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, tex
     }
 }
 
+/// A player's name and icon from its `name\\model/skin` configstring,
+/// the base `male/grunt` icon without a skin. C ref: `CL_LoadClientinfo`
+/// (cl_parse.c), without its check that the icon file exists.
+fn client_info(s: &str) -> (String, String) {
+    let (name, skin) = s.split_once('\\').unwrap_or((s, ""));
+    let icon = match skin.split_once('/') {
+        Some((model, skin)) if !model.is_empty() && !skin.is_empty() => {
+            format!("/players/{model}/{skin}_i.pcx")
+        }
+        _ => "/players/male/grunt_i.pcx".to_string(),
+    };
+    (name.to_string(), icon)
+}
+
 /// The next token, or "" at the end (C COM_Parse returns "").
 fn arg<'a>(toks: &mut impl Iterator<Item = &'a str>) -> &'a str {
     toks.next().unwrap_or("")
@@ -257,7 +273,32 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                 // Skip to the matching endif.
                 toks.by_ref().find(|&t| t == "endif");
             }
-            // "client"/"ctf" are deathmatch scoreboard blocks.
+            // A deathmatch scoreboard entry; "ctf" is not ported.
+            "client" => {
+                let bx = input.width / 2 - 160 + strtol(arg(&mut toks));
+                let by = input.height / 2 - 120 + strtol(arg(&mut toks));
+                let value = strtol(arg(&mut toks));
+                let (score, ping, time) = (
+                    strtol(arg(&mut toks)),
+                    strtol(arg(&mut toks)),
+                    strtol(arg(&mut toks)),
+                );
+                // C drops the connection for a bad client number.
+                let Some(index) = usize::try_from(value).ok().filter(|&v| v < MAX_CLIENTS) else {
+                    continue;
+                };
+                let (name, icon) = client_info((input.configstrings)(CS_PLAYERSKINS + index));
+                draw_string(&mut out, bx + 32, by, &name, 0x80);
+                draw_string(&mut out, bx + 32, by + 8, "Score: ", 0);
+                draw_string(&mut out, bx + 32 + 7 * 8, by + 8, &score.to_string(), 0x80);
+                draw_string(&mut out, bx + 32, by + 16, &format!("Ping:  {ping}"), 0);
+                draw_string(&mut out, bx + 32, by + 24, &format!("Time:  {time}"), 0);
+                out.push(HudDraw::Pic {
+                    x: bx,
+                    y: by,
+                    name: icon,
+                });
+            }
             _ => {}
         }
     }
@@ -292,6 +333,45 @@ mod tests {
             y,
             name: name.into(),
         }
+    }
+
+    fn chars_at(draws: &[HudDraw], y: i32) -> String {
+        draws
+            .iter()
+            .filter_map(|d| match d {
+                HudDraw::Char { y: cy, ch, .. } if *cy == y => Some((ch & 0x7f) as char),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_client_block_draws_the_players_icon_name_score_ping_and_time() {
+        use q2_shared::constants::CS_PLAYERSKINS;
+        let draws = run(
+            "client 0 32 1 7 50 3",
+            &[0; 32],
+            &[(CS_PLAYERSKINS + 1, "Bob\\male/grunt")],
+        );
+        let (x, y) = (W / 2 - 160, H / 2 - 120 + 32);
+        assert!(draws.contains(&pic(x, y, "/players/male/grunt_i.pcx")));
+        assert_eq!(chars_at(&draws, y), "Bob");
+        assert_eq!(chars_at(&draws, y + 8), "Score: 7");
+        assert_eq!(chars_at(&draws, y + 16), "Ping:  50");
+        assert_eq!(chars_at(&draws, y + 24), "Time:  3");
+        // The name and the score are in the alternate colour.
+        let name = draws
+            .iter()
+            .find(|d| matches!(d, HudDraw::Char { y: cy, .. } if *cy == y));
+        assert!(matches!(name, Some(HudDraw::Char { ch, .. }) if ch & 0x80 != 0));
+    }
+
+    #[test]
+    fn a_client_block_without_a_skin_uses_the_base_player_icon() {
+        let draws = run("client 0 0 3 0 0 0", &[0; 32], &[]);
+        assert!(draws.iter().any(
+            |d| matches!(d, HudDraw::Pic { name, .. } if name == "/players/male/grunt_i.pcx")
+        ));
     }
 
     #[test]

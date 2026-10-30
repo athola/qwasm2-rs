@@ -4,16 +4,16 @@
 //!
 //! MD2 models outside the view frustum are skipped (C `CullAliasModel`).
 //!
-//! Not modelled relative to C: frustum culling of brush entities, the
-//! `RF_WEAPONMODEL` gun FOV and left-hand mirroring, `RF_DEPTHHACK`,
-//! `RF_SHELL_*` colour-only shells, `RF_IR_VISIBLE`, `RF_BEAM` beams, the
-//! null-model placeholder, entity shadows, sprite (`.sp2`) models and
-//! dynamic lights on brush models. Entities whose model
-//! is none of the above are skipped.
+//! Not modelled relative to C: frustum culling of brush entities,
+//! `RF_IR_VISIBLE`, the null-model placeholder, entity shadows and dynamic
+//! lights on brush models. Beams and sprites are drawn in the same passes
+//! through `fx`. Entities whose model is none of the above are skipped.
 
 use glow::HasContext;
 use q2_render_api::{DLight, RefDef, RenderEntity};
-use q2_shared::constants::{MAX_LIGHTSTYLES, RF_TRANSLUCENT, RF_VIEWERMODEL, RF_WEAPONMODEL};
+use q2_shared::constants::{
+    MAX_LIGHTSTYLES, RF_BEAM, RF_TRANSLUCENT, RF_VIEWERMODEL, RF_WEAPONMODEL,
+};
 
 use super::alias::{
     build_corners, clamp_frames, clamp_frames_independently, cull_alias, entity_skin,
@@ -179,26 +179,137 @@ pub struct EntityScene<'a> {
     /// View frustum for culling MD2 models (C `frustum`).
     pub frustum: [FrustumPlane; 4],
     pub view_proj: [f32; 16],
+    /// `view_proj` with the gun's fov, for `RF_WEAPONMODEL`.
+    pub gun_view_proj: [f32; 16],
+    /// C cvar `hand`: 1 mirrors the gun, 2 hides it.
+    pub hand: i32,
+    /// Beam and sprite programs; without them neither is drawn.
+    pub fx: Option<&'a super::fx::FxGpu>,
+    /// Beam colours.
+    pub palette: Option<&'a Palette>,
+    /// The view's right and up, which sprites face.
+    pub view_right_up: (q2_shared::types::Vec3f, q2_shared::types::Vec3f),
 }
 
 fn vec3(v: q2_shared::types::Vec3f) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
-/// Draw the `filter` batches of `entity` if it is a brush model.
+/// How an entity is drawn (C `GL3_DrawEntitiesOnList`'s dispatch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityDraw {
+    Beam,
+    /// Inline model `n` of the world.
+    Brush(usize),
+    Alias,
+    Sprite,
+}
+
+/// The opaque (`translucent == false`) or `RF_TRANSLUCENT` entities in
+/// list order, as C's two passes take them: a beam whatever its model,
+/// the rest by model type. The viewer's own model and modelless entities
+/// (C `GL3_DrawNullModel`) are left out.
+pub fn entity_draws<'a, A>(
+    entities: &'a [RenderEntity],
+    models: &'a ModelRegistry<A>,
+    translucent: bool,
+) -> impl Iterator<Item = (&'a RenderEntity, EntityDraw)> + 'a {
+    entities
+        .iter()
+        .filter(move |e| {
+            e.flags & RF_VIEWERMODEL == 0 && (e.flags & RF_TRANSLUCENT != 0) == translucent
+        })
+        .filter_map(|e| {
+            if e.flags & RF_BEAM != 0 {
+                return Some((e, EntityDraw::Beam));
+            }
+            let kind = match models.get(e.model)? {
+                Model::Brush { submodel } => EntityDraw::Brush(*submodel),
+                Model::Alias(_) => EntityDraw::Alias,
+                Model::Sprite(_) => EntityDraw::Sprite,
+            };
+            Some((e, kind))
+        })
+}
+
+/// The program an entity draw needs bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bound {
+    World,
+    Alias,
+    Fx,
+}
+
+/// Draw one entity pass in list order (C `GL3_DrawEntitiesOnList`). The
+/// world program must be bound; it is bound again on return.
+pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent: bool) {
+    let gl = scene.gl;
+    let mut bound = Bound::World;
+    for (entity, kind) in entity_draws(entities, scene.models, translucent) {
+        let want = match kind {
+            EntityDraw::Brush(_) => Bound::World,
+            EntityDraw::Alias => Bound::Alias,
+            EntityDraw::Beam | EntityDraw::Sprite => Bound::Fx,
+        };
+        if want == Bound::Fx && scene.fx.is_none() {
+            continue;
+        }
+        if want != bound {
+            match (want, scene.fx) {
+                // SAFETY: the world program was linked on `gl` by init.
+                (Bound::World, _) => unsafe { gl.use_program(Some(scene.world_program)) },
+                // SAFETY: the alias program was linked on `gl` by `create_extra`.
+                (Bound::Alias, _) => unsafe { gl.use_program(Some(scene.extra.alias_program)) },
+                (Bound::Fx, Some(fx)) => super::fx::bind(gl, fx, &scene.view_proj),
+                (Bound::Fx, None) => {}
+            }
+            bound = want;
+        }
+        match kind {
+            // The SURF_TRANS33/66 faces wait for `draw_brush_alpha_faces`.
+            EntityDraw::Brush(submodel) => {
+                draw_brush(scene, entity, submodel, BatchFilter::Opaque, translucent)
+            }
+            EntityDraw::Alias => draw_alias(scene, entity, translucent),
+            EntityDraw::Beam => {
+                if let (Some(fx), Some(palette)) = (scene.fx, scene.palette) {
+                    super::fx::draw_beam(gl, fx, scene.extra.white, palette, entity);
+                }
+            }
+            EntityDraw::Sprite => {
+                if let (Some(fx), Some(Model::Sprite(sprite))) =
+                    (scene.fx, scene.models.get(entity.model))
+                {
+                    super::fx::draw_sprite(
+                        gl,
+                        fx,
+                        scene.images,
+                        sprite,
+                        entity,
+                        scene.view_right_up,
+                    );
+                }
+            }
+        }
+    }
+    if bound != Bound::World {
+        // SAFETY: the world program was linked on `gl` by `init`.
+        unsafe { gl.use_program(Some(scene.world_program)) };
+    }
+}
+
+/// The `filter` faces of a brush entity. C ref: `GL3_DrawBrushModel`.
 fn draw_brush(
     scene: &EntityScene,
     entity: &RenderEntity,
+    submodel: usize,
     filter: BatchFilter,
-    translucent_entity: bool,
+    translucent: bool,
 ) {
-    let Some(Model::Brush { submodel }) = scene.models.get(entity.model) else {
-        return;
-    };
     let Some(world) = scene.world else {
         return;
     };
-    let Some(batches) = world.model_batches(*submodel) else {
+    let Some(batches) = world.model_batches(submodel) else {
         return;
     };
     let matrix = brush_matrix(vec3(entity.origin), vec3(entity.angles));
@@ -208,7 +319,7 @@ fn draw_brush(
         time: scene.refdef.time,
         frame: entity.frame,
         filter,
-        translucent_entity,
+        translucent_entity: translucent,
         areabits: None,
     };
     draw_batches(scene.gl, scene.world_uniforms, world, batches, &draw);
@@ -219,90 +330,155 @@ fn draw_brush(
 /// `gl3_alpha_surfaces`, whatever the entity's own flags). Deliberate
 /// deviation: C draws that chain with the identity matrix, so a moved or
 /// rotated brush entity's glass stays where the entity spawned; here it
-/// keeps the entity's matrix.
+/// keeps the entity's matrix. The world program must be bound.
 pub fn draw_brush_alpha_faces(scene: &EntityScene, entities: &[RenderEntity]) {
-    for entity in entities.iter().filter(|e| e.flags & RF_VIEWERMODEL == 0) {
-        draw_brush(scene, entity, BatchFilter::Translucent, false);
+    for entity in entities
+        .iter()
+        .filter(|e| e.flags & (RF_VIEWERMODEL | RF_BEAM) == 0)
+    {
+        if let Some(Model::Brush { submodel }) = scene.models.get(entity.model) {
+            draw_brush(scene, entity, *submodel, BatchFilter::Translucent, false);
+        }
     }
 }
 
-/// Draw the opaque (`translucent == false`) or `RF_TRANSLUCENT` entities.
-/// The world program must be bound; it is bound again on return. The viewer's
-/// own model is never drawn here.
-pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent: bool) {
-    let wanted = |entity: &&RenderEntity| {
-        entity.flags & RF_VIEWERMODEL == 0 && (entity.flags & RF_TRANSLUCENT != 0) == translucent
+/// One MD2 with the alias program bound. C ref: `GL3_DrawAliasModel`.
+fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
+    let Some(Model::Alias(model)) = scene.models.get(entity.model) else {
+        return;
     };
-
-    // A brush entity's SURF_TRANS33/66 faces wait for `draw_brush_alpha_faces`.
-    for entity in entities.iter().filter(wanted) {
-        draw_brush(scene, entity, BatchFilter::Opaque, translucent);
+    let origin = vec3(entity.origin);
+    let frame_count = model.md2.frames.len();
+    let weapon = entity.flags & RF_WEAPONMODEL != 0;
+    let gun_cull = super::gun_cull_face(scene.hand);
+    if weapon && gun_cull.is_none() {
+        return;
     }
-
-    let mut alias_program_bound = false;
-    for entity in entities.iter().filter(wanted) {
-        let Some(Model::Alias(model)) = scene.models.get(entity.model) else {
-            continue;
-        };
-        let origin = vec3(entity.origin);
-        let frame_count = model.md2.frames.len();
-        let weapon = entity.flags & RF_WEAPONMODEL != 0;
-        // C culls every MD2 but the gun, and the cull writes each frame
-        // reset on its own back into the entity before the draw sees it.
-        let (frame, oldframe) = if weapon {
-            clamp_frames(entity.frame, entity.oldframe, frame_count)
-        } else {
-            clamp_frames_independently(entity.frame, entity.oldframe, frame_count)
-        };
-        let culled = match (model.md2.frames.get(frame), model.md2.frames.get(oldframe)) {
-            (Some(frame), Some(oldframe)) => {
-                !weapon && cull_alias(frame, oldframe, origin, vec3(entity.angles), &scene.frustum)
-            }
-            _ => true,
-        };
-        if culled {
-            continue;
+    // C culls every MD2 but the gun, and the cull writes each frame
+    // reset on its own back into the entity before the draw sees it.
+    let (frame, oldframe) = if weapon {
+        clamp_frames(entity.frame, entity.oldframe, frame_count)
+    } else {
+        clamp_frames_independently(entity.frame, entity.oldframe, frame_count)
+    };
+    let culled = match (model.md2.frames.get(frame), model.md2.frames.get(oldframe)) {
+        (Some(frame), Some(oldframe)) => {
+            !weapon && cull_alias(frame, oldframe, origin, vec3(entity.angles), &scene.frustum)
         }
-        let entity = &RenderEntity {
-            frame: i32::try_from(frame).unwrap_or(0),
-            oldframe: i32::try_from(oldframe).unwrap_or(0),
-            ..entity.clone()
-        };
-        let lit = || {
-            scene.light.map_or([1.0; 3], |tree| {
-                tree.light_point(origin, scene.styles, scene.dlights)
-            })
-        };
-        let Some(vertices) = entity_vertices(model, entity, lit, scene.refdef.time) else {
-            continue;
-        };
-        if !alias_program_bound {
-            // SAFETY: the program was linked on `scene.gl` by `create_extra`.
-            unsafe { scene.gl.use_program(Some(scene.extra.alias_program)) };
-            alias_program_bound = true;
-        }
-        let texture = entity_skin(entity.skin, entity.skinnum, &model.skins)
+        _ => true,
+    };
+    if culled {
+        return;
+    }
+    let entity = &RenderEntity {
+        frame: i32::try_from(frame).unwrap_or(0),
+        oldframe: i32::try_from(oldframe).unwrap_or(0),
+        ..entity.clone()
+    };
+    let lit = || {
+        scene.light.map_or([1.0; 3], |tree| {
+            tree.light_point(origin, scene.styles, scene.dlights)
+        })
+    };
+    let Some(vertices) = entity_vertices(model, entity, lit, scene.refdef.time) else {
+        return;
+    };
+    let shell = super::alias::shell_light(entity.flags).is_some();
+    let texture = if shell {
+        scene.extra.white
+    } else {
+        entity_skin(entity.skin, entity.skinnum, &model.skins)
             .and_then(|index| scene.images.get(index))
             .and_then(|image| image.texture)
-            .unwrap_or(scene.extra.notexture);
-        let matrix = alias_matrix(origin, vec3(entity.angles));
-        let mvp = mat4_mul(&scene.view_proj, &matrix);
-        draw_mesh(
-            scene.gl,
-            &scene.extra.alias_uniforms,
-            &scene.extra.alias_stream,
-            &MeshDraw {
-                vertices: &vertices,
-                vertex_count: i32::try_from(vertices.len() / ALIAS_VERTEX_FLOATS)
-                    .unwrap_or(i32::MAX),
-                texture: Some(texture),
-                mvp: &mvp,
-                blend: translucent,
-            },
-        );
+            .unwrap_or(scene.extra.notexture)
+    };
+    let matrix = alias_matrix(origin, vec3(entity.angles));
+    let view_proj = if weapon {
+        &scene.gun_view_proj
+    } else {
+        &scene.view_proj
+    };
+    let mvp = mat4_mul(view_proj, &matrix);
+    let (near, far) = super::alias_depth_range(entity.flags);
+    if (near, far) != (0.0, 1.0) {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.depth_range_f32(near, far) };
     }
-    if alias_program_bound {
-        // SAFETY: the world program was linked on `scene.gl` by `init`.
-        unsafe { scene.gl.use_program(Some(scene.world_program)) };
+    let mirrored = weapon && gun_cull != Some(super::CULL_FACE);
+    if let (true, Some(face)) = (mirrored, gun_cull) {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.cull_face(face) };
+    }
+    draw_mesh(
+        scene.gl,
+        &scene.extra.alias_uniforms,
+        &scene.extra.alias_stream,
+        &MeshDraw {
+            vertices: &vertices,
+            vertex_count: i32::try_from(vertices.len() / ALIAS_VERTEX_FLOATS).unwrap_or(i32::MAX),
+            texture: Some(texture),
+            mvp: &mvp,
+            blend: translucent,
+            color_only: shell,
+        },
+    );
+    if (near, far) != (0.0, 1.0) {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.depth_range_f32(0.0, 1.0) };
+    }
+    if mirrored {
+        // SAFETY: state-only call on the live context.
+        unsafe { scene.gl.cull_face(super::CULL_FACE) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use q2_render_api::ModelHandle;
+    use q2_shared::constants::RF_BEAM;
+
+    fn sprite() -> Model<&'static str> {
+        Model::Sprite(super::super::fx::SpriteModel { frames: Vec::new() })
+    }
+
+    #[test]
+    fn each_pass_draws_its_entities_in_list_order_like_c_drawentitiesonlist() {
+        let mut models = ModelRegistry::<&'static str>::default();
+        let alias = models.register("a.md2", || Some(Model::Alias("a")));
+        let spr = models.register("s.sp2", || Some(sprite()));
+        let brush = models.register_inline("*2", Some(3));
+        let ent = |model, flags| RenderEntity {
+            model,
+            flags,
+            ..Default::default()
+        };
+        let list = [
+            ent(spr, 0),
+            ent(ModelHandle::NONE, RF_BEAM),
+            ent(alias, RF_TRANSLUCENT),
+            ent(brush, 0),
+            ent(alias, 0),
+            // C draws a beam whatever its model; a modelless entity is
+            // C's null model, which is not drawn here.
+            ent(ModelHandle::NONE, 0),
+            ent(alias, RF_VIEWERMODEL),
+            ent(ModelHandle::NONE, RF_BEAM | RF_TRANSLUCENT),
+        ];
+        let kinds = |translucent| -> Vec<(usize, EntityDraw)> {
+            entity_draws(&list, &models, translucent)
+                .map(|(e, kind)| (list.iter().position(|l| std::ptr::eq(l, e)).unwrap(), kind))
+                .collect()
+        };
+        assert_eq!(
+            kinds(false),
+            [
+                (0, EntityDraw::Sprite),
+                (1, EntityDraw::Beam),
+                (3, EntityDraw::Brush(2)),
+                (4, EntityDraw::Alias),
+            ]
+        );
+        assert_eq!(kinds(true), [(2, EntityDraw::Alias), (7, EntityDraw::Beam)]);
     }
 }

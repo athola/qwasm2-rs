@@ -70,6 +70,172 @@ All notable changes to qwasm2-rs are documented here.
   `q2_common::pmove::angle_vectors` and `BspHeader::records` are public
 
 ### Added
+- The player fires the blaster: `ClientThink` latches the attack button
+  and the weapon runs C's `Think_Weapon`/`Weapon_Generic` cycle (raise,
+  fire, idle with random pauses, lower and `ChangeWeapon`), with muzzle
+  flash, view kick and the no-ammo click and auto-switch; `ItemDef` gains
+  `view_model` and `weaponthink` (#16, first slice)
+- All ten weapons and hand grenades fire as in C (`Weapon_*`): shotgun
+  and super shotgun spreads, the machinegun climb, chaingun spin-up,
+  hyperblaster loop, rocket, grenade launcher, railgun, the BFG windup and
+  cooked hand grenades that go off in the hand; picking up a new weapon
+  switches to it, the weapon hum plays on the player and the BFG's pitch
+  kick fades over `DAMAGE_TIME`
+- Weapon and inventory commands (C `ClientCommand`): `use`, `drop`,
+  `weapnext`, `weapprev`, `weaplast`, `invnext`/`invprev` (and the `w`/`p`
+  variants), `invuse`, `invdrop`, with C's messages; the browser binds
+  them like Q2's `default.cfg` (1-0 weapons, `[` `]` `'` Enter);
+  `LocalGame::client_command` runs one, and `ServerGameImport` answers
+  `argv`/`args` like `Cmd_TokenizeString`
+- The first-person gun is drawn (C `CL_AddViewWeapon`): `ps.gunindex` at
+  the eye with lerped `gunoffset`/`gunangles` and frames, in C GL3's own
+  80 degree gun projection and the front 30% of the depth range
+  (`RF_DEPTHHACK`) so it never pokes into walls; `RF_MINLIGHT` and
+  `RF_DEPTHHACK` join `q2_shared::constants`
+- Powerups and power armor can be used (C `Use_Quad`,
+  `Use_Invulnerability`, `Use_Breather`, `Use_Envirosuit`,
+  `Use_Silencer`, `Use_PowerArmor`) and dropped (`Drop_General`,
+  `Drop_PowerArmor`); `Pickup_Powerup` keeps C's skill and coop limits,
+  power screens and shields can be picked up, deathmatch items respawn
+  (`SetRespawn`/`DoRespawn`) and instant items and dropped quads are used
+  on pickup; touching an item plays its pickup sound (health by size)
+  and selects it when usable
+- Powerups take effect: invulnerability blocks damage (with C's
+  `protect4` clink every two seconds), quad and invulnerability glow and
+  blink before running out (`G_SetClientEffects`, also the power armor
+  screen or shell while it absorbs), the HUD shows the current weapon's
+  ammo, the powerup timer and power armor cells (`G_SetStats`; power
+  armor switches off when cells run out), and the view tints for
+  liquids, powerups and pickups with C's warning sounds three seconds
+  before a powerup ends (`SV_CalcBlend`), drawn under the HUD
+- Deathmatch rules (C `CheckDMRules`, `EndDMLevel`): the frag and time
+  limits end the match and the next map comes from `DF_SAME_LEVEL`, the
+  map list, `nextmap` or the level's exit; levels end through C's
+  `BeginIntermission` (single player goes straight on, multiplayer
+  freezes everyone at an intermission spot until a button five seconds
+  later); deathmatch exits kill unless `DF_ALLOW_EXIT` and announce who
+  left; dead players respawn on a press (attack only in deathmatch, or
+  forced with `DF_FORCE_RESPAWN`), dying clears powerups; teams by skin
+  or model with `DF_NO_FRIENDLY_FIRE` (`OnSameTeam`). `GameLocals` gains
+  `fraglimit`, `timelimit` and `maplist`; all reachable from tests only,
+  as the browser plays single player
+- Weapons and damage send C's temp entities (game side): blood and
+  sparks from `SpawnDamage` (armor, power armor and god mode sparks),
+  bullet and shotgun puffs with water splashes and bubble trails
+  (`fire_lead`), blaster flashes, rocket and grenade explosions (water
+  variants), rail trails, and the BFG's lasers, big explosion and
+  explosion frames (`bfg_think`, `bfg_explode`); projectiles vanish into
+  the sky, rockets knock debris off walls, and monsters see players'
+  blaster, rocket and BFG shots coming (`check_dodge`); the constants live in
+  `q2_shared::constants` (`TE_*`, `SPLASH_*`, `SURF_*`)
+- The browser draws the game's effects (C `cl_tempentities.c`,
+  `cl_particles.c`, `cl_effects.c`): blood, sparks and bullet puffs,
+  splashes, explosions with their lights, rail and bubble trails, BFG
+  lasers and blasts, rocket, blaster, grenade and gib trails, flies,
+  teleport and respawn sparkles, footsteps and landing sounds, and the
+  smoke of monster machineguns and shotguns (`q2_client::fx`). The GL3
+  renderer gains C's particle, beam and sprite (`.sp2`) drawing, and
+  client sounds can play at a fixed origin or as a player's sexed sound
+  (`sound::NamedSound`)
+- The GL3 renderer draws in C `GL3_RenderView` order: beams and sprites
+  inside the opaque and translucent entity passes in list order, then
+  particles, then the world's translucent surfaces over everything
+- Mission-pack client effects (C `cl_newfx.c` and the rogue, xatrix and
+  CTF cases of `CL_ParseTEnt`): every non-base temp entity, steam, widow
+  and nuke sustains, heat beams from the player's gun, lightning, the
+  grapple cable, and the trails and lights of every effect flag;
+  translucent BFG balls, plasma and spheres, spinning lights
+- Colour shells: quad, pentagram, double and half damage and the power
+  shield draw C's second, colour-only model pushed out along the vertex
+  normals, and power screens their armour shell (`RF_SHELL_*`)
+- A keys legend: F4 (Q2's `default.cfg` binds it to `menu_keys`, the
+  controls screen) or the page's Keys button lists every action and its
+  keys, named as C's controls menu names them
+- More of Q2's `default.cfg` binds: `g` hand grenades, `/` next
+  weapon, Backspace drop item, and `q`/`b`/`e`/`i`/`p` for quad,
+  rebreather, environment suit, invulnerability and power shield (`s`,
+  the silencer there, stays free for moving back)
+- The page's log console starts hidden; backquote shows it, and a
+  startup error opens it
+- Barrels (`misc_explobox`) roll away when walked into (C
+  `barrel_touch`), settle on the floor and are gone in deathmatch
+- The rest of `g_misc.c`: `func_wall` (triggered, toggled, animated),
+  `func_object`, `func_clock` (timers and the time of day, from the
+  page's clock through `GameImport::local_time`), `target_string` and
+  `target_character`, the banner, satellite dish, dead soldiers, black
+  hole, easter tank and chicks, the commander's body, the vipers, viper
+  bomb and Strogg ship, and `viewthing`
+- `?vid_fullscreen=1` (C's `vid_fullscreen`, off by default): clicking to
+  play also takes the game fullscreen and, in Chromium browsers, locks
+  the keyboard to it (Keyboard Lock API), so Ctrl+W, Ctrl+T and the like
+  reach the game while firing with Ctrl; hold Esc to leave fullscreen
+- Moving while firing with the mouse no longer stops: each click on the
+  locked canvas asked for pointer lock again, the browser answered with
+  `pointerlockchange`, and that released every held key; held keys are
+  now only released when the lock (or focus) is lost
+- Opt-in explosion smoke (`?cl_fxextra=1`, off by default): rocket,
+  grenade and other dry explosions leave a rising column of grey smoke,
+  drawn with C's otherwise unused `CL_SmokeTrail`; ADR-005 now allows
+  additions like this only behind settings that default to C
+- The page reads C's `cl_gun` (`?cl_gun=`: 0 no gun, 1 none in a wide
+  view, 2 always, the default), which the game reads too (`gi.cvar`) to
+  show the weapon icon only when the gun is not drawn
+- The page reads C's `hand` (`?hand=1` left, `2` centre), `game`
+  (`?game=rogue`) and a start map (`?map=demo3`): shots leave from the
+  player's hand, the gun is mirrored or hidden, heat beams follow the
+  hand, and rogue's shell colours
+  apply; flashlight and tracker lights take slots in the client's
+  dlights like C's
+- Map lasers (C `target_laser`): beams aimed along their angles or at a
+  target, in the five spawnflag colours, burning what they cross, with
+  sparks where they land when they move; the browser draws a beam in one
+  of its four packed colours at alpha 0.30 each frame
+- The browser shows the server's text: printed lines at the top for
+  three seconds (death messages, pickups, chat with its talk sound),
+  centre prints such as door messages, and the server layout over the
+  status bar, so F1 opens the help computer and the scoreboard draws
+  with C's `client` blocks (`q2_client::notify`, prints and unicasts
+  reach `LocalGame::take_messages`)
+- Death messages, scores and the help computer (C `ClientObituary`,
+  `DeathmatchScoreboardMessage`, `HelpComputerMessage`, `Cmd_Score_f`,
+  `Cmd_Help_f`): every C obituary by means of death and gender, frag
+  scoring with the friendly-fire penalty (`GameWorld::friendly_fire`),
+  the scoreboard layout (on death, at intermission and with `score`,
+  refreshed every 32 frames), `target_help` objectives with the help
+  icon and three beeps, the `help` command, `STAT_LAYOUTS`/
+  `STAT_HELPICON`, and each player's name and skin in `CS_PLAYERSKINS`
+- Taking damage shows like C `P_DamageFeedback`: a tint mixed red,
+  white and green by what absorbed the hit, the status-number flashes,
+  pain sounds by health and a view kick away from the hit; dying plays
+  one of four death screams and a big enough hit gibs the player into
+  meat and a head (C `player_die`)
+- Items precache like C `PrecacheItem` (models, view models, icons,
+  pickup sounds, their ammo and the `precaches` list) when spawned, and
+  worldspawn precaches the blaster; `ItemDef` gains `precaches`
+- Item pickups match C for weapons and ammo: dropped ammo gives back
+  what was dropped and a dropped weapon brings no ammo (both were free
+  ammo through `drop`), the first grenades are switched to, infinite
+  ammo fills to the cap, and deathmatch and coop items respawn or stay
+  put as in `Pickup_Weapon`/`Pickup_Ammo`/`Touch_Item`; a deathmatch death
+  drops the loaded weapon and, with `DF_QUAD_DROP`, the quad
+  (`TossClientWeapon`); drops follow the aim (`v_angle`); the gun sways
+  with the walk bob and lags behind turns (`SV_CalcGunOffset`)
+- Water, slime and lava act on the player (C `P_WorldEffects`): splash,
+  submerge and gasp sounds, drowning once the air runs out (harder each
+  second up to 15), the rebreather and envirosuit giving air, lava
+  burning three a level (one with the envirosuit) and slime one a level
+  (none with it)
+- Muzzle flashes (C `CL_AddMuzzleFlash`/`CL_AddMuzzleFlash2`): the
+  player's and monsters' gunfire is heard (C plays those sounds on the
+  client, so they were silent) and lights the scene; the server hands
+  multicast messages to `LocalGame::take_messages`, the client keeps C's
+  dlight list (`q2_client::effects`), and lit world faces take C GL3's
+  dynamic lights; `monster_flash_offset` moves to `q2_shared::flash`
+- Grenades: blasts record C's means of death by kind (launcher, hand,
+  held) in `GameWorld::means_of_death`, set by every `t_damage` like C
+  `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two
+  hand grenade sounds) and launched grenades get C's random lift and
+  drift
 - Gamma is tunable: `?gamma=1.2` sets `vid_gamma` at load and F7/F8 step
   it by 0.1 in game, within C's brightness slider range 0.1..2.0; the
   shaders read it as C's `gamma` uniform (`1/vid_gamma`) through the new

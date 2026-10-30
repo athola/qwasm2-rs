@@ -303,6 +303,7 @@ pub const SFL_CROSS_TRIGGER_MASK: i32 = 0x0000_00ff;
 pub const CHAN_AUTO: i32 = 0;
 pub const CHAN_WEAPON: i32 = 1;
 pub const CHAN_VOICE: i32 = 2;
+pub const CHAN_ITEM: i32 = 3;
 pub const CHAN_BODY: i32 = 4;
 pub const CHAN_NO_PHS_ADD: i32 = 8;
 
@@ -312,6 +313,10 @@ pub const ATTN_IDLE: f32 = 2.0;
 pub const ATTN_STATIC: f32 = 3.0;
 
 pub const SKILL_EASY: i32 = 0;
+/// C `pers.hand` (userinfo `hand`).
+pub const RIGHT_HANDED: i32 = 0;
+pub const LEFT_HANDED: i32 = 1;
+pub const CENTER_HANDED: i32 = 2;
 pub const SKILL_MEDIUM: i32 = 1;
 pub const SKILL_HARD: i32 = 2;
 pub const SKILL_HARDPLUS: i32 = 3;
@@ -321,21 +326,54 @@ pub const DEFAULT_BULLET_VSPREAD: i32 = 500;
 pub const DEFAULT_SHOTGUN_HSPREAD: i32 = 1000;
 pub const DEFAULT_SHOTGUN_VSPREAD: i32 = 500;
 pub const DEFAULT_SHOTGUN_COUNT: i32 = 12;
+pub const DEFAULT_DEATHMATCH_SHOTGUN_COUNT: i32 = 12;
+pub const DEFAULT_SSHOTGUN_COUNT: i32 = 20;
+
+/// Seconds a damage kick takes to fade from the view (C `DAMAGE_TIME`).
+pub const DAMAGE_TIME: f32 = 0.5;
+
+/// `dmflags` bit: weapons stay put when picked up and can't be dropped
+/// (C `DF_WEAPONS_STAY`).
+pub const DF_WEAPONS_STAY: i32 = 0x0000_0004;
+
+/// `dmflags` bits for deathmatch (C `DF_*`): stay on the same map, teams
+/// by skin or model, no team damage, respawn without a press, exits
+/// allowed.
+pub const DF_SAME_LEVEL: i32 = 0x0000_0020;
+pub const DF_SKINTEAMS: i32 = 0x0000_0040;
+pub const DF_MODELTEAMS: i32 = 0x0000_0080;
+pub const DF_NO_FRIENDLY_FIRE: i32 = 0x0000_0100;
+pub const DF_FORCE_RESPAWN: i32 = 0x0000_0400;
+pub const DF_ALLOW_EXIT: i32 = 0x0000_1000;
+/// `dmflags` bit: a dying player drops a running quad (C `DF_QUAD_DROP`).
+pub const DF_QUAD_DROP: i32 = 0x0000_4000;
+
+/// `dmflags` bit: deathmatch powerups are used when picked up (C
+/// `DF_INSTANT_ITEMS`).
+pub const DF_INSTANT_ITEMS: i32 = 0x0000_0010;
+
+/// `dmflags` bit: firing uses no ammo (C `DF_INFINITE_AMMO`).
+pub const DF_INFINITE_AMMO: i32 = 0x0000_2000;
 
 pub const POWER_ARMOR_NONE: i32 = 0;
 pub const POWER_ARMOR_SCREEN: i32 = 1;
 pub const POWER_ARMOR_SHIELD: i32 = 2;
 
-pub const TE_EXPLOSION1: i32 = 5;
-pub const TE_EXPLOSION2: i32 = 6;
-pub const TE_SPLASH: i32 = 10;
-pub const TE_PARASITE_ATTACK: i32 = 16;
-pub const TE_MEDIC_CABLE_ATTACK: i32 = 19;
-/// Used as 22 in maps (shared.h: "DON'T RENUMBER").
-pub const TE_BOSSTPORT: i32 = 22;
+pub use q2_shared::constants::{
+    TE_BOSSTPORT, TE_EXPLOSION1, TE_EXPLOSION2, TE_MEDIC_CABLE_ATTACK, TE_PARASITE_ATTACK,
+    TE_SPLASH,
+};
 
+/// C `ANIM_*` (local.h): player animation classes, lowest first.
+pub const ANIM_BASIC: i32 = 0;
+pub const ANIM_WAVE: i32 = 1;
+pub const ANIM_JUMP: i32 = 2;
+pub const ANIM_PAIN: i32 = 3;
+pub const ANIM_ATTACK: i32 = 4;
 /// C `ANIM_DEATH` (local.h): the death animation holds its last frame.
 pub const ANIM_DEATH: i32 = 5;
+/// Plays backwards from `s.frame` down to `anim_end`.
+pub const ANIM_REVERSE: i32 = 6;
 /// Most gibs thrown in one frame (C `MAX_GIBS`, local.h).
 pub const MAX_GIBS: i32 = 20;
 /// Most debris chunks thrown in one frame (C `MAX_DEBRIS`, local.h).

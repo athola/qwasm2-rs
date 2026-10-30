@@ -1,8 +1,9 @@
 //! Miscellaneous entities — explobox, teleporters, gibs, path_corners, lights.
 //!
 //! Part of `g_misc.c`: misc_explobox, misc_teleporter(_dest), path_corner,
-//! point_combat, info_null/info_notnull and func_group. The decorative
-//! misc_* models, gibs and light_mine spawn as static models. The gib,
+//! point_combat, info_null/info_notnull and func_group. misc_gib_* and
+//! light_mine spawn as static models; the other misc_* set pieces are in
+//! `misc_models`, func_wall/func_object/func_clock in `misc_func`. The gib,
 //! debris and explosion helpers monsters die through (ThrowGib, ThrowHead,
 //! ThrowClientHead, ThrowDebris, BecomeExplosion1/2) live here too.
 //!
@@ -274,7 +275,7 @@ const EF_FLIES: u32 = 0x0000_4000;
 const SM_MEAT_MODEL: &str = "models/objects/gibs/sm_meat/tris.md2";
 
 /// C `think = G_FreeEdict`.
-fn free_think(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn free_think(world: &mut GameWorld, key: EntityKey) {
     world.free_entity(key);
 }
 
@@ -622,8 +623,34 @@ pub fn become_explosion2(world: &mut GameWorld, self_key: EntityKey) {
 // Spawn functions
 // ---------------------------------------------------------------------------
 
-/// C ref: `SP_misc_explobox`. The model comes from `spawn::SPAWNS`;
-/// barrel_touch (pushing) and M_droptofloor are not ported.
+/// Roll away from whoever walks into it, by their mass against its own,
+/// unless they are in the air or standing on it. C ref: `barrel_touch`.
+pub fn barrel_touch(
+    world: &mut GameWorld,
+    self_key: EntityKey,
+    other: EntityKey,
+    _plane: Option<&Plane>,
+    _surf: Option<&Surface>,
+) {
+    let (Some(barrel), Some(pusher)) = (world.entities.get(self_key), world.entities.get(other))
+    else {
+        return;
+    };
+    if pusher.game.ground_entity.is_none() || pusher.game.ground_entity == Some(self_key) {
+        return;
+    }
+    let ratio = pusher.game.mass as f32 / barrel.game.mass as f32;
+    let away = barrel.state.origin - pusher.state.origin;
+    crate::monster::movement::m_walkmove(
+        world,
+        self_key,
+        crate::monster::movement::vectoyaw(away),
+        20.0 * ratio * FRAMETIME,
+    );
+}
+
+/// C ref: `SP_misc_explobox` (the model comes from `spawn::SPAWNS`);
+/// `finish_misc_explobox` does the parts that need the level.
 pub fn sp_misc_explobox(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -645,7 +672,35 @@ pub fn sp_misc_explobox(
         }
         ent.die = Some(barrel_delay);
         ent.game.takedamage = TakeDamage::Yes;
+        ent.monsterinfo.get_or_insert_with(Box::default).aiflags = AiFlags::NOSTEP;
+        ent.touch = Some(barrel_touch);
     }
+}
+
+/// The rest of C `SP_misc_explobox`: gone in deathmatch, the debris
+/// models precached, and dropped to the floor two frames in.
+pub fn finish_misc_explobox(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    for model in [
+        "models/objects/debris1/tris.md2",
+        "models/objects/debris2/tris.md2",
+        "models/objects/debris3/tris.md2",
+    ] {
+        world.gi.model_index(model);
+    }
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.think = Some(crate::ai::m_droptofloor);
+        ent.game.nextthink = time + 2.0 * FRAMETIME;
+    }
+    world.link_entity(key);
 }
 
 /// C ref: `SP_misc_teleporter`: a solid pad plus a separate trigger above
@@ -857,19 +912,6 @@ pub fn sp_info_notnull(
         if let Some(tn) = fields.get("targetname") {
             ent.game.targetname = tn.clone();
         }
-    }
-}
-
-pub fn sp_misc_generic(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    fields: &HashMap<String, String>,
-) {
-    if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields
-            .get("classname")
-            .cloned()
-            .unwrap_or_else(|| "misc".to_string());
     }
 }
 
@@ -1236,6 +1278,92 @@ mod tests {
         assert_eq!(
             (ent.mins, ent.maxs),
             (Vec3f::new(-16.0, -16.0, 0.0), Vec3f::new(16.0, 16.0, 40.0))
+        );
+    }
+
+    #[test]
+    fn explobox_is_pushable_and_drops_to_the_floor_two_frames_in() {
+        let mut world = test_world();
+        world.init_game();
+        world.level.time = 1.0;
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "misc_explobox" }"#,
+            "",
+        );
+        let barrel = world.find_by_classname(None, "misc_explobox").unwrap();
+        let ent = world.entities.get(barrel).unwrap();
+        assert!(ent
+            .touch
+            .is_some_and(|f| std::ptr::fn_addr_eq(f, barrel_touch as crate::entity::TouchFn)));
+        assert!(ent
+            .monsterinfo
+            .as_ref()
+            .is_some_and(|m| m.aiflags.contains(AiFlags::NOSTEP)));
+        assert!(ent.think.is_some_and(|f| std::ptr::fn_addr_eq(
+            f,
+            crate::ai::m_droptofloor as crate::entity::ThinkFn
+        )));
+        assert!((ent.game.nextthink - (world.level.time + 0.2)).abs() < 1e-5);
+        assert_eq!(world.level.total_monsters, 0, "not a monster");
+    }
+
+    #[test]
+    fn deathmatch_removes_exploboxes() {
+        let mut world = test_world();
+        world.init_game();
+        world.game.deathmatch = true;
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "misc_explobox" }"#,
+            "",
+        );
+        assert!(world.find_by_classname(None, "misc_explobox").is_none());
+    }
+
+    /// A barrel on the floor at the origin and a 200-mass player at `x`.
+    fn barrel_and_pusher(x: f32) -> (GameWorld, EntityKey, EntityKey) {
+        let mut world = crate::monster::test_support::floor_world(None);
+        let ground = world.entities.key_for_number(0);
+        let barrel = world.spawn().unwrap();
+        sp_misc_explobox(&mut world.entities, barrel, &HashMap::new());
+        world.entities.get_mut(barrel).unwrap().game.ground_entity = ground;
+        world.link_entity(barrel);
+        let player = world.spawn().unwrap();
+        let p = world.entities.get_mut(player).unwrap();
+        p.state.origin = Vec3f::new(x, 0.0, 24.0);
+        p.game.mass = 200;
+        p.game.ground_entity = ground;
+        (world, barrel, player)
+    }
+
+    #[test]
+    fn walking_into_a_barrel_pushes_it_away_by_mass_ratio() {
+        // C barrel_touch: 20 * (200 / 400) * FRAMETIME = 1 unit per touch,
+        // away from the toucher.
+        let (mut world, barrel, player) = barrel_and_pusher(-40.0);
+        barrel_touch(&mut world, barrel, player, None, None);
+        let origin = world.entities.get(barrel).unwrap().state.origin;
+        assert!(
+            (origin - Vec3f::new(1.0, 0.0, 0.0)).length() < 0.01,
+            "{origin}"
+        );
+    }
+
+    #[test]
+    fn a_barrel_ignores_touches_from_the_air_or_from_on_top() {
+        let (mut world, barrel, player) = barrel_and_pusher(-40.0);
+        world.entities.get_mut(player).unwrap().game.ground_entity = None;
+        barrel_touch(&mut world, barrel, player, None, None);
+        assert_eq!(
+            world.entities.get(barrel).unwrap().state.origin,
+            Vec3f::ZERO
+        );
+        world.entities.get_mut(player).unwrap().game.ground_entity = Some(barrel);
+        barrel_touch(&mut world, barrel, player, None, None);
+        assert_eq!(
+            world.entities.get(barrel).unwrap().state.origin,
+            Vec3f::ZERO
         );
     }
 

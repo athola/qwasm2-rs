@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use q2_common::pmove::Pmove;
-use q2_shared::constants::{MASK_DEADSOLID, MASK_PLAYERSOLID};
+use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID};
 use q2_shared::types::*;
 
 use crate::constants::*;
@@ -67,6 +67,7 @@ impl GameWorld {
         ent.die = Some(player_die);
         ent.game.health = PLAYER_MAX_HEALTH;
         ent.game.max_health = PLAYER_MAX_HEALTH;
+        self.player_skin_configstring(key);
 
         Some(key)
     }
@@ -160,6 +161,8 @@ impl GameWorld {
                     viewangles: ent.state.angles,
                     ..Default::default()
                 };
+                client.v_angle = ent.state.angles;
+                client.air_finished = self.level.time + 12.0;
                 for i in 0..3 {
                     client.ps.pmove.origin[i] = (spawn_origin[i] * 8.0) as i32 as i16;
                     client.ps.pmove.delta_angles[i] =
@@ -171,6 +174,14 @@ impl GameWorld {
         // C ignores whether something survived.
         self.kill_box(key);
         self.link_entity(key);
+
+        self.player_skin_configstring(key);
+
+        // Force the current weapon up.
+        if let Some(client) = self.client_mut(key) {
+            client.newweapon = client.pers.weapon;
+        }
+        self.change_weapon(key);
     }
 
     /// Starting persistent data: the Blaster, 100 health and the default
@@ -457,9 +468,7 @@ impl GameWorld {
 
     /// Put a dead player back in: deathmatch and coop leave the corpse in
     /// the body queue and respawn at a start with a teleport effect; single
-    /// player asks for the load menu. Not called yet:
-    /// ClientBeginServerFrame's respawn waits on #16. `respawn_time` is not
-    /// ported. C ref: `respawn` (player/client.c).
+    /// player asks for the load menu. C ref: `respawn` (player/client.c).
     pub fn respawn(&mut self, key: EntityKey) {
         if !(self.game.deathmatch || self.game.coop) {
             // Restart the entire server.
@@ -478,11 +487,13 @@ impl GameWorld {
             ent.svflags &= !q2_shared::constants::SVF_NOCLIENT;
         }
         self.begin_client(key);
+        let time = self.level.time;
         if let Some((ent, client)) = self.entity_and_client_mut(key) {
             // Teleport effect, held in place briefly.
             ent.state.event = q2_shared::constants::EV_PLAYER_TELEPORT;
             client.ps.pmove.pm_flags = q2_common::pmove::PMF_TIME_TELEPORT;
             client.ps.pmove.pm_time = 14;
+            client.respawn_time = time;
         }
     }
 
@@ -532,6 +543,17 @@ impl GameWorld {
         let Some(number) = self.number_of(key) else {
             return;
         };
+        if self.level.intermission_time != 0.0 {
+            let can_exit = self.level.time > self.level.intermission_time + 5.0;
+            if let Some(client) = self.client_mut(key) {
+                client.ps.pmove.pm_type = PmType::Freeze;
+            }
+            // Can exit intermission after five seconds.
+            if can_exit && cmd.buttons & q2_shared::constants::BUTTON_ANY != 0 {
+                self.level.exitintermission = true;
+            }
+            return;
+        }
         let (state, snap_initial, mask) = {
             let Some((ent, client)) = self.entity_and_client_mut(key) else {
                 return;
@@ -622,6 +644,7 @@ impl GameWorld {
                 client.ps.viewangles.x = -15.0;
                 client.ps.viewangles.z = 40.0;
             } else {
+                client.v_angle = pm.viewangles;
                 client.ps.viewangles = pm.viewangles;
             }
         }
@@ -657,29 +680,107 @@ impl GameWorld {
             }
         }
 
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        client.oldbuttons = client.buttons;
+        client.buttons = cmd.buttons;
+        client.latched_buttons |= client.buttons & !client.oldbuttons;
         // Save the light level the player is standing on for monster
         // sighting AI.
-        if let Some(ent) = self.entities.get_mut(key) {
-            ent.game.light_level = i32::from(cmd.lightlevel);
+        ent.game.light_level = i32::from(cmd.lightlevel);
+
+        // Fire from the final position. A spectator's press (chase cam)
+        // waits on spectator support.
+        let fire = client.latched_buttons & BUTTON_ATTACK != 0
+            && !client.resp.spectator
+            && !client.weapon_thunk;
+        if fire {
+            client.weapon_thunk = true;
+            self.think_weapon(key);
         }
     }
 
-    /// Per-frame setup for a client at the start of the server frame.
-    /// C ref: `ClientBeginServerFrame` (player/client.c).
-    /// Only the player-trail part is ported; weapon think and respawn
-    /// wait on #16.
+    /// Per-frame setup for a client at the start of the server frame:
+    /// run the weapon unless a command already did, respawn a dead player
+    /// on a press, then the player trail. C ref: `ClientBeginServerFrame`
+    /// (player/client.c); the deathmatch spectator switch is not ported.
     pub fn client_begin_server_frame(&mut self, key: EntityKey) {
         if self.level.intermission_time != 0.0 {
             return;
+        }
+        if let Some(client) = self.client_mut(key) {
+            if !client.weapon_thunk && !client.resp.spectator {
+                self.think_weapon(key);
+            } else {
+                client.weapon_thunk = false;
+            }
         }
         let dead = self
             .entities
             .get(key)
             .is_none_or(|e| e.game.deadflag != crate::constants::DeadFlag::No);
         if dead {
+            // Wait for any button just going down; in deathmatch only
+            // attack, or none with forced respawn.
+            let deathmatch = self.game.deathmatch;
+            let force = deathmatch && self.game.dmflags & crate::constants::DF_FORCE_RESPAWN != 0;
+            let time = self.level.time;
+            let pressed = self.client(key).is_some_and(|c| {
+                let mask = if deathmatch { BUTTON_ATTACK } else { u8::MAX };
+                time > c.respawn_time && (c.latched_buttons & mask != 0 || force)
+            });
+            if pressed {
+                self.respawn(key);
+                if let Some(client) = self.client_mut(key) {
+                    client.latched_buttons = 0;
+                }
+            }
             return;
         }
         self.player_trail_follow(key);
+        if let Some(client) = self.client_mut(key) {
+            client.latched_buttons = 0;
+        }
+    }
+
+    /// The player's looping sound: frying in lava or slime, else the
+    /// weapon's hum. C ref: `G_SetClientSound` (player/view.c), without
+    /// the help-computer beep.
+    fn set_client_sound(&mut self, key: EntityKey) {
+        // New help: flag it, and beep (no more than three times).
+        let (game_helpchanged, framenum) = (self.game.helpchanged, self.level.framenum);
+        let beep = self.client_mut(key).is_some_and(|c| {
+            if c.pers.game_helpchanged != game_helpchanged {
+                c.pers.game_helpchanged = game_helpchanged;
+                c.pers.helpchanged = 1;
+            }
+            let due = c.pers.helpchanged != 0 && c.pers.helpchanged <= 3 && framenum & 63 == 0;
+            if due {
+                c.pers.helpchanged += 1;
+            }
+            due
+        });
+        if beep {
+            let pc_up = self.gi.sound_index("misc/pc_up.wav");
+            self.gi.sound(
+                self.number_of(key),
+                CHAN_VOICE,
+                pc_up,
+                1.0,
+                ATTN_STATIC,
+                0.0,
+            );
+        }
+        let fry = self.gi.sound_index("player/fry.wav");
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        let burning = ent.game.waterlevel != 0
+            && ent.game.watertype
+                & (q2_shared::constants::CONTENTS_LAVA | q2_shared::constants::CONTENTS_SLIME)
+                != 0;
+        ent.state.sound = if burning { fry } else { client.weapon_sound };
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
@@ -699,11 +800,34 @@ impl GameWorld {
         self.level.debris_this_frame = 0;
     }
 
-    /// Build one client's view and status bar for this frame.
-    /// C ref: `ClientEndServerFrame` (player/view.c).
+    /// Build one client's view, effects, sound and status bar for this
+    /// frame. C ref: `ClientEndServerFrame` (player/view.c).
     pub fn client_end_server_frame(&mut self, key: EntityKey) {
-        self.update_player_view(key);
+        self.world_effects(key);
+        // C works out the bob before P_DamageFeedback; the feedback does
+        // not touch the bob, so the view offset computes it here.
+        self.damage_feedback(key);
+        let bob = self.update_player_view(key);
+        self.calc_gun_offset(key, &bob);
+        // After the view offset, so eye contents are right.
+        self.calc_blend(key);
         self.update_player_stats(key);
+        self.set_client_effects(key);
+        self.set_client_sound(key);
+        // If the scoreboard is up, update it.
+        let showscores = self.client(key).is_some_and(|c| c.showscores);
+        if showscores && self.level.framenum & 31 == 0 {
+            let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
+            self.deathmatch_scoreboard_message(key, enemy);
+            if let Some(number) = self.number_of(key) {
+                self.gi.unicast(number, false);
+            }
+        }
+        if let Some(client) = self.client_mut(key) {
+            client.oldviewangles = client.ps.viewangles;
+            client.kick_origin = Vec3f::ZERO;
+            client.kick_angles = Vec3f::ZERO;
+        }
     }
 }
 
@@ -748,17 +872,20 @@ const SAVED_FLAGS: EntityFlags = EntityFlags::GODMODE
     .union(EntityFlags::NOTARGET)
     .union(EntityFlags::POWER_ARMOR);
 
-/// Keep the userinfo and take the player's name from it. The skin, hand
-/// and fov parts are not ported. C ref: `ClientUserinfoChanged`.
+/// Keep the userinfo and take the player's name and handedness from it.
+/// The skin and fov parts are not ported. C ref: `ClientUserinfoChanged`.
 fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
     pers.netname = extract_info_value(userinfo, "name").unwrap_or_else(|| "player".to_string());
+    if let Some(hand) = extract_info_value(userinfo, "hand").filter(|h| !h.is_empty()) {
+        pers.hand = crate::spawn::strtol(&hand);
+    }
     pers.userinfo = userinfo.to_string();
 }
 
 /// Extract a value from a Quake-style userinfo string ("\\key\\value\\key\\value").
 /// Keys compare case-sensitively and a value may be empty, as in C
 /// `Info_ValueForKey`.
-fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
+pub(crate) fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
     let body = userinfo.strip_prefix('\\').unwrap_or(userinfo);
     let mut parts = body.split('\\');
     while let (Some(k), Some(value)) = (parts.next(), parts.next()) {
@@ -776,9 +903,9 @@ fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
 pub fn player_die(
     world: &mut GameWorld,
     key: EntityKey,
-    _inflictor: EntityKey,
-    _attacker: EntityKey,
-    _damage: i32,
+    inflictor: EntityKey,
+    attacker: EntityKey,
+    damage: i32,
     _point: Vec3f,
 ) {
     let Some(ent) = world.entities.get_mut(key) else {
@@ -794,11 +921,23 @@ pub fn player_die(
     ent.maxs.z = -8.0;
     ent.svflags |= SvFlags::DEADMONSTER.bits();
     let first_death = ent.game.deadflag == DeadFlag::No;
+    let time = world.level.time;
+    if first_death {
+        world.client_obituary(key, inflictor, attacker);
+        world.toss_client_weapon(key);
+        if world.game.deathmatch {
+            world.cmd_help(key); // show scores
+        }
+    }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
     if let Some(client) = ent
         .client
         .and_then(|slot| world.clients.get_mut(slot))
         .filter(|_| first_death)
     {
+        client.respawn_time = time + 1.0;
         client.ps.pmove.pm_type = PmType::Dead;
         // Clear the inventory, keeping keys for the coop respawn.
         for (n, item) in world.items.iter().enumerate() {
@@ -808,12 +947,221 @@ pub fn player_die(
         }
         client.pers.inventory.fill(0);
     }
-    ent.game.flags.remove(EntityFlags::POWER_ARMOR);
-    if ent.game.health < -40 {
-        ent.game.takedamage = TakeDamage::No; // gibbed
+    // Remove powerups.
+    if let Some(client) = ent.client.and_then(|slot| world.clients.get_mut(slot)) {
+        client.quad_framenum = 0;
+        client.invincible_framenum = 0;
+        client.breather_framenum = 0;
+        client.enviro_framenum = 0;
     }
+    ent.game.flags.remove(EntityFlags::POWER_ARMOR);
+    let gibbed = ent.game.health < -40;
+    let was_dead = ent.game.deadflag != DeadFlag::No;
+    if gibbed {
+        // The sound is played at the end of the server frame.
+        let udeath = world.gi.sound_index("misc/udeath.wav");
+        if let Some(client) = world.client_mut(key) {
+            client.death_sound = udeath;
+        }
+        for _ in 0..4 {
+            crate::misc::throw_gib(
+                world,
+                key,
+                "models/objects/gibs/sm_meat/tris.md2",
+                damage,
+                crate::misc::GibType::Organic,
+            );
+        }
+        crate::misc::throw_client_head(world, key, damage);
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.game.takedamage = TakeDamage::No;
+        }
+    } else if !was_dead && world.client(key).is_some_and(|c| c.death_sound == 0) {
+        // Normal death; the animation is #32. The sound is played at the
+        // end of the server frame.
+        let n = world.random_u32() % 4 + 1;
+        let scream = world.gi.sound_index(&format!("*death{n}.wav"));
+        if let Some(client) = world.client_mut(key) {
+            client.death_sound = scream;
+        }
+    }
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
     ent.game.deadflag = DeadFlag::Dead;
     world.link_entity(key);
+}
+
+/// What a self-kill message calls the player (C `IsFemale`, `IsNeutral`
+/// on the userinfo `gender`).
+fn pronoun(userinfo: &str) -> (&'static str, &'static str) {
+    let gender = extract_info_value(userinfo, "gender").unwrap_or_default();
+    match gender.chars().next() {
+        Some('f' | 'F') => ("her", "herself"),
+        Some('m' | 'M') => ("his", "himself"),
+        _ => ("its", "itself"),
+    }
+}
+
+impl GameWorld {
+    /// Say how a player died and keep score: a world death or suicide
+    /// costs a deathmatch frag, a kill earns the killer one (or costs one
+    /// for a teammate). Single player only says "died". C ref:
+    /// `ClientObituary` (player/client.c).
+    pub fn client_obituary(&mut self, key: EntityKey, _inflictor: EntityKey, attacker: EntityKey) {
+        use crate::constants::MeansOfDeath as M;
+        use q2_shared::constants::PRINT_MEDIUM;
+        let (deathmatch, coop) = (self.game.deathmatch, self.game.coop);
+        let attacker_client = self.client(attacker).map(|c| c.pers.netname.clone());
+        if coop && attacker_client.is_some() {
+            self.friendly_fire = true;
+        }
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        let name = client.pers.netname.clone();
+        let (his, himself) = pronoun(&client.pers.userinfo);
+        if deathmatch || coop {
+            let (ff, mod_) = (self.friendly_fire, self.means_of_death);
+            let mut message: Option<String> = match mod_ {
+                M::Suicide => Some("suicides".into()),
+                M::Falling => Some("cratered".into()),
+                M::Crush => Some("was squished".into()),
+                M::Water => Some("sank like a rock".into()),
+                M::Slime => Some("melted".into()),
+                M::Lava => Some("does a back flip into the lava".into()),
+                M::Explosive | M::Barrel => Some("blew up".into()),
+                M::Exit => Some("found a way out".into()),
+                M::TargetLaser => Some("saw the light".into()),
+                M::TargetBlaster => Some("got blasted".into()),
+                M::Bomb | M::Splash | M::TriggerHurt => Some("was in the wrong place".into()),
+                _ => None,
+            };
+            if attacker == key {
+                message = Some(match mod_ {
+                    M::HeldGrenade => "tried to put the pin back in".into(),
+                    M::HandgrenadeSplash | M::GrenadeSplash => {
+                        format!("tripped on {his} own grenade")
+                    }
+                    M::RocketSplash => format!("blew {himself} up"),
+                    M::BfgBlast => "should have used a smaller gun".into(),
+                    _ => format!("killed {himself}"),
+                });
+            }
+            if let Some(message) = message {
+                self.gi
+                    .bprintf(PRINT_MEDIUM, &format!("{name} {message}.\n"));
+                if deathmatch {
+                    if let Some(client) = self.client_mut(key) {
+                        client.resp.score -= 1;
+                    }
+                }
+                if let Some(ent) = self.entities.get_mut(key) {
+                    ent.game.enemy = None;
+                }
+                return;
+            }
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.game.enemy = Some(attacker);
+            }
+            if let Some(killer) = attacker_client {
+                let words = match mod_ {
+                    M::Blaster => Some(("was blasted by", "")),
+                    M::Shotgun => Some(("was gunned down by", "")),
+                    M::SShotgun => Some(("was blown away by", "'s super shotgun")),
+                    M::Machinegun => Some(("was machinegunned by", "")),
+                    M::Chaingun => Some(("was cut in half by", "'s chaingun")),
+                    M::Grenade => Some(("was popped by", "'s grenade")),
+                    M::GrenadeSplash => Some(("was shredded by", "'s shrapnel")),
+                    M::Rocket => Some(("ate", "'s rocket")),
+                    M::RocketSplash => Some(("almost dodged", "'s rocket")),
+                    M::Hyperblaster => Some(("was melted by", "'s hyperblaster")),
+                    M::Railgun => Some(("was railed by", "")),
+                    M::BfgLaser => Some(("saw the pretty lights from", "'s BFG")),
+                    M::BfgBlast => Some(("was disintegrated by", "'s BFG blast")),
+                    M::BfgEffect => Some(("couldn't hide from", "'s BFG")),
+                    M::Handgrenade => Some(("caught", "'s handgrenade")),
+                    M::HandgrenadeSplash => Some(("didn't see", "'s handgrenade")),
+                    M::HeldGrenade => Some(("feels", "'s pain")),
+                    M::Telefrag => Some(("tried to invade", "'s personal space")),
+                    _ => None,
+                };
+                if let Some((message, message2)) = words {
+                    self.gi.bprintf(
+                        PRINT_MEDIUM,
+                        &format!("{name} {message} {killer}{message2}\n"),
+                    );
+                    if deathmatch {
+                        if let Some(client) = self.client_mut(attacker) {
+                            client.resp.score += if ff { -1 } else { 1 };
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        self.gi.bprintf(PRINT_MEDIUM, &format!("{name} died.\n"));
+        if deathmatch {
+            if let Some(client) = self.client_mut(key) {
+                client.resp.score -= 1;
+            }
+        }
+    }
+}
+
+impl GameWorld {
+    /// A deathmatch death drops the weapon in hand if it has ammo (never
+    /// the blaster) and, with `DF_QUAD_DROP`, a quad with more than a
+    /// second left, which vanishes when its time would have run out; the
+    /// two go 22.5 degrees either side of the aim. C ref:
+    /// `TossClientWeapon` (player/client.c).
+    pub fn toss_client_weapon(&mut self, key: EntityKey) {
+        if !self.game.deathmatch {
+            return;
+        }
+        let framenum = self.level.framenum;
+        let quad_drop = self.game.dmflags & crate::constants::DF_QUAD_DROP != 0;
+        let blaster = self.find_item_by_name("Blaster");
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        let item = client
+            .pers
+            .weapon
+            .filter(|_| client.pers.inventory[client.ammo_index] != 0)
+            .filter(|&w| Some(w) != blaster);
+        let quad_left = client.quad_framenum - framenum;
+        let quad = quad_drop && client.quad_framenum > framenum + 10;
+        let spread = if item.is_some() && quad { 22.5 } else { 0.0 };
+        let turn = |world: &mut GameWorld, degrees: f32| {
+            if let Some(client) = world.client_mut(key) {
+                client.v_angle.y += degrees;
+            }
+        };
+        if let Some(item) = item {
+            turn(self, -spread);
+            let drop = self.drop_item(key, item);
+            turn(self, spread);
+            if let Some(e) = drop.and_then(|d| self.entities.get_mut(d)) {
+                e.game.spawnflags = crate::items::DROPPED_PLAYER_ITEM;
+            }
+        }
+        if quad {
+            let Some(quad_item) = self.find_item("item_quad") else {
+                return;
+            };
+            turn(self, spread);
+            let drop = self.drop_item(key, quad_item);
+            turn(self, -spread);
+            let time = self.level.time;
+            if let Some(e) = drop.and_then(|d| self.entities.get_mut(d)) {
+                e.game.spawnflags |= crate::items::DROPPED_PLAYER_ITEM;
+                e.touch = Some(crate::items::touch_item);
+                e.game.nextthink = time + quad_left as f32 * FRAMETIME;
+                e.think = Some(crate::items::free_drop);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -822,6 +1170,18 @@ mod tests {
     use crate::traits::GameExport;
     use crate::world::test_world;
     use q2_shared::constants::EF_GIB;
+
+    #[test]
+    fn the_userinfo_sets_the_players_hand_and_an_absent_one_keeps_it() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\Ann\\hand\\1").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.hand, LEFT_HANDED);
+        let pers = &mut world.client_mut(key).unwrap().pers;
+        client_userinfo_changed(pers, "\\name\\Ann");
+        assert_eq!(pers.hand, LEFT_HANDED, "C only sets it when present");
+        client_userinfo_changed(pers, "\\hand\\2");
+        assert_eq!(pers.hand, CENTER_HANDED);
+    }
 
     #[test]
     fn client_connect_creates_player() {
@@ -944,7 +1304,12 @@ mod tests {
         }
         world.begin_client(key);
         let e = world.entities.get(key).unwrap();
-        assert_eq!((e.state.effects, e.state.skinnum, e.state.frame), (0, 0, 0));
+        // ChangeWeapon then raises the blaster: C ShowGun puts its weapmodel
+        // (1) in the skin's high byte and plays FRAME_pain301 (62).
+        assert_eq!(
+            (e.state.effects, e.state.skinnum, e.state.frame),
+            (0, 1 << 8, 62)
+        );
         assert_eq!((e.state.modelindex, e.state.modelindex2), (255, 255));
         assert_eq!(e.svflags, 0);
         assert!(!e.game.flags.contains(EntityFlags::NO_KNOCKBACK));
@@ -1206,6 +1571,309 @@ mod tests {
         assert_eq!(world.select_spawn_point(second), Some(near));
     }
 
+    fn attack(buttons: u8) -> UserCmd {
+        UserCmd {
+            msec: 10,
+            buttons,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn think_client_latches_a_new_press_and_not_a_held_button() {
+        use q2_shared::constants::BUTTON_ATTACK;
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.client_mut(key).unwrap().pers.weapon = None;
+
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        let client = world.client(key).unwrap();
+        assert_eq!(client.buttons, BUTTON_ATTACK);
+        assert_eq!(client.latched_buttons & BUTTON_ATTACK, BUTTON_ATTACK);
+
+        world.client_mut(key).unwrap().latched_buttons = 0;
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        let client = world.client(key).unwrap();
+        assert_eq!(client.oldbuttons, BUTTON_ATTACK);
+        assert_eq!(client.latched_buttons, 0, "held, not pressed again");
+
+        world.think_client(key, &attack(0));
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        assert_eq!(world.client(key).unwrap().latched_buttons, BUTTON_ATTACK);
+    }
+
+    #[test]
+    fn an_attack_press_thinks_the_weapon_once_for_the_frame_like_c() {
+        use q2_shared::constants::BUTTON_ATTACK;
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+
+        world.think_client(key, &attack(BUTTON_ATTACK));
+        assert!(world.client(key).unwrap().weapon_thunk);
+        // ClientBeginServerFrame skips the think the command already ran
+        // and clears the flag and the latched buttons for the next frame.
+        world.client_begin_server_frame(key);
+        let client = world.client(key).unwrap();
+        assert!(!client.weapon_thunk);
+        assert_eq!(client.latched_buttons, 0);
+    }
+
+    #[test]
+    fn think_client_keeps_the_view_angles_for_aiming_like_c_v_angle() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let mut cmd = attack(0);
+        cmd.angles = [angle2short(10.0), angle2short(90.0), 0];
+        world.think_client(key, &cmd);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.v_angle, client.ps.viewangles);
+        assert!(
+            (client.v_angle.y - 90.0).abs() < 0.1,
+            "{:?}",
+            client.v_angle
+        );
+    }
+
+    #[test]
+    fn the_weapon_hum_plays_on_the_player_and_lava_drowns_it_out() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let hum = world.gi.sound_index("weapons/hyprbl1a.wav");
+        world.client_mut(key).unwrap().weapon_sound = hum;
+        world.client_end_server_frames();
+        assert_eq!(world.entities.get(key).unwrap().state.sound, hum);
+
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.waterlevel = 1;
+        ent.game.watertype = q2_shared::constants::CONTENTS_LAVA;
+        world.client_end_server_frames();
+        let fry = world.gi.sound_index("player/fry.wav");
+        assert_eq!(world.entities.get(key).unwrap().state.sound, fry);
+
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.waterlevel = 0;
+        world.client_mut(key).unwrap().weapon_sound = 0;
+        world.client_end_server_frames();
+        assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
+    }
+
+    fn dead_player(
+        deathmatch: bool,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        world.game.deathmatch = deathmatch;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = if deathmatch {
+            "info_player_deathmatch"
+        } else {
+            "info_player_start"
+        }
+        .into();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.time = 10.0;
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.health = 0;
+        ent.game.deadflag = DeadFlag::Dead;
+        world.client_mut(key).unwrap().respawn_time = 11.0;
+        (world, key, gi)
+    }
+
+    #[test]
+    fn a_dead_deathmatch_player_respawns_on_attack_after_a_second() {
+        use q2_shared::constants::{BUTTON_ATTACK, BUTTON_USE};
+        let (mut world, key, _) = dead_player(true);
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        world.client_begin_server_frame(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.deadflag,
+            DeadFlag::Dead,
+            "too soon"
+        );
+        world.level.time = 11.5;
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_USE;
+        world.client_begin_server_frame(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.deadflag,
+            DeadFlag::Dead,
+            "attack only"
+        );
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        world.client_begin_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().game.deadflag, DeadFlag::No);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.latched_buttons, client.respawn_time), (0, 11.5));
+    }
+
+    #[test]
+    fn force_respawn_brings_a_deathmatch_player_back_without_a_press() {
+        let (mut world, key, _) = dead_player(true);
+        world.game.dmflags = crate::constants::DF_FORCE_RESPAWN;
+        world.level.time = 11.5;
+        world.client_begin_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().game.deadflag, DeadFlag::No);
+    }
+
+    #[test]
+    fn a_dead_single_player_asks_for_the_load_menu_on_any_press() {
+        use q2_shared::constants::BUTTON_USE;
+        let (mut world, key, gi) = dead_player(false);
+        world.level.time = 11.5;
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_USE;
+        world.client_begin_server_frame(key);
+        assert_eq!(*gi.commands.borrow(), ["menu_loadgame\n"]);
+    }
+
+    /// A deathmatch player holding `weapon` with `ammo` rounds, about to die.
+    fn armed_for_death(weapon: &str, ammo: (&str, i32)) -> (GameWorld, EntityKey) {
+        let (mut world, _) = crate::world::test_world_recording();
+        world.init_items();
+        world.game.deathmatch = true;
+        world.level.framenum = 100;
+        world.level.time = 10.0;
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let weapon = world.find_item_by_name(weapon).unwrap();
+        let ammo_item = world.find_item_by_name(ammo.0).unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.weapon = Some(weapon);
+        client.pers.inventory[weapon] = 1;
+        client.ammo_index = ammo_item;
+        client.pers.inventory[ammo_item] = ammo.1;
+        (world, key)
+    }
+
+    fn dropped(world: &GameWorld, classname: &str) -> Option<EntityKey> {
+        world.find_by_classname(None, classname)
+    }
+
+    #[test]
+    fn a_deathmatch_death_drops_the_loaded_weapon() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let gun = dropped(&world, "weapon_shotgun").expect("dropped");
+        assert_eq!(
+            world.entities.get(gun).unwrap().game.spawnflags,
+            crate::items::DROPPED_PLAYER_ITEM
+        );
+    }
+
+    #[test]
+    fn no_drop_for_the_blaster_an_empty_gun_or_single_player() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 0));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_shotgun").is_none(), "no ammo");
+
+        let (mut world, key) = armed_for_death("Blaster", ("Shells", 5));
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_blaster").is_none());
+
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.deathmatch = false;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "weapon_shotgun").is_none());
+    }
+
+    #[test]
+    fn quad_drop_throws_the_quad_with_its_time_left_beside_the_gun() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.dmflags = crate::constants::DF_QUAD_DROP;
+        world.client_mut(key).unwrap().quad_framenum = 150;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let quad = dropped(&world, "item_quad").expect("quad dropped");
+        let e = world.entities.get(quad).unwrap();
+        assert_eq!(
+            e.game.spawnflags,
+            crate::items::DROPPED_ITEM | crate::items::DROPPED_PLAYER_ITEM
+        );
+        assert_eq!(e.game.nextthink, 15.0, "50 frames left");
+        assert!(std::ptr::fn_addr_eq(
+            e.touch.unwrap(),
+            crate::items::touch_item as crate::entity::TouchFn
+        ));
+        // The gun and the quad go 22.5 degrees either side.
+        let gun = world
+            .entities
+            .get(dropped(&world, "weapon_shotgun").unwrap())
+            .unwrap();
+        assert!((gun.velocity.normalize() - e.velocity.normalize()).length() > 0.1);
+        assert_eq!(world.client(key).unwrap().v_angle.y, 0.0, "aim restored");
+    }
+
+    #[test]
+    fn a_nearly_spent_quad_is_not_dropped() {
+        let (mut world, key) = armed_for_death("Shotgun", ("Shells", 5));
+        world.game.dmflags = crate::constants::DF_QUAD_DROP;
+        world.client_mut(key).unwrap().quad_framenum = 110;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert!(dropped(&world, "item_quad").is_none(), "10 frames or less");
+    }
+
+    #[test]
+    fn a_dying_player_screams_one_of_four_death_sounds() {
+        let (mut world, _) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.health = -10;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        let sound = world.client(key).unwrap().death_sound;
+        let names: Vec<i32> = (1..=4)
+            .map(|n| world.gi.sound_index(&format!("*death{n}.wav")))
+            .collect();
+        assert!(names.contains(&sound), "{sound}");
+    }
+
+    #[test]
+    fn a_gibbed_player_bursts_into_gibs_and_a_head() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.health = -50;
+        player_die(&mut world, key, key, key, 80, Vec3f::ZERO);
+        assert_eq!(
+            world.client(key).unwrap().death_sound,
+            world.gi.sound_index("misc/udeath.wav")
+        );
+        let gibs = world
+            .entities
+            .iter()
+            .filter(|&(k, e)| e.in_use && k != key && e.state.effects & EF_GIB != 0)
+            .count();
+        assert_eq!(gibs, 4);
+        let head = world.entities.get(key).unwrap();
+        let model = gi.models.borrow()[head.state.modelindex as usize - 1].clone();
+        assert!(
+            model.contains("head2") || model.contains("skull"),
+            "{model}"
+        );
+        assert_eq!(head.game.takedamage, TakeDamage::No);
+    }
+
+    #[test]
+    fn dying_schedules_the_respawn_a_second_later() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.level.time = 7.0;
+        let _ = gi;
+        world.client_mut(key).unwrap().quad_framenum = 500;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        assert_eq!(world.client(key).unwrap().respawn_time, 8.0);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 0, "powerups go");
+    }
+
     #[test]
     fn think_client_runs_pmove_with_c_gravity_and_records_the_result() {
         // The mock's traces never hit, so the player is airborne: pmove must
@@ -1353,7 +2021,7 @@ mod tests {
             Vec3f::X,
             Vec3f::ZERO,
             Vec3f::ZERO,
-            150,
+            120,
             0,
             DamageFlags::empty(),
             MeansOfDeath::Unknown,

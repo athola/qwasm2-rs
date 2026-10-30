@@ -68,6 +68,26 @@ struct Engine {
     vid_gamma: f32,
     /// Last frame's keys, so a held F7/F8 steps gamma once.
     last_keys: [bool; 256],
+    /// Muzzle flash lights (C `cl_dlights`).
+    effects: q2_client::effects::Effects,
+    /// Particles, explosions, beams and lasers (C `cl_particles.c`,
+    /// `cl_tempentities.c`).
+    fx: q2_client::fx::ClientFx,
+    /// Each entity's trail state (C `centity_t`).
+    trails: q2_client::fx::EntityTrails,
+    /// The client's random numbers (C `randk`) for flash sizes and sounds.
+    rng: u32,
+    /// Printed lines, the centre print and the server layout.
+    text: q2_client::notify::ServerText,
+    /// C cvar `game`, the game directory (`?game=`; empty is baseq2).
+    game: String,
+    /// C cvar `hand` (`?hand=`): 0 right, 1 left, 2 centre.
+    hand: i32,
+    /// C cvar `cl_gun` (`?cl_gun=`): 0 no gun, 1 none in a wide view, 2
+    /// always.
+    cl_gun: f32,
+    /// The keys legend (F4, C `menu_keys`, or the page's Keys button).
+    show_legend: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -94,6 +114,15 @@ impl Engine {
             audio: None,
             vid_gamma: 1.0,
             last_keys: [false; 256],
+            effects: q2_client::effects::Effects::default(),
+            fx: q2_client::fx::ClientFx::default(),
+            trails: q2_client::fx::EntityTrails::default(),
+            rng: 0x1234_5678,
+            text: q2_client::notify::ServerText::default(),
+            game: String::new(),
+            hand: 0,
+            cl_gun: 2.0,
+            show_legend: false,
         };
         engine.register_sounds();
         engine
@@ -106,11 +135,74 @@ impl Engine {
         log(&format!("Gamma: {vid_gamma:.1} (F7 darker, F8 brighter)"));
     }
 
+    /// C cvar `hand`: the renderer mirrors or hides the gun, and heat
+    /// beams leave from that side. The game reads it from the userinfo.
+    fn set_hand(&mut self, hand: i32) {
+        self.hand = hand;
+        self.renderer.set_hand(hand);
+    }
+
     fn step_gamma(&mut self, step: i32) {
         let vid_gamma = step_vid_gamma(self.vid_gamma, step);
         if vid_gamma != self.vid_gamma {
             self.set_gamma(vid_gamma);
         }
+    }
+
+    /// Run a new server frame's entity events (C `CL_FireEntityEvents`)
+    /// and this frame's messages for muzzle flashes, temp entities and
+    /// text, then age the lights (C `CL_RunDLights`). Returns the flash
+    /// and effect sounds.
+    fn run_effects(
+        &mut self,
+        messages: &[Vec<u8>],
+        dt: f32,
+        new_frame: bool,
+    ) -> (
+        Vec<q2_client::effects::FlashSound>,
+        Vec<q2_client::fx::FxSound>,
+    ) {
+        let time_ms = self.frames.time();
+        let time = time_ms as f32;
+        // C cl.frame.servertime.
+        let servertime = self.frames.serverframe().unwrap_or(0).wrapping_mul(100);
+        let current = &self.frames.current;
+        let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
+        let rng = &mut self.rng;
+        let mut randk = || xorshift(rng);
+        let mut fx_sounds = Vec::new();
+        if new_frame {
+            for state in current {
+                fx_sounds.extend(self.fx.entity_event(state, time_ms, &mut randk));
+            }
+        }
+        let mut sounds: Vec<q2_client::effects::FlashSound> = messages
+            .iter()
+            .flat_map(|m| self.effects.message(m, entity, time, &mut randk))
+            .collect();
+        for message in messages {
+            fx_sounds.extend(
+                self.fx
+                    .temp_entity(message, time_ms, servertime, &mut randk),
+            );
+        }
+        // C allocates these in cl_dlights while it parses the temp entity.
+        for light in self.fx.take_dlights() {
+            self.effects.add_dlight(light, time);
+        }
+        for (origin, kind) in self.effects.take_particles() {
+            self.fx
+                .flash_particles(origin, kind, time_ms, servertime, &mut randk);
+        }
+        // C con.linewidth: the screen in characters less a margin.
+        let linewidth = usize::try_from(self.view.width / 8 - 2).unwrap_or(1);
+        for message in messages {
+            if self.text.message(message, time as i32, linewidth) {
+                sounds.push(talk_sound());
+            }
+        }
+        self.effects.run_dlights(time, dt);
+        (sounds, fx_sounds)
     }
 
     /// C `CL_RegisterSounds`, from the server's `CS_SOUNDS` names.
@@ -127,6 +219,8 @@ impl Engine {
     fn mix_sounds(
         &mut self,
         sounds: &[q2_server::game_iface::SoundEvent],
+        flash_sounds: &[q2_client::effects::FlashSound],
+        fx_sounds: &[q2_client::fx::FxSound],
         vieworg: q2_shared::types::Vec3f,
         viewangles: q2_shared::types::Vec3f,
         lerpfrac: f32,
@@ -149,6 +243,18 @@ impl Engine {
             };
             self.sound.start_sound(
                 &start,
+                |i| local.configstring(i),
+                |path| fs.load_file(path).ok(),
+            );
+        }
+        let named = flash_sounds.iter().map(flash_named_sound).chain(
+            fx_sounds
+                .iter()
+                .map(|sound| -> q2_client::sound::NamedSound<'_> { fx_named_sound(sound) }),
+        );
+        for sound in named {
+            self.sound.start_named_sound(
+                &sound,
                 |i| local.configstring(i),
                 |path| fs.load_file(path).ok(),
             );
@@ -200,17 +306,19 @@ impl Engine {
     /// Take the server's entities and player state when a new 10 Hz frame
     /// has run (C CL_ParseFrame keeps the previous one for interpolation),
     /// and keep the renderer's models and the sounds in step with their
-    /// configstrings.
-    fn sync_frame(&mut self) {
+    /// configstrings. Returns whether a new frame arrived.
+    fn sync_frame(&mut self) -> bool {
         let framenum = self.local.framenum();
         if self.frames.serverframe() == Some(framenum) {
-            return;
+            return false;
         }
         let Some((_, ps)) = self.local.player() else {
-            return;
+            return false;
         };
         self.frames
             .receive(framenum, self.local.entity_states(), ps);
+        self.trails
+            .server_frame(&self.frames.current, &self.frames.previous);
         let local = &self.local;
         let renderer = &mut self.renderer;
         self.models.sync(
@@ -221,6 +329,7 @@ impl Engine {
         let fs = &self.fs;
         self.sound
             .sync_sounds(|i| local.configstring(i), |path| fs.load_file(path).ok());
+        true
     }
 
     /// Follow a level exit (C `gamemap`): the server loads the next level
@@ -256,6 +365,10 @@ impl Engine {
         self.sound.stop_all();
         sounds.clear();
         self.frames = q2_client::frame::FrameHistory::default();
+        self.effects.clear();
+        self.fx.clear();
+        self.trails = q2_client::fx::EntityTrails::default();
+        self.text.layout.clear();
         self.input.view_angles = q2_shared::types::Vec3f::ZERO;
         if request.kind == LevelKind::Pic {
             log(&format!("Picture: pics/{} shown", request.map));
@@ -277,16 +390,31 @@ impl Engine {
         use q2_client::layout::{execute_layout, HudDraw, LayoutInput};
         let local = &self.local;
         let configstring = |i: usize| local.configstring(i);
-        let draws = execute_layout(
+        let input = LayoutInput {
+            width: self.view.width,
+            height: self.view.height,
+            stats,
+            configstrings: &configstring,
+            serverframe: self.frames.serverframe().unwrap_or(0),
+        };
+        // C SCR_DrawStats, SCR_DrawLayout, then the centre print and the
+        // notify lines.
+        let mut draws = execute_layout(
             local.configstring(q2_shared::constants::CS_STATUSBAR),
-            &LayoutInput {
-                width: self.view.width,
-                height: self.view.height,
-                stats,
-                configstrings: &configstring,
-                serverframe: self.frames.serverframe().unwrap_or(0),
-            },
+            &input,
         );
+        if stats[q2_shared::constants::STAT_LAYOUTS] & 1 != 0 {
+            draws.extend(execute_layout(&self.text.layout, &input));
+        }
+        draws.extend(
+            self.text
+                .draws(self.view.width, self.view.height, self.frames.time()),
+        );
+        if self.show_legend {
+            let ((x, y, w, h), legend) = legend_draws(self.view.width, self.view.height);
+            self.renderer.draw_fill(x, y, w, h, 0);
+            draws.extend(legend);
+        }
         for draw in draws {
             match draw {
                 HudDraw::Pic { x, y, name } => self.renderer.draw_pic(x, y, &name),
@@ -319,23 +447,38 @@ impl Engine {
         );
         apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
         self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
+        if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
+            self.show_legend = !self.show_legend;
+        }
+        for command in bound_commands(&self.last_keys, &input.keys) {
+            self.local.client_command(command);
+        }
         self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
         cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
 
+        // C's func_clock reads localtime: the page's clock.
+        let now = js_sys::Date::new_0();
+        self.local.set_local_time(Some((
+            now.get_hours(),
+            now.get_minutes(),
+            now.get_seconds(),
+        )));
         self.local.think(&cmd);
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.
         self.local.frame(elapsed_us);
         let mut sounds = self.local.take_sounds();
+        let messages = self.local.take_messages();
         if let Some(level) = self.local.take_map_change() {
             if let Err(e) = self.change_map(&level, &mut sounds) {
                 console::error_1(&q2err_to_js(e));
             }
         }
         self.frames.advance(elapsed_us);
-        self.sync_frame();
+        let new_frame = self.sync_frame();
+        let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
@@ -356,7 +499,7 @@ impl Engine {
             // the output, and with no entities no loop is left playing. The
             // client is not spawned, so C sends it no unreliable sounds.
             let origin = q2_shared::types::Vec3f::ZERO;
-            self.mix_sounds(&[], origin, origin, 0.0);
+            self.mix_sounds(&[], &[], &[], origin, origin, 0.0);
         }
         if let Some(name) = self.local.picture() {
             picture_frame(
@@ -374,8 +517,15 @@ impl Engine {
             return;
         };
         let (vieworg, viewangles) = self.frames.view(origin, ps, lerpfrac);
-        let stats = ps.stats;
-        self.mix_sounds(&sounds, vieworg, viewangles, lerpfrac);
+        let (stats, blend, rdflags) = (ps.stats, ps.blend, ps.rdflags);
+        self.mix_sounds(
+            &sounds,
+            &flash_sounds,
+            &fx_sounds,
+            vieworg,
+            viewangles,
+            lerpfrac,
+        );
         let fd = RefDef {
             x: 0,
             y: 0,
@@ -394,19 +544,55 @@ impl Engine {
             // C cl.refdef.areabits = cl.frame.areabits: shut area portals
             // hide the world behind them.
             areabits: self.local.area_bits(),
-            ..Default::default()
+            // C CL_CalcViewValues: the server's tint (powerups, liquids).
+            blend,
+            rdflags,
         };
 
-        let views = q2_client::entities::entity_views(
+        let mut views = q2_client::entities::entity_views(
+            &self.game,
             &self.frames.current,
             &self.frames.previous,
             lerpfrac,
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
-        let entities = render_entities(&views, &self.models);
+        let rng = &mut self.rng;
+        q2_client::entities::pick_beam_colours(&mut views, &mut || xorshift(rng));
+        let mut entities = render_entities(&views, &self.models);
+        let gun = self
+            .frames
+            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
+        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
+        // C CL_AddPacketEntities' trails, then CL_AddTEnts and
+        // CL_AddParticles; C cl.playernum + 1 is the local player.
+        let player = q2_server::local::LOCAL_PLAYER as i32;
+        let rng = &mut self.rng;
+        let mut randk = || xorshift(rng);
+        let mut lights = self.trails.run(
+            &mut self.fx,
+            &self.frames.current,
+            lerpfrac,
+            player,
+            cl_time,
+            &mut randk,
+        );
+        let view = q2_client::fx::FxView::new(
+            player,
+            vieworg,
+            viewangles,
+            self.frames.gun_offsets(),
+            self.hand,
+        );
+        let mut effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
+        effects.entities.extend(power_screens(&views));
+        entities.extend(fx_render_entities(&effects.entities, &self.models));
+        lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
-        self.renderer.render_frame(&fd, &entities, &[], &[]);
+        let mut dlights = render_dlights(&self.effects);
+        dlights.extend(fx_dlights(&lights));
+        self.renderer
+            .render_frame(&fd, &entities, &dlights, &fx_particles(&effects.particles));
         self.draw_hud(&stats);
         self.renderer.end_frame();
     }
@@ -440,6 +626,8 @@ fn frame_dt_seconds(timestamp_ms: f64, last_ms: f64) -> f32 {
 struct ModelTable {
     names: Vec<String>,
     handles: Vec<q2_render_api::ModelHandle>,
+    /// The effects' models (C `cl_mod_explode` and the rest).
+    fx: Vec<(&'static str, q2_render_api::ModelHandle)>,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -466,6 +654,21 @@ impl ModelTable {
                 };
             }
         }
+    }
+
+    /// C `CL_RegisterTEntModels`.
+    fn register_fx(&mut self, mut register: impl FnMut(&str) -> q2_render_api::ModelHandle) {
+        self.fx = q2_client::fx::FX_MODELS
+            .iter()
+            .map(|&name| (name, register(name)))
+            .collect();
+    }
+
+    fn fx_handle(&self, name: &str) -> q2_render_api::ModelHandle {
+        self.fx
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(q2_render_api::ModelHandle::NONE, |&(_, handle)| handle)
     }
 
     fn handle(&self, modelindex: i32) -> q2_render_api::ModelHandle {
@@ -500,6 +703,7 @@ fn prep_refresh<'a>(
     let map = world.strip_prefix("maps/").unwrap_or(world);
     renderer.begin_registration(map.strip_suffix(".bsp").unwrap_or(map))?;
     *models = ModelTable::default();
+    models.register_fx(|name| renderer.register_model(name));
     models.sync(&configstring, |name| renderer.register_model(name));
     // C keeps these in `cl.image_precache`, which nothing draws from: the
     // status bar draws pics by name.
@@ -566,7 +770,7 @@ fn sky_axis(text: &str) -> q2_shared::types::Vec3f {
 }
 
 /// The renderer's entity list for `views`; models it could not register
-/// are left out.
+/// are left out, except beams, which have none.
 #[cfg(any(target_arch = "wasm32", test))]
 fn render_entities(
     views: &[q2_client::entities::EntityView],
@@ -576,7 +780,9 @@ fn render_entities(
         .iter()
         .filter_map(|v| {
             let model = models.handle(v.modelindex);
-            (model != q2_render_api::ModelHandle::NONE).then(|| q2_render_api::RenderEntity {
+            let drawable = model != q2_render_api::ModelHandle::NONE
+                || v.flags & q2_shared::constants::RF_BEAM != 0;
+            drawable.then(|| q2_render_api::RenderEntity {
                 model,
                 frame: v.frame,
                 oldframe: v.oldframe,
@@ -591,6 +797,167 @@ fn render_entities(
             })
         })
         .collect()
+}
+
+/// C `S_StartLocalSound("misc/talk.wav")` for a chat line.
+#[cfg(any(target_arch = "wasm32", test))]
+fn talk_sound() -> q2_client::effects::FlashSound {
+    q2_client::effects::FlashSound {
+        entnum: q2_server::local::LOCAL_PLAYER as i32,
+        channel: 0,
+        name: "misc/talk.wav".into(),
+        volume: 1.0,
+        attenuation: 0.0,
+        timeofs: 0.0,
+    }
+}
+
+/// The lit dynamic lights for the renderer (C `V_AddLight`: the radius
+/// is the intensity).
+#[cfg(any(target_arch = "wasm32", test))]
+fn render_dlights(effects: &q2_client::effects::Effects) -> Vec<q2_render_api::DLight> {
+    effects
+        .dlights()
+        .map(|light| q2_render_api::DLight {
+            origin: light.origin,
+            color: q2_shared::types::Vec3f::from_array(light.color),
+            intensity: light.radius,
+        })
+        .collect()
+}
+
+/// The effects' models for the renderer (C `V_AddEntity` in
+/// `CL_AddTEnts`): a beam needs no model, the rest are left out when
+/// theirs did not register.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_render_entities(
+    entities: &[q2_client::fx::FxEntity],
+    models: &ModelTable,
+) -> Vec<q2_render_api::RenderEntity> {
+    entities
+        .iter()
+        .filter_map(|e| {
+            let model = e.model.map_or(q2_render_api::ModelHandle::NONE, |name| {
+                models.fx_handle(name)
+            });
+            let drawable = e.flags & q2_shared::constants::RF_BEAM != 0
+                || model != q2_render_api::ModelHandle::NONE;
+            drawable.then(|| q2_render_api::RenderEntity {
+                model,
+                frame: e.frame,
+                oldframe: e.oldframe,
+                backlerp: e.backlerp,
+                origin: e.origin,
+                oldorigin: e.oldorigin,
+                angles: e.angles,
+                alpha: e.alpha,
+                flags: e.flags,
+                skinnum: e.skinnum,
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// C `CL_AddPacketEntities`' `EF_POWERSCREEN` model over every entity
+/// but the viewer, whom C skips before it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn power_screens(views: &[q2_client::entities::EntityView]) -> Vec<q2_client::fx::FxEntity> {
+    views
+        .iter()
+        .filter(|v| {
+            v.effects & q2_shared::constants::EF_POWERSCREEN != 0
+                && v.flags & q2_shared::constants::RF_VIEWERMODEL == 0
+        })
+        .map(q2_client::fx::powerscreen_entity)
+        .collect()
+}
+
+/// C `V_AddParticle` for each live particle.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_particles(particles: &[q2_client::particles::DrawParticle]) -> Vec<q2_render_api::Particle> {
+    particles
+        .iter()
+        .map(|p| q2_render_api::Particle {
+            origin: p.origin,
+            color: i32::from(p.color),
+            alpha: p.alpha,
+        })
+        .collect()
+}
+
+/// C `V_AddLight` for the effects' lights.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_dlights(lights: &[q2_client::fx::FxLight]) -> Vec<q2_render_api::DLight> {
+    lights
+        .iter()
+        .map(|l| q2_render_api::DLight {
+            origin: l.origin,
+            color: q2_shared::types::Vec3f::from_array(l.color),
+            intensity: l.intensity,
+        })
+        .collect()
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_named_sound(sound: &q2_client::fx::FxSound) -> q2_client::sound::NamedSound<'static> {
+    q2_client::sound::NamedSound {
+        name: sound.name,
+        entnum: sound.entnum,
+        entchannel: sound.channel,
+        volume: sound.volume,
+        attenuation: sound.attenuation,
+        timeofs: sound.timeofs,
+        origin: sound.origin,
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn flash_named_sound(sound: &q2_client::effects::FlashSound) -> q2_client::sound::NamedSound<'_> {
+    q2_client::sound::NamedSound {
+        name: &sound.name,
+        entnum: sound.entnum,
+        entchannel: sound.channel,
+        volume: sound.volume,
+        attenuation: sound.attenuation,
+        timeofs: sound.timeofs,
+        origin: None,
+    }
+}
+
+/// A xorshift32 step: the client's `randk`, 31 bits like C's. C's
+/// generator (KISS) differs, so the effects' random spreads do too.
+#[cfg(any(target_arch = "wasm32", test))]
+fn xorshift(state: &mut u32) -> u32 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    // C randk is never negative (it takes the absolute value).
+    x & 0x7fff_ffff
+}
+
+/// The first-person gun as a render entity (C `CL_AddViewWeapon`'s
+/// `V_AddEntity`), if its model is registered.
+#[cfg(any(target_arch = "wasm32", test))]
+fn gun_entity(
+    gun: &q2_client::frame::ViewWeapon,
+    models: &ModelTable,
+) -> Option<q2_render_api::RenderEntity> {
+    use q2_shared::constants::{RF_DEPTHHACK, RF_MINLIGHT, RF_WEAPONMODEL};
+    let model = models.handle(gun.modelindex);
+    (model != q2_render_api::ModelHandle::NONE).then(|| q2_render_api::RenderEntity {
+        model,
+        frame: gun.frame,
+        oldframe: gun.oldframe,
+        backlerp: gun.backlerp,
+        origin: gun.origin,
+        oldorigin: gun.origin,
+        angles: gun.angles,
+        flags: RF_MINLIGHT | RF_DEPTHHACK | RF_WEAPONMODEL,
+        ..Default::default()
+    })
 }
 
 /// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
@@ -652,6 +1019,51 @@ fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::inpu
     input.keys = *keys;
 }
 
+/// Command keys from Q2's default.cfg: weapons on the number row, the
+/// inventory keys, hand grenades, the next weapon and the powerups. Each
+/// fires on the frame the key goes down (C key binds run on the down
+/// event).
+#[cfg(any(target_arch = "wasm32", test))]
+const BINDS: [(u8, &str); 23] = [
+    (q2_platform::keymap::K_F1, "help"),
+    (b'1', "use Blaster"),
+    (b'2', "use Shotgun"),
+    (b'3', "use Super Shotgun"),
+    (b'4', "use Machinegun"),
+    (b'5', "use Chaingun"),
+    (b'6', "use Grenade Launcher"),
+    (b'7', "use Rocket Launcher"),
+    (b'8', "use HyperBlaster"),
+    (b'9', "use Railgun"),
+    (b'0', "use BFG10K"),
+    (b'[', "invprev"),
+    (b']', "invnext"),
+    (b'\'', "invdrop"),
+    (q2_platform::keymap::K_ENTER, "invuse"),
+    (q2_platform::keymap::K_BACKSPACE, "invdrop"),
+    (b'/', "weapnext"),
+    (b'g', "use grenades"),
+    // default.cfg's s (use silencer) is left out: s moves back here.
+    (b'q', "use quad damage"),
+    (b'b', "use rebreather"),
+    (b'e', "use environment suit"),
+    (b'i', "use invulnerability"),
+    (b'p', "use power shield"),
+];
+
+/// The bound commands whose keys went down since `last_keys`, in key
+/// order.
+#[cfg(any(target_arch = "wasm32", test))]
+fn bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
+    let mut commands: Vec<(u8, &str)> = BINDS
+        .iter()
+        .filter(|&&(k, _)| keys[k as usize] && !last_keys[k as usize])
+        .copied()
+        .collect();
+    commands.sort_by_key(|&(k, _)| k);
+    commands.into_iter().map(|(_, command)| command).collect()
+}
+
 /// Range of C's video menu brightness slider (`s_brightness_slider`), which
 /// is the only way C sets `vid_gamma` short of the console.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -659,14 +1071,76 @@ const VID_GAMMA_MIN: f32 = 0.1;
 #[cfg(any(target_arch = "wasm32", test))]
 const VID_GAMMA_MAX: f32 = 2.0;
 
+/// The value of `key` in the page's query string (`?map=demo3&hand=1`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn query_value<'a>(search: &'a str, key: &str) -> Option<&'a str> {
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// The map to start on: `?map=` (`demo3` or `maps/demo3.bsp`) when the pak
+/// has it, else demo1, else the first map.
+#[cfg(any(target_arch = "wasm32", test))]
+fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<&'a str> {
+    let wanted = requested.map(|name| {
+        let name = name.strip_prefix("maps/").unwrap_or(name);
+        format!("maps/{}.bsp", name.strip_suffix(".bsp").unwrap_or(name))
+    });
+    wanted
+        .and_then(|wanted| maps.iter().find(|&&m| m == wanted))
+        .or_else(|| maps.iter().find(|&&m| m == "maps/demo1.bsp"))
+        .or_else(|| maps.first())
+        .copied()
+}
+
+/// C cvar `hand` (0 right, 1 left, 2 centre) from `?hand=`; 0 when unset
+/// or not a number.
+#[cfg(any(target_arch = "wasm32", test))]
+fn hand_from_query(search: &str) -> i32 {
+    query_value(search, "hand")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The local client's userinfo: C sends its `CVAR_USERINFO` cvars, of
+/// which this port has only `hand`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn local_userinfo(hand: i32) -> String {
+    format!("\\hand\\{hand}")
+}
+
+/// C cvar `cl_gun` from `?cl_gun=`, as text for the game; C's default 2.
+#[cfg(any(target_arch = "wasm32", test))]
+fn cl_gun_from_query(search: &str) -> &str {
+    query_value(search, "cl_gun").unwrap_or("2")
+}
+
+/// C cvar `vid_fullscreen` from `?vid_fullscreen=1`: clicking to play
+/// also goes fullscreen with the keyboard locked to the game.
+#[cfg(any(target_arch = "wasm32", test))]
+fn vid_fullscreen_from_query(search: &str) -> bool {
+    query_value(search, "vid_fullscreen") == Some("1")
+}
+
+/// `?cl_fxextra=1`: effects C does not draw (ADR-003), off by default.
+#[cfg(any(target_arch = "wasm32", test))]
+fn fx_extras_from_query(search: &str) -> bool {
+    query_value(search, "cl_fxextra") == Some("1")
+}
+
+/// C cvar `game` (the game directory) from `?game=`; empty is baseq2.
+#[cfg(any(target_arch = "wasm32", test))]
+fn game_from_query(search: &str) -> &str {
+    query_value(search, "game").unwrap_or("")
+}
+
 /// `vid_gamma` from the page's query string (`?gamma=1.2`), clamped to the
 /// slider range; `None` keeps the default.
 #[cfg(any(target_arch = "wasm32", test))]
 fn vid_gamma_from_query(search: &str) -> Option<f32> {
-    let value = search
-        .trim_start_matches('?')
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("gamma="))?;
+    let value = query_value(search, "gamma")?;
     let vid_gamma = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
     Some(vid_gamma.clamp(VID_GAMMA_MIN, VID_GAMMA_MAX))
 }
@@ -677,6 +1151,152 @@ fn vid_gamma_from_query(search: &str) -> Option<f32> {
 fn step_vid_gamma(vid_gamma: f32, step: i32) -> f32 {
     let tenths = (vid_gamma * 10.0).round() + step as f32;
     (tenths / 10.0).clamp(VID_GAMMA_MIN, VID_GAMMA_MAX)
+}
+
+/// F4 went down this frame: Q2's default.cfg binds it to `menu_keys`,
+/// the controls screen the keys legend stands in for.
+#[cfg(any(target_arch = "wasm32", test))]
+fn legend_key_pressed(last_keys: &[bool; 256], keys: &[bool; 256]) -> bool {
+    use q2_platform::keymap::K_F4;
+    keys[K_F4 as usize] && !last_keys[K_F4 as usize]
+}
+
+/// A key's name as C's `Key_KeynumToString` gives it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn key_name(key: u8) -> String {
+    use q2_platform::keymap::*;
+    let named = match key {
+        K_TAB => "TAB",
+        K_ENTER => "ENTER",
+        K_ESCAPE => "ESCAPE",
+        K_SPACE => "SPACE",
+        K_BACKSPACE => "BACKSPACE",
+        K_UPARROW => "UPARROW",
+        K_DOWNARROW => "DOWNARROW",
+        K_LEFTARROW => "LEFTARROW",
+        K_RIGHTARROW => "RIGHTARROW",
+        K_ALT => "ALT",
+        K_CTRL => "CTRL",
+        K_SHIFT => "SHIFT",
+        K_INS => "INS",
+        K_DEL => "DEL",
+        K_PGDN => "PGDN",
+        K_PGUP => "PGUP",
+        K_HOME => "HOME",
+        K_END => "END",
+        K_MOUSE1 => "MOUSE1",
+        K_F1..=K_F12 => return format!("F{}", key - K_F1 + 1),
+        _ => return char::from(key).to_ascii_uppercase().to_string(),
+    };
+    named.to_string()
+}
+
+/// The keys legend: (action, keys) in the order of C's controls menu
+/// (`bindnames` in menu.c, its names where it has one), then the bound
+/// commands of `BINDS`, then the page's own keys.
+#[cfg(any(target_arch = "wasm32", test))]
+fn key_legend() -> Vec<(String, String)> {
+    use q2_platform::keymap::*;
+    let keys = |ks: &[u8]| {
+        ks.iter()
+            .map(|&k| key_name(k))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut legend: Vec<(String, String)> = [
+        ("attack", format!("{}, MOUSE1", key_name(K_CTRL))),
+        ("walk forward", keys(&[b'w', K_UPARROW])),
+        ("backpedal", keys(&[b's', K_DOWNARROW])),
+        ("turn left", keys(&[K_LEFTARROW])),
+        ("turn right", keys(&[K_RIGHTARROW])),
+        ("run", keys(&[K_SHIFT])),
+        ("step left", keys(b"a,")),
+        ("step right", keys(b"d.")),
+        ("sidestep", keys(&[K_ALT])),
+        ("look up", keys(&[K_PGDN])),
+        ("look down", keys(&[K_DEL])),
+        ("up / jump", keys(&[K_SPACE])),
+        ("down / crouch", keys(b"c")),
+        ("mouse look", "MOUSE".to_string()),
+    ]
+    .into_iter()
+    .map(|(label, keys)| (label.to_string(), keys))
+    .collect();
+    for (key, command) in BINDS {
+        let label = match command {
+            "weapnext" => "next weapon".to_string(),
+            "invuse" => "use item".to_string(),
+            "invdrop" => "drop item".to_string(),
+            "invprev" => "prev item".to_string(),
+            "invnext" => "next item".to_string(),
+            "help" => "help computer".to_string(),
+            other => other
+                .strip_prefix("use ")
+                .unwrap_or(other)
+                .to_ascii_lowercase(),
+        };
+        match legend.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, keys)) => {
+                keys.push_str(", ");
+                keys.push_str(&key_name(key));
+            }
+            None => legend.push((label, key_name(key))),
+        }
+    }
+    for (label, key) in [
+        ("gamma darker", "F7"),
+        ("gamma brighter", "F8"),
+        ("keys", "F4"),
+        ("console", "`"),
+    ] {
+        legend.push((label.to_string(), key.to_string()));
+    }
+    legend
+}
+
+/// The keys legend centred on a `width` x `height` screen: its backing
+/// rectangle (x, y, w, h) and its characters, title "KEYS" in the
+/// alternate colour, each action right-aligned against its keys.
+#[cfg(any(target_arch = "wasm32", test))]
+fn legend_draws(
+    width: i32,
+    height: i32,
+) -> ((i32, i32, i32, i32), Vec<q2_client::layout::HudDraw>) {
+    use q2_client::layout::HudDraw;
+    const CHAR: i32 = 8;
+    const LINE: i32 = 10;
+    let legend = key_legend();
+    let label_cols = legend.iter().map(|(l, _)| l.len()).max().unwrap_or(0) as i32;
+    let key_cols = legend.iter().map(|(_, k)| k.len()).max().unwrap_or(0) as i32;
+    // Two columns of padding each side, two between: an even width.
+    let cols = (label_cols + key_cols + 6 + 1) & !1;
+    let (w, h) = (cols * CHAR, (legend.len() as i32 + 3) * LINE);
+    let (x, y) = (width / 2 - w / 2, (height - h).max(0) / 2);
+    let mut draws = Vec::new();
+    let mut text = |tx: i32, ty: i32, s: &str, alt: bool| {
+        for (i, b) in s.bytes().enumerate() {
+            let ch = if alt { b | 0x80 } else { b };
+            draws.push(HudDraw::Char {
+                x: tx + i as i32 * CHAR,
+                y: ty,
+                ch,
+            });
+        }
+    };
+    let title = "KEYS";
+    text(
+        x + w / 2 - title.len() as i32 * CHAR / 2,
+        y + LINE / 2,
+        title,
+        true,
+    );
+    let split = x + (2 + label_cols) * CHAR;
+    for (row, (label, keys)) in legend.iter().enumerate() {
+        let ty = y + LINE / 2 + (row as i32 + 2) * LINE;
+        text(split - label.len() as i32 * CHAR, ty, label, false);
+        text(split + 2 * CHAR, ty, keys, true);
+    }
+    ((x, y, w, h), draws)
 }
 
 /// +1 when F8 (brighter) went down this frame, -1 for F7 (darker). Q2's
@@ -941,14 +1561,17 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
         log(&format!("  {}", m));
     }
 
-    // 6. Load first map's BSP
-    let map_name = if map_list.contains(&"maps/demo1.bsp") {
-        "maps/demo1.bsp"
-    } else if let Some(first) = map_list.first() {
-        first
-    } else {
+    // 6. Load the first map's BSP: `?map=`, else demo1.
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let requested = query_value(&search, "map");
+    let Some(map_name) = start_map(requested, &map_list) else {
         return Err(JsValue::from_str("No maps found in pak0.pak"));
     };
+    if let Some(requested) = requested.filter(|r| !map_name.contains(*r)) {
+        log(&format!("?map={requested} is not in the pak"));
+    }
 
     log(&format!("Loading {}...", map_name));
     let bsp_data = fs.load_file(map_name).map_err(q2err_to_js)?;
@@ -970,7 +1593,13 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
 
     // 8. Server and game: load collision, spawn the map's entities, and put
     //    the local player in at the player start.
-    let local = q2_server::local::LocalGame::start(short_name, &bsp_data).map_err(q2err_to_js)?;
+    let hand = hand_from_query(&search);
+    let local = q2_server::local::LocalGame::start_with_userinfo(
+        short_name,
+        &bsp_data,
+        &local_userinfo(hand),
+    )
+    .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
     if let Some((origin, ps)) = local.player() {
         log(&format!(
@@ -985,10 +1614,13 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
     log("World uploaded to GPU");
 
     let mut engine = Engine::new(renderer, local, fs, models, canvas.clone(), view);
-    let search = web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .unwrap_or_default();
     engine.set_gamma(vid_gamma_from_query(&search).unwrap_or(1.0));
+    engine.set_hand(hand);
+    engine.game = game_from_query(&search).to_string();
+    engine.fx.extras = fx_extras_from_query(&search);
+    let cl_gun = cl_gun_from_query(&search);
+    engine.cl_gun = q2_common::cvar::parse_value(cl_gun);
+    engine.local.set_cvar("cl_gun", cl_gun);
     Ok((engine, map_name.to_string()))
 }
 
@@ -996,9 +1628,15 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
 #[cfg(target_arch = "wasm32")]
 fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
     // 9. Input: the listeners are leaked for the page's lifetime.
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
     let canvas = engine.canvas.clone();
-    let input_state =
-        q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
+    let input_state = q2_platform::wasm::input::setup_input_listeners(
+        &canvas,
+        vid_fullscreen_from_query(&search),
+    )
+    .map_err(q2err_to_js)?;
     log("Input listeners attached (click canvas for pointer lock)");
 
     // Sound plays once the browser lets the context run (a click).
@@ -1149,6 +1787,9 @@ mod tests {
         fn set_gamma(&mut self, vid_gamma: f32) {
             self.calls.push(format!("gamma {vid_gamma}"));
         }
+        fn set_hand(&mut self, hand: i32) {
+            self.calls.push(format!("hand {hand}"));
+        }
         fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str) {
             self.calls.push(format!("stretch {x} {y} {w} {h} {name}"));
         }
@@ -1190,6 +1831,20 @@ mod tests {
             renderer.calls,
             [
                 "begin demo2",
+                // C CL_RegisterTEntModels, before the configstring models.
+                "model models/objects/explode/tris.md2",
+                "model models/objects/smoke/tris.md2",
+                "model models/objects/flash/tris.md2",
+                "model models/monsters/parasite/segment/tris.md2",
+                "model models/ctf/segment/tris.md2",
+                "model models/monsters/parasite/tip/tris.md2",
+                "model models/objects/r_explode/tris.md2",
+                "model sprites/s_bfg2.sp2",
+                "model models/items/armor/effect/tris.md2",
+                "model models/objects/r_explode2/tris.md2",
+                "model models/proj/lightning/tris.md2",
+                "model models/proj/beam/tris.md2",
+                "model models/proj/widowbeam/tris.md2",
                 "model *1",
                 "model models/items/armor/jacket/tris.md2",
                 // C stops at the first empty image configstring.
@@ -1200,6 +1855,14 @@ mod tests {
             ]
         );
         assert_ne!(models.handle(3), q2_render_api::ModelHandle::NONE);
+        assert_ne!(
+            models.fx_handle("sprites/s_bfg2.sp2"),
+            q2_render_api::ModelHandle::NONE
+        );
+        assert_eq!(
+            models.fx_handle("models/unknown.md2"),
+            q2_render_api::ModelHandle::NONE
+        );
     }
 
     #[test]
@@ -1335,6 +1998,8 @@ mod tests {
             |_| q2_render_api::ModelHandle::new(7),
         );
         let view = |modelindex| EntityView {
+            number: 0,
+            effects: 0,
             modelindex,
             frame: 3,
             oldframe: 2,
@@ -1346,8 +2011,13 @@ mod tests {
             flags: 0,
             alpha: 1.0,
         };
-        let ents = render_entities(&[view(2), view(9)], &table);
-        assert_eq!(ents.len(), 1);
+        let beam = EntityView {
+            flags: q2_shared::constants::RF_BEAM,
+            ..view(0)
+        };
+        let ents = render_entities(&[view(2), view(9), beam], &table);
+        assert_eq!(ents.len(), 2, "a beam needs no model");
+        assert_eq!(ents[1].model, q2_render_api::ModelHandle::NONE);
         assert_eq!(ents[0].model, q2_render_api::ModelHandle::new(7));
         assert_eq!(
             (ents[0].frame, ents[0].oldframe, ents[0].skinnum),
@@ -1378,6 +2048,49 @@ mod tests {
         // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
         assert_eq!(cmd_msec(0.4), 100);
         assert_eq!(cmd_msec(-1.0), 0);
+    }
+
+    #[test]
+    fn query_values_are_found_by_their_exact_key() {
+        assert_eq!(query_value("?map=demo3&hand=1", "map"), Some("demo3"));
+        assert_eq!(query_value("?map=demo3&hand=1", "hand"), Some("1"));
+        assert_eq!(query_value("?maps=x", "map"), None);
+        assert_eq!(query_value("", "map"), None);
+    }
+
+    #[test]
+    fn the_first_map_is_the_requested_one_else_demo1_else_the_first() {
+        let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
+        assert_eq!(start_map(Some("demo3"), &maps), Some("maps/demo3.bsp"));
+        assert_eq!(
+            start_map(Some("maps/demo3.bsp"), &maps),
+            Some("maps/demo3.bsp")
+        );
+        assert_eq!(start_map(Some("base1"), &maps), Some("maps/demo1.bsp"));
+        assert_eq!(start_map(None, &maps), Some("maps/demo1.bsp"));
+        assert_eq!(start_map(None, &["maps/q2dm1.bsp"]), Some("maps/q2dm1.bsp"));
+        assert_eq!(start_map(Some("demo3"), &[]), None);
+    }
+
+    #[test]
+    fn hand_and_game_come_from_the_query_with_c_defaults() {
+        assert_eq!(hand_from_query("?hand=1"), 1);
+        assert_eq!(hand_from_query("?hand=2"), 2);
+        assert_eq!(hand_from_query("?hand=left"), 0);
+        assert_eq!(hand_from_query(""), 0);
+        assert_eq!(local_userinfo(1), "\\hand\\1");
+        assert_eq!(game_from_query("?game=rogue"), "rogue");
+        // C cl_gun: 0 no gun, 1 none in a wide view, 2 (default) always.
+        assert_eq!(cl_gun_from_query("?cl_gun=0"), "0");
+        assert_eq!(cl_gun_from_query(""), "2");
+        // Effects beyond C are opt-in.
+        assert!(fx_extras_from_query("?cl_fxextra=1"));
+        assert!(!fx_extras_from_query("?cl_fxextra=0"));
+        assert!(!fx_extras_from_query(""));
+        // C vid_fullscreen: 0 (default) windowed.
+        assert!(vid_fullscreen_from_query("?vid_fullscreen=1"));
+        assert!(!vid_fullscreen_from_query(""));
+        assert_eq!(game_from_query(""), "");
     }
 
     #[test]
@@ -1433,6 +2146,333 @@ mod tests {
         let mut both = f8;
         both[K_F7 as usize] = true;
         assert_eq!(gamma_key_step(&up, &both), 0);
+    }
+
+    fn pressed(keys: &[u8]) -> [bool; 256] {
+        let mut down = [false; 256];
+        for &k in keys {
+            down[k as usize] = true;
+        }
+        down
+    }
+
+    #[test]
+    fn the_view_weapon_is_drawn_as_a_depth_hacked_weapon_model() {
+        use q2_shared::constants::{CS_MODELS, RF_DEPTHHACK, RF_MINLIGHT, RF_WEAPONMODEL};
+        use q2_shared::types::Vec3f;
+        let mut table = ModelTable::default();
+        table.sync(
+            |i| {
+                if i == CS_MODELS + 4 {
+                    "models/weapons/v_blast/tris.md2"
+                } else {
+                    ""
+                }
+            },
+            |_| q2_render_api::ModelHandle::new(9),
+        );
+        let gun = q2_client::frame::ViewWeapon {
+            modelindex: 4,
+            origin: Vec3f::new(1.0, 2.0, 3.0),
+            angles: Vec3f::new(0.0, 90.0, 0.0),
+            frame: 7,
+            oldframe: 6,
+            backlerp: 0.25,
+        };
+        let ent = gun_entity(&gun, &table).unwrap();
+        assert_eq!(ent.model, q2_render_api::ModelHandle::new(9));
+        assert_eq!(ent.flags, RF_MINLIGHT | RF_DEPTHHACK | RF_WEAPONMODEL);
+        assert_eq!((ent.frame, ent.oldframe, ent.backlerp), (7, 6, 0.25));
+        assert_eq!(ent.origin, gun.origin);
+        assert_eq!(ent.oldorigin, gun.origin, "don't lerp at all");
+        assert_eq!(ent.angles, gun.angles);
+
+        let unknown = q2_client::frame::ViewWeapon {
+            modelindex: 5,
+            ..gun
+        };
+        assert!(gun_entity(&unknown, &table).is_none());
+    }
+
+    #[test]
+    fn effect_entities_need_their_model_except_beams() {
+        use q2_client::fx::{FxEntity, MOD_FLASH, MOD_SMOKE};
+        use q2_shared::types::Vec3f;
+        let mut table = ModelTable::default();
+        table.register_fx(|name| {
+            if name == MOD_SMOKE {
+                q2_render_api::ModelHandle::new(5)
+            } else {
+                q2_render_api::ModelHandle::NONE
+            }
+        });
+        let laser = FxEntity {
+            origin: Vec3f::ONE,
+            oldorigin: Vec3f::ZERO,
+            frame: 4,
+            skinnum: 0xd0,
+            alpha: 0.3,
+            flags: q2_shared::constants::RF_BEAM | q2_shared::constants::RF_TRANSLUCENT,
+            ..FxEntity::default()
+        };
+        let smoke = FxEntity {
+            model: Some(MOD_SMOKE),
+            frame: 2,
+            alpha: 0.5,
+            ..FxEntity::default()
+        };
+        let unloaded = FxEntity {
+            model: Some(MOD_FLASH),
+            ..FxEntity::default()
+        };
+        let ents = fx_render_entities(&[laser, smoke, unloaded], &table);
+        assert_eq!(ents.len(), 2);
+        assert_eq!(ents[0].model, q2_render_api::ModelHandle::NONE);
+        assert_eq!(
+            (
+                ents[0].oldorigin,
+                ents[0].frame,
+                ents[0].skinnum,
+                ents[0].alpha
+            ),
+            (Vec3f::ZERO, 4, 0xd0, 0.3)
+        );
+        assert_eq!(ents[1].model, q2_render_api::ModelHandle::new(5));
+        assert_eq!((ents[1].frame, ents[1].alpha), (2, 0.5));
+    }
+
+    #[test]
+    fn power_screens_cover_other_entities_but_not_the_viewer() {
+        use q2_client::entities::EntityView;
+        use q2_shared::constants::{EF_POWERSCREEN, RF_VIEWERMODEL};
+        let view = |effects, flags| EntityView {
+            number: 3,
+            effects,
+            modelindex: 2,
+            frame: 5,
+            oldframe: 4,
+            backlerp: 0.5,
+            origin: q2_shared::types::Vec3f::ONE,
+            oldorigin: q2_shared::types::Vec3f::ONE,
+            angles: q2_shared::types::Vec3f::ZERO,
+            skinnum: 0,
+            flags,
+            alpha: 1.0,
+        };
+        let screens = power_screens(&[
+            view(EF_POWERSCREEN, 0),
+            view(0, 0),
+            view(EF_POWERSCREEN, RF_VIEWERMODEL),
+        ]);
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].model, Some(q2_client::fx::MOD_POWERSCREEN));
+        assert_eq!(
+            (screens[0].frame, screens[0].origin),
+            (0, q2_shared::types::Vec3f::ONE)
+        );
+    }
+
+    #[test]
+    fn effect_particles_lights_and_sounds_reach_the_renderer_and_mixer() {
+        use q2_client::fx::{FxLight, FxSound};
+        use q2_client::particles::DrawParticle;
+        use q2_shared::types::Vec3f;
+        let particles = fx_particles(&[DrawParticle {
+            origin: Vec3f::ONE,
+            color: 0xe0,
+            alpha: 0.25,
+        }]);
+        assert_eq!(particles.len(), 1);
+        let p = &particles[0];
+        assert_eq!((p.origin, p.color, p.alpha), (Vec3f::ONE, 0xe0, 0.25));
+        let lights = fx_dlights(&[FxLight {
+            origin: Vec3f::ONE,
+            intensity: 200.0,
+            color: [1.0, 1.0, 0.0],
+        }]);
+        assert_eq!(lights[0].intensity, 200.0);
+        assert_eq!(lights[0].color, Vec3f::new(1.0, 1.0, 0.0));
+        let sound = FxSound {
+            name: "weapons/rocklx1a.wav",
+            origin: Some(Vec3f::ONE),
+            entnum: 0,
+            channel: 0,
+            volume: 1.0,
+            attenuation: 1.0,
+            timeofs: 0.0,
+        };
+        let named = fx_named_sound(&sound);
+        assert_eq!((named.name, named.origin), (sound.name, sound.origin));
+        let talk = talk_sound();
+        let named = flash_named_sound(&talk);
+        assert_eq!(
+            (named.name, named.origin, named.entnum),
+            ("misc/talk.wav", None, talk.entnum)
+        );
+    }
+
+    #[test]
+    fn lit_flash_lights_reach_the_renderer_with_radius_as_intensity() {
+        use q2_shared::types::{EntityState, Vec3f};
+        let mut effects = q2_client::effects::Effects::default();
+        assert!(render_dlights(&effects).is_empty());
+        let player = EntityState {
+            number: 1,
+            ..Default::default()
+        };
+        effects.muzzle_flash(&player, q2_shared::constants::MZ_RAILGUN, 0.0, &mut || 3);
+        let lights = render_dlights(&effects);
+        assert_eq!(lights.len(), 1);
+        assert_eq!(lights[0].intensity, 203.0);
+        assert_eq!(lights[0].color, Vec3f::new(0.5, 0.5, 1.0));
+        assert_eq!(lights[0].origin, Vec3f::new(18.0, -16.0, 0.0));
+    }
+
+    #[test]
+    fn xorshift_never_sticks_and_varies() {
+        let mut state = 1;
+        let draws: Vec<u32> = (0..4).map(|_| xorshift(&mut state)).collect();
+        assert!(draws.iter().all(|&d| d != 0));
+        assert_ne!(draws[0], draws[1]);
+    }
+
+    #[test]
+    fn randk_is_never_negative_like_c() {
+        let mut state = 0x8000_0000;
+        assert!((0..1000).all(|_| xorshift(&mut state) <= i32::MAX as u32));
+    }
+
+    #[test]
+    fn the_key_legend_lists_every_bound_key_with_c_menu_names() {
+        let legend = key_legend();
+        let row = |label: &str| {
+            legend
+                .iter()
+                .find(|(l, _)| *l == label)
+                .map(|(_, keys)| keys.clone())
+                .unwrap_or_else(|| panic!("no {label} row"))
+        };
+        // C menu.c bindnames, with this port's keys.
+        assert_eq!(row("attack"), "CTRL, MOUSE1");
+        assert_eq!(row("walk forward"), "W, UPARROW");
+        assert_eq!(row("up / jump"), "SPACE");
+        assert_eq!(row("next weapon"), "/");
+        assert_eq!(row("drop item"), "', BACKSPACE");
+        assert_eq!(row("help computer"), "F1");
+        assert_eq!(row("grenades"), "G");
+        assert_eq!(row("keys"), "F4");
+        // Every bound command key is listed somewhere.
+        for (key, _) in BINDS {
+            let name = key_name(key);
+            assert!(
+                legend
+                    .iter()
+                    .any(|(_, keys)| keys.split(", ").any(|k| k == name)),
+                "{name} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn f4_toggles_the_legend_once_per_press_like_menu_keys() {
+        use q2_platform::keymap::K_F4;
+        let up = [false; 256];
+        let f4 = pressed(&[K_F4]);
+        assert!(legend_key_pressed(&up, &f4));
+        assert!(!legend_key_pressed(&f4, &f4), "held");
+        // F4 is the page's, not a game command.
+        assert!(bound_commands(&up, &f4).is_empty());
+    }
+
+    #[test]
+    fn the_legend_is_centred_on_screen_with_its_title() {
+        let (rect, draws) = legend_draws(640, 480);
+        let (x, y, w, h) = rect;
+        assert!(x >= 0 && y >= 0 && x + w <= 640 && y + h <= 480, "{rect:?}");
+        assert_eq!(x + w / 2, 320);
+        let chars: Vec<_> = draws
+            .iter()
+            .filter_map(|d| match d {
+                q2_client::layout::HudDraw::Char { x, y, ch } => Some((*x, *y, *ch)),
+                _ => None,
+            })
+            .collect();
+        // Title in the alternate (bit 7) colour, then a row per action.
+        assert!(chars.iter().any(|&(_, _, c)| c == b'K' | 0x80));
+        assert!(chars
+            .iter()
+            .all(|&(cx, cy, _)| cx >= x && cx + 8 <= x + w && cy >= y && cy + 8 <= y + h));
+        let rows = chars
+            .iter()
+            .map(|&(_, cy, _)| cy)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.len(), key_legend().len() + 1);
+    }
+
+    #[test]
+    fn item_keys_follow_q2_default_cfg_where_wasd_leaves_them_free() {
+        let none = [false; 256];
+        for (key, command) in [
+            (b'g', "use grenades"),
+            (b'/', "weapnext"),
+            (q2_platform::keymap::K_BACKSPACE, "invdrop"),
+            (b'q', "use quad damage"),
+            (b'b', "use rebreather"),
+            (b'e', "use environment suit"),
+            (b'i', "use invulnerability"),
+            (b'p', "use power shield"),
+        ] {
+            let mut keys = [false; 256];
+            keys[key as usize] = true;
+            assert_eq!(bound_commands(&none, &keys), [command], "{key}");
+        }
+        // default.cfg's s (silencer) would fire while moving back.
+        assert!(bound_commands(&none, &pressed(b"s")).is_empty());
+    }
+
+    #[test]
+    fn number_keys_use_weapons_like_q2_default_cfg() {
+        let none = [false; 256];
+        assert_eq!(bound_commands(&none, &pressed(b"1")), ["use Blaster"]);
+        assert_eq!(bound_commands(&none, &pressed(b"3")), ["use Super Shotgun"]);
+        assert_eq!(bound_commands(&none, &pressed(b"0")), ["use BFG10K"]);
+    }
+
+    #[test]
+    fn f1_opens_the_help_computer_like_q2_default_cfg() {
+        use q2_platform::keymap::K_F1;
+        assert_eq!(bound_commands(&[false; 256], &pressed(&[K_F1])), ["help"]);
+    }
+
+    #[test]
+    fn chat_is_greeted_with_the_talk_sound_heard_everywhere() {
+        let talk = talk_sound();
+        assert_eq!(
+            (talk.name.as_str(), talk.attenuation),
+            ("misc/talk.wav", 0.0)
+        );
+    }
+
+    #[test]
+    fn inventory_keys_bind_like_q2_default_cfg() {
+        use q2_platform::keymap::K_ENTER;
+        let none = [false; 256];
+        assert_eq!(bound_commands(&none, &pressed(b"[")), ["invprev"]);
+        assert_eq!(bound_commands(&none, &pressed(b"]")), ["invnext"]);
+        assert_eq!(bound_commands(&none, &pressed(b"'")), ["invdrop"]);
+        assert_eq!(bound_commands(&none, &pressed(&[K_ENTER])), ["invuse"]);
+    }
+
+    #[test]
+    fn a_bound_key_runs_its_command_once_per_press() {
+        let held = pressed(b"2");
+        assert!(bound_commands(&held, &held).is_empty());
+        assert!(bound_commands(&held, &[false; 256]).is_empty());
+        assert!(bound_commands(&[false; 256], &pressed(b"w")).is_empty());
+        assert_eq!(
+            bound_commands(&[false; 256], &pressed(b"12")),
+            ["use Blaster", "use Shotgun"]
+        );
     }
 
     #[test]
