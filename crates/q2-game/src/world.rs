@@ -2337,6 +2337,50 @@ mod tests {
     }
 
     #[test]
+    fn find_teams_chains_each_team_in_number_order_under_its_first_member() {
+        // C G_FindTeams: the lowest-numbered member is the teammaster, the
+        // rest are FL_TEAMSLAVE and follow it on teamchain in number order.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        let block = |team: &str, tag: &str| {
+            format!("{{ \"classname\" \"info_notnull\" \"team\" \"{team}\" \"targetname\" \"{tag}\" }}\n")
+        };
+        let entities: String = [
+            ("a", "a1"),
+            ("b", "b1"),
+            ("a", "a2"),
+            ("b", "b2"),
+            ("a", "a3"),
+        ]
+        .iter()
+        .map(|(team, tag)| block(team, tag))
+        .collect();
+        world.spawn_entities(
+            "base1",
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{entities}"),
+            "",
+        );
+        let key = |tag: &str| world.find_by_targetname(None, tag).unwrap();
+        let (a1, a2, a3, b1, b2) = (key("a1"), key("a2"), key("a3"), key("b1"), key("b2"));
+        let get = |k: EntityKey| world.entities.get(k).unwrap();
+        assert_eq!(world.team_chain(a1), [a1, a2, a3]);
+        assert_eq!(world.team_chain(b1), [b1, b2]);
+        for (member, master) in [(a1, a1), (a2, a1), (a3, a1), (b1, b1), (b2, b1)] {
+            assert_eq!(get(member).game.teammaster, Some(master));
+            let slave = get(member)
+                .game
+                .flags
+                .contains(crate::constants::EntityFlags::TEAMSLAVE);
+            assert_eq!(slave, member != master);
+        }
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "2 teams with 5 entities.\n"));
+    }
+
+    #[test]
     fn find_by_classname() {
         let mut world = test_world();
 
