@@ -805,13 +805,20 @@ pub fn seed(world: &mut GameWorld, rolls: impl Fn(&mut GameWorld) -> bool) {
 
 /// Seed the random sequence so the next `random()` satisfies `want`.
 pub fn seed_random(world: &mut GameWorld, want: impl Fn(f32) -> bool) {
-    let seed = (0..)
+    let seed = (0..100_000)
         .find(|&seed| {
             world.level.rand_state = seed;
             want(world.random())
         })
-        .unwrap();
+        .expect("no seed gives that roll");
     world.level.rand_state = seed;
+}
+
+#[test]
+#[should_panic(expected = "no seed gives that roll")]
+fn seed_random_fails_on_a_roll_no_seed_gives() {
+    let mut world = crate::world::test_world();
+    seed_random(&mut world, |r| r > 1.0);
 }
 
 // ---------------------------------------------------------------------------
