@@ -981,10 +981,12 @@ mod tests {
     }
 
     #[test]
-    fn berserker_spike_hits_for_15_to_20_and_club_for_5_to_10() {
-        for (attack, low) in [
-            (berserk_attack_spike as ThinkFn, 15),
-            (berserk_attack_club as ThinkFn, 5),
+    fn berserker_spike_hits_for_15_to_20_and_club_for_5_to_10_both_kicking_400() {
+        // Both kick 400: the low spike straight on throws the enemy up and
+        // away, the club from his left (mins[0]) pushes it to his right.
+        for (attack, low, away) in [
+            (berserk_attack_spike as ThinkFn, 15, Vec3f::X),
+            (berserk_attack_club as ThinkFn, 5, -Vec3f::Y),
         ] {
             for k in 0..6 {
                 let (mut world, gi) = test_world_recording();
@@ -994,6 +996,9 @@ mod tests {
                 attack(&mut world, key);
                 let health = world.entities.get(enemy).unwrap().game.health;
                 assert_eq!(health, 100 - (low + k as i32));
+                let push = world.entities.get(enemy).unwrap().velocity;
+                assert!((push.length() - 400.0).abs() < 0.01, "{push}");
+                assert!(push.dot(away) > 0.0, "{push}");
             }
         }
     }

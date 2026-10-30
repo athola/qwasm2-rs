@@ -1281,6 +1281,24 @@ mod tests {
     }
 
     #[test]
+    fn brain_claws_knock_the_enemy_by_40_from_opposite_sides() {
+        // Right claw at maxs[0], left at mins[0]: the push comes from the
+        // brain's right (-y), then its left (+y).
+        for (claw, push_y_positive) in [
+            (brain_hit_right as ThinkFn, true),
+            (brain_hit_left as ThinkFn, false),
+        ] {
+            let (mut world, gi) = test_world_recording();
+            let key = spawned(&mut world);
+            let enemy = enemy_in_reach(&mut world, &gi, key);
+            claw(&mut world, key);
+            let push = world.entities.get(enemy).unwrap().velocity;
+            assert!((push.length() - 40.0).abs() < 0.01, "{push}");
+            assert_eq!(push.y > 0.0, push_y_positive, "{push}");
+        }
+    }
+
+    #[test]
     fn brain_chest_opens_without_its_screen() {
         let (mut world, gi) = test_world_recording();
         let key = spawned(&mut world);
@@ -1304,6 +1322,12 @@ mod tests {
             seed_randk(&mut world, |r| r % 5 == 4);
             brain_tentacle_attack(&mut world, key);
             assert_eq!(world.entities.get(enemy).unwrap().game.health, 86);
+            // Kick -600 pulls the enemy back toward the brain.
+            let pull = world.entities.get(enemy).unwrap().velocity;
+            assert!(
+                (pull.length() - 600.0).abs() < 0.01 && pull.x < 0.0,
+                "{pull}"
+            );
             let grabbed = world.entities.get(key).unwrap().game.spawnflags & SPAWNFLAG_GRABBED;
             assert_eq!(grabbed != 0, grabs);
             assert_eq!(
