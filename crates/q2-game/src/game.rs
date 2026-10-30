@@ -109,6 +109,8 @@ impl GameExport for GameWorld {
             self.send_login_effect(key);
             self.print_entered_the_game(key);
         }
+        // Make sure all view stuff is valid.
+        self.client_end_server_frame(key);
     }
 
     fn client_disconnect(&mut self, number: usize) {
@@ -205,6 +207,21 @@ mod tests {
         world.client_begin(3);
         world.client_disconnect(MAX_CLIENTS + 1);
         world.client_think(0, &UserCmd::default());
+    }
+
+    #[test]
+    fn client_begin_leaves_a_valid_view_and_status_bar() {
+        // C ClientBegin ends with ClientEndServerFrame.
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(1);
+        world.init();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert!(world.client_connect(1, ""));
+        world.client_begin(1);
+        let key = world.entities.key_for_number(1).unwrap();
+        let ps = &world.client(key).unwrap().ps;
+        assert_eq!(ps.stats[q2_shared::constants::STAT_HEALTH], 100);
+        assert_eq!(ps.viewoffset.z, 22.0);
     }
 
     #[test]

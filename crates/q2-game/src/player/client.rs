@@ -693,11 +693,17 @@ impl GameWorld {
             .collect();
 
         for key in keys {
-            self.update_player_view(key);
-            self.update_player_stats(key);
+            self.client_end_server_frame(key);
         }
         self.level.gibs_this_frame = 0;
         self.level.debris_this_frame = 0;
+    }
+
+    /// Build one client's view and status bar for this frame.
+    /// C ref: `ClientEndServerFrame` (player/view.c).
+    pub fn client_end_server_frame(&mut self, key: EntityKey) {
+        self.update_player_view(key);
+        self.update_player_stats(key);
     }
 }
 
