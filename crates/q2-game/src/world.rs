@@ -908,6 +908,8 @@ pub struct MockGameImport {
     pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
     /// Content mask of every `trace` call, in order.
     pub trace_masks: RefCell<Vec<i32>>,
+    /// End point of every `trace` call, in order.
+    pub trace_ends: RefCell<Vec<Vec3f>>,
     pub configstrings: RefCell<Vec<(i32, String)>>,
     /// Returned by the next `trace` call instead of an unobstructed trace.
     pub next_trace: RefCell<Option<Trace>>,
@@ -1029,6 +1031,7 @@ impl GameImport for MockGameImport {
     ) -> Trace {
         self.trace_pass_ents.borrow_mut().push(pass_ent);
         self.trace_masks.borrow_mut().push(content_mask);
+        self.trace_ends.borrow_mut().push(end);
         if let Some(trace) = self.next_trace.borrow_mut().take() {
             return trace;
         }

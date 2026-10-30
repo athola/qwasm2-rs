@@ -77,6 +77,8 @@ pub const RF_TRANSLUCENT: i32 = 32;
 pub const RF_GLOW: i32 = 512;
 pub const RF_FRAMELERP: i32 = 64;
 pub const RF_BEAM: i32 = 128;
+/// Don't draw a shadow.
+pub const RF_NOSHADOW: i32 = 8192;
 /// Leave a blood trail.
 pub const EF_GIB: u32 = 0x0000_0002;
 /// Projectile effects: dynamic light and trail per weapon.

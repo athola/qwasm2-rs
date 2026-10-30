@@ -337,11 +337,16 @@ impl GameWorld {
         effect: u32,
         hyper: bool,
     ) {
+        let dir = dir.normalize_or_zero();
         let Some(bolt_key) = self.spawn() else {
             return;
         };
 
         if let Some(bolt) = self.entities.get_mut(bolt_key) {
+            // C: a dead monster, so player prediction does not clip
+            // against bolts.
+            bolt.svflags = q2_shared::constants::SVF_DEADMONSTER;
+            bolt.state.renderfx |= q2_shared::constants::RF_NOSHADOW;
             bolt.game.classname = "bolt".into();
             bolt.game.movetype = MoveType::FlyMissile;
             bolt.solid = Solid::Bbox;
@@ -352,7 +357,7 @@ impl GameWorld {
 
             bolt.state.origin = start;
             bolt.state.old_origin = start;
-            bolt.velocity = dir.normalize_or_zero() * speed as f32;
+            bolt.velocity = dir * speed as f32;
 
             bolt.touch = Some(blaster_touch);
             bolt.think = Some(projectile_timeout);
@@ -362,6 +367,29 @@ impl GameWorld {
 
         self.link_entity(bolt_key);
         self.player_noise(owner, start, PlayerNoise::Weapon);
+
+        // A muzzle behind a wall or inside a target hits it at once.
+        let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
+            return;
+        };
+        let trace = self.gi.trace(
+            owner_origin,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            start,
+            self.number_of(bolt_key),
+            MASK_SHOT,
+        );
+        if trace.fraction < 1.0 {
+            if let Some(bolt) = self.entities.get_mut(bolt_key) {
+                bolt.state.origin -= dir * 10.0;
+            }
+            // C passes tr.ent, which is the world when no entity was hit.
+            let other = trace.ent_index.unwrap_or(0);
+            if let Some(other) = self.entities.key_for_number(other) {
+                blaster_touch(self, bolt_key, other, None, None);
+            }
+        }
     }
 
     /// Fire a single bullet (machinegun/chaingun round).
@@ -1396,5 +1424,94 @@ mod tests {
             apply_spread(Vec3f::X, 500, 500, 1.0, 0),
             apply_spread(Vec3f::X, 500, 500, 1.0, 1)
         );
+    }
+
+    #[test]
+    fn fire_blaster_checks_the_path_from_the_shooter_to_the_muzzle() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        let start = Vec3f::new(16.0, 0.0, 0.0);
+
+        world.fire_blaster(
+            owner,
+            start,
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        // C traces from self->s.origin to the bolt, passing the bolt.
+        assert_eq!(*gi.trace_ends.borrow(), vec![start]);
+        assert_eq!(*gi.trace_masks.borrow(), vec![MASK_SHOT]);
+        assert_eq!(*gi.trace_pass_ents.borrow(), vec![world.number_of(bolt)]);
+        assert_eq!(world.entities.get(bolt).unwrap().state.origin, start);
+    }
+
+    #[test]
+    fn fire_blaster_touches_what_blocks_the_muzzle_at_once() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let owner = world.spawn().unwrap();
+        let target = target_at(&mut world, Vec3f::new(8.0, 0.0, 0.0), 100);
+        hit(&world, &gi, target);
+
+        world.fire_blaster(
+            owner,
+            Vec3f::new(16.0, 0.0, 0.0),
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        assert_eq!(world.entities.get(target).unwrap().game.health, 85);
+        assert!(world.find_by_classname(None, "bolt").is_none());
+    }
+
+    #[test]
+    fn fire_blaster_explodes_at_once_when_the_muzzle_is_inside_a_wall() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.entities.spawn_numbered(0).unwrap();
+        let owner = world.spawn().unwrap();
+        // No entity hit: C's tr.ent is the world.
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 0.5,
+            ..Trace::default()
+        });
+
+        world.fire_blaster(
+            owner,
+            Vec3f::new(16.0, 0.0, 0.0),
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+
+        assert!(world.find_by_classname(None, "bolt").is_none());
+    }
+
+    #[test]
+    fn blaster_bolts_are_dead_monsters_that_cast_no_shadow() {
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_blaster(
+            owner,
+            Vec3f::ZERO,
+            Vec3f::X,
+            15,
+            1000,
+            q2_shared::constants::EF_BLASTER,
+            false,
+        );
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        let bolt = world.entities.get(bolt).unwrap();
+        // C: player prediction does not clip against bolts.
+        assert_ne!(bolt.svflags & q2_shared::constants::SVF_DEADMONSTER, 0);
+        assert_ne!(bolt.state.renderfx & q2_shared::constants::RF_NOSHADOW, 0);
     }
 }
