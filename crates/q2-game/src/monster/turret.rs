@@ -339,25 +339,23 @@ pub fn turret_driver_die(
     point: Vec3f,
 ) {
     // C dereferences target_ent unchecked. A driver that never linked
-    // (misnamed target) or whose breach is gone has no team to leave, so
-    // only the unlinking is skipped and the driver still dies.
+    // (misnamed target) has no gun or team; one whose breach is gone
+    // still leaves the team it joined. Either way the driver dies.
     let breach = world.entities.get(key).and_then(|e| e.game.target_ent);
-    if let Some(breach) = breach {
-        turret_driver_unlink(world, key, breach);
+    if let Some(b) = breach.and_then(|b| world.entities.get_mut(b)) {
+        // Level the gun.
+        b.game.move_angles.x = 0.0;
+        b.owner = None;
     }
+    turret_driver_leave_team(world, key);
     // C: a driver's gib_health is 0, so infantry_die always gibs it.
     infantry::infantry_die(world, key, inflictor, attacker, damage, point);
 }
 
-/// Level the gun and take the driver off the end of the turret's team.
-fn turret_driver_unlink(world: &mut GameWorld, key: EntityKey, breach: EntityKey) {
-    let Some(b) = world.entities.get_mut(breach) else {
-        return;
-    };
-    // Level the gun.
-    b.game.move_angles.x = 0.0;
-    b.owner = None;
-    let master = b.game.teammaster;
+/// Take the driver off the end of the turret's team (the breach's team,
+/// which the driver joined in `turret_driver_link`).
+fn turret_driver_leave_team(world: &mut GameWorld, key: EntityKey) {
+    let master = world.entities.get(key).and_then(|e| e.game.teammaster);
 
     // Remove the driver from the end of the team chain.
     let mut member = master;
@@ -1098,6 +1096,20 @@ mod tests {
             DeadFlag::Dead
         );
         assert_eq!(world.entities.count(), count + 6, "2 bones, 4 meat");
+    }
+
+    #[test]
+    fn turret_driver_whose_breach_is_gone_still_leaves_the_team_and_dies() {
+        let mut world = test_world();
+        let t = turret(&mut world);
+        world.free_entity(t.breach);
+        world.entities.get_mut(t.driver).unwrap().game.health = -10;
+        turret_driver_die(&mut world, t.driver, t.driver, t.driver, 50, Vec3f::ZERO);
+        let d = world.entities.get(t.driver).unwrap();
+        assert_eq!(d.game.deadflag, DeadFlag::Dead);
+        assert_eq!(d.game.teammaster, None);
+        assert!(!d.game.flags.contains(EntityFlags::TEAMSLAVE));
+        assert_eq!(world.entities.get(t.base).unwrap().owner, None);
     }
 
     /// A map turret (breach + base team, muzzle target, driver) with a
