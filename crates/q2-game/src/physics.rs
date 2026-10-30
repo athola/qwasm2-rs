@@ -1444,6 +1444,159 @@ mod tests {
         assert!((origin.x - 20.0).abs() < 0.01);
     }
 
+    // -- sv_push (via physics_pusher) --
+
+    /// A linked 64x64x8 brush mover at `origin` moving at `velocity`.
+    fn mover(
+        world: &mut GameWorld,
+        movetype: MoveType,
+        origin: Vec3f,
+        velocity: Vec3f,
+    ) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.movetype = movetype;
+        e.solid = Solid::Bsp;
+        e.state.origin = origin;
+        e.mins = Vec3f::new(-32.0, -32.0, -8.0);
+        e.maxs = Vec3f::new(32.0, 32.0, 0.0);
+        e.velocity = velocity;
+        world.link_entity(key);
+        key
+    }
+
+    /// A linked step box at `origin`, standing on `ground`.
+    fn box_at(world: &mut GameWorld, origin: Vec3f, ground: Option<EntityKey>) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.movetype = MoveType::Step;
+        e.solid = Solid::Bbox;
+        e.state.origin = origin;
+        e.mins = Vec3f::splat(-4.0);
+        e.maxs = Vec3f::splat(4.0);
+        e.game.ground_entity = ground;
+        world.link_entity(key);
+        key
+    }
+
+    fn stuck() -> Trace {
+        Trace {
+            startsolid: true,
+            ..Default::default()
+        }
+    }
+
+    fn origin_of(world: &GameWorld, key: EntityKey) -> Vec3f {
+        world.entities.get(key).unwrap().state.origin
+    }
+
+    fn record_block(world: &mut GameWorld, self_key: EntityKey, _other: EntityKey) {
+        world.entities.get_mut(self_key).unwrap().game.count += 1;
+    }
+
+    #[test]
+    fn pusher_moves_snap_to_eighth_units() {
+        // C SV_Push: 1.23 * 8 = 9.84, +0.5 truncates to 10, * 0.125.
+        let mut world = test_world();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(12.3, -12.3, 0.0),
+        );
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, plat), Vec3f::new(1.25, -1.25, 0.0));
+    }
+
+    #[test]
+    fn rotating_pusher_carries_its_rider_around_its_origin() {
+        let mut world = test_world();
+        let plat = mover(&mut world, MoveType::Push, Vec3f::ZERO, Vec3f::ZERO);
+        world.entities.get_mut(plat).unwrap().avelocity = Vec3f::new(0.0, 900.0, 0.0);
+        let rider = box_at(&mut world, Vec3f::new(10.0, 0.0, 4.0), Some(plat));
+        world.physics_pusher(plat);
+        let o = origin_of(&world, rider);
+        assert!((o - Vec3f::new(0.0, 10.0, 4.0)).length() < 1e-4, "{o:?}");
+    }
+
+    #[test]
+    fn stop_pusher_is_blocked_by_what_it_would_push() {
+        // MOVETYPE_STOP only carries riders: a box in its way blocks it,
+        // where a MOVETYPE_PUSH mover would shove the box along.
+        for (movetype, blocked) in [(MoveType::Stop, true), (MoveType::Push, false)] {
+            let (mut world, gi) = test_world_recording();
+            let plat = mover(
+                &mut world,
+                movetype,
+                Vec3f::ZERO,
+                Vec3f::new(100.0, 0.0, 0.0),
+            );
+            world.entities.get_mut(plat).unwrap().blocked = Some(record_block);
+            let rock = box_at(&mut world, Vec3f::new(30.0, 0.0, -4.0), None);
+            gi.queued_traces.borrow_mut().push_back(stuck());
+            world.physics_pusher(plat);
+            let (plat_x, rock_x) = (origin_of(&world, plat).x, origin_of(&world, rock).x);
+            let count = world.entities.get(plat).unwrap().game.count;
+            if blocked {
+                assert_eq!((plat_x, rock_x, count), (0.0, 30.0, 1), "{movetype:?}");
+            } else {
+                assert_eq!((plat_x, rock_x, count), (10.0, 40.0, 0), "{movetype:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rider_that_cannot_move_is_left_behind_if_its_old_spot_is_clear() {
+        // C: "if it is ok to leave in the old position, do it".
+        let (mut world, gi) = test_world_recording();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        world.entities.get_mut(plat).unwrap().blocked = Some(record_block);
+        let rider = box_at(&mut world, Vec3f::new(0.0, 0.0, 4.0), Some(plat));
+        // Stuck at the new spot, clear at the old one.
+        gi.queued_traces.borrow_mut().push_back(stuck());
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, plat), Vec3f::new(10.0, 0.0, 0.0));
+        assert_eq!(origin_of(&world, rider), Vec3f::new(0.0, 0.0, 4.0));
+        assert_eq!(world.entities.get(plat).unwrap().game.count, 0);
+    }
+
+    #[test]
+    fn blocked_team_part_rolls_back_the_parts_already_moved() {
+        let (mut world, gi) = test_world_recording();
+        let master = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        let slave = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::new(500.0, 0.0, 0.0),
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        world.entities.get_mut(master).unwrap().game.teamchain = Some(slave);
+        {
+            let s = world.entities.get_mut(slave).unwrap();
+            s.game.flags |= EntityFlags::TEAMSLAVE;
+            s.blocked = Some(record_block);
+        }
+        // Only the slave's box overlaps the rock; it is stuck both ways.
+        box_at(&mut world, Vec3f::new(530.0, 0.0, -4.0), None);
+        gi.queued_traces
+            .borrow_mut()
+            .extend([stuck(), stuck(), stuck()]);
+        world.physics_pusher(master);
+        assert_eq!(origin_of(&world, master), Vec3f::ZERO);
+        assert_eq!(origin_of(&world, slave), Vec3f::new(500.0, 0.0, 0.0));
+        assert_eq!(world.entities.get(slave).unwrap().game.count, 1);
+    }
+
     #[test]
     fn run_entity_dispatches_fly() {
         let mut world = test_world();
