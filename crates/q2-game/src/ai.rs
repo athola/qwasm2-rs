@@ -820,7 +820,7 @@ pub fn ai_set_sight_client(world: &mut GameWorld) {
         .sight_client_key
         .and_then(|k| world.number_of(k))
         .filter(|&n| (1..=maxclients).contains(&n))
-        .unwrap_or(maxclients);
+        .unwrap_or(1); // C: start = 1, so client 1 is checked last
     world.level.sight_client_key = (1..=maxclients)
         .map(|i| (start + i - 1) % maxclients + 1)
         .filter_map(|n| world.entities.key_for_number(n))
@@ -2632,6 +2632,23 @@ mod tests {
         ai_set_sight_client(&mut world);
 
         assert_eq!(world.level.sight_client_key, None);
+    }
+
+    #[test]
+    fn first_sight_client_search_starts_after_client_1() {
+        // C: with no sight client, start = 1 and the first check is 2.
+        let mut world = test_world();
+        world.set_max_clients(2);
+        let first = world.spawn_test_client(Default::default());
+        let second = world.spawn_test_client(Default::default());
+        for key in [first, second] {
+            world.entities.get_mut(key).unwrap().game.health = 100;
+        }
+
+        ai_set_sight_client(&mut world);
+        assert_eq!(world.level.sight_client_key, Some(second));
+        ai_set_sight_client(&mut world);
+        assert_eq!(world.level.sight_client_key, Some(first));
     }
 
     #[test]
