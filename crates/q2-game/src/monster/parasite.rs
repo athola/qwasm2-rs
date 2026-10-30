@@ -491,7 +491,7 @@ pub fn parasite_pain(
         return;
     }
     ent.game.pain_debounce_time = time + 3.0;
-    if world.game.skill == 3 {
+    if world.game.skill == SKILL_HARDPLUS {
         return; // No pain anims in nightmare.
     }
     let name = if world.random() < 0.5 {
@@ -1032,7 +1032,7 @@ mod tests {
         parasite_stand(&mut world, key);
         parasite_pain(&mut world, key, key, 0.0, 10);
         assert_eq!(gi.sound_calls.borrow().len(), calls, "debounced");
-        world.game.skill = 3;
+        world.game.skill = SKILL_HARDPLUS;
         world.level.time = 6.0;
         parasite_pain(&mut world, key, key, 0.0, 10);
         assert_eq!(
