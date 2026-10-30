@@ -1448,7 +1448,18 @@ pub fn makron_hyperblaster(world: &mut GameWorld, key: EntityKey) {
         angles.y + 10.0 * (frame - FRAME_ATTAK421) as f32
     };
     let (forward, _, _) = crate::physics::angle_vectors(Vec3f::new(pitch, yaw, 0.0));
-    monster_fire_blaster(world, key, start, forward, 15, 1000, flash, EF_BLASTER);
+    // C projects from the frame's offset but always sends BLASTER_1, so
+    // the client draws every bolt's flash at the first muzzle.
+    monster_fire_blaster(
+        world,
+        key,
+        start,
+        forward,
+        15,
+        1000,
+        MZ2_MAKRON_BLASTER_1,
+        EF_BLASTER,
+    );
 }
 
 /// Small hits are shrugged off one time in five; then a pain move by
@@ -2686,13 +2697,13 @@ mod tests {
         makron_hyperblaster(&mut world, key);
         assert_eq!(
             flashes(&gi),
-            [
-                MZ2_MAKRON_BFG,
-                MZ2_MAKRON_RAILGUN_1,
-                MZ2_MAKRON_BLASTER_1 + 3
-            ]
+            [MZ2_MAKRON_BFG, MZ2_MAKRON_RAILGUN_1, MZ2_MAKRON_BLASTER_1]
         );
         let bolt = world.find_by_classname(None, "bolt").unwrap();
+        // The bolt starts at the frame's own muzzle, though the flash on
+        // the wire is always the first one.
+        let (start, _, _) = monster_flash_source(&world, key, MZ2_MAKRON_BLASTER_1 + 3).unwrap();
+        assert_eq!(world.entities.get(bolt).unwrap().state.origin, start);
         let v = world.entities.get(bolt).unwrap().velocity;
         // Frame 408 is 5 frames before 413: 50 degrees to the left.
         let yaw = v.y.atan2(v.x).to_degrees();
