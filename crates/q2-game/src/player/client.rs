@@ -72,8 +72,10 @@ impl GameWorld {
     }
 
     /// Place a connected client into the game world at a spawn point.
-    /// C ref: `PutClientInServer` (player/client.c). The help-computer
-    /// counts coop carries across a respawn are not ported.
+    /// C ref: `PutClientInServer` (player/client.c). Not ported: the
+    /// help-computer counts coop carries across a respawn, and
+    /// `air_finished` and `pain`, which only player drowning (P_WorldEffects)
+    /// and player_pain read, neither of which is ported.
     pub fn begin_client(&mut self, key: EntityKey) {
         // Before health is set back up, so farthest ranging does not count
         // this client.
@@ -120,11 +122,16 @@ impl GameWorld {
         }
         self.fetch_client_ent_data(key);
 
+        let number = self.number_of(key).unwrap_or(1);
         if let Some(ent) = self.entities.get_mut(key) {
+            ent.game.ground_entity = None;
             ent.in_use = true;
             ent.game.takedamage = TakeDamage::Aim;
             ent.game.deadflag = DeadFlag::No;
-            ent.svflags &= !SvFlags::DEADMONSTER.bits();
+            ent.game.waterlevel = 0;
+            ent.game.watertype = 0;
+            ent.game.flags.remove(EntityFlags::NO_KNOCKBACK);
+            ent.svflags = 0;
             ent.die = Some(player_die);
             ent.game.movetype = MoveType::Walk;
             ent.game.viewheight = 22.0;
@@ -137,7 +144,12 @@ impl GameWorld {
             ent.velocity = Vec3f::ZERO;
             // 255: "use the skin specified model"; anything else makes
             // ClientThink treat the player as gibs.
+            ent.state.effects = 0;
             ent.state.modelindex = 255;
+            ent.state.modelindex2 = 255; // custom gun model
+                                         // The skin is the player number; the weapon is added later.
+            ent.state.skinnum = number as i32 - 1;
+            ent.state.frame = 0;
             ent.state.origin = spawn_origin + Vec3f::new(0.0, 0.0, 1.0); // off the ground
             ent.state.old_origin = ent.state.origin;
             ent.state.angles = Vec3f::new(0.0, spawn_angles.y, 0.0);
@@ -156,6 +168,8 @@ impl GameWorld {
             }
         }
 
+        // C ignores whether something survived.
+        self.kill_box(key);
         self.link_entity(key);
     }
 
@@ -879,6 +893,56 @@ mod tests {
         world.disconnect_client(key);
         // C keeps client edicts allocated; the slot is just no longer in use.
         assert!(!world.entities.get(key).unwrap().in_use);
+    }
+
+    #[test]
+    fn begin_client_clears_what_a_gibbed_body_left_on_the_edict() {
+        // C PutClientInServer: effects 0, skin = client index, frame 0,
+        // modelindex2 255, svflags 0, no FL_NO_KNOCKBACK, no ground, dry.
+        let mut world = test_world();
+        world.init_game();
+        let key = world.connect_client(1, "").unwrap();
+        {
+            let e = world.entities.get_mut(key).unwrap();
+            e.state.effects = q2_shared::constants::EF_GIB;
+            e.state.skinnum = 7;
+            e.state.frame = 5;
+            e.svflags = SvFlags::DEADMONSTER.bits() | SvFlags::NOCLIENT.bits();
+            e.game.flags |= EntityFlags::NO_KNOCKBACK;
+            e.game.ground_entity = Some(key);
+            e.game.waterlevel = 2;
+            e.game.watertype = q2_shared::constants::CONTENTS_WATER;
+        }
+        world.begin_client(key);
+        let e = world.entities.get(key).unwrap();
+        assert_eq!((e.state.effects, e.state.skinnum, e.state.frame), (0, 0, 0));
+        assert_eq!((e.state.modelindex, e.state.modelindex2), (255, 255));
+        assert_eq!(e.svflags, 0);
+        assert!(!e.game.flags.contains(EntityFlags::NO_KNOCKBACK));
+        assert_eq!(e.game.ground_entity, None);
+        assert_eq!((e.game.waterlevel, e.game.watertype), (0, 0));
+    }
+
+    #[test]
+    fn begin_client_telefrags_whatever_stands_on_the_spawn_point() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_game();
+        let key = world.connect_client(1, "").unwrap();
+        let camper = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(camper).unwrap();
+            e.game.health = 100;
+            e.game.takedamage = TakeDamage::Yes;
+            e.solid = Solid::Bbox;
+        }
+        // The first trace KillBox makes hits the camper.
+        gi.queued_traces.borrow_mut().push_back(Trace {
+            startsolid: true,
+            ent_index: world.number_of(camper),
+            ..Default::default()
+        });
+        world.begin_client(key);
+        assert!(world.entities.get(camper).unwrap().game.health <= 0);
     }
 
     #[test]
