@@ -306,15 +306,22 @@ impl CVarSystem {
 
     /// Build a backslash-delimited info string from cvars that have the given
     /// flag, applying each pair the way C `Info_SetValueForKey` does.
+    ///
+    /// C ref: `Cvar_BitInfo` walks `cvar_vars`, which `Cvar_Get` keeps in
+    /// strcmp order, so keys appear sorted by name (and that order decides
+    /// which keys are dropped once `MAX_INFO_STRING` is reached).
     fn build_info_string(vars: &[CVar], flag: CVarFlags) -> String {
+        let mut flagged: Vec<&CVar> = vars.iter().filter(|c| c.flags.contains(flag)).collect();
+        flagged.sort_by(|a, b| a.name.cmp(&b.name));
         let mut info = String::new();
-        for cvar in vars.iter().filter(|c| c.flags.contains(flag)) {
+        for cvar in flagged {
             let (key, value) = (cvar.name.as_str(), cvar.string.as_str());
             if key.contains(['\\', '"', ';']) || value.contains(['\\', '"']) {
                 tracing::warn!("Can't use keys or values with a \\ or \" ({key})");
                 continue;
             }
-            if key.len() >= MAX_INFO_KEY || value.len() >= MAX_INFO_KEY {
+            // C counts bytes; Q2 strings hold one char per byte here.
+            if key.chars().count() >= MAX_INFO_KEY || value.chars().count() >= MAX_INFO_KEY {
                 tracing::warn!("Keys and values must be < 64 characters ({key})");
                 continue;
             }
@@ -322,13 +329,17 @@ impl CVarSystem {
                 continue;
             }
             let pair = format!("\\{key}\\{value}");
-            if pair.len() + info.len() >= MAX_INFO_STRING {
+            // `info` is printable ASCII, so its len() is its byte count.
+            if pair.chars().count() + info.len() >= MAX_INFO_STRING {
                 tracing::warn!("Info string length exceeded ({key})");
                 continue;
             }
-            // Only printable ASCII survives, high bit stripped first.
+            // Only printable ASCII survives, high bit stripped first. A
+            // char above U+00FF is no Q2 byte and could not reach C, so it
+            // is dropped.
             info.extend(
-                pair.bytes()
+                pair.chars()
+                    .filter_map(|c| u8::try_from(u32::from(c)).ok())
                     .map(|b| b & 0x7f)
                     .filter(|b| (32..127).contains(b))
                     .map(char::from),
@@ -750,6 +761,36 @@ mod tests {
             .map(|line| line.split(' ').nth(1).unwrap().to_owned())
             .collect();
         assert_eq!(names, ["fov", "gl_mode", "name", "vid_mode"]);
+    }
+
+    #[test]
+    fn info_string_lists_keys_sorted_by_name_like_the_c_list() {
+        let mut cvars = CVarSystem::new();
+        for name in ["skin", "name", "rate", "hand"] {
+            cvars.get(name, "1", CVarFlags::USERINFO);
+        }
+        assert_eq!(
+            cvars.userinfo_string(),
+            "\\hand\\1\\name\\1\\rate\\1\\skin\\1"
+        );
+    }
+
+    #[test]
+    fn info_string_strips_the_high_bit_of_each_q2_byte() {
+        let mut cvars = CVarSystem::new();
+        // One char per wire byte: 0xE9 & 0x7f is 'i'.
+        cvars.get("name", "caf\u{e9}", CVarFlags::USERINFO);
+        assert_eq!(cvars.userinfo_string(), "\\name\\cafi");
+    }
+
+    #[test]
+    fn info_string_measures_high_bit_values_in_q2_bytes() {
+        let mut cvars = CVarSystem::new();
+        // 40 bytes in C (80 in UTF-8): under MAX_INFO_KEY, so kept.
+        let coloured: String = std::iter::repeat_n('\u{e1}', 40).collect();
+        cvars.get("name", &coloured, CVarFlags::USERINFO);
+        let expected = format!("\\name\\{}", "a".repeat(40));
+        assert_eq!(cvars.userinfo_string(), expected);
     }
 
     #[test]

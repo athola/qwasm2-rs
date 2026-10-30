@@ -684,7 +684,7 @@ fn pm_categorize_position(pm: &mut Pmove, pml: &mut PmLocal) {
         pm.ground_entity = None;
     } else {
         let trace = (pm.trace)(pml.origin, pm.mins, pm.maxs, point);
-        pml.ground_surface = trace.surface.clone();
+        pml.ground_surface = trace.surface;
         pml.ground_contents = trace.contents;
 
         if trace.ent_index.is_none() || (f64::from(trace.plane.normal.z) < 0.7 && !trace.startsolid)

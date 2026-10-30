@@ -162,6 +162,10 @@ struct TraceState {
     maxs: Vec3f,
     extents: Vec3f,
     trace: Trace,
+    /// Index into the map's surfaces of the closest hit's lead side. C
+    /// keeps a csurface_t pointer; the owned `Surface` is built once when
+    /// the sweep ends instead of on every closer brush.
+    surface_idx: Option<usize>,
 }
 
 /// One pending call of C `CM_RecursiveHullCheck`: sweep `p1`..`p2`
@@ -358,9 +362,10 @@ impl CollisionMap {
             self.planes.push(CPlane {
                 normal: p.normal,
                 dist: p.dist,
-                // C keeps the on-disk int and takes the general path for
-                // any type >= 3; map out-of-range values to one of those.
-                plane_type: u8::try_from(p.plane_type).unwrap_or(u8::MAX),
+                // C ref: CMod_LoadPlanes stores the on-disk int in a byte
+                // (`out->type = LittleLong(in->type)`), keeping the low 8
+                // bits: 256 becomes the axial X type 0.
+                plane_type: p.plane_type as u8,
                 sign_bits: sign_bits_for_plane(p.normal),
             });
         }
@@ -523,7 +528,9 @@ impl CollisionMap {
         self.surfaces.reserve(texinfo.len());
         for t in texinfo {
             self.surfaces.push(MapSurface {
-                name: t.texture,
+                // C ref: CMod_LoadSurfaces Q_strlcpy into csurface_t.name[16];
+                // game code compares trace surface names, so keep 15 chars.
+                name: t.texture.chars().take(15).collect(),
                 flags: t.flags,
                 value: t.value,
             });
@@ -1227,6 +1234,7 @@ impl CollisionMap {
             maxs,
             extents: Vec3f::ZERO,
             trace: Trace::default(),
+            surface_idx: None,
         };
 
         if self.nodes.is_empty() || !self.head_node_valid(head_node) {
@@ -1269,6 +1277,14 @@ impl CollisionMap {
 
         // General sweeping through world
         self.hull_check(head_node, start, end, &mut state);
+        state.trace.surface = state.surface_idx.map(|idx| {
+            let surf = &self.surfaces[idx];
+            Surface {
+                name: surf.name.clone(),
+                flags: surf.flags,
+                value: surf.value,
+            }
+        });
 
         if state.trace.fraction == 1.0 {
             state.trace.endpos = end;
@@ -1446,19 +1462,10 @@ impl CollisionMap {
             }
 
             if let Some(sidx) = lead_side_idx {
-                // C stores a pointer to the map's csurface_t; Trace owns its
-                // Surface (q2-shared), so a closer hit clones the name.
                 let side = &brush_sides[sidx];
-                if side.surface_idx >= 0 && (side.surface_idx as usize) < surfaces.len() {
-                    let surf = &surfaces[side.surface_idx as usize];
-                    state.trace.surface = Some(Surface {
-                        name: surf.name.clone(),
-                        flags: surf.flags,
-                        value: surf.value,
-                    });
-                } else {
-                    state.trace.surface = None;
-                }
+                state.surface_idx = usize::try_from(side.surface_idx)
+                    .ok()
+                    .filter(|&idx| idx < surfaces.len());
             }
 
             state.trace.contents = brush.contents;
@@ -2376,6 +2383,28 @@ pub(crate) mod tests {
         assert_eq!(
             trace.surface.as_ref().map(|s| s.name.as_str()),
             Some("solid")
+        );
+    }
+
+    #[test]
+    fn trace_surface_name_is_truncated_to_15_bytes_like_c() {
+        // C ref: CMod_LoadSurfaces Q_strlcpy's the name into
+        // csurface_t.name[16]; bytes map 1:1 to chars.
+        let mut bsp = build_minimal_bsp();
+        let at = lump(&bsp, LUMP_TEXINFO).0 + 40;
+        bsp[at..at + 32].copy_from_slice(b"e1u1/caf\xe9_long_texture_name_xyz!");
+        let mut cm = load(&bsp);
+        let trace = cm.box_trace(
+            Vec3f::new(50.0, 0.0, 0.0),
+            Vec3f::new(-50.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            0,
+            CONTENTS_SOLID,
+        );
+        assert_eq!(
+            trace.surface.map(|s| s.name),
+            Some("e1u1/caf\u{e9}_long_".to_owned())
         );
     }
 
@@ -3813,10 +3842,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn out_of_range_plane_type_takes_the_general_path_like_c() {
-        // C keeps the int and tests `type < 3`; 256 must not truncate to
-        // the axial X case.
-        for plane_type in [256, -1, 6] {
+    fn plane_type_wrapping_past_axial_takes_the_general_path_like_c() {
+        // C stores the on-disk int in a byte: -1 becomes 255, and both 255
+        // and 6 fail `type < 3`.
+        for plane_type in [-1, 6] {
             let mut cm = load(&diagonal_bsp(plane_type));
             assert_eq!(
                 cm.point_contents(Vec3f::new(-30.0, 10.0, 0.0), 0),
@@ -3848,6 +3877,26 @@ pub(crate) mod tests {
                 t.endpos
             );
         }
+    }
+
+    #[test]
+    fn plane_type_truncates_to_a_byte_like_c() {
+        // C ref: CMod_LoadPlanes `out->type = LittleLong(in->type)` into a
+        // byte, so 256 becomes 0 and takes the axial X path.
+        let axial = load(&diagonal_bsp(0));
+        let wrapped = load(&diagonal_bsp(256));
+        assert_eq!(wrapped.planes[0].plane_type, 0);
+        let probe = Vec3f::new(-10.0, 30.0, 0.0);
+        assert_eq!(wrapped.point_contents(probe, 0), CONTENTS_SOLID);
+        assert_eq!(
+            wrapped.point_contents(probe, 0),
+            axial.point_contents(probe, 0)
+        );
+        let (mins, maxs) = (Vec3f::new(-12.0, 28.0, -1.0), Vec3f::new(-8.0, 32.0, 1.0));
+        assert_eq!(
+            wrapped.box_leafnums(mins, maxs, 8),
+            axial.box_leafnums(mins, maxs, 8)
+        );
     }
 
     #[test]

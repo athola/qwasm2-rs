@@ -93,9 +93,14 @@ impl CmdSystem {
         self.buffer.push_str(text);
     }
 
-    /// Insert text at the beginning of the command buffer. Shares the
-    /// `cbuf_add_text` cap, as C `Cbuf_InsertText` goes through
-    /// `Cbuf_AddText`.
+    /// Insert text at the beginning of the command buffer.
+    ///
+    /// C ref: `Cbuf_InsertText` clears the buffer, passes only the inserted
+    /// text to `Cbuf_AddText` (checked against the empty buffer), then
+    /// `SZ_Write`s the old text back; `cmd_text` has no `allowoverflow`, so
+    /// a combined size past the buffer is `ERR_FATAL`. This port instead
+    /// drops the insert, with a warning, whenever the combined text would
+    /// reach the `cbuf_add_text` cap, and keeps the old text.
     pub fn cbuf_insert_text(&mut self, text: &str) {
         if self.would_overflow(text) {
             return;
@@ -135,7 +140,9 @@ impl CmdSystem {
         self.defer_buffer = std::mem::take(&mut self.buffer);
     }
 
-    /// Restore the defer buffer to the main buffer.
+    /// Restore the defer buffer to the main buffer. Goes through
+    /// `cbuf_insert_text`, so deferred commands that would overflow the
+    /// buffer are dropped where C would `ERR_FATAL`.
     pub fn cbuf_insert_from_defer(&mut self) {
         let deferred = std::mem::take(&mut self.defer_buffer);
         self.cbuf_insert_text(&deferred);
@@ -151,7 +158,16 @@ impl CmdSystem {
         let name = &tokens[0];
         let arg_strings: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
 
-        if let Some(handler) = self.commands.get(name.as_str()) {
+        // C ref: Cmd_ExecuteString matches with Q_strcasecmp while walking
+        // cmd_functions, which Cmd_AddCommand keeps in strcmp order, so the
+        // smallest case-insensitive match wins.
+        let handler = self
+            .commands
+            .iter()
+            .filter(|(registered, _)| registered.eq_ignore_ascii_case(name))
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(_, handler)| handler);
+        if let Some(handler) = handler {
             handler(&arg_strings);
         }
         // Not found: C would try cvars, then forward to the server, then
@@ -165,9 +181,13 @@ impl Default for CmdSystem {
     }
 }
 
-/// C COM_Parse whitespace: every byte up to and including space.
+/// C COM_Parse / Cmd_TokenizeString whitespace: `c <= ' '` on a signed
+/// `char` (x86 and clang wasm32, Qwasm2's target), so bytes 0x80-0xFF are
+/// negative and count as separators too.
+///
+/// C ref: COM_Parse `(c = *data) <= ' '` and `while (c > 32)`.
 fn is_separator(c: char) -> bool {
-    c <= ' '
+    c <= ' ' || ('\u{80}'..='\u{ff}').contains(&c)
 }
 
 /// Tokenize a command string, handling quoted strings and `//` comments
@@ -289,6 +309,15 @@ mod tests {
     }
 
     #[test]
+    fn tokenize_splits_on_high_bit_bytes_like_signed_char_c() {
+        assert_eq!(tokenize("a\u{e9}b \u{80}c\u{ff}"), ["a", "b", "c"]);
+        // Inside quotes only '"' ends the token, as in C COM_Parse.
+        assert_eq!(tokenize("\"a\u{e9}b\""), ["a\u{e9}b"]);
+        // Above U+00FF is no Q2 byte; it stays in the token.
+        assert_eq!(tokenize("a\u{100}b"), ["a\u{100}b"]);
+    }
+
+    #[test]
     fn tokenize_empty() {
         let tokens = tokenize("");
         assert!(tokens.is_empty());
@@ -310,6 +339,30 @@ mod tests {
         });
         cmd.execute_string("test");
         assert!(called.get());
+    }
+
+    #[test]
+    fn dispatch_ignores_ascii_case_like_c_but_registration_does_not() {
+        let mut cmd = CmdSystem::new();
+        let called = Rc::new(Cell::new(0));
+        let called2 = called.clone();
+        cmd.add_command("test", move |_args| called2.set(called2.get() + 1));
+        cmd.execute_string("TEST");
+        cmd.execute_string("Test");
+        assert_eq!(called.get(), 2);
+        // C Cmd_Exists / Cmd_AddCommand compare with strcmp.
+        assert!(!cmd.exists("TEST"));
+    }
+
+    #[test]
+    fn dispatch_picks_the_first_name_in_strcmp_order_like_the_c_list() {
+        let mut cmd = CmdSystem::new();
+        let ran = Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+        let (upper, lower) = (ran.clone(), ran.clone());
+        cmd.add_command("test", move |_args| lower.borrow_mut().push("test"));
+        cmd.add_command("Test", move |_args| upper.borrow_mut().push("Test"));
+        cmd.execute_string("test");
+        assert_eq!(*ran.borrow(), ["Test"]);
     }
 
     #[test]
@@ -482,12 +535,11 @@ mod tests {
     #[test]
     fn tokenize_splits_on_control_bytes_but_not_unicode_spaces() {
         // C COM_Parse treats `c <= ' '` as whitespace with `c` read from a
-        // `char *`. With unsigned char only bytes 0..=32 qualify; where char
-        // is signed (x86, Apple arm64) bytes >= 0x80 are negative and would
-        // count too. The port follows the unsigned reading so high-bit
-        // (Latin-1) text stays inside its token.
+        // signed `char *`, so byte 0xA0 splits; a char above U+00FF is no
+        // Q2 byte and stays in its token.
         assert_eq!(tokenize("a\u{1}b"), vec!["a", "b"]);
-        assert_eq!(tokenize("a\u{a0}b"), vec!["a\u{a0}b"]);
+        assert_eq!(tokenize("a\u{a0}b"), vec!["a", "b"]);
+        assert_eq!(tokenize("a\u{2003}b"), vec!["a\u{2003}b"]);
     }
 
     #[test]
@@ -568,18 +620,20 @@ mod tests {
     fn limits_count_wire_bytes_not_utf8_bytes() {
         // NetMsg::read_string maps each wire byte to one char (U+0000..=U+00FF);
         // C's byte limits must count those chars, not their UTF-8 length.
+        // High-bit bytes separate bare words, so they are quoted here.
         let long = "\u{e9}".repeat(600);
-        assert_eq!(tokenize(&format!("echo {long}"))[1], long);
+        assert_eq!(tokenize(&format!("echo \"{long}\""))[1], long);
         assert_eq!(
-            tokenize(&format!("echo {}", "\u{e9}".repeat(MAX_TOKEN_CHARS)))[1],
+            tokenize(&format!("echo \"{}\"", "\u{e9}".repeat(MAX_TOKEN_CHARS)))[1],
             ""
         );
 
         let mut cmd = CmdSystem::new();
         let echo = logging_command(&mut cmd, "echo");
-        cmd.cbuf_add_text(&format!("echo {}\n", "\u{e9}".repeat(2000)));
+        cmd.cbuf_add_text(&format!("echo \"{}\"\n", "\u{e9}".repeat(2000)));
         cmd.cbuf_execute();
-        assert_eq!(echo.borrow()[0].chars().count(), MAX_LINE_CHARS);
+        // The line keeps MAX_LINE_CHARS chars, one of them the opening quote.
+        assert_eq!(echo.borrow()[0].chars().count(), MAX_LINE_CHARS - 1);
 
         let mut cmd = CmdSystem::new();
         cmd.cbuf_add_text(&"\u{e9}".repeat(CBUF_MAX_SIZE / 2 + 1));
@@ -588,7 +642,8 @@ mod tests {
 
     #[test]
     fn cbuf_insert_text_shares_the_add_text_cap() {
-        // C Cbuf_InsertText goes through Cbuf_AddText.
+        // C would ERR_FATAL once old + inserted text exceeds the buffer;
+        // the port drops the insert instead (cbuf_insert_text doc).
         let mut cmd = CmdSystem::new();
         cmd.cbuf_add_text(&"a".repeat(CBUF_MAX_SIZE - 2));
         cmd.cbuf_insert_text("bb");
