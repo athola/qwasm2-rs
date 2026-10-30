@@ -9,7 +9,7 @@ use q2_render_api::DLight;
 use q2_shared::constants::MAX_LIGHTSTYLES;
 
 use super::lightmap::{calc_surface_extents, style_count};
-use super::world::{face_positions, SURF_SKY, SURF_WARP};
+use super::world::{face_positions, SURF_WARP};
 use crate::bsp::BspData;
 
 /// C `GL3_LightPoint` traces this far below the point.
@@ -36,8 +36,8 @@ struct LightFace {
 
 pub struct LightTree {
     nodes: Vec<LightNode>,
-    /// Parallel to the BSP face array; `None` for faces C gives no lightmap
-    /// (sky, warp) or whose geometry is malformed.
+    /// Parallel to the BSP face array; `None` for faces C skips (warp) or
+    /// whose geometry is malformed.
     faces: Vec<Option<LightFace>>,
     lighting: Vec<u8>,
 }
@@ -80,7 +80,9 @@ impl LightTree {
             .iter()
             .map(|face| {
                 let texinfo = bsp.texinfo.get(usize::try_from(face.texinfo_idx).ok()?)?;
-                if texinfo.flags & (SURF_SKY | SURF_WARP) != 0 {
+                // C skips SURF_DRAWTURB, and SURF_DRAWSKY only with
+                // r_fixsurfsky set (default 0): sky faces stay in the trace.
+                if texinfo.flags & SURF_WARP != 0 {
                     return None;
                 }
                 let positions = face_positions(bsp, face)?;
@@ -357,11 +359,20 @@ mod tests {
     }
 
     #[test]
-    fn warp_and_sky_faces_carry_no_light() {
-        for flags in [SURF_WARP, SURF_SKY] {
-            let tree = LightTree::from_bsp(&floor_bsp(flags, 0));
-            near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
-        }
+    fn warp_faces_carry_no_light() {
+        let tree = LightTree::from_bsp(&floor_bsp(SURF_WARP, 0));
+        near(tree.light_point([20.0, 36.0, 100.0], &ON, &[]), [0.0; 3]);
+    }
+
+    // C skips SURF_DRAWSKY faces only with r_fixsurfsky set (default 0), and
+    // stock sky faces carry lightmap samples, so the trace stops there.
+    #[test]
+    fn sky_faces_are_lit_like_c_default_r_fixsurfsky() {
+        let tree = LightTree::from_bsp(&floor_bsp(crate::gl3::world::SURF_SKY, 0));
+        near(
+            tree.light_point([20.0, 36.0, 100.0], &ON, &[]),
+            [110.0 / 255.0, 55.0 / 255.0, 0.0],
+        );
     }
 
     #[test]
