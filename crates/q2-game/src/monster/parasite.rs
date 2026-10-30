@@ -192,6 +192,7 @@ static PARASITE_FRAMES_STOP_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 0.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_STOP_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN10,
     lastframe: FRAME_RUN15,
@@ -237,6 +238,7 @@ static PARASITE_FRAMES_STOP_WALK: [MonsterFrame; 6] = [
     frame(ai::ai_walk, 0.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_STOP_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN10,
     lastframe: FRAME_RUN15,
@@ -328,6 +330,7 @@ static PARASITE_FRAMES_BREAK: [MonsterFrame; 32] = [
     frame(ai::ai_charge, 1.0, None),
 ];
 
+/// Defined but unused in C too: nothing in parasite.c sets it.
 pub static PARASITE_MOVE_BREAK: MonsterMove = MonsterMove {
     firstframe: FRAME_BREAK01,
     lastframe: FRAME_BREAK32,

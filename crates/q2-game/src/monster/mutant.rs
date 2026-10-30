@@ -435,6 +435,7 @@ pub fn mutant_search(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SEARCH, ATTN_NORM);
 }
 
+/// Defined but unused in C too: no mutant frame calls it.
 /// C ref: `mutant_swing`.
 pub fn mutant_swing(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SWING, ATTN_NORM);
