@@ -1245,6 +1245,7 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.nextthink = 6.0;
         gunner_dead(&mut world, key);
         let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.mins, Vec3f::new(-16.0, -16.0, -24.0));
         assert_eq!(ent.maxs, Vec3f::new(16.0, 16.0, -8.0));
         assert_eq!(ent.game.movetype, MoveType::Toss);
         assert_ne!(ent.svflags & SvFlags::DEADMONSTER.bits(), 0);
@@ -1345,6 +1346,11 @@ mod tests {
         &wire[wire.len() - 2]
     }
 
+    /// A pain callback that keeps the kick it was handed in `game.count`.
+    fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
+        world.entities.get_mut(key).unwrap().game.count = kick as i32;
+    }
+
     #[test]
     fn gunner_fire_shoots_the_enemy_from_the_frames_barrel() {
         let (mut world, gi, player) = player_arena(200.0);
@@ -1354,8 +1360,10 @@ mod tests {
         ent.state.origin = Vec3f::new(0.0, 0.0, 24.0);
         ent.state.frame = FRAME_ATTAK216 + 3;
         ent.game.enemy = Some(player);
+        world.entities.get_mut(player).unwrap().pain = Some(keep_kick);
         gunner_fire(&mut world, key);
         assert_eq!(health(&world, player), 97);
+        assert_eq!(world.entities.get(player).unwrap().game.count, 4, "kick");
         let _ = gi;
 
         let (mut world, gi) = wire_world();
@@ -1414,9 +1422,13 @@ mod tests {
             world.entities.get_mut(key).unwrap().state.frame = frame;
             gunner_grenade(&mut world, key);
             let g = grenade(&world).expect("a grenade");
-            assert_eq!(g.game.dmg, 50);
+            assert_eq!((g.game.dmg, g.game.dmg_radius), (50, 90.0));
             assert_eq!(g.owner, Some(key));
-            assert!(g.velocity.x > 500.0, "ahead: {}", g.velocity);
+            // 600 straight ahead; C's up and right jitter is level-aim
+            // perpendicular, so it leaves x alone.
+            assert!((g.velocity.x - 600.0).abs() < 0.01, "ahead: {}", g.velocity);
+            assert!(g.velocity.y.abs() <= 10.0, "{}", g.velocity);
+            assert!((190.0..=210.0).contains(&g.velocity.z), "{}", g.velocity);
             assert_eq!(*last_flash(&gi.wire.borrow()), Wire::Byte(flash), "{frame}");
         }
     }
