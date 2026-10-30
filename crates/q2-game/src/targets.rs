@@ -153,26 +153,45 @@ fn target_speaker_use(
         .positioned_sound(origin, number, chan, noise, volume, attenuation, 0.0);
 }
 
-/// target_secret — increment secret counter.
+/// Play the secret sound, count the secret, fire the targets and go.
+/// C ref: `use_target_secret`.
 fn target_secret_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
     activator: EntityKey,
 ) {
+    play_found_sound(world, self_key);
     world.level.found_secrets += 1;
     world.use_targets(self_key, activator);
+    world.free_entity(self_key);
 }
 
-/// target_goal — increment goal counter.
+/// As `target_secret_use`, and the last goal found stops the CD track.
+/// C ref: `use_target_goal`.
 fn target_goal_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
     activator: EntityKey,
 ) {
+    play_found_sound(world, self_key);
     world.level.found_goals += 1;
+    if world.level.found_goals == world.level.total_goals {
+        world
+            .gi
+            .configstring(q2_shared::constants::CS_CDTRACK as i32, "0");
+    }
     world.use_targets(self_key, activator);
+    world.free_entity(self_key);
+}
+
+/// C `gi.sound(ent, CHAN_VOICE, ent->noise_index, 1, ATTN_NORM, 0)`.
+fn play_found_sound(world: &GameWorld, key: EntityKey) {
+    let noise = world.entities.get(key).map_or(0, |e| e.game.noise_index);
+    world
+        .gi
+        .sound(world.number_of(key), CHAN_VOICE, noise, 1.0, ATTN_NORM, 0.0);
 }
 
 /// Generic target use — just fires its own targets (relay behavior).
@@ -280,27 +299,73 @@ pub fn sp_target_changelevel(
     ent.svflags = q2_shared::constants::SVF_NOCLIENT;
 }
 
+/// C ref: `SP_target_secret`; `finish_found_target` does the rest.
 pub fn sp_target_secret(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
     if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = "target_secret".to_string();
         ent.use_fn = Some(target_secret_use);
-        let _ = fields;
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
     }
 }
 
+/// C ref: `SP_target_goal`; `finish_found_target` does the rest.
 pub fn sp_target_goal(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
     if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = "target_goal".to_string();
         ent.use_fn = Some(target_goal_use);
-        let _ = fields;
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+    }
+}
+
+/// The `GameWorld` half of C SP_target_secret and SP_target_goal: freed in
+/// deathmatch, otherwise the noise (default `misc/secret.wav`) and the
+/// level total, plus C's mine3 quirk giving one secret its message.
+pub fn finish_found_target(
+    world: &mut GameWorld,
+    key: EntityKey,
+    fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    let noise = fields
+        .get("noise")
+        .map_or("misc/secret.wav", String::as_str);
+    let noise_index = world.gi.sound_index(noise);
+    let mine3 = world.level.mapname.eq_ignore_ascii_case("mine3");
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.game.noise_index = noise_index;
+    if ent.game.classname == "target_goal" {
+        world.level.total_goals += 1;
+        return;
+    }
+    world.level.total_secrets += 1;
+    if mine3 && ent.state.origin == q2_shared::types::Vec3f::new(280.0, -2048.0, -624.0) {
+        ent.game.message = "You have found a secret area.".to_string();
+    }
+}
+
+/// The `GameWorld` half of C SP_target_changelevel: its quirk sending
+/// fact1's exit to fact3 to the secret spawn point.
+pub fn finish_target_changelevel(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let fact1 = world.level.mapname.eq_ignore_ascii_case("fact1");
+    if let Some(ent) = world.entities.get_mut(key) {
+        if fact1 && ent.game.map.eq_ignore_ascii_case("fact3") {
+            ent.game.map = "fact3$secret1".to_string();
+        }
     }
 }
 
@@ -395,6 +460,118 @@ mod tests {
         world.entities.get_mut(target).unwrap().game.map = "base2".to_string();
         target_changelevel_use(&mut world, target, player, player);
         assert!(!world.level.exitintermission);
+    }
+
+    fn spawn_map(
+        mapname: &str,
+        deathmatch: bool,
+        entities: &str,
+    ) -> (GameWorld, std::rc::Rc<crate::world::MockGameImport>) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.game.deathmatch = deathmatch;
+        world.init_game();
+        world.spawn_entities(
+            mapname,
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{entities}"),
+            "",
+        );
+        (world, gi)
+    }
+
+    #[test]
+    fn secrets_and_goals_count_their_totals_and_hide() {
+        let (world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_secret" } { "classname" "target_secret" "noise" "x.wav" }
+               { "classname" "target_goal" }"#,
+        );
+        assert_eq!((world.level.total_secrets, world.level.total_goals), (2, 1));
+        let secret = world.find_by_classname(None, "target_secret").unwrap();
+        let ent = world.entities.get(secret).unwrap();
+        assert_eq!(ent.svflags, q2_shared::constants::SVF_NOCLIENT);
+        let sounds = gi.sounds.borrow();
+        assert_eq!(sounds[ent.game.noise_index as usize - 1], "misc/secret.wav");
+        assert!(sounds.contains(&"x.wav".to_string()));
+    }
+
+    #[test]
+    fn deathmatch_removes_secrets_and_goals() {
+        let (world, _) = spawn_map(
+            "base1",
+            true,
+            r#"{ "classname" "target_secret" } { "classname" "target_goal" }"#,
+        );
+        assert!(world.find_by_classname(None, "target_secret").is_none());
+        assert!(world.find_by_classname(None, "target_goal").is_none());
+        assert_eq!((world.level.total_secrets, world.level.total_goals), (0, 0));
+    }
+
+    #[test]
+    fn a_secret_plays_its_sound_counts_once_and_is_freed() {
+        let (mut world, gi) = spawn_map("base1", false, r#"{ "classname" "target_secret" }"#);
+        let secret = world.find_by_classname(None, "target_secret").unwrap();
+        let use_fn = world.entities.get(secret).unwrap().use_fn.unwrap();
+        let number = world.number_of(secret);
+        use_fn(&mut world, secret, secret, secret);
+        assert_eq!(world.level.found_secrets, 1);
+        assert!(!world.entities.is_live(secret));
+        let noise = 1 + gi
+            .sounds
+            .borrow()
+            .iter()
+            .position(|s| s == "misc/secret.wav")
+            .unwrap() as i32;
+        assert!(gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .any(|c| c.0 == number && c.1 == CHAN_VOICE && c.2 == noise));
+    }
+
+    #[test]
+    fn finding_the_last_goal_sets_the_cd_track_to_0() {
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_goal" } { "classname" "target_goal" }"#,
+        );
+        let first = world.find_by_classname(None, "target_goal").unwrap();
+        let second = world.find_by_classname(Some(first), "target_goal").unwrap();
+        let cdtrack = |gi: &crate::world::MockGameImport| {
+            gi.configstrings
+                .borrow()
+                .iter()
+                .filter(|(i, v)| *i == q2_shared::constants::CS_CDTRACK as i32 && v == "0")
+                .count()
+        };
+        let before = cdtrack(&gi);
+        target_goal_use(&mut world, first, first, first);
+        assert_eq!(cdtrack(&gi), before);
+        target_goal_use(&mut world, second, second, second);
+        assert_eq!(cdtrack(&gi), before + 1);
+        assert!(!world.entities.is_live(second));
+    }
+
+    #[test]
+    fn fact1_exit_to_fact3_goes_to_the_secret_spawn() {
+        let entities = r#"{ "classname" "target_changelevel" "map" "FACT3" }"#;
+        let (world, _) = spawn_map("fact1", false, entities);
+        let exit = world.find_by_classname(None, "target_changelevel").unwrap();
+        assert_eq!(world.entities.get(exit).unwrap().game.map, "fact3$secret1");
+        let (world, _) = spawn_map("fact2", false, entities);
+        let exit = world.find_by_classname(None, "target_changelevel").unwrap();
+        assert_eq!(world.entities.get(exit).unwrap().game.map, "FACT3");
+    }
+
+    #[test]
+    fn mine3_secret_gets_its_missing_message() {
+        let entities = r#"{ "classname" "target_secret" "origin" "280 -2048 -624" }"#;
+        for (map, message) in [("MINE3", "You have found a secret area."), ("mine2", "")] {
+            let (world, _) = spawn_map(map, false, entities);
+            let secret = world.find_by_classname(None, "target_secret").unwrap();
+            assert_eq!(world.entities.get(secret).unwrap().game.message, message);
+        }
     }
 
     #[test]

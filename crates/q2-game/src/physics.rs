@@ -156,6 +156,8 @@ fn real_bounding_box(ent: &crate::entity::Entity) -> (Vec3f, Vec3f) {
 
 impl GameWorld {
     /// Clamp entity velocity to `sv_maxvelocity`.
+    /// Deviation: the game has no cvars, so this is the cvar's default
+    /// (`DEFAULT_MAX_VELOCITY`) even where a server would change it.
     /// C ref: `SV_CheckVelocity` (g_phys.c:87-100)
     pub fn check_velocity(&mut self, key: EntityKey) {
         let Some(ent) = self.entities.get_mut(key) else {
@@ -227,6 +229,9 @@ impl GameWorld {
     }
 
     /// Apply gravity to an entity for one frame.
+    /// Deviation: C reads `sv_gravity`, which SP_worldspawn sets from the
+    /// map's `gravity` key; this uses the default 800 on every map, as the
+    /// player's pmove gravity does (see `worldspawn_configstrings`).
     /// C ref: `SV_AddGravity` (g_phys.c:373-382)
     pub fn add_gravity(&mut self, key: EntityKey) {
         let Some(ent) = self.entities.get_mut(key) else {
@@ -429,8 +434,13 @@ impl GameWorld {
 
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.state.origin = trace.endpos;
-                // Push gibs, debris and dead monsters slightly off
-                // non-horizontal planes so they don't render black.
+            }
+            self.link_entity(key);
+
+            // Push gibs, debris and dead monsters slightly off
+            // non-horizontal planes so they don't render black. C does
+            // not relink, so the touch below sees the linked position.
+            if let Some(ent) = self.entities.get_mut(key) {
                 let nudge = (ent.game.classname.starts_with("monster_") && ent.game.health < 1)
                     || ent.game.classname == "debris"
                     || ent.state.effects & EF_GIB != 0;
@@ -438,7 +448,6 @@ impl GameWorld {
                     ent.state.origin += trace.plane.normal;
                 }
             }
-            self.link_entity(key);
 
             if trace.fraction != 1.0 {
                 let hit_key = trace
@@ -652,6 +661,7 @@ impl GameWorld {
         // are in the water.
         let mut hitsound = false;
         if !was_on_ground && !is_flying && !(is_swimming && waterlevel > 2) {
+            // C: sv_gravity, fixed at its default here (see add_gravity).
             hitsound = ent.velocity.z < DEFAULT_GRAVITY * -0.1;
             if waterlevel == 0 {
                 self.add_gravity(key);
@@ -680,9 +690,15 @@ impl GameWorld {
         }
 
         if ent.velocity != Vec3f::ZERO {
-            // Apply friction. C also lets dead monsters that are not
-            // completely on ground slide (M_CheckBottom, not ported yet).
-            if was_on_ground || is_flying || is_swimming {
+            // Apply friction, but let dead monsters that are not
+            // completely on ground slide.
+            let dead = ent.game.health <= 0;
+            let friction = (was_on_ground || is_flying || is_swimming)
+                && !(dead && !crate::monster::movement::m_check_bottom(self, key));
+            let Some(ent) = self.entities.get_mut(key) else {
+                return;
+            };
+            if friction {
                 let speed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
                 if speed != 0.0 {
                     let control = speed.max(STOPSPEED);
@@ -738,12 +754,14 @@ impl GameWorld {
 
     /// `true` if the entity's box is stuck in something solid at its
     /// current origin. C ref: `SV_TestEntityPosition` (which returns the
-    /// world edict instead of `true`).
+    /// world edict instead of `true`). Dead bodies only collide with BSP,
+    /// so pushers carry them.
     fn test_entity_position(&self, key: EntityKey) -> bool {
         let Some(ent) = self.entities.get(key) else {
             return false;
         };
-        let mask = if ent.clipmask != 0 {
+        let dead = ent.svflags & q2_shared::constants::SVF_DEADMONSTER != 0;
+        let mask = if ent.clipmask != 0 && !dead {
             ent.clipmask
         } else {
             MASK_SOLID
@@ -944,8 +962,9 @@ impl GameWorld {
         }
     }
 
-    /// `key`, then each `teamchain` member, stopping at a repeat.
-    fn team_chain(&self, key: EntityKey) -> Vec<EntityKey> {
+    /// `key`, then each `teamchain` member, stopping at a repeat (C
+    /// `for (ent = self; ent; ent = ent->teamchain)`).
+    pub(crate) fn team_chain(&self, key: EntityKey) -> Vec<EntityKey> {
         let mut team = vec![key];
         let mut next = self.entities.get(key).and_then(|e| e.game.teamchain);
         while let Some(k) = next.filter(|k| !team.contains(k)) {
@@ -1418,6 +1437,159 @@ mod tests {
         assert!((origin.x - 20.0).abs() < 0.01);
     }
 
+    // -- sv_push (via physics_pusher) --
+
+    /// A linked 64x64x8 brush mover at `origin` moving at `velocity`.
+    fn mover(
+        world: &mut GameWorld,
+        movetype: MoveType,
+        origin: Vec3f,
+        velocity: Vec3f,
+    ) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.movetype = movetype;
+        e.solid = Solid::Bsp;
+        e.state.origin = origin;
+        e.mins = Vec3f::new(-32.0, -32.0, -8.0);
+        e.maxs = Vec3f::new(32.0, 32.0, 0.0);
+        e.velocity = velocity;
+        world.link_entity(key);
+        key
+    }
+
+    /// A linked step box at `origin`, standing on `ground`.
+    fn box_at(world: &mut GameWorld, origin: Vec3f, ground: Option<EntityKey>) -> EntityKey {
+        let key = world.spawn().unwrap();
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.movetype = MoveType::Step;
+        e.solid = Solid::Bbox;
+        e.state.origin = origin;
+        e.mins = Vec3f::splat(-4.0);
+        e.maxs = Vec3f::splat(4.0);
+        e.game.ground_entity = ground;
+        world.link_entity(key);
+        key
+    }
+
+    fn stuck() -> Trace {
+        Trace {
+            startsolid: true,
+            ..Default::default()
+        }
+    }
+
+    fn origin_of(world: &GameWorld, key: EntityKey) -> Vec3f {
+        world.entities.get(key).unwrap().state.origin
+    }
+
+    fn record_block(world: &mut GameWorld, self_key: EntityKey, _other: EntityKey) {
+        world.entities.get_mut(self_key).unwrap().game.count += 1;
+    }
+
+    #[test]
+    fn pusher_moves_snap_to_eighth_units() {
+        // C SV_Push: 1.23 * 8 = 9.84, +0.5 truncates to 10, * 0.125.
+        let mut world = test_world();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(12.3, -12.3, 0.0),
+        );
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, plat), Vec3f::new(1.25, -1.25, 0.0));
+    }
+
+    #[test]
+    fn rotating_pusher_carries_its_rider_around_its_origin() {
+        let mut world = test_world();
+        let plat = mover(&mut world, MoveType::Push, Vec3f::ZERO, Vec3f::ZERO);
+        world.entities.get_mut(plat).unwrap().avelocity = Vec3f::new(0.0, 900.0, 0.0);
+        let rider = box_at(&mut world, Vec3f::new(10.0, 0.0, 4.0), Some(plat));
+        world.physics_pusher(plat);
+        let o = origin_of(&world, rider);
+        assert!((o - Vec3f::new(0.0, 10.0, 4.0)).length() < 1e-4, "{o:?}");
+    }
+
+    #[test]
+    fn stop_pusher_is_blocked_by_what_it_would_push() {
+        // MOVETYPE_STOP only carries riders: a box in its way blocks it,
+        // where a MOVETYPE_PUSH mover would shove the box along.
+        for (movetype, blocked) in [(MoveType::Stop, true), (MoveType::Push, false)] {
+            let (mut world, gi) = test_world_recording();
+            let plat = mover(
+                &mut world,
+                movetype,
+                Vec3f::ZERO,
+                Vec3f::new(100.0, 0.0, 0.0),
+            );
+            world.entities.get_mut(plat).unwrap().blocked = Some(record_block);
+            let rock = box_at(&mut world, Vec3f::new(30.0, 0.0, -4.0), None);
+            gi.queued_traces.borrow_mut().push_back(stuck());
+            world.physics_pusher(plat);
+            let (plat_x, rock_x) = (origin_of(&world, plat).x, origin_of(&world, rock).x);
+            let count = world.entities.get(plat).unwrap().game.count;
+            if blocked {
+                assert_eq!((plat_x, rock_x, count), (0.0, 30.0, 1), "{movetype:?}");
+            } else {
+                assert_eq!((plat_x, rock_x, count), (10.0, 40.0, 0), "{movetype:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rider_that_cannot_move_is_left_behind_if_its_old_spot_is_clear() {
+        // C: "if it is ok to leave in the old position, do it".
+        let (mut world, gi) = test_world_recording();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        world.entities.get_mut(plat).unwrap().blocked = Some(record_block);
+        let rider = box_at(&mut world, Vec3f::new(0.0, 0.0, 4.0), Some(plat));
+        // Stuck at the new spot, clear at the old one.
+        gi.queued_traces.borrow_mut().push_back(stuck());
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, plat), Vec3f::new(10.0, 0.0, 0.0));
+        assert_eq!(origin_of(&world, rider), Vec3f::new(0.0, 0.0, 4.0));
+        assert_eq!(world.entities.get(plat).unwrap().game.count, 0);
+    }
+
+    #[test]
+    fn blocked_team_part_rolls_back_the_parts_already_moved() {
+        let (mut world, gi) = test_world_recording();
+        let master = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        let slave = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::new(500.0, 0.0, 0.0),
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        world.entities.get_mut(master).unwrap().game.teamchain = Some(slave);
+        {
+            let s = world.entities.get_mut(slave).unwrap();
+            s.game.flags |= EntityFlags::TEAMSLAVE;
+            s.blocked = Some(record_block);
+        }
+        // Only the slave's box overlaps the rock; it is stuck both ways.
+        box_at(&mut world, Vec3f::new(530.0, 0.0, -4.0), None);
+        gi.queued_traces
+            .borrow_mut()
+            .extend([stuck(), stuck(), stuck()]);
+        world.physics_pusher(master);
+        assert_eq!(origin_of(&world, master), Vec3f::ZERO);
+        assert_eq!(origin_of(&world, slave), Vec3f::new(500.0, 0.0, 0.0));
+        assert_eq!(world.entities.get(slave).unwrap().game.count, 1);
+    }
+
     #[test]
     fn run_entity_dispatches_fly() {
         let mut world = test_world();
@@ -1559,6 +1731,7 @@ mod tests {
             let ent = world.entities.get_mut(key).unwrap();
             ent.game.movetype = MoveType::Step;
             ent.game.ground_entity = Some(ground);
+            ent.game.health = 100;
             ent.velocity = Vec3f::new(500.0, 0.0, 0.0);
         }
 
@@ -1568,6 +1741,26 @@ mod tests {
         // Friction should have reduced horizontal velocity.
         assert!(vx < 500.0);
         assert!(vx > 0.0);
+    }
+
+    #[test]
+    fn physics_step_lets_a_dead_monster_off_its_ledge_slide() {
+        // C: no friction when health <= 0 and !M_CheckBottom. The mock
+        // world has no floor under the box, so M_CheckBottom fails.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        let ground = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.movetype = MoveType::Step;
+            ent.game.ground_entity = Some(ground);
+            ent.game.health = -5;
+            ent.velocity = Vec3f::new(500.0, 0.0, 0.0);
+        }
+
+        world.physics_step(key);
+
+        assert_eq!(world.entities.get(key).unwrap().velocity.x, 500.0);
     }
     // -- C-parity regressions --
 
@@ -1881,12 +2074,58 @@ mod tests {
             let ent = world.entities.get_mut(key).unwrap();
             ent.game.movetype = MoveType::Step;
             ent.game.flags = EntityFlags::FLY;
+            // Alive, so friction skips M_CheckBottom and its monster-mask traces.
+            ent.game.health = 100;
             ent.velocity = Vec3f::new(50.0, 0.0, 0.0);
         }
         world.physics_step(key);
         let masks = gi.trace_masks.borrow();
         assert!(!masks.is_empty());
         assert!(masks.iter().all(|&m| m == MASK_SOLID), "{masks:x?}");
+    }
+
+    #[test]
+    fn position_test_of_a_corpse_only_collides_with_bsp() {
+        // C SV_TestEntityPosition: dead bodies use MASK_SOLID during
+        // pushmoves, so a pusher carries a corpse overlapping a monster.
+        let (mut world, gi) = test_world_recording();
+        let corpse = world.spawn().unwrap();
+        let monster = world.spawn().unwrap();
+        for (key, svflags) in [
+            (corpse, q2_shared::constants::SVF_DEADMONSTER),
+            (monster, q2_shared::constants::SVF_MONSTER),
+        ] {
+            let e = world.entities.get_mut(key).unwrap();
+            e.clipmask = MASK_MONSTERSOLID;
+            e.svflags = svflags;
+            world.test_entity_position(key);
+        }
+        assert_eq!(*gi.trace_masks.borrow(), [MASK_SOLID, MASK_MONSTERSOLID]);
+    }
+
+    #[test]
+    fn push_entity_links_a_gib_before_nudging_it_off_the_plane() {
+        // C SV_PushEntity links at trace.endpos, then adds the plane normal
+        // to the origin without relinking.
+        let (mut world, gi) = test_world_recording();
+        let gib = world.spawn().unwrap();
+        world.entities.get_mut(gib).unwrap().state.effects = EF_GIB;
+        let normal = Vec3f::new(1.0, 0.0, 0.0);
+        *gi.next_trace.borrow_mut() = Some(Trace {
+            fraction: 1.0,
+            endpos: Vec3f::new(5.0, 0.0, 0.0),
+            plane: Plane {
+                normal,
+                plane_type: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        world.push_entity(gib, Vec3f::new(10.0, 0.0, 0.0));
+        let link = *gi.links.borrow().last().expect("linked");
+        assert_eq!(link.origin, Vec3f::new(5.0, 0.0, 0.0));
+        let origin = world.entities.get(gib).unwrap().state.origin;
+        assert_eq!(origin, Vec3f::new(6.0, 0.0, 0.0));
     }
 
     #[test]

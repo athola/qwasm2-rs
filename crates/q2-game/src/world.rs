@@ -81,18 +81,32 @@ pub struct GameLocals {
     /// Target name of the start to use (C `game.spawnpoint`), from the
     /// previous level's exit; empty for a fresh map.
     pub spawnpoint: String,
-    pub maxclients: i32,
+    /// Read with `maxclients()`; only `GameWorld::set_max_clients` writes
+    /// it, keeping it equal to the entity storage's client count and
+    /// `clients.len()`.
+    maxclients: i32,
     pub maxentities: i32,
     pub serverflags: i32,
     /// C `dmflags` cvar (`DF_*` bits); read by deathmatch spawn selection.
     pub dmflags: i32,
     pub num_items: i32,
-    /// C `skill` cvar, clamped to 0..=3 (easy, medium, hard, hard+).
+    /// C `skill` cvar: 0..=3 (easy, medium, hard, hard+) once
+    /// `spawn_entities` has clamped it, as C SpawnEntities does.
     pub skill: i32,
     /// C `deathmatch` and `coop` cvars (default 0): the browser plays
     /// single player, so both stay false there.
     pub deathmatch: bool,
     pub coop: bool,
+    /// How far the view bob cycle advances each frame on the ground; kept
+    /// while airborne (C view.c file static `bobmove`).
+    pub bobmove: f32,
+}
+
+impl GameLocals {
+    /// C `game.maxclients()`.
+    pub fn maxclients(&self) -> i32 {
+        self.maxclients
+    }
 }
 
 impl Default for GameLocals {
@@ -107,6 +121,7 @@ impl Default for GameLocals {
             skill: 1, // C cvar default
             deathmatch: false,
             coop: false,
+            bobmove: 0.0,
         }
     }
 }
@@ -148,7 +163,7 @@ impl GameWorld {
             ..GameLocals::default()
         };
         let mut entities = EntityStorage::new(maxentities);
-        let maxclients = game.maxclients.max(0) as usize;
+        let maxclients = game.maxclients().max(0) as usize;
         entities.set_max_clients(maxclients);
         Self {
             entities,
@@ -190,6 +205,16 @@ impl GameWorld {
         Some((ent, client))
     }
 
+    /// Set `game.maxclients` (clamped to `MAX_CLIENTS`, as the server clamps
+    /// its cvar) and reserve entity numbers `1..=maxclients` for clients.
+    pub fn set_max_clients(&mut self, max_clients: usize) {
+        let max_clients = max_clients.min(q2_shared::constants::MAX_CLIENTS);
+        self.game.maxclients = max_clients as i32;
+        self.entities.set_max_clients(max_clients);
+        // C InitGame allocates game.clients for maxclients.
+        self.clients.resize_with(max_clients, Default::default);
+    }
+
     /// Spawn a new entity. Returns `None` if storage is full.
     /// C ref: G_Spawn (g_utils.c)
     pub fn spawn(&mut self) -> Option<EntityKey> {
@@ -197,7 +222,10 @@ impl GameWorld {
     }
 
     /// Free an entity: unlink it and keep the slot as a freed edict, so its
-    /// number is not reused for another 0.5 s. Client slots are never freed.
+    /// number is not reused for another 0.5 s, except that edicts freed in
+    /// the level's first 2 s can be reused at once (C G_Spawn's
+    /// `freetime < 2`, so map-load frees do not shift numbering). Client
+    /// slots are never freed.
     /// C ref: G_FreeEdict (g_utils.c)
     pub fn free_entity(&mut self, key: EntityKey) {
         let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
@@ -210,14 +238,14 @@ impl GameWorld {
         // queue after them, are never freed. C always has `bodyque` edicts
         // there in those modes; checking the classname keeps entities
         // spawned without a worldspawn (unit tests) freeable.
-        let body_queue_end = self.game.maxclients + crate::constants::BODY_QUEUE_SIZE as i32;
+        let body_queue_end = self.game.maxclients() + crate::constants::BODY_QUEUE_SIZE as i32;
         let body_queue = (self.game.deathmatch || self.game.coop)
             && number <= body_queue_end
             && self
                 .entities
                 .get(key)
                 .is_some_and(|e| e.game.classname == "bodyque");
-        if number <= self.game.maxclients || body_queue {
+        if number <= self.game.maxclients() || body_queue {
             return;
         }
         self.entities.set_level_time(self.level.time);
@@ -267,6 +295,10 @@ impl GameWorld {
         // that don't quite touch.
         ent.absmin -= Vec3f::ONE;
         ent.absmax += Vec3f::ONE;
+        // If first time, make sure old_origin is valid.
+        if ent.linkcount == 0 {
+            ent.state.old_origin = ent.state.origin;
+        }
         ent.linkcount += 1;
 
         let owner = ent.owner;
@@ -444,8 +476,11 @@ impl GameWorld {
     }
 
     /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
-    /// one survived (C callers mostly ignore it).
-    /// C ref: `KillBox` (g_utils.c).
+    /// one survived, `true` once the box is clear; no caller reads it.
+    /// C ref: `KillBox` (g_utils.c). C's SV_Trace reports the world when
+    /// nothing is hit, so C's loop ends by "damaging" the solid world and
+    /// returns false every time; here `world_trace`'s "world only on a hit"
+    /// (ADR-005) makes a clear box return true. The telefrags are the same.
     pub fn kill_box(&mut self, key: EntityKey) -> bool {
         use crate::constants::{DamageFlags, MeansOfDeath};
         loop {
@@ -461,8 +496,8 @@ impl GameWorld {
                 None,
                 q2_shared::constants::MASK_PLAYERSOLID,
             );
-            // The world (0) is never telefragged; C's trace.ent is NULL
-            // when nothing is hit.
+            // Nothing hit, or only the world (0), which takes no damage:
+            // the box is clear.
             let Some(victim) = tr
                 .ent_index
                 .filter(|&n| n != 0)
@@ -1197,13 +1232,15 @@ impl GameWorld {
             .configstring((q2_shared::constants::CS_LIGHTS + 63) as i32, "a");
     }
 
-    /// C SP_light: untargeted lights are freed; switchable styles (32 and
-    /// up) start on or off and toggle when used.
+    /// C SP_light: untargeted lights, and in deathmatch every light (they
+    /// cause global messages), are freed; switchable styles (32 and up)
+    /// start on or off and toggle when used.
     pub(crate) fn spawn_light(&mut self, key: EntityKey, _fields: &HashMap<String, String>) {
+        let deathmatch = self.game.deathmatch;
         let Some(ent) = self.entities.get_mut(key) else {
             return;
         };
-        if ent.game.targetname.is_empty() {
+        if ent.game.targetname.is_empty() || deathmatch {
             self.free_entity(key);
             return;
         }
@@ -1224,7 +1261,8 @@ impl GameWorld {
     /// C ref: `G_RunFrame` (g_main.c:447-514).
     pub fn run_frame(&mut self) {
         self.level.framenum += 1;
-        self.level.time = self.level.framenum as f32 * crate::constants::FRAMETIME;
+        // C FRAMETIME is a double, so the product is rounded once.
+        self.level.time = (f64::from(self.level.framenum) * 0.1) as f32;
         self.entities.set_level_time(self.level.time);
         self.level.gibs_this_frame = 0;
         self.level.debris_this_frame = 0;
@@ -1240,7 +1278,7 @@ impl GameWorld {
         // Walk entity numbers, re-reading the table each step so entities
         // spawned during the frame run in it too (C loops to the growing
         // `globals.num_edicts`).
-        let maxclients = self.game.maxclients.max(0) as usize;
+        let maxclients = self.game.maxclients().max(0) as usize;
         for number in 0..self.game.maxentities.max(0) as usize {
             let Some(key) = self.entities.key_for_number(number) else {
                 continue;
@@ -1364,7 +1402,13 @@ impl GameWorld {
         let Some(name) = fields.get("item") else {
             return;
         };
-        match self.find_item(name) {
+        // C FindItemByClassname compares with Q_stricmp, where
+        // ED_CallSpawn's item lookup (find_item) uses strcmp.
+        let found = self
+            .items
+            .iter()
+            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(name));
+        match found {
             Some(item) => {
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.item = Some(item);
@@ -1447,7 +1491,7 @@ impl GameWorld {
         self.client_end_server_frames();
 
         // Clear some things before going to the next level.
-        for number in 1..=self.game.maxclients.max(0) as usize {
+        for number in 1..=self.game.maxclients().max(0) as usize {
             let Some(ent) = self
                 .entities
                 .key_for_number(number)
@@ -1463,6 +1507,7 @@ impl GameWorld {
     /// Parse an entity string and spawn all entities.
     /// C ref: `SpawnEntities` (g_spawn.c).
     pub fn spawn_entities(&mut self, mapname: &str, entstring: &str, spawnpoint: &str) {
+        self.game.skill = self.game.skill.clamp(0, 3);
         self.game.spawnpoint = spawnpoint.to_string();
         self.save_client_data();
         // `self.clients` is untouched: C re-points `g_edicts[i + 1].client`
@@ -1471,7 +1516,7 @@ impl GameWorld {
         // C SpawnEntities: a new map starts from zeroed edicts and level.
         self.entities = EntityStorage::new(self.game.maxentities.max(0) as usize);
         self.entities
-            .set_max_clients(self.game.maxclients.max(0) as usize);
+            .set_max_clients(self.game.maxclients().max(0) as usize);
         self.level = LevelLocals {
             mapname: mapname.to_string(),
             ..LevelLocals::default()
@@ -1479,7 +1524,7 @@ impl GameWorld {
         // C SP_worldspawn sets this from the maxclients cvar (g_spawn.c).
         self.gi.configstring(
             q2_shared::constants::CS_MAXCLIENTS as i32,
-            &self.game.maxclients.to_string(),
+            &self.game.maxclients().to_string(),
         );
 
         // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
@@ -1492,20 +1537,27 @@ impl GameWorld {
         };
 
         let mut inhibit = 0;
-        for fields in &parsed {
-            let classname = match fields.get("classname") {
-                Some(cn) => cn.clone(),
-                None => continue,
+        for (index, fields) in parsed.iter().enumerate() {
+            // C G_Spawns the block and ED_CallSpawn frees it again at once,
+            // so skipping it keeps the numbering.
+            let Some(classname) = fields.get("classname").cloned() else {
+                self.gi.dprintf("ED_CallSpawn: NULL classname\n");
+                continue;
             };
 
-            // C SpawnEntities: the first entity (worldspawn) is g_edicts[0].
-            let slot = if classname == "worldspawn" {
+            // C SpawnEntities: the first block (worldspawn) is g_edicts[0],
+            // every later one is G_Spawned.
+            let slot = if index == 0 {
                 self.entities.spawn_numbered(0)
             } else {
                 self.entities.spawn()
             };
             let Some(key) = slot else {
-                break; // Storage full.
+                // C G_Spawn raises ERR_DROP here; GameExport::spawn_entities
+                // cannot fail, so report it and stop parsing.
+                self.gi.dprintf("ED_Alloc: no free edicts\n");
+                tracing::error!("spawn_entities: no free edicts");
+                break;
             };
             let Some(ent) = self.entities.get_mut(key) else {
                 continue;
@@ -1550,7 +1602,14 @@ impl GameWorld {
         }
         self.gi.dprintf(&format!("{inhibit} entities inhibited.\n"));
         self.find_teams();
-        self.trail.init();
+        // C PlayerTrail_Init returns in deathmatch, leaving its static
+        // trail as the last map left it (pointing at edicts the new map
+        // has cleared); here a deathmatch map starts with no trail.
+        if self.game.deathmatch {
+            self.trail = Default::default();
+        } else {
+            self.trail.init();
+        }
 
         // Entities a spawn function created itself (a plat's trigger); C
         // links them inside the SP_* function.
@@ -1671,6 +1730,26 @@ mod tests {
         world.link_entity(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!((ent.areanum, ent.areanum2), (1, 0));
+    }
+
+    #[test]
+    fn first_link_of_an_entity_starts_its_lerp_at_its_origin() {
+        // C SV_LinkEdict copies origin to old_origin while linkcount is 0,
+        // so a rocket spawned into a reused number does not lerp from (0 0 0).
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        world.link_entity(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.old_origin,
+            Vec3f::new(100.0, 0.0, 0.0)
+        );
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(200.0, 0.0, 0.0);
+        world.link_entity(key);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.old_origin,
+            Vec3f::new(100.0, 0.0, 0.0)
+        );
     }
 
     #[test]
@@ -2153,10 +2232,181 @@ mod tests {
             "",
         );
         let key = world.entities.key_for_number(0).expect("world at 0");
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.classname, "worldspawn");
+        // C SP_worldspawn: the world is a solid BSP pusher with model 1,
+        // so step monsters landing on it ground on it.
         assert_eq!(
-            world.entities.get(key).unwrap().game.classname,
-            "worldspawn"
+            (ent.game.movetype, ent.solid),
+            (crate::constants::MoveType::Push, Solid::Bsp)
         );
+        assert_eq!(ent.state.modelindex, 1);
+    }
+
+    #[test]
+    fn only_the_first_block_is_the_world_and_a_second_worldspawn_does_not_stop_the_map() {
+        // C SpawnEntities gives g_edicts[0] to the first block and G_Spawns
+        // every later one, whatever its classname.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "worldspawn" }
+               { "classname" "info_player_start" }"#,
+            "",
+        );
+        let second = world
+            .find_by_classname(world.entities.key_for_number(0), "worldspawn")
+            .expect("second worldspawn spawned");
+        assert!(world.number_of(second).unwrap() > 0);
+        assert!(world.find_by_classname(None, "info_player_start").is_some());
+    }
+
+    #[test]
+    fn running_out_of_edicts_while_spawning_is_reported() {
+        // C G_Spawn raises "ED_Alloc: no free edicts".
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        let lots = "{ \"classname\" \"info_notnull\" }\n".repeat(1100);
+        world.spawn_entities(
+            "base1",
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{lots}"),
+            "",
+        );
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "ED_Alloc: no free edicts\n"));
+    }
+
+    #[test]
+    fn a_block_without_a_classname_is_reported() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" } { \"origin\" \"1 2 3\" }",
+            "",
+        );
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "ED_CallSpawn: NULL classname\n"));
+    }
+
+    #[test]
+    fn deathmatch_frees_even_targeted_lights() {
+        // C SP_light: `if (!self->targetname || deathmatch->value)`.
+        for (deathmatch, kept) in [(false, true), (true, false)] {
+            let mut world = test_world();
+            world.game.deathmatch = deathmatch;
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                r#"{ "classname" "worldspawn" } { "classname" "light" "targetname" "l" "style" "32" }"#,
+                "",
+            );
+            assert_eq!(world.find_by_classname(None, "light").is_some(), kept);
+        }
+    }
+
+    #[test]
+    fn level_time_is_framenum_times_the_double_frametime() {
+        // C G_RunFrame: level.time = level.framenum * FRAMETIME (a double).
+        // Frames 9 and 13 round differently from a float multiply.
+        let mut world = test_world();
+        for frame in 1..=13 {
+            world.run_frame();
+            assert_eq!(
+                world.level.time,
+                (f64::from(frame) * 0.1) as f32,
+                "frame {frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn monster_item_key_is_matched_ignoring_case() {
+        // C monster_start uses FindItemByClassname, which is Q_stricmp.
+        let mut world = test_world();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" } { "classname" "monster_soldier" "item" "Ammo_Shells" }"#,
+            "",
+        );
+        let soldier = world.find_by_classname(None, "monster_soldier").unwrap();
+        let item = world.entities.get(soldier).unwrap().game.item;
+        assert_eq!(item, world.find_item("ammo_shells"));
+        assert!(item.is_some());
+    }
+
+    #[test]
+    fn spawn_entities_clamps_the_skill_like_c() {
+        // C SpawnEntities clamps skill to 0..=3 before filtering, so -1
+        // plays (and filters) as easy, not hard.
+        for (skill, clamped, kept) in [(-1, 0, false), (7, 3, true)] {
+            let mut world = test_world();
+            world.game.skill = skill;
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                r#"{ "classname" "worldspawn" } { "classname" "info_notnull" "spawnflags" "256" }"#,
+                "",
+            );
+            assert_eq!(world.game.skill, clamped);
+            assert_eq!(
+                world.find_by_classname(None, "info_notnull").is_some(),
+                kept,
+                "skill {skill}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_teams_chains_each_team_in_number_order_under_its_first_member() {
+        // C G_FindTeams: the lowest-numbered member is the teammaster, the
+        // rest are FL_TEAMSLAVE and follow it on teamchain in number order.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        let block = |team: &str, tag: &str| {
+            format!("{{ \"classname\" \"info_notnull\" \"team\" \"{team}\" \"targetname\" \"{tag}\" }}\n")
+        };
+        let entities: String = [
+            ("a", "a1"),
+            ("b", "b1"),
+            ("a", "a2"),
+            ("b", "b2"),
+            ("a", "a3"),
+        ]
+        .iter()
+        .map(|(team, tag)| block(team, tag))
+        .collect();
+        world.spawn_entities(
+            "base1",
+            &format!("{{ \"classname\" \"worldspawn\" }}\n{entities}"),
+            "",
+        );
+        let key = |tag: &str| world.find_by_targetname(None, tag).unwrap();
+        let (a1, a2, a3, b1, b2) = (key("a1"), key("a2"), key("a3"), key("b1"), key("b2"));
+        let get = |k: EntityKey| world.entities.get(k).unwrap();
+        assert_eq!(world.team_chain(a1), [a1, a2, a3]);
+        assert_eq!(world.team_chain(b1), [b1, b2]);
+        for (member, master) in [(a1, a1), (a2, a1), (a3, a1), (b1, b1), (b2, b1)] {
+            assert_eq!(get(member).game.teammaster, Some(master));
+            let slave = get(member)
+                .game
+                .flags
+                .contains(crate::constants::EntityFlags::TEAMSLAVE);
+            assert_eq!(slave, member != master);
+        }
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "2 teams with 5 entities.\n"));
     }
 
     #[test]
@@ -2313,17 +2563,6 @@ mod tests {
         assert!((dir.x - 1.0).abs() < 0.001);
         assert!(dir.y.abs() < 0.001);
         assert!(dir.z.abs() < 0.001);
-    }
-
-    #[test]
-    fn mock_game_import_trace_passes_through() {
-        let gi = MockGameImport::default();
-        let start = Vec3f::new(0.0, 0.0, 0.0);
-        let end = Vec3f::new(100.0, 0.0, 0.0);
-        let trace = gi.trace(start, Vec3f::ZERO, Vec3f::ZERO, end, None, 0);
-        assert_eq!(trace.fraction, 1.0);
-        assert_eq!(trace.endpos, end);
-        assert!(!trace.allsolid);
     }
 
     // -- Game Main Loop tests --
@@ -3055,7 +3294,7 @@ mod tests {
         );
         let after = world.find_by_targetname(None, "after").unwrap();
         // C G_Spawn reuses edicts freed before level time 2.
-        let first = world.game.maxclients as usize + 1;
+        let first = world.game.maxclients() as usize + 1;
         assert_eq!(world.number_of(after), Some(first));
     }
 

@@ -3,10 +3,7 @@
 //!
 //! Port of `g_ai.c` and of `g_monster.c` except `monster_fire_*`; monsters
 //! step, turn and chase through `monster::movement` (C `m_move.c`).
-//! Deviations from C: a player is always lit well enough to be seen (C
-//! `light_level`, which nothing sets yet), heard noises skip the area
-//! portal check (no `AreasConnected` import), and a monster starts on the
-//! first frame of its move rather than a random one.
+//! Deviations from C are documented on the functions that have them.
 //!
 //! # AI state machine
 //! Monsters cycle: stand → (spot player) → run → (in range) → attack → pain → die.
@@ -109,7 +106,7 @@ fn has_flag(world: &GameWorld, key: EntityKey, flag: EntityFlags) -> bool {
 }
 
 /// C `vtos`: "(x y z)" in whole units.
-fn vtos(v: Vec3f) -> String {
+pub(crate) fn vtos(v: Vec3f) -> String {
     format!("({} {} {})", v.x as i32, v.y as i32, v.z as i32)
 }
 
@@ -431,7 +428,8 @@ pub fn ai_move(world: &mut GameWorld, key: EntityKey, dist: f32) {
     movement::m_walkmove(world, key, yaw, dist);
 }
 
-/// Face the enemy and close in. C ref: `ai_charge` (g_ai.c).
+/// Face the enemy and close in. C ref: `ai_charge` (g_ai.c); where C
+/// reads an unset vector when there is no enemy, `ideal_yaw` is kept.
 pub fn ai_charge(world: &mut GameWorld, key: EntityKey, dist: f32) {
     let enemy_origin = world
         .entities
@@ -574,8 +572,7 @@ pub fn hunt_target(world: &mut GameWorld, key: EntityKey) {
 
 /// The monster has a new enemy: wake other monsters, remember where it
 /// was seen, and hunt it or first run to the combat point the mapper set.
-/// C ref: `FoundTarget` (g_ai.c), without lighting up the sighting
-/// monster (`light_level`, not ported).
+/// C ref: `FoundTarget` (g_ai.c).
 pub fn found_target(world: &mut GameWorld, key: EntityKey) {
     let Some(enemy) = world
         .entities
@@ -649,9 +646,8 @@ pub fn found_target(world: &mut GameWorld, key: EntityKey) {
 /// a player made, or this frame's sight client, within range, in light
 /// and line of sight, and in front unless it is close and hostile.
 /// Returns whether an enemy was found. C ref: `FindTarget` (g_ai.c).
-/// Deviations: no darkness check and no area portal check (see the
-/// module docs), and an unset sight or sound entity never takes its
-/// branch (C would follow a null pointer).
+/// Deviation: an unset sight or sound entity never takes its branch (C
+/// would follow a null pointer).
 pub fn find_target(world: &mut GameWorld, key: EntityKey) -> bool {
     let Some(ent) = world.entities.get(key) else {
         return false;
@@ -818,13 +814,13 @@ pub fn find_target(world: &mut GameWorld, key: EntityKey) -> bool {
 /// Pick the next live client, round-robin, for monsters to check this
 /// frame; none if no client is alive. C ref: `AI_SetSightClient` (g_ai.c).
 pub fn ai_set_sight_client(world: &mut GameWorld) {
-    let maxclients = world.game.maxclients.max(0) as usize;
+    let maxclients = world.game.maxclients().max(0) as usize;
     let start = world
         .level
         .sight_client_key
         .and_then(|k| world.number_of(k))
         .filter(|&n| (1..=maxclients).contains(&n))
-        .unwrap_or(maxclients);
+        .unwrap_or(1); // C: start = 1, so client 1 is checked last
     world.level.sight_client_key = (1..=maxclients)
         .map(|i| (start + i - 1) % maxclients + 1)
         .filter_map(|n| world.entities.key_for_number(n))
@@ -1020,21 +1016,6 @@ fn hes_dead_jim(world: &GameWorld, key: EntityKey) -> bool {
     enemy.game.health <= 0
 }
 
-/// C `edict_t.last_sound_time` of a player noise. C sets it to
-/// `level.time` exactly when it records the noise's level framenum, and
-/// `level.time` is `framenum * FRAMETIME`, so the framenum gives it back;
-/// anything that is not the current noise reads as C's never-set zero.
-fn last_sound_time(world: &GameWorld, noise: EntityKey) -> f32 {
-    let level = &world.level;
-    if level.sound_entity == Some(noise) {
-        level.sound_entity_framenum as f32 * FRAMETIME
-    } else if level.sound2_entity == Some(noise) {
-        level.sound2_entity_framenum as f32 * FRAMETIME
-    } else {
-        0.0
-    }
-}
-
 /// Decide whether to attack, or what else to do, and record what is
 /// known about the enemy in `world.enemy_check`. Returns whether the
 /// monster acted (attacked, changed enemy or gave up). Used by `ai_run`
@@ -1054,7 +1035,9 @@ pub fn ai_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
             return false;
         }
         if flags.contains(AiFlags::SOUND_TARGET) && !visible(world, key, goal) {
-            let heard = enemy.map_or(0.0, |e| last_sound_time(world, e));
+            let heard = enemy
+                .and_then(|e| world.entities.get(e))
+                .map_or(0.0, |e| e.game.last_sound_time);
             let Some(ent) = world.entities.get_mut(key) else {
                 return false;
             };
@@ -1674,11 +1657,11 @@ pub fn monster_triggered_start(world: &mut GameWorld, key: EntityKey) {
 /// whether the monster stays. The first think is the one the spawn
 /// function chose with [`walkmonster_start`], [`flymonster_start`] or
 /// [`swimmonster_start`], `walkmonster_start_go` if none.
-/// C ref: `monster_start` (g_monster.c). Kept from before: movetype STEP,
-/// SOLID_BBOX and a mass of 200 by default (C's `SP_*` set these), and
-/// `pausetime` set already so a monster that thinks before
-/// `monster_start_go` stands. Not here: the random start frame (see the
-/// module docs), and `st.item`, which `call_spawn` resolves.
+/// The movetype, solid, mass and `pausetime` are the spawn function's,
+/// as in C. C ref: `monster_start` (g_monster.c). Not here: `st.item`,
+/// which `call_spawn` resolves, and C's `s.skinnum = 0`: C resets it
+/// before SP_* functions such as SP_misc_insane and the soldiers set
+/// their skin, but here those spawn halves have already run.
 pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     if world.game.deathmatch {
         world.free_entity(key);
@@ -1723,11 +1706,6 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     ent.svflags &= !SvFlags::DEADMONSTER.bits();
     ent.state.old_origin = ent.state.origin;
 
-    ent.game.movetype = MoveType::Step;
-    ent.solid = Solid::Bbox;
-    if ent.game.mass == 0 {
-        ent.game.mass = 200;
-    }
     if ent.think.is_none() {
         ent.think = Some(walkmonster_start_go);
     }
@@ -1736,7 +1714,17 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
         if mi.checkattack.is_none() {
             mi.checkattack = Some(m_check_attack);
         }
-        mi.pausetime = PAUSE_FOREVER;
+    }
+
+    // Randomize what frame they start on.
+    let span = monsterinfo(world, key)
+        .and_then(|mi| mi.currentmove.as_ref())
+        .map(|mv| (mv.firstframe, mv.lastframe - mv.firstframe + 1));
+    if let Some((firstframe, count)) = span {
+        let pick = world.random_u32() as i32 % count;
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.state.frame = firstframe + pick;
+        }
     }
     true
 }
@@ -2337,11 +2325,67 @@ mod tests {
         monster_start(&mut world, key);
 
         let ent = world.entities.get(key).unwrap();
-        assert_eq!(ent.game.movetype, MoveType::Step);
         assert_eq!(ent.game.takedamage, TakeDamage::Aim); // C DAMAGE_AIM
         assert!(ent.svflags & SvFlags::MONSTER.bits() != 0);
-        assert_eq!(ent.game.mass, 200);
         assert!(ent.think.is_some());
+    }
+
+    #[test]
+    fn monster_start_puts_the_monster_on_a_random_frame_of_its_move() {
+        // C: s.frame = firstframe + randk() % (lastframe - firstframe + 1).
+        for seed in [1u32, 2, 3, 77] {
+            let mut world = test_world();
+            world.level.rand_state = seed;
+            let key = world.spawn().unwrap();
+            world.entities.get_mut(key).unwrap().monsterinfo = Some(Box::new(MonsterInfo {
+                currentmove: Some(crate::entity::MonsterMove {
+                    firstframe: 10,
+                    lastframe: 14,
+                    frames: &[],
+                    endfunc: None,
+                }),
+                ..Default::default()
+            }));
+            let mut rng = test_world();
+            rng.level.rand_state = seed;
+            let expected = 10 + (rng.random_u32() % 5) as i32;
+
+            monster_start(&mut world, key);
+
+            assert_eq!(world.entities.get(key).unwrap().state.frame, expected);
+            assert_eq!(world.level.rand_state, rng.level.rand_state, "one randk()");
+        }
+    }
+
+    #[test]
+    fn monster_start_without_a_move_draws_no_random_number() {
+        let mut world = test_world();
+        world.level.rand_state = 5;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().monsterinfo = Some(Box::default());
+        monster_start(&mut world, key);
+        assert_eq!(world.level.rand_state, 5);
+    }
+
+    #[test]
+    fn monster_start_keeps_the_movetype_solid_mass_and_pause_its_spawn_chose() {
+        // C monster_start sets none of these: each SP_* does, and
+        // SP_turret_driver's MOVETYPE_PUSH must not become STEP.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.monsterinfo = Some(Box::default());
+            ent.game.movetype = MoveType::Push;
+            ent.solid = Solid::Not;
+        }
+
+        monster_start(&mut world, key);
+
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!((ent.game.movetype, ent.solid), (MoveType::Push, Solid::Not));
+        assert_eq!(ent.game.mass, 0);
+        assert_eq!(ent.monsterinfo.as_ref().unwrap().pausetime, 0.0);
     }
 
     #[test]
@@ -2577,6 +2621,23 @@ mod tests {
         ai_set_sight_client(&mut world);
 
         assert_eq!(world.level.sight_client_key, None);
+    }
+
+    #[test]
+    fn first_sight_client_search_starts_after_client_1() {
+        // C: with no sight client, start = 1 and the first check is 2.
+        let mut world = test_world();
+        world.set_max_clients(2);
+        let first = world.spawn_test_client(Default::default());
+        let second = world.spawn_test_client(Default::default());
+        for key in [first, second] {
+            world.entities.get_mut(key).unwrap().game.health = 100;
+        }
+
+        ai_set_sight_client(&mut world);
+        assert_eq!(world.level.sight_client_key, Some(second));
+        ai_set_sight_client(&mut world);
+        assert_eq!(world.level.sight_client_key, Some(first));
     }
 
     #[test]
@@ -3073,6 +3134,32 @@ mod tests {
     fn hear(world: &mut GameWorld, noise: EntityKey) {
         world.level.sound_entity = Some(noise);
         world.level.sound_entity_framenum = world.level.framenum;
+        world.entities.get_mut(noise).unwrap().game.last_sound_time = world.level.time;
+    }
+
+    #[test]
+    fn a_monster_keeps_hunting_a_noise_another_player_has_since_outdone() {
+        // C keeps last_sound_time on the noise edict, so a coop player's
+        // newer noise does not make an older one read as never heard.
+        let mut world = floor_world(Some(200.0)); // the wall hides the noise;
+        let monster = counting_monster(&mut world, 0.0, 0.0);
+        let player = player_at(&mut world, 2000.0, 0.0);
+        let older = noise_at(&mut world, 400.0, 0.0, player);
+        let newer = noise_at(&mut world, 0.0, 400.0, player);
+        world.level.time = 3.0;
+        hear(&mut world, older);
+        world.level.time = 6.0;
+        hear(&mut world, newer);
+        {
+            let e = world.entities.get_mut(monster).unwrap();
+            e.game.enemy = Some(older);
+            e.game.goalentity = Some(older);
+        }
+        mi_mut(&mut world, monster).aiflags = AiFlags::SOUND_TARGET;
+        ai_checkattack(&mut world, monster);
+        assert!(monsterinfo(&world, monster)
+            .aiflags
+            .contains(AiFlags::SOUND_TARGET));
     }
 
     #[test]
@@ -3471,6 +3558,23 @@ mod tests {
         ai_walk(&mut world, monster, 0.0);
 
         assert_eq!(count(&world, monster), 1100);
+    }
+
+    #[test]
+    fn monster_start_keeps_the_walker_skin_misc_insane_picked() {
+        // C monster_start resets s.skinnum, but C's SP_misc_insane picks
+        // its skin after walkmonster_start; here insane_finish runs first.
+        let skins: Vec<i32> = (0..20)
+            .map(|seed| {
+                let mut world = test_world();
+                world.init_game();
+                world.level.rand_state = seed;
+                let key = world.spawn().unwrap();
+                world.call_spawn(key, "misc_insane", &std::collections::HashMap::new());
+                world.entities.get(key).unwrap().state.skinnum
+            })
+            .collect();
+        assert!(skins.iter().any(|&s| s != 0), "{skins:?}");
     }
 
     #[test]
@@ -3975,6 +4079,7 @@ mod tests {
         let player = player_at(&mut world, 2000.0, 0.0);
         let noise = noise_at(&mut world, 300.0, 0.0, player);
         world.level.framenum = 10;
+        world.level.time = 1.0;
         hear(&mut world, noise);
         let ent = world.entities.get_mut(monster).unwrap();
         ent.game.enemy = Some(noise);

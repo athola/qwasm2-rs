@@ -76,9 +76,10 @@ impl GameWorld {
             self.level.sound_entity_framenum = framenum;
             noise
         };
-        // ai.rs reads C's `last_sound_time` from the framenums set above.
+        let time = self.level.time;
         if let Some(ent) = self.entities.get_mut(noise) {
             ent.state.origin = at;
+            ent.game.last_sound_time = time;
         }
         self.link_entity(noise);
     }
@@ -162,6 +163,17 @@ mod tests {
         assert_eq!(ent.state.origin, at);
         assert!(ent.linkcount > 0, "linked");
         assert_eq!(world.level.sound2_entity, None);
+    }
+
+    #[test]
+    fn player_noise_stamps_its_marker_with_the_time() {
+        // C PlayerNoise: noise->last_sound_time = level.time.
+        let mut world = noisy_world();
+        let who = player(&mut world);
+        world.level.time = 1.0;
+        world.player_noise(who, Vec3f::ZERO, PlayerNoise::Impact);
+        let noise = world.level.sound2_entity.expect("a noise");
+        assert_eq!(world.entities.get(noise).unwrap().game.last_sound_time, 1.0);
     }
 
     #[test]

@@ -22,18 +22,6 @@ use std::collections::HashMap;
 
 use q2_shared::constants::{EF_GIB, EF_TELEPORTER, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT};
 
-/// C `vectoyaw`.
-fn vectoyaw(v: Vec3f) -> f32 {
-    if v.y == 0.0 && v.x == 0.0 {
-        return 0.0;
-    }
-    let mut yaw = v.y.atan2(v.x).to_degrees().trunc();
-    if yaw < 0.0 {
-        yaw += 360.0;
-    }
-    yaw
-}
-
 /// Move a touching client to the teleporter's destination, hold it briefly
 /// and reset its view, telefragging whatever is at the destination.
 /// C ref: `teleporter_touch`.
@@ -180,7 +168,9 @@ fn path_corner_touch(
                 stand(world, other_key);
             }
         }
-        (None, Some(goal)) => other.game.ideal_yaw = vectoyaw(goal - other.state.origin),
+        (None, Some(goal)) => {
+            other.game.ideal_yaw = crate::monster::movement::vectoyaw(goal - other.state.origin)
+        }
         (None, None) => {}
     }
 }
@@ -731,16 +721,120 @@ pub fn sp_path_corner(
     ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
 }
 
+/// A monster sent here by its combattarget has arrived: pass it on to the
+/// point's target, or hold it here (spawnflag 1), or send it back to its
+/// enemy; then fire the pathtarget. C ref: `point_combat_touch`.
+pub fn point_combat_touch(
+    world: &mut GameWorld,
+    self_key: EntityKey,
+    other_key: EntityKey,
+    _plane: Option<&Plane>,
+    _surface: Option<&Surface>,
+) {
+    let Some(other) = world.entities.get(other_key) else {
+        return;
+    };
+    if other.game.movetarget != Some(self_key) {
+        return;
+    }
+    let other_flags = other.game.flags;
+    let Some(point) = world.entities.get(self_key) else {
+        return;
+    };
+    let (target, pathtarget, hold) = (
+        point.game.target.clone(),
+        point.game.pathtarget.clone(),
+        point.game.spawnflags & 1 != 0,
+    );
+
+    if !target.is_empty() {
+        let next = world.pick_target(&target);
+        if next.is_none() {
+            let origin = world.entities.get(self_key).map(|p| p.state.origin);
+            world.gi.dprintf(&format!(
+                "point_combat at {} target {target} does not exist\n",
+                origin.map_or_else(String::new, crate::ai::vtos)
+            ));
+        }
+        if let Some(other) = world.entities.get_mut(other_key) {
+            other.game.target = target;
+            other.game.goalentity = next;
+            other.game.movetarget = next.or(Some(self_key));
+        }
+        if let Some(point) = world.entities.get_mut(self_key) {
+            point.game.target.clear();
+        }
+    } else if hold && !other_flags.intersects(EntityFlags::SWIM | EntityFlags::FLY) {
+        let time = world.level.time;
+        let stand = world
+            .entities
+            .get_mut(other_key)
+            .and_then(|o| o.monsterinfo.as_mut())
+            .and_then(|mi| {
+                mi.pausetime = time + 100_000_000.0;
+                mi.aiflags |= AiFlags::STAND_GROUND;
+                mi.stand
+            });
+        if let Some(stand) = stand {
+            stand(world, other_key);
+        }
+    }
+
+    if let Some(other) = world.entities.get_mut(other_key) {
+        if other.game.movetarget == Some(self_key) {
+            other.game.target.clear();
+            other.game.movetarget = None;
+            other.game.goalentity = other.game.enemy;
+            if let Some(mi) = other.monsterinfo.as_mut() {
+                mi.aiflags.remove(AiFlags::COMBAT_POINT);
+            }
+        }
+    }
+
+    if !pathtarget.is_empty() {
+        let is_client = |k: Option<EntityKey>| {
+            k.filter(|&k| world.entities.get(k).is_some_and(|e| e.client.is_some()))
+        };
+        let other = world.entities.get(other_key);
+        let activator = other
+            .and_then(|o| {
+                is_client(o.game.enemy)
+                    .or_else(|| is_client(o.game.oldenemy))
+                    .or_else(|| is_client(o.game.activator))
+            })
+            .unwrap_or(other_key);
+        let savetarget = world
+            .entities
+            .get_mut(self_key)
+            .map(|p| std::mem::replace(&mut p.game.target, pathtarget))
+            .unwrap_or_default();
+        world.use_targets(self_key, activator);
+        if let Some(point) = world.entities.get_mut(self_key) {
+            point.game.target = savetarget;
+        }
+    }
+}
+
+/// C ref: `SP_point_combat` (its deathmatch free is in
+/// `finish_point_combat`, which can read the game mode).
 pub fn sp_point_combat(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
     if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = "point_combat".to_string();
-        if let Some(tn) = fields.get("targetname") {
-            ent.game.targetname = tn.clone();
-        }
+        ent.solid = Solid::Trigger;
+        ent.touch = Some(point_combat_touch);
+        ent.mins = Vec3f::new(-8.0, -8.0, -16.0);
+        ent.maxs = Vec3f::new(8.0, 8.0, 16.0);
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+    }
+}
+
+/// The deathmatch half of C SP_point_combat: combat points are freed.
+pub fn finish_point_combat(world: &mut GameWorld, key: EntityKey, _: &HashMap<String, String>) {
+    if world.game.deathmatch {
+        world.free_entity(key);
     }
 }
 
@@ -905,6 +999,161 @@ mod tests {
         assert!(world
             .find_by_classname(Some(corner), "path_corner")
             .is_none());
+    }
+
+    #[test]
+    fn point_combat_is_a_noclient_trigger_box_freed_in_deathmatch() {
+        let spawn = |deathmatch: bool| {
+            let mut world = test_world();
+            world.game.deathmatch = deathmatch;
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                r#"{ "classname" "worldspawn" } { "classname" "point_combat" "targetname" "c1" }"#,
+                "",
+            );
+            let point = world.find_by_classname(None, "point_combat");
+            (world, point)
+        };
+        let (world, point) = spawn(false);
+        let ent = world.entities.get(point.unwrap()).unwrap();
+        assert_eq!(ent.solid, Solid::Trigger);
+        assert_eq!(ent.mins, Vec3f::new(-8.0, -8.0, -16.0));
+        assert_eq!(ent.maxs, Vec3f::new(8.0, 8.0, 16.0));
+        assert_eq!(ent.svflags, q2_shared::constants::SVF_NOCLIENT);
+        assert!(ent.touch.is_some_and(|t| std::ptr::fn_addr_eq(
+            t,
+            point_combat_touch as crate::entity::TouchFn
+        )));
+        assert!(spawn(true).1.is_none(), "C frees it in deathmatch");
+    }
+
+    /// A monster on its way to `point`, fighting `enemy`.
+    fn monster_heading_for(world: &mut GameWorld, point: EntityKey) -> (EntityKey, EntityKey) {
+        let enemy = world.spawn_test_client(Default::default());
+        let monster = world.spawn().unwrap();
+        let e = world.entities.get_mut(monster).unwrap();
+        e.monsterinfo = Some(Default::default());
+        e.monsterinfo.as_mut().unwrap().aiflags = AiFlags::COMBAT_POINT;
+        e.game.target = "c1".into();
+        e.game.movetarget = Some(point);
+        e.game.goalentity = Some(point);
+        e.game.enemy = Some(enemy);
+        (monster, enemy)
+    }
+
+    #[test]
+    fn reaching_the_point_combat_sends_the_monster_back_to_its_enemy() {
+        let mut world = test_world();
+        let point = world.spawn().unwrap();
+        let (monster, enemy) = monster_heading_for(&mut world, point);
+        let bystander = world.spawn().unwrap();
+
+        // C: only the monster the point is the movetarget of reacts.
+        point_combat_touch(&mut world, point, bystander, None, None);
+        assert_eq!(world.entities.get(bystander).unwrap().game.goalentity, None);
+
+        point_combat_touch(&mut world, point, monster, None, None);
+        let m = world.entities.get(monster).unwrap();
+        assert!(!m
+            .monsterinfo
+            .as_ref()
+            .unwrap()
+            .aiflags
+            .contains(AiFlags::COMBAT_POINT));
+        assert_eq!(m.game.goalentity, Some(enemy));
+        assert_eq!(m.game.movetarget, None);
+        assert_eq!(m.game.target, "");
+    }
+
+    #[test]
+    fn point_combat_with_a_target_passes_the_monster_on_once() {
+        let mut world = test_world();
+        let point = world.spawn().unwrap();
+        world.entities.get_mut(point).unwrap().game.target = "c2".into();
+        let next = world.spawn().unwrap();
+        world.entities.get_mut(next).unwrap().game.targetname = "c2".into();
+        let (monster, _) = monster_heading_for(&mut world, point);
+
+        point_combat_touch(&mut world, point, monster, None, None);
+        let m = world.entities.get(monster).unwrap();
+        assert_eq!(
+            (m.game.goalentity, m.game.movetarget),
+            (Some(next), Some(next))
+        );
+        assert_eq!(m.game.target, "c2");
+        assert!(m
+            .monsterinfo
+            .as_ref()
+            .unwrap()
+            .aiflags
+            .contains(AiFlags::COMBAT_POINT));
+        assert_eq!(world.entities.get(point).unwrap().game.target, "");
+    }
+
+    #[test]
+    fn hold_point_combat_makes_a_walking_monster_stand_ground() {
+        let mut world = test_world();
+        let point = world.spawn().unwrap();
+        world.entities.get_mut(point).unwrap().game.spawnflags = 1;
+        let (monster, _) = monster_heading_for(&mut world, point);
+        world.level.time = 3.0;
+
+        point_combat_touch(&mut world, point, monster, None, None);
+        let mi = world
+            .entities
+            .get(monster)
+            .unwrap()
+            .monsterinfo
+            .as_ref()
+            .unwrap();
+        assert!(mi.aiflags.contains(AiFlags::STAND_GROUND));
+        assert_eq!(mi.pausetime, 3.0 + 100_000_000.0);
+    }
+
+    #[test]
+    fn point_combat_pathtarget_fires_with_the_client_enemy_as_activator() {
+        let mut world = test_world();
+        let point = world.spawn().unwrap();
+        world.entities.get_mut(point).unwrap().game.pathtarget = "door".into();
+        let door = world.spawn().unwrap();
+        {
+            let d = world.entities.get_mut(door).unwrap();
+            d.game.targetname = "door".into();
+            d.use_fn = Some(|w, s, _other, activator| {
+                w.entities.get_mut(s).unwrap().game.activator = Some(activator);
+            });
+        }
+        let (monster, enemy) = monster_heading_for(&mut world, point);
+
+        point_combat_touch(&mut world, point, monster, None, None);
+        assert_eq!(
+            world.entities.get(door).unwrap().game.activator,
+            Some(enemy)
+        );
+        assert_eq!(world.entities.get(point).unwrap().game.target, "");
+    }
+
+    #[test]
+    fn path_corner_straight_down_y_faces_minus_90_as_c_vectoyaw() {
+        // C vectoyaw special-cases x == 0: y < 0 gives -90, not 270.
+        let mut world = test_world();
+        let c1 = world.spawn().unwrap();
+        let c2 = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(c1).unwrap();
+            e.game.targetname = "p1".into();
+            e.game.target = "p2".into();
+        }
+        {
+            let e = world.entities.get_mut(c2).unwrap();
+            e.game.targetname = "p2".into();
+            e.state.origin = Vec3f::new(0.0, -100.0, 0.0);
+        }
+        let monster = world.spawn().unwrap();
+        world.entities.get_mut(monster).unwrap().game.movetarget = Some(c1);
+        path_corner_touch(&mut world, c1, monster, None, None);
+        assert_eq!(world.entities.get(monster).unwrap().game.ideal_yaw, -90.0);
     }
 
     #[test]

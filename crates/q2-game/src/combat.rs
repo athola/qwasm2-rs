@@ -80,9 +80,10 @@ impl GameWorld {
     // -----------------------------------------------------------------------
 
     /// Apply knockback to an entity — adds velocity in `dir` direction.
+    /// A negative knockback pulls the entity along `-dir`.
     ///
-    /// `scale`: 1600.0 for self-damage, 500.0 for other damage.
-    /// Minimum effective mass is 50.
+    /// `scale`: 1600.0 for a client hurting itself, 500.0 for everything
+    /// else. Minimum effective mass is 50. C ref: `apply_knockback`.
     fn apply_knockback(&mut self, target: EntityKey, dir: Vec3f, knockback: f32, scale: f32) {
         if knockback == 0.0 {
             return;
@@ -98,7 +99,7 @@ impl GameWorld {
         } else {
             Vec3f::ZERO
         };
-        let kvel = dir_norm * (scale * knockback / mass);
+        let kvel = dir_norm * (scale * (knockback / mass));
         ent.velocity += kvel;
     }
 
@@ -254,6 +255,14 @@ impl GameWorld {
             .is_some_and(|mi| mi.aiflags.contains(AiFlags::GOOD_GUY));
         if dying_monster && !good_guy {
             self.level.killed_monsters += 1;
+            // Medics won't heal monsters that they kill themselves.
+            let by_medic = self
+                .entities
+                .get(attacker)
+                .is_some_and(|a| a.game.classname == "monster_medic");
+            if let Some(ent) = self.entities.get_mut(target).filter(|_| by_medic) {
+                ent.owner = Some(attacker);
+            }
         }
 
         let Some(ent) = self.entities.get_mut(target) else {
@@ -310,8 +319,9 @@ impl GameWorld {
 
     /// Apply damage to an entity. This is THE core damage function.
     ///
-    /// Sequence: check god mode → armor absorption → knockback → reduce health
-    /// → if health <= 0: Killed() → else: pain callback.
+    /// Sequence, as in C: knockback, god mode, power armor, armor, health,
+    /// then Killed() at or below 0 health or the pain callback otherwise.
+    /// C ref: `T_Damage`.
     ///
     /// # Parameters
     /// - `target`: entity taking damage
@@ -390,7 +400,7 @@ impl GameWorld {
         }
 
         // Apply knockback (unless suppressed by damage flags or movetype).
-        if !dflags.contains(DamageFlags::NO_KNOCKBACK) && knockback > 0.0 {
+        if !dflags.contains(DamageFlags::NO_KNOCKBACK) && knockback != 0.0 {
             let movetype = self
                 .entities
                 .get(target)
@@ -402,8 +412,15 @@ impl GameWorld {
                 && movetype != MoveType::Push
                 && movetype != MoveType::Stop
             {
-                let is_self_damage = target == attacker;
-                let scale = if is_self_damage { 1600.0 } else { 500.0 };
+                let target_is_client = self
+                    .entities
+                    .get(target)
+                    .is_some_and(|e| e.client.is_some());
+                let scale = if target_is_client && target == attacker {
+                    1600.0
+                } else {
+                    500.0
+                };
                 self.apply_knockback(target, dir, knockback, scale);
             }
         }
@@ -600,10 +617,9 @@ impl GameWorld {
             None => return,
         };
 
-        // Collect all entity keys to avoid borrow issues during iteration.
-        let all_keys: Vec<EntityKey> = self.entities.iter().map(|(k, _)| k).collect();
-
-        for key in all_keys {
+        let mut found = None;
+        while let Some(key) = self.find_radius(found, inf_origin, radius) {
+            found = Some(key);
             if Some(key) == ignore {
                 continue;
             }
@@ -612,22 +628,14 @@ impl GameWorld {
                 let Some(ent) = self.entities.get(key) else {
                     continue;
                 };
-                // C findradius skips free and SOLID_NOT edicts.
-                if !ent.in_use || ent.solid == Solid::Not || ent.game.takedamage == TakeDamage::No {
+                if ent.game.takedamage == TakeDamage::No {
                     continue;
                 }
                 (ent.state.origin, ent.mins, ent.maxs)
             };
 
-            // Calculate distance to entity's bounding box center.
-            let center = ent_origin + (ent_mins + ent_maxs) * 0.5;
-            let diff = inf_origin - center;
-            let dist = diff.length();
-
-            // Check if within radius.
-            if dist > radius {
-                continue;
-            }
+            // Distance to the entity's bounding box center.
+            let dist = (inf_origin - (ent_origin + (ent_mins + ent_maxs) * 0.5)).length();
 
             // Linear falloff: damage - 0.5 * distance.
             let mut points = damage - 0.5 * dist;
@@ -1240,6 +1248,96 @@ mod tests {
         assert!(v.x > 0.0);
     }
 
+    /// A mass-100 step entity with 100 health, hit along +x for 50 knockback
+    /// by `attacker`; returns its velocity.
+    fn knockback_velocity(
+        world: &mut GameWorld,
+        target: EntityKey,
+        attacker: EntityKey,
+        kick: i32,
+    ) -> Vec3f {
+        {
+            let ent = world.entities.get_mut(target).unwrap();
+            ent.game.health = 100;
+            ent.game.takedamage = TakeDamage::Yes;
+            ent.game.mass = 100;
+            ent.game.movetype = MoveType::Step;
+        }
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::new(1.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            1,
+            kick,
+            DamageFlags::empty(),
+            MeansOfDeath::Rocket,
+        );
+        world.entities.get(target).unwrap().velocity
+    }
+
+    #[test]
+    fn monster_hurting_itself_gets_the_500_scale() {
+        // C: `(client && attacker == targ) ? 1600 : 500`.
+        let mut world = test_world();
+        let monster = world.spawn().unwrap();
+        let v = knockback_velocity(&mut world, monster, monster, 50);
+        assert_eq!(v, Vec3f::new(500.0 * (50.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn client_hurting_itself_gets_the_1600_scale() {
+        let mut world = test_world();
+        let player = world.spawn_test_client(Default::default());
+        let v = knockback_velocity(&mut world, player, player, 50);
+        assert_eq!(v, Vec3f::new(1600.0 * (50.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn negative_knockback_pulls_the_target_back() {
+        // floater_zap kicks with -10; C apply_knockback skips only zero.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        let attacker = world.spawn().unwrap();
+        let v = knockback_velocity(&mut world, target, attacker, -10);
+        assert_eq!(v, Vec3f::new(500.0 * (-10.0 / 100.0), 0.0, 0.0));
+    }
+
+    #[test]
+    fn knockback_divides_by_mass_before_scaling_as_c_does() {
+        // C: scale * (knockback / mass). For 7/51, (500 * 7) / 51 rounds to
+        // a different f32.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        world.entities.get_mut(target).unwrap().game.mass = 51;
+        world.apply_knockback(target, Vec3f::new(1.0, 0.0, 0.0), 7.0, 500.0);
+        let v = world.entities.get(target).unwrap().velocity;
+        assert_eq!(v.x.to_bits(), (500.0f32 * (7.0f32 / 51.0f32)).to_bits());
+    }
+
+    #[test]
+    fn medic_killing_a_monster_becomes_its_owner() {
+        // C Killed: medics won't heal monsters they killed themselves.
+        let mut world = test_world();
+        let medic = world.spawn().unwrap();
+        world.entities.get_mut(medic).unwrap().game.classname = "monster_medic".into();
+        let other = world.spawn().unwrap();
+        let mut victims = Vec::new();
+        for attacker in [medic, other] {
+            let victim = world.spawn().unwrap();
+            let e = world.entities.get_mut(victim).unwrap();
+            e.svflags |= SvFlags::MONSTER.bits();
+            e.monsterinfo = Some(Default::default());
+            e.die = Some(|_, _, _, _, _, _| {});
+            world.killed(victim, attacker, attacker, 10, Vec3f::ZERO);
+            victims.push(victim);
+        }
+        assert_eq!(world.entities.get(victims[0]).unwrap().owner, Some(medic));
+        assert_eq!(world.entities.get(victims[1]).unwrap().owner, None);
+    }
+
     #[test]
     fn t_damage_with_armor() {
         let mut world = test_world();
@@ -1309,6 +1407,36 @@ mod tests {
     }
 
     // -- t_radius_damage tests --
+
+    #[test]
+    fn radius_damage_walks_entities_in_number_order() {
+        // C findradius walks g_edicts by number; a client spawned after a
+        // map entity takes a later slot but a lower number.
+        let mut world = test_world();
+        let inflictor = world.spawn().unwrap();
+        let map_ent = world.spawn().unwrap();
+        let client = world.spawn_test_client(Default::default());
+        for key in [map_ent, client] {
+            let e = world.entities.get_mut(key).unwrap();
+            e.game.health = 100;
+            e.game.takedamage = TakeDamage::Yes;
+            e.solid = Solid::Bbox;
+            e.pain = Some(|w, s, _, _, _| {
+                w.level.killed_monsters += 1;
+                w.entities.get_mut(s).unwrap().game.count = w.level.killed_monsters;
+            });
+        }
+        world.t_radius_damage(
+            inflictor,
+            inflictor,
+            50.0,
+            None,
+            100.0,
+            MeansOfDeath::Rocket,
+        );
+        let hit_order = |k| world.entities.get(k).unwrap().game.count;
+        assert_eq!((hit_order(client), hit_order(map_ent)), (1, 2));
+    }
 
     #[test]
     fn radius_damage_hits_nearby() {

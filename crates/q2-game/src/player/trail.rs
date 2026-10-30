@@ -4,8 +4,8 @@
 //!
 //! C keeps the eight nodes as `player_trail` edicts; only their origin,
 //! timestamp and yaw are ever read, so here they are plain data on
-//! `GameWorld` and take no entity slots. C disables the trail in
-//! deathmatch, which this port does not have.
+//! `GameWorld` and take no entity slots. As in C, there is no trail in
+//! deathmatch.
 
 use q2_shared::types::Vec3f;
 
@@ -116,6 +116,9 @@ impl GameWorld {
     /// Drop a node where the player was if the newest one is out of its
     /// sight. C ref: the trail part of `ClientBeginServerFrame`.
     pub(crate) fn player_trail_follow(&mut self, player: EntityKey) {
+        if self.game.deathmatch {
+            return;
+        }
         let Some(last) = self.trail.last_spot() else {
             return;
         };
@@ -241,6 +244,28 @@ mod tests {
         world.entities.get_mut(player).unwrap().game.deadflag = crate::constants::DeadFlag::No;
         world.client_begin_server_frame(player);
         assert_ne!(world.trail.last_spot(), before, "alive and in play: added");
+    }
+
+    #[test]
+    fn deathmatch_has_no_player_trail() {
+        // C PlayerTrail_Init returns in deathmatch, and ClientBeginServerFrame
+        // adds trail spots only when !deathmatch.
+        for (deathmatch, active) in [(false, true), (true, false)] {
+            let mut world = crate::world::test_world();
+            world.game.deathmatch = deathmatch;
+            world.init_game();
+            world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+            assert_eq!(world.trail.last_spot().is_some(), active);
+        }
+
+        let mut world = floor_world(Some(200.0));
+        let player = walker(&mut world, 100.0, 0.0);
+        world.trail.init();
+        world.trail.add(Vec3f::new(300.0, 0.0, 24.0), 3.0); // out of sight
+        let before = world.trail.last_spot();
+        world.game.deathmatch = true;
+        world.client_begin_server_frame(player);
+        assert_eq!(world.trail.last_spot(), before);
     }
 
     #[test]
