@@ -60,7 +60,32 @@ use crate::bsp::BspData;
 use crate::files::palette::Palette;
 use alias::AliasModel;
 use draw::{draw_batches, draw_ui, BatchDraw, BatchFilter, SkyGpu, UiTarget, WorldGpu};
-use entities::{create_extra, draw_entities, free_extra, EntityScene, ExtraGpu};
+use entities::{
+    create_extra, draw_brush_alpha_faces, draw_entities, free_extra, EntityScene, ExtraGpu,
+};
+
+/// One step of a 3D frame after the sky.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    WorldOpaque,
+    /// The opaque or the `RF_TRANSLUCENT` entities, brush entities without
+    /// their translucent faces.
+    Entities {
+        translucent: bool,
+    },
+    /// Every SURF_TRANS33/66 face (C `GL3_DrawAlphaSurfaces`): the brush
+    /// entities' first, then the world's, as C prepends the entities'
+    /// faces to the chain the world filled.
+    AlphaSurfaces,
+}
+
+/// C `GL3_RenderView` order.
+const FRAME_PASSES: [Pass; 4] = [
+    Pass::WorldOpaque,
+    Pass::Entities { translucent: false },
+    Pass::Entities { translucent: true },
+    Pass::AlphaSurfaces,
+];
 use images::ImageStore;
 use light::LightTree;
 use model::{Model, ModelRegistry};
@@ -414,8 +439,8 @@ impl Renderer for Gl3Renderer {
         }
     }
 
-    /// Draw order: sky, opaque world, opaque entities, translucent world,
-    /// translucent entities. 2D draws are queued until `end_frame`.
+    /// Draw order: sky, then `FRAME_PASSES`. 2D draws are queued until
+    /// `end_frame`.
     fn render_frame(
         &mut self,
         fd: &RefDef,
@@ -491,13 +516,21 @@ impl Renderer for Gl3Renderer {
             view_proj,
         });
 
-        world_batches(BatchFilter::Opaque);
-        if let Some(scene) = &scene {
-            draw_entities(scene, entities, false);
-        }
-        world_batches(BatchFilter::Translucent);
-        if let Some(scene) = &scene {
-            draw_entities(scene, entities, true);
+        for pass in FRAME_PASSES {
+            match pass {
+                Pass::WorldOpaque => world_batches(BatchFilter::Opaque),
+                Pass::Entities { translucent } => {
+                    if let Some(scene) = &scene {
+                        draw_entities(scene, entities, translucent);
+                    }
+                }
+                Pass::AlphaSurfaces => {
+                    if let Some(scene) = &scene {
+                        draw_brush_alpha_faces(scene, entities);
+                    }
+                    world_batches(BatchFilter::Translucent);
+                }
+            }
         }
 
         // SAFETY: Unbinding the program and reading the error flag are
@@ -1507,6 +1540,23 @@ mod tests {
         // 'A' is cell (1, 4) of the 16x16 font, drawn 8x8 pixels.
         assert_eq!(&r.ui_queue[3].vertices[2..4], &[0.0625, 0.25]);
         assert_eq!(&r.ui_queue[3].vertices[40..42], &[16.0, 24.0]);
+    }
+
+    // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
+    // RF_TRANSLUCENT), then GL3_DrawAlphaSurfaces for every SURF_TRANS33/66
+    // face, the brush entities' included, so a monster behind a window is
+    // drawn before the glass.
+    #[test]
+    fn translucent_faces_are_drawn_after_every_entity_like_c() {
+        assert_eq!(
+            FRAME_PASSES,
+            [
+                Pass::WorldOpaque,
+                Pass::Entities { translucent: false },
+                Pass::Entities { translucent: true },
+                Pass::AlphaSurfaces,
+            ]
+        );
     }
 
     #[test]
