@@ -154,7 +154,10 @@ effects, and the deathmatch rules end matches through C's intermission.
   models; their lights share the client's 32 dlights as in C. The
   rogue shell combinations apply with C's `game` set to `rogue`
   (`?game=rogue`), which only the client reads: no rogue game code or
-  data is loaded. The page starts on `?map=` (else demo1). Brush models
+  data is loaded. The page starts on `?map=` (else demo1), and
+  `?vid_fullscreen=1` goes fullscreen with the keyboard locked to the
+  game where the browser allows it (Chromium), so Ctrl shortcuts do not
+  reach the browser. Brush models
   moved by doors take dlights at their rest
   position.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are

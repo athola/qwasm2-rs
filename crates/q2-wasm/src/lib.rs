@@ -1074,6 +1074,13 @@ fn cl_gun_from_query(search: &str) -> &str {
     query_value(search, "cl_gun").unwrap_or("2")
 }
 
+/// C cvar `vid_fullscreen` from `?vid_fullscreen=1`: clicking to play
+/// also goes fullscreen with the keyboard locked to the game.
+#[cfg(any(target_arch = "wasm32", test))]
+fn vid_fullscreen_from_query(search: &str) -> bool {
+    query_value(search, "vid_fullscreen") == Some("1")
+}
+
 /// `?cl_fxextra=1`: effects C does not draw (ADR-003), off by default.
 #[cfg(any(target_arch = "wasm32", test))]
 fn fx_extras_from_query(search: &str) -> bool {
@@ -1412,8 +1419,11 @@ async fn run_engine(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
     // 9. Input, last of the fallible steps before the loop: the listeners
     //    are leaked for the page's lifetime, so a failed start that is
     //    retried must not have attached them already.
-    let input_state =
-        q2_platform::wasm::input::setup_input_listeners(&canvas).map_err(q2err_to_js)?;
+    let input_state = q2_platform::wasm::input::setup_input_listeners(
+        &canvas,
+        vid_fullscreen_from_query(&search),
+    )
+    .map_err(q2err_to_js)?;
     log("Input listeners attached (click canvas for pointer lock)");
 
     // Sound plays once the browser lets the context run (a click).
@@ -1869,6 +1879,9 @@ mod tests {
         assert!(fx_extras_from_query("?cl_fxextra=1"));
         assert!(!fx_extras_from_query("?cl_fxextra=0"));
         assert!(!fx_extras_from_query(""));
+        // C vid_fullscreen: 0 (default) windowed.
+        assert!(vid_fullscreen_from_query("?vid_fullscreen=1"));
+        assert!(!vid_fullscreen_from_query(""));
         assert_eq!(game_from_query(""), "");
     }
 

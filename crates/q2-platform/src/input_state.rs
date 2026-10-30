@@ -36,6 +36,26 @@ impl WasmInputState {
     }
 }
 
+/// What a click on the game canvas asks the browser for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClickRequests {
+    /// Fullscreen and keyboard lock (C `vid_fullscreen` 1), so browser
+    /// shortcuts such as Ctrl+W reach the game.
+    pub fullscreen: bool,
+    pub pointer_lock: bool,
+}
+
+impl ClickRequests {
+    /// Only what the page does not hold yet: asking for pointer lock again
+    /// makes the browser fire pointerlockchange for nothing.
+    pub fn for_click(vid_fullscreen: bool, fullscreen: bool, pointer_locked: bool) -> Self {
+        Self {
+            fullscreen: vid_fullscreen && !fullscreen,
+            pointer_lock: !pointer_locked,
+        }
+    }
+}
+
 impl Default for WasmInputState {
     fn default() -> Self {
         Self {
@@ -69,6 +89,38 @@ mod tests {
         assert!(state.keys[b'w' as usize]);
         assert_eq!(state.mouse_buttons, 1);
         assert_eq!((state.mouse_dx, state.mouse_dy), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_click_asks_only_for_what_the_page_does_not_have() {
+        let ask = |vid_fullscreen, fullscreen, locked| {
+            ClickRequests::for_click(vid_fullscreen, fullscreen, locked)
+        };
+        // vid_fullscreen 0: pointer lock only, and not again while held.
+        assert_eq!(
+            ask(false, false, false),
+            ClickRequests {
+                fullscreen: false,
+                pointer_lock: true
+            }
+        );
+        assert_eq!(ask(false, false, true), ClickRequests::default());
+        // vid_fullscreen 1: fullscreen (with keyboard lock) as well.
+        assert_eq!(
+            ask(true, false, false),
+            ClickRequests {
+                fullscreen: true,
+                pointer_lock: true
+            }
+        );
+        assert_eq!(
+            ask(true, false, true),
+            ClickRequests {
+                fullscreen: true,
+                pointer_lock: false
+            }
+        );
+        assert_eq!(ask(true, true, true), ClickRequests::default());
     }
 
     #[test]

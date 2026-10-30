@@ -6,12 +6,19 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent};
 
-pub use crate::input_state::WasmInputState;
+pub use crate::input_state::{ClickRequests, WasmInputState};
 pub use crate::keymap::key_code_to_q2;
 
-/// Set up keyboard and mouse event listeners on a canvas.
+/// Set up keyboard and mouse event listeners on a canvas. With
+/// `vid_fullscreen`, a click also takes the canvas's container fullscreen
+/// and locks the keyboard to the page where the browser can (Keyboard Lock
+/// API, Chromium only): there Ctrl+W, Ctrl+T and the like reach the game,
+/// and Esc must be held to leave fullscreen.
 /// Returns a shared reference to the input state.
-pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<WasmInputState>>> {
+pub fn setup_input_listeners(
+    canvas: &HtmlCanvasElement,
+    vid_fullscreen: bool,
+) -> Q2Result<Rc<RefCell<WasmInputState>>> {
     let state = Rc::new(RefCell::new(WasmInputState::default()));
     let document = web_sys::window()
         .ok_or_else(|| fatal("no window"))?
@@ -159,10 +166,17 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
             web_sys::console::warn_1(&format!("[qwasm2] pointer lock refused: {reason}").into());
         }) as Box<dyn FnMut(JsValue)>);
         let closure = Closure::wrap(Box::new(move |_: MouseEvent| {
-            // Asking again while locked makes the browser fire
-            // pointerlockchange for nothing; every mouse shot is a click.
+            // Every mouse shot is a click: ask only for what is missing.
             let element: &web_sys::Element = canvas_clone.as_ref();
-            if lock_doc.pointer_lock_element().as_ref() == Some(element) {
+            let requests = ClickRequests::for_click(
+                vid_fullscreen,
+                lock_doc.fullscreen_element().is_some(),
+                lock_doc.pointer_lock_element().as_ref() == Some(element),
+            );
+            if requests.fullscreen {
+                enter_fullscreen(&lock_doc, element);
+            }
+            if !requests.pointer_lock {
                 return;
             }
             let request = js_sys::Reflect::get(&canvas_clone, &"requestPointerLock".into())
@@ -186,4 +200,48 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
     }
 
     Ok(state)
+}
+
+/// Take `#game-container` (the canvas and its overlays; else the canvas)
+/// fullscreen, then lock the keyboard to the page where the browser has
+/// `navigator.keyboard.lock` (Chromium). Refusals are logged.
+fn enter_fullscreen(document: &web_sys::Document, canvas: &web_sys::Element) {
+    let target = document
+        .get_element_by_id("game-container")
+        .unwrap_or_else(|| canvas.clone());
+    if let Err(e) = target.request_fullscreen() {
+        web_sys::console::warn_1(&e);
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let keyboard = js_sys::Reflect::get(&window, &"navigator".into())
+        .and_then(|navigator| js_sys::Reflect::get(&navigator, &"keyboard".into()))
+        .ok()
+        .filter(|k| !k.is_undefined());
+    let lock = keyboard.as_ref().and_then(|k| {
+        js_sys::Reflect::get(k, &"lock".into())
+            .ok()
+            .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+    });
+    match (keyboard, lock) {
+        (Some(keyboard), Some(lock)) => match lock.call0(&keyboard) {
+            Ok(result) => {
+                if let Ok(promise) = result.dyn_into::<js_sys::Promise>() {
+                    // Once per entry into fullscreen, so leaking it is small.
+                    let refused = Closure::wrap(Box::new(|err: JsValue| {
+                        web_sys::console::warn_2(&"[qwasm2] keyboard lock refused:".into(), &err);
+                    }) as Box<dyn FnMut(JsValue)>);
+                    let _ = promise.catch(&refused);
+                    refused.forget();
+                }
+            }
+            Err(e) => web_sys::console::warn_1(&e),
+        },
+        _ => web_sys::console::warn_1(
+            &"[qwasm2] no Keyboard Lock API: browser shortcuts like Ctrl+W stay the browser's"
+                .into(),
+        ),
+    }
 }

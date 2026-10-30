@@ -145,6 +145,10 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- `?vid_fullscreen=1` (C's `vid_fullscreen`, off by default): clicking to
+  play also takes the game fullscreen and, in Chromium browsers, locks
+  the keyboard to it (Keyboard Lock API), so Ctrl+W, Ctrl+T and the like
+  reach the game while firing with Ctrl; hold Esc to leave fullscreen
 - Moving while firing with the mouse no longer stops: each click on the
   locked canvas asked for pointer lock again, the browser answered with
   `pointerlockchange`, and that released every held key; held keys are
