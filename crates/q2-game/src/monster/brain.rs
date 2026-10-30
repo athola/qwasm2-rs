@@ -1161,16 +1161,6 @@ mod tests {
     }
 
     #[test]
-    fn brain_spawns_with_its_c_pain_walk_run_and_melee_callbacks() {
-        let mut world = test_world();
-        let key = spawned(&mut world);
-        let ent = world.entities.get(key).unwrap();
-        let mi = ent.monsterinfo.as_ref().unwrap();
-        assert!(ent.pain.is_some());
-        assert!(mi.walk.is_some() && mi.run.is_some() && mi.melee.is_some());
-    }
-
-    #[test]
     fn brain_spawns_with_the_c_values_callbacks_and_power_screen() {
         let mut world = test_world();
         let key = spawned(&mut world);
@@ -1183,6 +1173,17 @@ mod tests {
             ai::walkmonster_start_go as ThinkFn
         ));
         let mi = ent.monsterinfo.as_ref().unwrap();
+        assert!(std::ptr::fn_addr_eq(
+            ent.pain.unwrap(),
+            brain_pain as crate::entity::PainFn
+        ));
+        for (got, want) in [
+            (mi.walk, brain_walk as ThinkFn),
+            (mi.run, brain_run),
+            (mi.melee, brain_melee),
+        ] {
+            assert!(std::ptr::fn_addr_eq(got.unwrap(), want));
+        }
         assert_eq!(mi.scale, 1.0);
         assert_eq!((mi.power_armor_type, mi.power_armor_power), (1, 100));
         assert!(mi.attack.is_none());
