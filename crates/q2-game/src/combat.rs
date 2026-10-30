@@ -255,6 +255,14 @@ impl GameWorld {
             .is_some_and(|mi| mi.aiflags.contains(AiFlags::GOOD_GUY));
         if dying_monster && !good_guy {
             self.level.killed_monsters += 1;
+            // Medics won't heal monsters that they kill themselves.
+            let by_medic = self
+                .entities
+                .get(attacker)
+                .is_some_and(|a| a.game.classname == "monster_medic");
+            if let Some(ent) = self.entities.get_mut(target).filter(|_| by_medic) {
+                ent.owner = Some(attacker);
+            }
         }
 
         let Some(ent) = self.entities.get_mut(target) else {
@@ -1316,6 +1324,27 @@ mod tests {
         world.apply_knockback(target, Vec3f::new(1.0, 0.0, 0.0), 7.0, 500.0);
         let v = world.entities.get(target).unwrap().velocity;
         assert_eq!(v.x.to_bits(), (500.0f32 * (7.0f32 / 51.0f32)).to_bits());
+    }
+
+    #[test]
+    fn medic_killing_a_monster_becomes_its_owner() {
+        // C Killed: medics won't heal monsters they killed themselves.
+        let mut world = test_world();
+        let medic = world.spawn().unwrap();
+        world.entities.get_mut(medic).unwrap().game.classname = "monster_medic".into();
+        let other = world.spawn().unwrap();
+        let mut victims = Vec::new();
+        for attacker in [medic, other] {
+            let victim = world.spawn().unwrap();
+            let e = world.entities.get_mut(victim).unwrap();
+            e.svflags |= SvFlags::MONSTER.bits();
+            e.monsterinfo = Some(Default::default());
+            e.die = Some(|_, _, _, _, _, _| {});
+            world.killed(victim, attacker, attacker, 10, Vec3f::ZERO);
+            victims.push(victim);
+        }
+        assert_eq!(world.entities.get(victims[0]).unwrap().owner, Some(medic));
+        assert_eq!(world.entities.get(victims[1]).unwrap().owner, None);
     }
 
     #[test]
