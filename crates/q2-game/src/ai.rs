@@ -5,8 +5,7 @@
 //! step, turn and chase through `monster::movement` (C `m_move.c`).
 //! Deviations from C: a player is always lit well enough to be seen (C
 //! `light_level`, which nothing sets yet), heard noises skip the area
-//! portal check (no `AreasConnected` import), and a monster starts on the
-//! first frame of its move rather than a random one.
+//! portal check (no `AreasConnected` import).
 //!
 //! # AI state machine
 //! Monsters cycle: stand → (spot player) → run → (in range) → attack → pain → die.
@@ -1675,9 +1674,8 @@ pub fn monster_triggered_start(world: &mut GameWorld, key: EntityKey) {
 /// function chose with [`walkmonster_start`], [`flymonster_start`] or
 /// [`swimmonster_start`], `walkmonster_start_go` if none.
 /// The movetype, solid, mass and `pausetime` are the spawn function's,
-/// as in C. C ref: `monster_start` (g_monster.c). Not here: the random
-/// start frame (see the module docs), and `st.item`, which `call_spawn`
-/// resolves.
+/// as in C. C ref: `monster_start` (g_monster.c). Not here: `st.item`,
+/// which `call_spawn` resolves.
 pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     if world.game.deathmatch {
         world.free_entity(key);
@@ -1729,6 +1727,17 @@ pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
         mi.air_finished = time + 12.0;
         if mi.checkattack.is_none() {
             mi.checkattack = Some(m_check_attack);
+        }
+    }
+
+    // Randomize what frame they start on.
+    let span = monsterinfo(world, key)
+        .and_then(|mi| mi.currentmove.as_ref())
+        .map(|mv| (mv.firstframe, mv.lastframe - mv.firstframe + 1));
+    if let Some((firstframe, count)) = span {
+        let pick = world.random_u32() as i32 % count;
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.state.frame = firstframe + pick;
         }
     }
     true
@@ -2333,6 +2342,43 @@ mod tests {
         assert_eq!(ent.game.takedamage, TakeDamage::Aim); // C DAMAGE_AIM
         assert!(ent.svflags & SvFlags::MONSTER.bits() != 0);
         assert!(ent.think.is_some());
+    }
+
+    #[test]
+    fn monster_start_puts_the_monster_on_a_random_frame_of_its_move() {
+        // C: s.frame = firstframe + randk() % (lastframe - firstframe + 1).
+        for seed in [1u32, 2, 3, 77] {
+            let mut world = test_world();
+            world.level.rand_state = seed;
+            let key = world.spawn().unwrap();
+            world.entities.get_mut(key).unwrap().monsterinfo = Some(Box::new(MonsterInfo {
+                currentmove: Some(crate::entity::MonsterMove {
+                    firstframe: 10,
+                    lastframe: 14,
+                    frames: &[],
+                    endfunc: None,
+                }),
+                ..Default::default()
+            }));
+            let mut rng = test_world();
+            rng.level.rand_state = seed;
+            let expected = 10 + (rng.random_u32() % 5) as i32;
+
+            monster_start(&mut world, key);
+
+            assert_eq!(world.entities.get(key).unwrap().state.frame, expected);
+            assert_eq!(world.level.rand_state, rng.level.rand_state, "one randk()");
+        }
+    }
+
+    #[test]
+    fn monster_start_without_a_move_draws_no_random_number() {
+        let mut world = test_world();
+        world.level.rand_state = 5;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().monsterinfo = Some(Box::default());
+        monster_start(&mut world, key);
+        assert_eq!(world.level.rand_state, 5);
     }
 
     #[test]

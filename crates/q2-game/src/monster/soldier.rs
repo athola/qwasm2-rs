@@ -2073,25 +2073,23 @@ mod tests {
         let key = world.spawn().unwrap();
         sp_monster_soldier(&mut world.entities, key, &HashMap::new());
 
-        // Initialize. monster_start_go (skipped here) would stand the
-        // soldier for good.
+        // Initialize: C monster_start puts the soldier on a random frame
+        // of stand1, firstframe + randk() % 30. monster_start_go (skipped
+        // here) would stand the soldier for good.
+        let mut rng = test_world();
+        rng.level.rand_state = world.level.rand_state;
+        let start = FRAME_STAND101 + (rng.random_u32() % 30) as i32;
         ai::monster_start(&mut world, key);
         assert!(world.entities.get(key).unwrap().think.is_some());
+        assert_eq!(world.entities.get(key).unwrap().state.frame, start);
         mi_mut(&mut world, key).pausetime = 100_000_000.0;
 
-        // Run one AI frame (think → monster_move_frame → advance animation).
-        // The spawn frame 0 is outside stand1, so the first tick snaps to it.
-        ai::monster_think(&mut world, key);
-        assert_eq!(world.entities.get(key).unwrap().state.frame, FRAME_STAND101);
-
-        // Run several more frames.
+        // Each AI frame (think, monster_move_frame) advances the animation.
+        assert!(start + 5 <= FRAME_STAND130, "the move does not wrap here");
         for _ in 0..5 {
             ai::monster_think(&mut world, key);
         }
-        assert_eq!(
-            world.entities.get(key).unwrap().state.frame,
-            FRAME_STAND101 + 5
-        );
+        assert_eq!(world.entities.get(key).unwrap().state.frame, start + 5);
     }
 
     // -- callbacks ----------------------------------------------------------
