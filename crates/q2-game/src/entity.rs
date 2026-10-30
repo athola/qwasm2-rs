@@ -589,7 +589,11 @@ impl EntityStorage {
         }
     }
 
-    /// Remove an entity outright and release its number.
+    /// Remove an entity outright and release its number: a test helper for
+    /// a key that no longer names anything. C has no counterpart (G_FreeEdict
+    /// is `soft_free`), and lowering `num_edicts` here would break what
+    /// `GameExport` promises the server.
+    #[cfg(test)]
     pub fn free(&mut self, key: EntityKey) {
         if let Some(ent) = self.entities.remove(key) {
             if let Some(slot) = usize::try_from(ent.state.number)
