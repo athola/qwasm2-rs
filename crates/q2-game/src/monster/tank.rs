@@ -776,7 +776,7 @@ pub fn tank_rocket(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// One bullet of the chaingun sweep: pitched at the enemy, yawed 8
-/// degrees a frame from right to left and back. C ref: `TankMachineGun`.
+/// degrees a frame from left to right and back. C ref: `TankMachineGun`.
 pub fn tank_machine_gun(world: &mut GameWorld, key: EntityKey) {
     let frame = frame_of(world, key);
     let flash = MZ2_TANK_MACHINEGUN_1 + (frame - FRAME_ATTAK406);
@@ -1344,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn tank_spawns_with_c_health_box_callbacks_and_starts_walking() {
+    fn tank_spawns_with_c_health_box_callbacks_and_stands() {
         let (world, _, key) = tank();
         let ent = world.entities.get(key).unwrap();
         assert_eq!(
@@ -1746,6 +1746,68 @@ mod tests {
         }
         let want: Vec<i32> = (MZ2_TANK_MACHINEGUN_1..MZ2_TANK_MACHINEGUN_1 + 19).collect();
         assert_eq!(muzzle_flashes(&gi), want);
+    }
+
+    /// A tank at (0, 0, 24) facing +x on attak406 (yaw + 40), with a
+    /// player at (300, 0, `player_z`) as its enemy.
+    fn tank_in_arena(player_z: f32) -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
+        let (mut world, gi, player) = player_arena(300.0);
+        world.entities.get_mut(player).unwrap().state.origin.z = player_z;
+        world.link_entity(player);
+        let key = world.spawn().unwrap();
+        sp_monster_tank(&mut world.entities, key, &HashMap::new());
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(0.0, 0.0, 24.0);
+        ent.state.frame = FRAME_ATTAK406;
+        ent.game.enemy = Some(player);
+        world.link_entity(key);
+        (world, gi, key, player)
+    }
+
+    /// Put the trace target 100 units along `(pitch, yaw)` from the
+    /// muzzle, fire one chaingun bullet and return the player's damage.
+    fn chaingun_damage_along(
+        world: &mut GameWorld,
+        gi: &ArenaImport,
+        key: EntityKey,
+        player: EntityKey,
+        pitch: f32,
+    ) -> i32 {
+        let flash = MZ2_TANK_MACHINEGUN_1;
+        let (start, _, _) = monster_flash_source(world, key, flash).unwrap();
+        let (forward, _, _) = crate::physics::angle_vectors(Vec3f::new(pitch, 40.0, 0.0));
+        gi.target_at(
+            start + forward * 100.0,
+            8.0,
+            world.number_of(player).unwrap(),
+        );
+        let before = world.entities.get(player).unwrap().game.health;
+        tank_machine_gun(world, key);
+        before - world.entities.get(player).unwrap().game.health
+    }
+
+    #[test]
+    fn tank_machine_gun_pitches_at_the_enemys_eye_for_20_damage() {
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        let (start, _, _) = monster_flash_source(&world, key, MZ2_TANK_MACHINEGUN_1).unwrap();
+        let p = world.entities.get(player).unwrap();
+        let eye = p.state.origin + Vec3f::new(0.0, 0.0, p.game.viewheight);
+        let pitch = crate::weapons::vectoangles(eye - start).x;
+        assert!(pitch < 0.0, "the enemy is above: negative pitch looks up");
+        assert_eq!(
+            chaingun_damage_along(&mut world, &gi, key, player, pitch),
+            20
+        );
+        // The same bullet fired level would miss a box on the pitched line.
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        assert_eq!(chaingun_damage_along(&mut world, &gi, key, player, 0.0), 0);
+    }
+
+    #[test]
+    fn tank_machine_gun_without_an_enemy_fires_level() {
+        let (mut world, gi, key, player) = tank_in_arena(224.0);
+        world.entities.get_mut(key).unwrap().game.enemy = None;
+        assert_eq!(chaingun_damage_along(&mut world, &gi, key, player, 0.0), 20);
     }
 
     #[test]

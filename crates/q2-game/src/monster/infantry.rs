@@ -484,8 +484,9 @@ pub fn infantry_pain(
 // Attacks
 // ---------------------------------------------------------------------------
 
-/// How far (pitch, yaw) below and right of its facing each dying burst
-/// fires, frame by frame from `FRAME_death211`. C ref: `aimangles`.
+/// How far (pitch, yaw) above and right of its facing each dying burst
+/// fires, frame by frame from `FRAME_death211`: C subtracts them from
+/// `s.angles`, and a negative pitch looks up. C ref: `aimangles`.
 const AIMANGLES: [[f32; 3]; 12] = [
     [0.0, 5.0, 0.0],
     [10.0, 15.0, 0.0],
@@ -554,12 +555,17 @@ pub fn infantry_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) 
 }
 
 /// The corpse box, then the flies. C ref: `infantry_dead`.
+/// Unlike `ai::monster_dead` it leaves `nextthink` alone, so a failed
+/// fly check is retried on the next frame.
 pub fn infantry_dead(world: &mut GameWorld, key: EntityKey) {
-    if let Some(ent) = world.entities.get_mut(key) {
-        ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
-        ent.maxs = Vec3f::new(16.0, 16.0, -8.0);
-    }
-    ai::monster_dead(world, key);
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
+    ent.maxs = Vec3f::new(16.0, 16.0, -8.0);
+    ent.game.movetype = MoveType::Toss;
+    ent.svflags |= SvFlags::DEADMONSTER.bits();
+    world.link_entity(key);
     ai::m_fly_check(world, key);
 }
 
@@ -1237,7 +1243,7 @@ mod tests {
 
     #[test]
     fn infantry_dying_machine_gun_sweeps_by_the_c_aim_angles() {
-        // death216 fires flash MACHINEGUN_7, 30 down and 45 right of ahead.
+        // death216 fires flash MACHINEGUN_7, 30 up and 45 right of ahead.
         let (mut world, gi, key, player) = in_arena(200.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
         world.entities.get_mut(key).unwrap().state.frame = FRAME_DEATH211 + 5;
@@ -1295,6 +1301,35 @@ mod tests {
         assert_eq!(ent.game.movetype, MoveType::Toss);
         assert_ne!(ent.svflags & SvFlags::DEADMONSTER.bits(), 0);
         assert!(ent
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, ai::m_flies_on as ThinkFn)));
+    }
+
+    #[test]
+    fn infantry_dead_keeps_thinking_when_the_fly_check_fails() {
+        // C infantry_dead never touches nextthink, so a failed M_FlyCheck
+        // is retried on the next frame of the death move.
+        let (mut world, _, key, _) = duel(300.0);
+        world.level.time = 2.0;
+        world.entities.get_mut(key).unwrap().game.nextthink = 2.1;
+        seed(&mut world, |w| w.random() > 0.5);
+        infantry_dead(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.movetype, MoveType::Toss);
+        assert_eq!(ent.game.nextthink, 2.1);
+    }
+
+    #[test]
+    fn infantry_dead_in_water_gets_no_flies_but_keeps_thinking() {
+        let (mut world, _, key, _) = duel(300.0);
+        world.level.time = 2.0;
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.nextthink = 2.1;
+        ent.game.waterlevel = 1;
+        infantry_dead(&mut world, key);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.nextthink, 2.1);
+        assert!(!ent
             .think
             .is_some_and(|t| std::ptr::fn_addr_eq(t, ai::m_flies_on as ThinkFn)));
     }

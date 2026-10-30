@@ -840,7 +840,8 @@ pub fn soldier_run(world: &mut GameWorld, key: EntityKey) {
 // ---------------------------------------------------------------------------
 
 /// Bloody skin below half health; a hit while flying up knocks the
-/// soldier over (pain4), even during the debounce. C ref: `soldier_pain`.
+/// soldier over (pain4), and during the debounce does so only while it
+/// is already in pain1-3. C ref: `soldier_pain`.
 pub fn soldier_pain(
     world: &mut GameWorld,
     key: EntityKey,
@@ -886,7 +887,7 @@ pub fn soldier_pain(
         set_move(world, key, &SOLDIER_MOVE_PAIN4);
         return;
     }
-    if skill == crate::constants::SKILL_HARDPLUS {
+    if skill == SKILL_HARDPLUS {
         return; // no pain anims in nightmare
     }
     let r = world.random();
@@ -942,7 +943,9 @@ const MACHINEGUN_FLASH: [i32; 8] = [
 /// and 6). The machinegun holds the frame for 3-10 frames of fire.
 /// C ref: `soldier_fire`. C dereferences `self->enemy` for aimed shots;
 /// without one there is nothing to aim at, so nothing fires.
-pub fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
+/// Private: only this file's `soldier_fireN` wrappers call it, with
+/// flash numbers 0-7, the length of the flash tables.
+fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
     let skin = skinnum(world, key);
     let flash_index = if skin < 2 {
         BLASTER_FLASH[flash_number]
@@ -1024,7 +1027,7 @@ pub fn soldier_fire1(world: &mut GameWorld, key: EntityKey) {
 /// Fire again on nightmare half the time, or always at melee range.
 /// The C refire tests in order, so `random()` is only drawn on nightmare.
 fn refire(world: &mut GameWorld, key: EntityKey, enemy: EntityKey) -> bool {
-    (world.game.skill == crate::constants::SKILL_HARDPLUS && world.random() < 0.5)
+    (world.game.skill == SKILL_HARDPLUS && world.random() < 0.5)
         || ai::range(world, key, enemy) == Range::Melee
 }
 
@@ -1159,7 +1162,7 @@ pub fn soldier_attack6_refire(world: &mut GameWorld, key: EntityKey) {
     if (ai::range(world, key, enemy) as i32) < Range::Mid as i32 {
         return;
     }
-    if world.game.skill == crate::constants::SKILL_HARDPLUS {
+    if world.game.skill == SKILL_HARDPLUS {
         set_nextframe(world, key, FRAME_RUNS03);
     }
 }
@@ -1188,10 +1191,12 @@ pub fn soldier_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
     };
     sound(world, key, CHAN_VOICE, shout, ATTN_NORM);
 
+    // C calls range(self, self->enemy) unchecked; with no enemy there
+    // is nothing to range, so the port only shouts.
     let Some(enemy) = world.entities.get(key).and_then(|e| e.game.enemy) else {
         return;
     };
-    if world.game.skill > crate::constants::SKILL_EASY
+    if world.game.skill > SKILL_EASY
         && ai::range(world, key, enemy) as i32 >= Range::Mid as i32
         && world.random() > 0.5
     {
@@ -1226,7 +1231,7 @@ pub fn soldier_dodge(world: &mut GameWorld, key: EntityKey, attacker: EntityKey,
     }
 
     let skill = world.game.skill;
-    if skill == crate::constants::SKILL_EASY {
+    if skill == SKILL_EASY {
         set_move(world, key, &SOLDIER_MOVE_DUCK);
         return;
     }
@@ -1238,7 +1243,7 @@ pub fn soldier_dodge(world: &mut GameWorld, key: EntityKey, attacker: EntityKey,
     let r = world.random();
     let duck_above = if skill == SKILL_MEDIUM {
         Some(0.33)
-    } else if skill >= crate::constants::SKILL_HARD {
+    } else if skill >= SKILL_HARD {
         Some(0.66)
     } else {
         None
@@ -2257,7 +2262,7 @@ mod tests {
     #[test]
     fn soldier_pain_flung_upward_falls_over_even_on_nightmare() {
         let (mut world, _, key, enemy) = duel(2, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         world.entities.get_mut(key).unwrap().velocity.z = 101.0;
         soldier_pain(&mut world, key, enemy, 0.0, 5);
         assert!(is(&world, key, &SOLDIER_MOVE_PAIN4));
@@ -2266,7 +2271,7 @@ mod tests {
     #[test]
     fn soldier_pain_on_nightmare_only_cries_out() {
         let (mut world, gi, key, enemy) = duel(2, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_pain(&mut world, key, enemy, 0.0, 5);
         assert!(is(&world, key, &SOLDIER_MOVE_STAND1));
         assert_eq!(sounds(&gi), [voice(SOUND_PAIN)]);
@@ -2344,6 +2349,36 @@ mod tests {
     }
 
     #[test]
+    fn soldier_fire_picks_the_skins_muzzle_flash_by_flash_number() {
+        // C soldier_fire: blaster_flash / shotgun_flash / machinegun_flash
+        // by skin, indexed by the caller's flash number.
+        for (skin, shot, flash) in [
+            (0, soldier_fire1 as ThinkFn, MZ2_SOLDIER_BLASTER_1),
+            (1, soldier_fire6, MZ2_SOLDIER_BLASTER_6),
+            (2, soldier_fire3, MZ2_SOLDIER_SHOTGUN_3),
+            (3, soldier_fire2, MZ2_SOLDIER_SHOTGUN_2),
+            (4, soldier_fire8, MZ2_SOLDIER_MACHINEGUN_8),
+            (5, soldier_fire7, MZ2_SOLDIER_MACHINEGUN_7),
+        ] {
+            let (mut world, gi) = crate::misc::wire::wire_world();
+            let key = world.spawn().unwrap();
+            sp_monster_soldier(&mut world.entities, key, &HashMap::new());
+            let enemy = world.spawn().unwrap();
+            world.entities.get_mut(enemy).unwrap().state.origin = Vec3f::new(300.0, 0.0, 0.0);
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.state.skinnum = skin;
+            ent.game.enemy = Some(enemy);
+            shot(&mut world, key);
+            let wire = gi.wire.borrow();
+            assert_eq!(
+                wire[wire.len() - 2],
+                crate::misc::wire::Wire::Byte(flash),
+                "skin {skin}"
+            );
+        }
+    }
+
+    #[test]
     fn soldier_aimed_shot_without_an_enemy_fires_nothing() {
         let (mut world, _, key, _) = duel(0, 300.0);
         world.entities.get_mut(key).unwrap().game.enemy = None;
@@ -2389,7 +2424,7 @@ mod tests {
         ] {
             for (lo, hi, want) in [(0.0, 0.5, again), (0.5, 1.01, end)] {
                 let (mut world, _, key, _) = duel(0, 300.0);
-                world.game.skill = crate::constants::SKILL_HARDPLUS;
+                world.game.skill = SKILL_HARDPLUS;
                 seed(&mut world, |w| (lo..hi).contains(&w.random()));
                 refire1(&mut world, key);
                 assert_eq!(nextframe(&world, key), want);
@@ -2426,7 +2461,7 @@ mod tests {
             assert_eq!(nextframe(&world, key), 0);
 
             let (mut world, _, key, _) = duel(2, 300.0);
-            world.game.skill = crate::constants::SKILL_HARDPLUS;
+            world.game.skill = SKILL_HARDPLUS;
             seed(&mut world, |w| w.random() < 0.5);
             refire2(&mut world, key);
             assert_eq!(nextframe(&world, key), again, "nightmare");
@@ -2505,22 +2540,22 @@ mod tests {
     #[test]
     fn soldier_attack6_refire_on_nightmare_runs_and_shoots_again_at_mid_range() {
         let (mut world, _, key, _) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), FRAME_RUNS03);
 
         let (mut world, _, key, _) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARD;
+        world.game.skill = SKILL_HARD;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "hard");
 
         let (mut world, _, key, _) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "near");
 
         let (mut world, _, key, enemy) = duel(0, 600.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         world.entities.get_mut(enemy).unwrap().game.health = 0;
         soldier_attack6_refire(&mut world, key);
         assert_eq!(nextframe(&world, key), 0, "dead enemy");
@@ -2548,7 +2583,7 @@ mod tests {
     fn soldier_sight_shouts_one_of_two_lines() {
         for (lo, hi, name) in [(0.0, 0.5, SOUND_SIGHT1), (0.5, 1.01, SOUND_SIGHT2)] {
             let (mut world, gi, key, enemy) = duel(0, 600.0);
-            world.game.skill = crate::constants::SKILL_EASY;
+            world.game.skill = SKILL_EASY;
             seed(&mut world, |w| (lo..hi).contains(&w.random()));
             soldier_sight(&mut world, key, enemy);
             assert_eq!(sounds(&gi), [voice(name)]);
@@ -2577,7 +2612,7 @@ mod tests {
         assert!(is(&world, key, &SOLDIER_MOVE_STAND1));
 
         let (mut world, _, key, enemy) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_HARDPLUS;
+        world.game.skill = SKILL_HARDPLUS;
         seed(&mut world, |w| {
             w.random();
             w.random() > 0.5
@@ -2600,7 +2635,7 @@ mod tests {
     #[test]
     fn soldier_dodge_on_easy_ducks_and_turns_on_an_unseen_attacker() {
         let (mut world, _, key, enemy) = duel(0, 300.0);
-        world.game.skill = crate::constants::SKILL_EASY;
+        world.game.skill = SKILL_EASY;
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() <= 0.25);
         soldier_dodge(&mut world, key, enemy, 0.5);

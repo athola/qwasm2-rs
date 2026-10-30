@@ -626,8 +626,8 @@ pub fn insane_cross(world: &mut GameWorld, key: EntityKey) {
     set_move(world, key, mv);
 }
 
-/// A crawler that stands its ground lies down after crawl pain; others
-/// crawl, or walk one of two ways. C ref: `insane_walk`.
+/// One that stands its ground lies down after crawl pain; others crawl,
+/// or walk one of two ways. C ref: `insane_walk`.
 pub fn insane_walk(world: &mut GameWorld, key: EntityKey) {
     let flags = spawnflags(world, key);
     if flags & SPAWNFLAG_STAND_GROUND != 0 && frame_of(world, key) == FRAME_CR_PAIN10 {
@@ -896,6 +896,11 @@ pub fn sp_monster_insane(
 
 /// The `GameWorld` half of C `SP_misc_insane`: precache the sounds, and a
 /// random one of three skins for a walker.
+///
+/// C sets the skin after walkmonster_start because C monster_start
+/// resets `s.skinnum` to 0. This finish runs before `call_spawn`'s
+/// `monster_start`, so it relies on the Rust `monster_start` not porting
+/// that reset; porting it would give every insane skin 0.
 pub fn insane_finish(world: &mut GameWorld, key: EntityKey, _fields: &HashMap<String, String>) {
     for name in [SOUND_FIST, SOUND_SHAKE, SOUND_MOAN]
         .iter()

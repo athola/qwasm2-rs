@@ -97,59 +97,7 @@ const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> Mo
     }
 }
 
-static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-];
+static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [frame(ai::ai_stand, 0.0, None); 51];
 
 static MUTANT_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
@@ -320,17 +268,7 @@ static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
     endfunc: Some(mutant_run),
 };
 
-static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [frame(ai::ai_move, 0.0, None); 9];
 
 static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
@@ -339,18 +277,7 @@ static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     endfunc: Some(mutant_dead),
 };
 
-static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [frame(ai::ai_move, 0.0, None); 10];
 
 static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
@@ -435,6 +362,7 @@ pub fn mutant_search(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SEARCH, ATTN_NORM);
 }
 
+/// Defined but unused in C too: no mutant frame calls it.
 /// C ref: `mutant_swing`.
 pub fn mutant_swing(world: &mut GameWorld, key: EntityKey) {
     sound(world, key, CHAN_VOICE, SOUND_SWING, ATTN_NORM);
@@ -477,9 +405,10 @@ pub fn mutant_run(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// A claw for 10 to 14 from the `right` side of the box.
-fn mutant_hit(world: &mut GameWorld, key: EntityKey, right: f32, hit_sound: &str) {
-    let aim = Vec3f::new(ai::MELEE_DISTANCE, right, 8.0);
+/// A claw for 10 to 14, `side` along the right axis: `mins.x` (negative)
+/// for the left claw, `maxs.x` for the right.
+fn mutant_hit(world: &mut GameWorld, key: EntityKey, side: f32, hit_sound: &str) {
+    let aim = Vec3f::new(ai::MELEE_DISTANCE, side, 8.0);
     let damage = 10 + (world.random_u32() % 5) as i32;
     if world.fire_hit(key, aim, damage, 100) {
         sound(world, key, CHAN_WEAPON, hit_sound, ATTN_NORM);

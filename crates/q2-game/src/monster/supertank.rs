@@ -1108,6 +1108,21 @@ mod tests {
     }
 
     #[test]
+    fn supertank_pain_on_hard_spares_the_volley_from_its_first_frame_only() {
+        let (mut world, _, key) = supertank();
+        world.game.skill = crate::constants::SKILL_HARD;
+        set_frame(&mut world, key, FRAME_ATTAK2_1);
+        pain(&mut world, key, 100, 0.5);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            0.0
+        );
+        set_frame(&mut world, key, FRAME_ATTAK2_1 - 1);
+        pain(&mut world, key, 100, 0.5);
+        assert!(playing(&world, key, &SUPERTANK_MOVE_PAIN3));
+    }
+
+    #[test]
     fn supertank_attack_uses_the_gun_close_and_mostly_rockets_far() {
         for (range, roll, mv) in [
             (160.0, 0.9, &SUPERTANK_MOVE_ATTACK1),
@@ -1151,6 +1166,62 @@ mod tests {
         }
         let want: Vec<i32> = (MZ2_SUPERTANK_MACHINEGUN_1..MZ2_SUPERTANK_MACHINEGUN_1 + 6).collect();
         assert_eq!(muzzle_flashes(&gi), want);
+    }
+
+    /// A supertank at (0, 0, 24) facing +x but pitched 20 degrees, on
+    /// attak1_1, with a player at (300, 0, 24) as its enemy.
+    fn pitched_supertank() -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
+        let (mut world, gi, player) = player_arena(300.0);
+        let key = world.spawn().unwrap();
+        sp_monster_supertank(&mut world.entities, key, &HashMap::new());
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(0.0, 0.0, 24.0);
+        ent.state.angles = Vec3f::new(20.0, 0.0, 0.0);
+        ent.state.frame = FRAME_ATTAK1_1;
+        ent.game.enemy = Some(player);
+        world.link_entity(key);
+        (world, gi, key, player)
+    }
+
+    /// C projects flash offset (30, 30, 88.5) from (0, yaw, 0), ignoring
+    /// the pitch: forward +x, right -y.
+    const YAW_ONLY_START: Vec3f = Vec3f::new(30.0, -30.0, 112.5);
+
+    fn gun_damage_with_target_at(
+        world: &mut GameWorld,
+        gi: &ArenaImport,
+        key: EntityKey,
+        player: EntityKey,
+        at: Vec3f,
+    ) -> i32 {
+        gi.target_at(at, 4.0, world.number_of(player).unwrap());
+        let before = world.entities.get(player).unwrap().game.health;
+        supertank_machine_gun(world, key);
+        before - world.entities.get(player).unwrap().game.health
+    }
+
+    #[test]
+    fn supertank_machine_gun_fires_from_the_yaw_only_muzzle_at_the_eye_for_6() {
+        let (mut world, gi, key, player) = pitched_supertank();
+        let p = world.entities.get(player).unwrap();
+        let eye = p.state.origin + Vec3f::new(0.0, 0.0, p.game.viewheight);
+        // Close to the muzzle, where a pitched start would pass well clear.
+        let at = YAW_ONLY_START + (eye - YAW_ONLY_START).normalize() * 20.0;
+        assert_eq!(
+            gun_damage_with_target_at(&mut world, &gi, key, player, at),
+            6
+        );
+    }
+
+    #[test]
+    fn supertank_machine_gun_without_an_enemy_fires_level_ahead() {
+        let (mut world, gi, key, player) = pitched_supertank();
+        world.entities.get_mut(key).unwrap().game.enemy = None;
+        let at = YAW_ONLY_START + Vec3f::X * 20.0;
+        assert_eq!(
+            gun_damage_with_target_at(&mut world, &gi, key, player, at),
+            6
+        );
     }
 
     #[test]

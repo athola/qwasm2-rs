@@ -21,6 +21,21 @@ use crate::monster::fire::monster_fire_blaster;
 use crate::monster::flash::{monster_flash_source, project_source};
 use crate::world::GameWorld;
 
+// C's sound_* names, one per file, shared by the call sites and
+// medic_precache.
+const SOUND_IDLE: &str = "medic/idle.wav";
+const SOUND_PAIN1: &str = "medic/medpain1.wav";
+const SOUND_PAIN2: &str = "medic/medpain2.wav";
+const SOUND_DIE: &str = "medic/meddeth1.wav";
+const SOUND_SIGHT: &str = "medic/medsght1.wav";
+const SOUND_SEARCH: &str = "medic/medsrch1.wav";
+const SOUND_HOOK_LAUNCH: &str = "medic/medatck2.wav";
+const SOUND_HOOK_HIT: &str = "medic/medatck3.wav";
+const SOUND_HOOK_HEAL: &str = "medic/medatck4.wav";
+const SOUND_HOOK_RETRACT: &str = "medic/medatck5.wav";
+/// C precaches it but plays it nowhere.
+const SOUND_ATTACK1: &str = "medic/medatck1.wav";
+
 /// C medic.h `MODEL_SCALE`.
 const MODEL_SCALE: f32 = 1.0;
 /// How far the medic looks for a patient (C `findradius(..., 1024)`).
@@ -472,7 +487,7 @@ fn take_patient(world: &mut GameWorld, key: EntityKey, patient: EntityKey, keep_
 
 /// C ref: `medic_idle`.
 pub fn medic_idle(world: &mut GameWorld, key: EntityKey) {
-    sound(world, key, CHAN_VOICE, "medic/idle.wav", ATTN_IDLE);
+    sound(world, key, CHAN_VOICE, SOUND_IDLE, ATTN_IDLE);
     if let Some(patient) = medic_find_dead_monster(world, key) {
         take_patient(world, key, patient, false);
     }
@@ -480,7 +495,7 @@ pub fn medic_idle(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `medic_search`.
 pub fn medic_search(world: &mut GameWorld, key: EntityKey) {
-    sound(world, key, CHAN_VOICE, "medic/medsrch1.wav", ATTN_IDLE);
+    sound(world, key, CHAN_VOICE, SOUND_SEARCH, ATTN_IDLE);
     if world
         .entities
         .get(key)
@@ -494,7 +509,7 @@ pub fn medic_search(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `medic_sight`.
 pub fn medic_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
-    sound(world, key, CHAN_VOICE, "medic/medsght1.wav", ATTN_NORM);
+    sound(world, key, CHAN_VOICE, SOUND_SIGHT, ATTN_NORM);
 }
 
 // ---------------------------------------------------------------------------
@@ -551,9 +566,9 @@ pub fn medic_pain(
         return; // no pain anims in nightmare
     }
     let (next, name) = if world.random() < 0.5 {
-        (&MEDIC_MOVE_PAIN1, "medic/medpain1.wav")
+        (&MEDIC_MOVE_PAIN1, SOUND_PAIN1)
     } else {
-        (&MEDIC_MOVE_PAIN2, "medic/medpain2.wav")
+        (&MEDIC_MOVE_PAIN2, SOUND_PAIN2)
     };
     set_move(world, key, next);
     sound(world, key, CHAN_VOICE, name, ATTN_NORM);
@@ -670,7 +685,7 @@ pub fn medic_die(
     if ent.game.deadflag == DeadFlag::Dead {
         return;
     }
-    sound(world, key, CHAN_VOICE, "medic/meddeth1.wav", ATTN_NORM);
+    sound(world, key, CHAN_VOICE, SOUND_DIE, ATTN_NORM);
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.deadflag = DeadFlag::Dead;
         ent.game.takedamage = TakeDamage::Yes;
@@ -745,7 +760,7 @@ pub fn medic_dodge(world: &mut GameWorld, key: EntityKey, attacker: EntityKey, _
 
 /// C ref: `medic_hook_launch`.
 pub fn medic_hook_launch(world: &mut GameWorld, key: EntityKey) {
-    sound(world, key, CHAN_WEAPON, "medic/medatck2.wav", ATTN_NORM);
+    sound(world, key, CHAN_WEAPON, SOUND_HOOK_LAUNCH, ATTN_NORM);
 }
 
 /// C `ED_CallSpawn(ent)` on a corpse. The `st.item` drop is not re-read,
@@ -843,14 +858,14 @@ pub fn medic_cable_attack(world: &mut GameWorld, key: EntityKey) {
     }
 
     if frame == FRAME_ATTACK43 {
-        sound(world, patient, CHAN_AUTO, "medic/medatck3.wav", ATTN_NORM);
+        sound(world, patient, CHAN_AUTO, SOUND_HOOK_HIT, ATTN_NORM);
         if let Some(mi) = mi_mut(world, patient) {
             mi.aiflags |= AiFlags::RESURRECTING;
         }
     } else if frame == FRAME_ATTACK50 {
         resurrect(world, key, patient);
     } else if frame == FRAME_ATTACK44 {
-        sound(world, key, CHAN_WEAPON, "medic/medatck4.wav", ATTN_NORM);
+        sound(world, key, CHAN_WEAPON, SOUND_HOOK_HEAL, ATTN_NORM);
     }
 
     // The beam starts mid-segment and ends mid-body, as the patient is
@@ -877,7 +892,7 @@ pub fn medic_cable_attack(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `medic_hook_retract`.
 pub fn medic_hook_retract(world: &mut GameWorld, key: EntityKey) {
-    sound(world, key, CHAN_WEAPON, "medic/medatck5.wav", ATTN_NORM);
+    sound(world, key, CHAN_WEAPON, SOUND_HOOK_RETRACT, ATTN_NORM);
     if let Some(patient) = enemy_of(world, key) {
         if let Some(mi) = mi_mut(world, patient) {
             mi.aiflags.remove(AiFlags::RESURRECTING);
@@ -952,17 +967,17 @@ pub fn sp_monster_medic(
 /// The sounds `SP_monster_medic` indexes.
 pub fn medic_precache(world: &mut GameWorld, _key: EntityKey, _fields: &HashMap<String, String>) {
     for name in [
-        "medic/idle.wav",
-        "medic/medpain1.wav",
-        "medic/medpain2.wav",
-        "medic/meddeth1.wav",
-        "medic/medsght1.wav",
-        "medic/medsrch1.wav",
-        "medic/medatck2.wav",
-        "medic/medatck3.wav",
-        "medic/medatck4.wav",
-        "medic/medatck5.wav",
-        "medic/medatck1.wav",
+        SOUND_IDLE,
+        SOUND_PAIN1,
+        SOUND_PAIN2,
+        SOUND_DIE,
+        SOUND_SIGHT,
+        SOUND_SEARCH,
+        SOUND_HOOK_LAUNCH,
+        SOUND_HOOK_HIT,
+        SOUND_HOOK_HEAL,
+        SOUND_HOOK_RETRACT,
+        SOUND_ATTACK1,
     ] {
         world.gi.sound_index(name);
     }
@@ -993,8 +1008,8 @@ mod tests {
         world.entities.get_mut(key).unwrap().state.frame = frame;
     }
 
-    /// A finished-dying soldier corpse at `at` with `max_health`, as
-    /// `soldier_die` and `monster_dead` leave it.
+    /// A finished-dying tank corpse at `at` with `max_health`, as
+    /// `tank_die` and `tank_dead` leave it.
     fn corpse(world: &mut GameWorld, at: Vec3f, max_health: i32) -> EntityKey {
         let key = world.spawn().unwrap();
         crate::monster::tank::sp_monster_tank(&mut world.entities, key, &HashMap::new());

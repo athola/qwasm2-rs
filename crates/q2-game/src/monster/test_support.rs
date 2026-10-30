@@ -32,11 +32,27 @@ pub struct FloorImport {
     pub wall_x: Option<f32>,
     /// Contents of the liquid filling the world below `water.0`, if set.
     pub water: Option<(f32, i32)>,
+    /// `(x, z)`: the floor is at height z (a stair up, or a ledge down)
+    /// at and beyond x, if set.
+    pub step: Option<(f32, f32)>,
+    /// Solid above this height, if set.
+    pub ceiling: Option<f32>,
 }
 
 impl FloorImport {
     fn solid(&self, p: Vec3f) -> bool {
-        p.z < 0.0 || self.wall_x.is_some_and(|w| p.x >= w)
+        p.z < self.floor_under(p.x, p.x)
+            || self.wall_x.is_some_and(|w| p.x >= w)
+            || self.ceiling.is_some_and(|c| p.z > c)
+    }
+
+    /// The highest floor under the x span `lo..=hi`.
+    fn floor_under(&self, lo: f32, hi: f32) -> f32 {
+        match self.step {
+            Some((x, z)) if lo >= x => z,
+            Some((x, z)) if hi >= x => z.max(0.0),
+            _ => 0.0,
+        }
     }
 }
 
@@ -83,9 +99,14 @@ impl GameImport for FloorImport {
         _pass_ent: Option<usize>,
         _content_mask: i32,
     ) -> Trace {
-        let start_solid =
-            start.z + mins.z < 0.0 || self.wall_x.is_some_and(|w| start.x + maxs.x > w);
-        if start_solid {
+        let floor = |p: Vec3f| self.floor_under(p.x + mins.x, p.x + maxs.x);
+        let in_ceiling = |p: Vec3f| self.ceiling.is_some_and(|c| p.z + maxs.z > c);
+        let in_floor_or_wall =
+            |p: Vec3f| p.z + mins.z < floor(p) || self.wall_x.is_some_and(|w| p.x + maxs.x > w);
+        // Only the ceiling can be traced out of, as C's startsolid without
+        // allsolid.
+        let startsolid = in_ceiling(start) || in_floor_or_wall(start);
+        if in_floor_or_wall(start) || (in_ceiling(start) && in_ceiling(end)) {
             return Trace {
                 allsolid: true,
                 startsolid: true,
@@ -96,9 +117,17 @@ impl GameImport for FloorImport {
             };
         }
         let (mut fraction, mut normal) = (1.0_f32, Vec3f::ZERO);
-        if end.z + mins.z < 0.0 {
-            fraction = (start.z + mins.z) / (start.z - end.z);
+        let floor_end = floor(end);
+        if end.z + mins.z < floor_end {
             normal = Vec3f::Z;
+            fraction = match self.step {
+                // Level into a stair: stop at its face.
+                Some((x, _)) if start.z <= end.z => {
+                    normal = Vec3f::NEG_X;
+                    ((x - (start.x + maxs.x)) / (end.x - start.x)).max(0.0)
+                }
+                _ => (start.z + mins.z - floor_end) / (start.z - end.z),
+            };
         }
         if let Some(w) = self.wall_x.filter(|&w| end.x + maxs.x > w) {
             let wall = (w - (start.x + maxs.x)) / (end.x - start.x);
@@ -115,6 +144,7 @@ impl GameImport for FloorImport {
                 ..Plane::default()
             },
             ent_index: (fraction < 1.0).then_some(0),
+            startsolid,
             ..Trace::default()
         }
     }
@@ -775,13 +805,20 @@ pub fn seed(world: &mut GameWorld, rolls: impl Fn(&mut GameWorld) -> bool) {
 
 /// Seed the random sequence so the next `random()` satisfies `want`.
 pub fn seed_random(world: &mut GameWorld, want: impl Fn(f32) -> bool) {
-    let seed = (0..)
+    let seed = (0..100_000)
         .find(|&seed| {
             world.level.rand_state = seed;
             want(world.random())
         })
-        .unwrap();
+        .expect("no seed gives that roll");
     world.level.rand_state = seed;
+}
+
+#[test]
+#[should_panic(expected = "no seed gives that roll")]
+fn seed_random_fails_on_a_roll_no_seed_gives() {
+    let mut world = crate::world::test_world();
+    seed_random(&mut world, |r| r > 1.0);
 }
 
 // ---------------------------------------------------------------------------
