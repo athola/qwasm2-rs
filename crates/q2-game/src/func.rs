@@ -2546,12 +2546,15 @@ pub(crate) fn finish_button(
     }
 }
 
-/// A targeted door without health centerprints its message when touched.
-/// C ref: the `else if (ent->targetname && ent->message)` branch of
-/// SP_func_door, SP_func_door_rotating and SP_func_door_secret.
+/// A targeted door centerprints its message when touched: without
+/// health for func_door and func_door_secret (C `else if`), with or
+/// without for func_door_rotating (C `if`).
+/// C ref: SP_func_door, SP_func_door_rotating and SP_func_door_secret.
 fn finish_door_message(world: &mut GameWorld, key: EntityKey) {
     let has_touch = world.entities.get(key).is_some_and(|e| {
-        e.game.health == 0 && !e.game.targetname.is_empty() && !e.game.message.is_empty()
+        (e.game.health == 0 || e.game.classname == "func_door_rotating")
+            && !e.game.targetname.is_empty()
+            && !e.game.message.is_empty()
     });
     if has_touch {
         world.gi.sound_index("misc/talk.wav");
@@ -4574,12 +4577,22 @@ mod tests {
     }
 
     #[test]
-    fn only_a_targeted_door_without_health_gets_a_message_touch() {
-        for keys in [
-            "\"targetname\" \"d\" \"message\" \"m\" \"health\" \"10\"",
-            "\"message\" \"m\"",
-            "\"targetname\" \"d\"",
-        ] {
+    fn targeted_doors_get_a_message_touch_as_c_decides() {
+        // func_door and func_door_secret use `else if`, so a shootable door
+        // gets no message touch; SP_func_door_rotating a plain `if`.
+        let shootable = "\"targetname\" \"d\" \"message\" \"m\" \"health\" \"10\"";
+        let world = spawned(&format!(
+            "{{ \"classname\" \"func_door\" \"model\" \"*1\" {shootable} }}"
+        ));
+        let touch = world
+            .entities
+            .get(by_class(&world, "func_door"))
+            .unwrap()
+            .touch;
+        assert!(
+            touch.is_none_or(|t| !std::ptr::fn_addr_eq(t, door_touch as crate::entity::TouchFn))
+        );
+        for keys in ["\"message\" \"m\"", "\"targetname\" \"d\""] {
             for class in ["func_door", "func_door_rotating"] {
                 let world = spawned(&format!(
                     "{{ \"classname\" \"{class}\" \"model\" \"*1\" {keys} }}"
@@ -4595,16 +4608,20 @@ mod tests {
                 );
             }
         }
-        for class in ["func_door_rotating", "func_door_secret"] {
+        for (class, health) in [
+            ("func_door_rotating", ""),
+            ("func_door_rotating", "\"health\" \"10\""),
+            ("func_door_secret", ""),
+        ] {
             let world = spawned(&format!(
-                "{{ \"classname\" \"{class}\" \"model\" \"*1\" \"targetname\" \"d\" \"message\" \"m\" }}"
+                "{{ \"classname\" \"{class}\" \"model\" \"*1\" \"targetname\" \"d\" \"message\" \"m\" {health} }}"
             ));
             let door = world.find_by_targetname(None, "d").unwrap();
             let touch = world.entities.get(door).unwrap().touch;
             assert!(
                 touch
                     .is_some_and(|t| std::ptr::fn_addr_eq(t, door_touch as crate::entity::TouchFn)),
-                "{class}"
+                "{class} {health}"
             );
         }
     }
