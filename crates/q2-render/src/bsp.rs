@@ -347,6 +347,8 @@ impl BspData {
         let drop = |msg: String| Err(Q2Error::Drop(msg));
         let in_range = |index: i64, len: usize| (0..len as i64).contains(&index);
         for face in &self.faces {
+            // Unsigned here: C's LittleShort sign-extends, so it also
+            // rejects planenum >= 32768 on maps with that many planes.
             if !in_range(i64::from(face.plane_idx), self.planes.len()) {
                 return drop(format!(
                     "Mod_LoadFaces: Incorrect {} planenum.",
