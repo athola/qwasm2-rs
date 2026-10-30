@@ -656,7 +656,7 @@ pub fn door_use(
         if closing {
             door_go_down(world, member);
         } else {
-            door_go_up(world, member, activator);
+            door_go_up(world, member, Some(activator));
         }
     }
 }
@@ -704,11 +704,7 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
     }
     for member in world.team_chain(master) {
         if state == STATE_DOWN {
-            let activator = world
-                .entities
-                .get(member)
-                .and_then(|e| e.game.activator)
-                .unwrap_or(member);
+            let activator = world.entities.get(member).and_then(|e| e.game.activator);
             door_go_up(world, member, activator);
         } else {
             door_go_down(world, member);
@@ -719,7 +715,7 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
 /// Start a door's move or turn to its open position, by classname as C
 /// does: func_door (also func_water) slides, func_door_rotating turns.
 /// C ref: `door_go_up`.
-pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: EntityKey) {
+pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: Option<EntityKey>) {
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -749,7 +745,13 @@ pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: EntityKey) {
         "func_door_rotating" => angle_move_calc(world, key, door_hit_top),
         _ => {}
     }
-    world.use_targets(key, activator);
+    // Deviation: a door reopened by door_blocked passes its own activator,
+    // which doors never set, so C calls G_UseTargets(self, NULL). door_use,
+    // button_use, train_use and func_timer_use return on that NULL and
+    // G_UseTargets' message print dereferences it, so no targets fire.
+    if let Some(activator) = activator {
+        world.use_targets(key, activator);
+    }
     door_use_areaportals(world, key, true);
 }
 
@@ -3485,6 +3487,27 @@ mod tests {
         let item = world.spawn().unwrap();
         door_blocked(&mut world, door, item);
         assert!(!world.entities.is_live(item));
+    }
+
+    #[test]
+    fn door_reopened_by_a_block_does_not_fire_its_targets() {
+        // C door_go_up(ent, ent->activator): a door's activator is never
+        // set, and door_use returns on the NULL activator G_UseTargets gets.
+        let mut world = spawned(
+            r#"{ "classname" "func_door" "model" "*1" "angle" "-1" "target" "d2" }
+               { "classname" "func_door" "model" "*1" "targetname" "d2" "origin" "500 0 0" }"#,
+        );
+        let door = by_class(&world, "func_door");
+        let other = world.find_by_targetname(None, "d2").unwrap();
+        run_for(&mut world, 0.2); // Think_SpawnDoorTrigger and friends
+        moveinfo_mut(&mut world, door).unwrap().state = STATE_DOWN;
+        let p = player(&mut world);
+        world.entities.get_mut(p).unwrap().game.takedamage = TakeDamage::Aim;
+
+        door_blocked(&mut world, door, p);
+
+        assert_eq!(mover(&world, door).1, STATE_UP);
+        assert_eq!(mover(&world, other).1, STATE_BOTTOM);
     }
 
     /// Dying turns the func_plat round, as a deathtarget re-using it could.
