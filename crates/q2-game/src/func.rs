@@ -42,8 +42,10 @@ pub const DOOR_START_OPEN: i32 = 1;
 pub const DOOR_REVERSE: i32 = 2;
 pub const DOOR_CRUSHER: i32 = 4;
 pub const DOOR_NOMONSTER: i32 = 8;
-/// func_door_rotating's ANIMATED flag.
+/// ANIMATED: the texture cycles (func_door and func_door_rotating).
 pub const DOOR_ANIMATED: i32 = 16;
+/// func_door's ANIMATED_FAST; the same bit is func_door_rotating's X_AXIS.
+pub const DOOR_ANIMATED_FAST: i32 = 64;
 pub const DOOR_TOGGLE: i32 = 32;
 pub const DOOR_X_AXIS: i32 = 64;
 pub const DOOR_Y_AXIS: i32 = 128;
@@ -1949,6 +1951,12 @@ pub fn sp_func_door(storage: &mut EntityStorage, key: EntityKey, fields: &HashMa
         end_origin: pos2,
         ..Default::default()
     }));
+    if ent.game.spawnflags & DOOR_ANIMATED != 0 {
+        ent.state.effects |= EF_ANIM_ALL;
+    }
+    if ent.game.spawnflags & DOOR_ANIMATED_FAST != 0 {
+        ent.state.effects |= EF_ANIM_ALLFAST;
+    }
 
     // Non-teamed doors are a team of one.
     if ent.game.team.is_empty() {
@@ -3508,6 +3516,21 @@ mod tests {
             Vec3f::new(90.0, 0.0, 0.0)
         );
         assert_ne!(p.state.effects & EF_ANIM_ALL, 0);
+    }
+
+    #[test]
+    fn func_door_animates_its_texture_with_spawnflags_16_and_64() {
+        // C SP_func_door: 16 is EF_ANIM_ALL, 64 EF_ANIM_ALLFAST.
+        for (flags, effects) in [(0, 0), (16, EF_ANIM_ALL), (64, EF_ANIM_ALLFAST)] {
+            let world = spawned(&format!(
+                "{{ \"classname\" \"func_door\" \"model\" \"*1\" \"spawnflags\" \"{flags}\" }}"
+            ));
+            let door = world.entities.get(by_class(&world, "func_door")).unwrap();
+            assert_eq!(
+                door.state.effects & (EF_ANIM_ALL | EF_ANIM_ALLFAST),
+                effects
+            );
+        }
     }
 
     #[test]
