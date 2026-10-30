@@ -485,7 +485,8 @@ impl NetMsg {
     /// Errors (C `ERR_FATAL`) when `to.number` is 0 (the list terminator) or
     /// not below `MAX_EDICTS`; nothing is written then. A negative number is
     /// rejected the same way on purpose: C tests only `!to->number` and
-    /// would write it as a byte, which no reader can map back to an entity.
+    /// writes its low byte, so the reader would apply the delta to another
+    /// entity (-1 arrives as 255).
     pub fn write_delta_entity(
         &mut self,
         from: &EntityState,
