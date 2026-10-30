@@ -19,7 +19,7 @@ use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
 use crate::ents::build_client_frame;
 use crate::init::{LevelKind, MapRequest};
-use crate::state::{Server, ServerState, ServerStatic};
+use crate::state::{ClientState, Server, ServerState, ServerStatic};
 use crate::ServerGameImport;
 
 /// Entity number of the local client (client slot 0).
@@ -101,9 +101,19 @@ impl LocalGame {
         self.game.clear_entity_events();
     }
 
-    /// Apply one user command to the local player (C ClientThink).
+    /// Apply one user command to the local player (C ClientThink). Like C
+    /// `SV_ExecuteClientMessage`, the command is dropped unless the client
+    /// is in the game (`cs_spawned`): a picture level or a failed map load
+    /// leaves it only connected.
     pub fn think(&mut self, cmd: &UserCmd) {
-        self.game.client_think(LOCAL_PLAYER, cmd);
+        let spawned = self
+            .svs
+            .clients
+            .first()
+            .is_some_and(|client| client.state == ClientState::Spawned);
+        if spawned {
+            self.game.client_think(LOCAL_PLAYER, cmd);
+        }
     }
 
     /// Advance the server by `frametime_us`; game frames run at 10 Hz.
@@ -252,4 +262,57 @@ fn player_eye(game: &dyn GameExport) -> Option<Vec3f> {
     let ps = game.client_player_state(LOCAL_PLAYER)?;
     let origin = Vec3f::from_array(ps.pmove.origin.map(|c| f32::from(c) * 0.125));
     Some(origin + ps.viewoffset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::NullGame;
+    use std::cell::Cell;
+
+    /// A local game whose client slot is in `client` state, and the count
+    /// of `client_think` calls that reach the game.
+    fn local_with_client(client: ClientState) -> (LocalGame, Rc<Cell<u32>>) {
+        let game = NullGame::default();
+        let thinks = game.thinks.clone();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        svs.clients[0].state = client;
+        let local = LocalGame {
+            sv: Server {
+                state: ServerState::Game,
+                ..Default::default()
+            },
+            svs,
+            gi: Rc::new(ServerGameImport::new()),
+            game: Box::new(game),
+            pending_us: 0,
+            cmd: CmdSystem::new(),
+            next_map: Rc::default(),
+            client_frame: Vec::new(),
+        };
+        (local, thinks)
+    }
+
+    #[test]
+    fn think_runs_client_think_for_a_spawned_client() {
+        let (mut local, thinks) = local_with_client(ClientState::Spawned);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 1);
+    }
+
+    #[test]
+    fn think_is_ignored_while_the_client_is_only_connected() {
+        // A picture level or a failed map load leaves the client Connected.
+        let (mut local, thinks) = local_with_client(ClientState::Connected);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 0);
+    }
+
+    #[test]
+    fn think_is_ignored_for_a_free_client_slot() {
+        let (mut local, thinks) = local_with_client(ClientState::Free);
+        local.think(&UserCmd::default());
+        assert_eq!(thinks.get(), 0);
+    }
 }
