@@ -63,6 +63,8 @@ struct GiInner {
     commands: String,
     /// Cvars set for the game to read (C's shared cvar table).
     cvars: std::collections::HashMap<String, String>,
+    /// The local wall clock the engine last gave (hours, minutes, seconds).
+    local_time: Option<(u32, u32, u32)>,
     /// Sounds the game started since the last `take_sounds`.
     sounds: Vec<SoundEvent>,
     /// The client command being run (C `Cmd_TokenizeString`'s `cmd_argv`
@@ -115,6 +117,7 @@ impl GiInner {
             areas: vec![(0, 0); MAX_EDICTS],
             commands: String::new(),
             cvars: std::collections::HashMap::new(),
+            local_time: None,
             sounds: Vec::new(),
             command_argv: Vec::new(),
             command_args: String::new(),
@@ -254,6 +257,12 @@ impl ServerGameImport {
         let mut inner = self.inner.borrow_mut();
         inner.command_argv = q2_common::cmd::tokenize(text);
         inner.command_args = args.to_string();
+    }
+
+    /// The engine's local wall clock for the game (C's game calls
+    /// `localtime` itself; here the engine supplies it).
+    pub fn set_local_time(&self, hms: Option<(u32, u32, u32)>) {
+        self.inner.borrow_mut().local_time = hms;
     }
 
     /// Set cvar `name` for the game (C `Cvar_Set` on the shared table).
@@ -887,6 +896,10 @@ impl GameImport for ServerGameImport {
         self.inner.borrow_mut().commands.push_str(text);
     }
 
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.inner.borrow().local_time
+    }
+
     fn cvar(&self, name: &str, default: &str) -> String {
         self.inner
             .borrow()
@@ -1074,6 +1087,14 @@ mod tests {
         // The limits themselves are allowed.
         gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
         assert_eq!(gi.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn the_game_reads_the_local_time_the_engine_set() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.local_time(), None);
+        gi.set_local_time(Some((23, 59, 1)));
+        assert_eq!(gi.local_time(), Some((23, 59, 1)));
     }
 
     #[test]

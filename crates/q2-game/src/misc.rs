@@ -1,8 +1,9 @@
 //! Miscellaneous entities — explobox, teleporters, gibs, path_corners, lights.
 //!
 //! Part of `g_misc.c`: misc_explobox, misc_teleporter(_dest), path_corner,
-//! point_combat, info_null/info_notnull and func_group. The decorative
-//! misc_* models, gibs and light_mine spawn as static models. The gib,
+//! point_combat, info_null/info_notnull and func_group. misc_gib_* and
+//! light_mine spawn as static models; the other misc_* set pieces are in
+//! `misc_models`, func_wall/func_object/func_clock in `misc_func`. The gib,
 //! debris and explosion helpers monsters die through (ThrowGib, ThrowHead,
 //! ThrowClientHead, ThrowDebris, BecomeExplosion1/2) live here too.
 //!
@@ -284,7 +285,7 @@ const EF_FLIES: u32 = 0x0000_4000;
 const SM_MEAT_MODEL: &str = "models/objects/gibs/sm_meat/tris.md2";
 
 /// C `think = G_FreeEdict`.
-fn free_think(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn free_think(world: &mut GameWorld, key: EntityKey) {
     world.free_entity(key);
 }
 
@@ -812,19 +813,6 @@ pub fn sp_info_notnull(
         if let Some(tn) = fields.get("targetname") {
             ent.game.targetname = tn.clone();
         }
-    }
-}
-
-pub fn sp_misc_generic(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    fields: &HashMap<String, String>,
-) {
-    if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields
-            .get("classname")
-            .cloned()
-            .unwrap_or_else(|| "misc".to_string());
     }
 }
 

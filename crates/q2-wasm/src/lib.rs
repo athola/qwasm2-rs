@@ -439,6 +439,13 @@ impl Engine {
         // From the last rendered frame, as C reads `r_lightlevel`.
         cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
 
+        // C's func_clock reads localtime: the page's clock.
+        let now = js_sys::Date::new_0();
+        self.local.set_local_time(Some((
+            now.get_hours(),
+            now.get_minutes(),
+            now.get_seconds(),
+        )));
         self.local.think(&cmd);
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.

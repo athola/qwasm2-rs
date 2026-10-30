@@ -946,6 +946,8 @@ pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 pub struct MockGameImport {
     /// Cvars `cvar` answers; others give their default.
     pub cvars: RefCell<HashMap<String, String>>,
+    /// What `local_time` answers.
+    pub local_time: std::cell::Cell<Option<(u32, u32, u32)>>,
     /// What `point_contents` answers everywhere.
     pub contents: std::cell::Cell<i32>,
     pub links: RefCell<Vec<EntityLink>>,
@@ -1170,6 +1172,10 @@ impl GameImport for MockGameImport {
     }
     fn add_command_string(&self, text: &str) {
         self.commands.borrow_mut().push(text.to_string());
+    }
+
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.local_time.get()
     }
 
     fn cvar(&self, name: &str, default: &str) -> String {

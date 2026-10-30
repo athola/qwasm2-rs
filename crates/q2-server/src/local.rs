@@ -88,6 +88,12 @@ impl LocalGame {
         self.game.client_command(LOCAL_PLAYER);
     }
 
+    /// The local wall clock (hours, minutes, seconds) the game's
+    /// time-of-day `func_clock` shows.
+    pub fn set_local_time(&self, hms: Option<(u32, u32, u32)>) {
+        self.gi.set_local_time(hms);
+    }
+
     /// Set a cvar the game reads (C shares one cvar table between the
     /// client and the game in a listen server).
     pub fn set_cvar(&self, name: &str, value: &str) {

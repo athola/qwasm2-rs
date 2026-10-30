@@ -145,6 +145,14 @@ All notable changes to qwasm2-rs are documented here.
 - Colour shells: quad, pentagram, double and half damage and the power
   shield draw C's second, colour-only model pushed out along the vertex
   normals, and power screens their armour shell (`RF_SHELL_*`)
+- Barrels (`misc_explobox`) roll away when walked into (C
+  `barrel_touch`), settle on the floor and are gone in deathmatch
+- The rest of `g_misc.c`: `func_wall` (triggered, toggled, animated),
+  `func_object`, `func_clock` (timers and the time of day, from the
+  page's clock through `GameImport::local_time`), `target_string` and
+  `target_character`, the banner, satellite dish, dead soldiers, black
+  hole, easter tank and chicks, the commander's body, the vipers, viper
+  bomb and Strogg ship, and `viewthing`
 - `?vid_fullscreen=1` (C's `vid_fullscreen`, off by default): clicking to
   play also takes the game fullscreen and, in Chromium browsers, locks
   the keyboard to it (Keyboard Lock API), so Ctrl+W, Ctrl+T and the like

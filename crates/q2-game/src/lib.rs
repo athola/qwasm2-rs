@@ -17,6 +17,8 @@ pub mod func;
 pub mod game;
 pub mod items;
 pub mod misc;
+pub mod misc_func;
+pub mod misc_models;
 pub mod monster;
 pub mod physics;
 pub mod player;
