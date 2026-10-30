@@ -325,7 +325,7 @@ pub fn sp_target_goal(
 
 /// The `GameWorld` half of C SP_target_secret and SP_target_goal: freed in
 /// deathmatch, otherwise the noise (default `misc/secret.wav`) and the
-/// level total.
+/// level total, plus C's mine3 quirk giving one secret its message.
 pub fn finish_found_target(
     world: &mut GameWorld,
     key: EntityKey,
@@ -339,6 +339,7 @@ pub fn finish_found_target(
         .get("noise")
         .map_or("misc/secret.wav", String::as_str);
     let noise_index = world.gi.sound_index(noise);
+    let mine3 = world.level.mapname.eq_ignore_ascii_case("mine3");
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -348,6 +349,24 @@ pub fn finish_found_target(
         return;
     }
     world.level.total_secrets += 1;
+    if mine3 && ent.state.origin == q2_shared::types::Vec3f::new(280.0, -2048.0, -624.0) {
+        ent.game.message = "You have found a secret area.".to_string();
+    }
+}
+
+/// The `GameWorld` half of C SP_target_changelevel: its quirk sending
+/// fact1's exit to fact3 to the secret spawn point.
+pub fn finish_target_changelevel(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let fact1 = world.level.mapname.eq_ignore_ascii_case("fact1");
+    if let Some(ent) = world.entities.get_mut(key) {
+        if fact1 && ent.game.map.eq_ignore_ascii_case("fact3") {
+            ent.game.map = "fact3$secret1".to_string();
+        }
+    }
 }
 
 // ==========================================================================
@@ -532,6 +551,27 @@ mod tests {
         target_goal_use(&mut world, second, second, second);
         assert_eq!(cdtrack(&gi), before + 1);
         assert!(!world.entities.is_live(second));
+    }
+
+    #[test]
+    fn fact1_exit_to_fact3_goes_to_the_secret_spawn() {
+        let entities = r#"{ "classname" "target_changelevel" "map" "FACT3" }"#;
+        let (world, _) = spawn_map("fact1", false, entities);
+        let exit = world.find_by_classname(None, "target_changelevel").unwrap();
+        assert_eq!(world.entities.get(exit).unwrap().game.map, "fact3$secret1");
+        let (world, _) = spawn_map("fact2", false, entities);
+        let exit = world.find_by_classname(None, "target_changelevel").unwrap();
+        assert_eq!(world.entities.get(exit).unwrap().game.map, "FACT3");
+    }
+
+    #[test]
+    fn mine3_secret_gets_its_missing_message() {
+        let entities = r#"{ "classname" "target_secret" "origin" "280 -2048 -624" }"#;
+        for (map, message) in [("MINE3", "You have found a secret area."), ("mine2", "")] {
+            let (world, _) = spawn_map(map, false, entities);
+            let secret = world.find_by_classname(None, "target_secret").unwrap();
+            assert_eq!(world.entities.get(secret).unwrap().game.message, message);
+        }
     }
 
     #[test]

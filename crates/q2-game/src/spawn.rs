@@ -201,7 +201,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("target_temp_entity", targets::sp_target_generic, None, None),
     ("target_speaker", targets::sp_target_speaker, None, Some(GameWorld::finish_target_speaker)),
     ("target_explosion", targets::sp_target_explosion, None, None),
-    ("target_changelevel", targets::sp_target_changelevel, None, None),
+    ("target_changelevel", targets::sp_target_changelevel, None, Some(targets::finish_target_changelevel)),
     ("target_secret", targets::sp_target_secret, None, Some(targets::finish_found_target)),
     ("target_goal", targets::sp_target_goal, None, Some(targets::finish_found_target)),
     ("target_splash", targets::sp_target_generic, None, None),
