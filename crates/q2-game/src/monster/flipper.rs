@@ -514,29 +514,25 @@ mod tests {
     }
 
     #[test]
-    fn flipper_pain_debounces_three_seconds_and_picks_pain1_or_pain2() {
+    fn flipper_pain_debounces_three_seconds_and_picks_pain1_on_an_odd_randk() {
         let (mut world, gi) = test_world_recording();
         world.level.time = 5.0;
         let key = flipper(&mut world);
-        let (mut one, mut two) = (0, 0);
-        for _ in 0..200 {
+        // C: n = (randk() + 1) % 2, pain1 when n is 0.
+        for (odd, mv, name) in [
+            (true, &FLIPPER_MOVE_PAIN1, "flipper/flppain1.wav"),
+            (false, &FLIPPER_MOVE_PAIN2, "flipper/flppain2.wav"),
+        ] {
             world.entities.get_mut(key).unwrap().game.pain_debounce_time = 0.0;
+            seed(&mut world, |w| (w.random_u32() % 2 == 1) == odd);
             pain(&mut world, key, 40);
             assert_eq!(
                 world.entities.get(key).unwrap().game.pain_debounce_time,
                 8.0
             );
-            let sound = sounds_of(&world, &gi, key).pop().unwrap().1;
-            if playing(&world, key, &FLIPPER_MOVE_PAIN1) {
-                assert_eq!(sound, "flipper/flppain1.wav");
-                one += 1;
-            } else {
-                assert!(playing(&world, key, &FLIPPER_MOVE_PAIN2));
-                assert_eq!(sound, "flipper/flppain2.wav");
-                two += 1;
-            }
+            assert!(playing(&world, key, mv), "odd {odd}");
+            assert_eq!(sounds_of(&world, &gi, key).pop().unwrap().1, name);
         }
-        assert!(one > 50 && two > 50, "{one} {two}");
 
         // Within the debounce: no new sound or move.
         let calls = gi.sound_calls.borrow().len();
