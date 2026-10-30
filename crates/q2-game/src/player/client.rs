@@ -794,6 +794,12 @@ pub fn player_die(
         .filter(|_| first_death)
     {
         client.ps.pmove.pm_type = PmType::Dead;
+        // Clear the inventory, keeping keys for the coop respawn.
+        for (n, item) in world.items.iter().enumerate() {
+            if world.game.coop && item.flags.contains(crate::constants::ItemFlags::KEY) {
+                client.resp.coop_respawn.inventory[n] = client.pers.inventory[n];
+            }
+        }
         client.pers.inventory.fill(0);
     }
     ent.game.flags.remove(EntityFlags::POWER_ARMOR);
@@ -1295,6 +1301,35 @@ mod tests {
             Some("male/grunt".to_string())
         );
         assert_eq!(extract_info_value(info, "male/grunt"), None);
+    }
+
+    #[test]
+    fn a_coop_player_dying_keeps_its_keys_for_the_respawn() {
+        // C player_die copies IT_KEY items to resp.coop_respawn in coop.
+        for coop in [true, false] {
+            let mut world = test_world();
+            world.game.coop = coop;
+            world.init_items();
+            let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.begin_client(key);
+            let pass = world.find_item("key_pass").unwrap();
+            let shells = world.find_item("ammo_shells").unwrap();
+            {
+                let inv = &mut world.client_mut(key).unwrap().pers.inventory;
+                inv[pass] = 1;
+                inv[shells] = 10;
+            }
+            let attacker = world.spawn().unwrap();
+            player_die(&mut world, key, attacker, attacker, 100, Vec3f::ZERO);
+            let client = world.client(key).unwrap();
+            assert!(client.pers.inventory.iter().all(|&n| n == 0));
+            let kept = &client.resp.coop_respawn.inventory;
+            assert_eq!(
+                (kept[pass], kept[shells]),
+                (i32::from(coop), 0),
+                "coop {coop}"
+            );
+        }
     }
 
     #[test]
