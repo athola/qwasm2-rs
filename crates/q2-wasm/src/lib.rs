@@ -11,6 +11,9 @@
 //! - Performance: 0
 //! - Inherent: 0
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod console_log;
+
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
@@ -774,6 +777,13 @@ impl ViewSize {
 #[wasm_bindgen(start)]
 pub fn wasm_main() {
     console_error_panic_hook_setup();
+    // The one process-wide logger, like the panic hook above.
+    #[cfg(target_arch = "wasm32")]
+    if let Err(e) = tracing::subscriber::set_global_default(console_log::console_subscriber(
+        console_log::browser_console,
+    )) {
+        console::error_1(&format!("[qwasm2-rs] no tracing output: {e}").into());
+    }
     console::log_1(&"[qwasm2-rs] WASM module initialized".into());
 }
 

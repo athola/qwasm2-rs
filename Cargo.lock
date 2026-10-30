@@ -751,6 +751,8 @@ dependencies = [
  "q2-render-api",
  "q2-server",
  "q2-shared",
+ "tracing",
+ "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
