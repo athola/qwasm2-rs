@@ -127,6 +127,17 @@ fn wrap180(d: f32) -> f32 {
     }
 }
 
+/// C's two ifs, not `f32::clamp`: a map's negative `speed` makes the
+/// bounds cross, which would panic `clamp` and leaves C at `-step`.
+fn cap_turn(delta: f32, step: f32) -> f32 {
+    let delta = if delta > step { step } else { delta };
+    if delta < -step {
+        -step
+    } else {
+        delta
+    }
+}
+
 /// Turn toward `move_angles` within the pitch/yaw limits at `speed`
 /// degrees a second, turn the base with it, drag the driver along, and
 /// fire when the driver asked. C ref: `turret_breach_think`.
@@ -161,8 +172,8 @@ pub fn turret_breach_think(world: &mut GameWorld, key: EntityKey) {
 
     let step = ent.game.speed * FRAMETIME;
     let mut delta = aim - current_angles;
-    delta.x = wrap180(delta.x).clamp(-step, step);
-    delta.y = wrap180(delta.y).clamp(-step, step);
+    delta.x = cap_turn(wrap180(delta.x), step);
+    delta.y = cap_turn(wrap180(delta.y), step);
     delta.z = 0.0;
     ent.avelocity = delta * (1.0 / FRAMETIME);
     ent.game.nextthink = time + FRAMETIME;
@@ -728,6 +739,22 @@ mod tests {
         ent.game.speed = 2000.0;
         turret_breach_think(&mut world, key);
         assert!((world.entities.get(key).unwrap().avelocity.y - 1100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn turret_breach_think_with_a_negative_map_speed_turns_like_c() {
+        // "speed" "-50" survives the spawn (only 0 is replaced). C's two
+        // ifs then always leave the turn at +5 degrees a frame.
+        let mut world = test_world();
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.speed = -50.0;
+        sp_turret_breach(&mut world.entities, key, &HashMap::new());
+        world.entities.get_mut(key).unwrap().game.move_angles = Vec3f::new(-20.0, 90.0, 0.0);
+        turret_breach_think(&mut world, key);
+        assert_eq!(
+            world.entities.get(key).unwrap().avelocity,
+            Vec3f::new(50.0, 50.0, 0.0)
+        );
     }
 
     #[test]
