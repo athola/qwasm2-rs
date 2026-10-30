@@ -60,8 +60,11 @@ relies on, each crate with unsafe code carries an audit header in its
 wasm-bindgen, web-sys and js-sys for the browser boundary; `glow` for
 OpenGL ES 3.0; `slotmap` for entities; `bitflags` and `glam` for flags and
 math; `serde` for save games; `tracing` for logs; `axum` for the dev server;
-`matchbox_socket` for WebRTC once Phase 7 starts. Audio (`cpal`, `lewton`)
-and a native SDL2 backend are planned but have no code or dependencies yet.
+`matchbox_socket` for WebRTC once Phase 7 starts. Sound is the C channel
+logic in q2-client (`sound`, with its own WAV loader) played through the
+browser's WebAudio `AudioContext` from q2-platform via web-sys, so it adds
+no audio dependency. A native SDL2 backend is planned but has no code or
+dependencies yet.
 
 ## Status of the phases (2026-10-26)
 
@@ -73,7 +76,7 @@ and a native SDL2 backend are planned but have no code or dependencies yet.
 | 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
 | 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles and texture animation run; dynamic lights and sprites wait on weapons (#16, #20) |
-| 6 WASM platform | Game loop, pointer lock, input and resize done; saves open (#21) |
+| 6 WASM platform | Game loop, pointer lock, input, resize and WebAudio sound done; saves open (#21) |
 | 7 P2P networking | Not started (#22) |
 | 8 Integration | Server and game run in-process in the browser (`LocalGame`); networking open (#23) |
 

@@ -55,8 +55,9 @@ would kill the whole page.
 
 The toolchain is pinned in `rust-toolchain.toml`. `make ci` runs
 `cargo fmt --check`, clippy with `--all-targets -D warnings` on the host and
-on the wasm32 libraries, `cargo check`, and the tests, all with `--locked`;
-CI adds `cargo audit` and the Playwright suite, and restores the demo
+on the wasm32 libraries, `cargo check`, and the tests. CI sets
+`CARGO_FLAGS=--locked`, so there every cargo step fails on a stale
+`Cargo.lock` instead of rewriting it (a local `make ci` passes no flag). CI adds `cargo audit` and the Playwright suite, and restores the demo
 `pak0.pak` first so the map-data tests run instead of returning early. Tests come first for a fix,
 and a test that encoded non-C behaviour is changed only together with the
 code and with the reason in the commit message.
