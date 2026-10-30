@@ -130,6 +130,9 @@ test.describe('Qwasm2 with the demo pak', () => {
     await expect(page.locator('#status span').last()).toHaveText(/Gamma: 1\.5/);
   });
 
+  /** The page with the promise the fullscreen test waits on. */
+  type LockWindow = Window & { lockSettled?: Promise<Event> };
+
   test('CP-5: ?vid_fullscreen=1 takes the game fullscreen on the click to play', async ({ page }) => {
     test.setTimeout(90000);
     await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
@@ -138,11 +141,17 @@ test.describe('Qwasm2 with the demo pak', () => {
       // `serve` redirects qwasm2.html to /qwasm2 without the query string.
       await page.goto('qwasm2' + query);
       await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
-      // Headless Chromium refuses pointer lock: its warning shows the
-      // click handler has run.
-      const handled = page.waitForEvent('console', m => /pointer lock refused/.test(m.text()));
+      // The click asks for pointer lock; it settles as pointerlockchange
+      // (granted, as on CI's Linux Chromium) or pointerlockerror (refused,
+      // as on macOS headless), which shows the click handler has run.
+      await page.evaluate(() => {
+        (window as LockWindow).lockSettled = new Promise<Event>(resolve => {
+          document.addEventListener('pointerlockchange', resolve, { once: true });
+          document.addEventListener('pointerlockerror', resolve, { once: true });
+        });
+      });
       await page.locator('#canvas').click();
-      await handled;
+      await page.evaluate(() => (window as LockWindow).lockSettled);
     };
     // Off by default (C vid_fullscreen 0).
     await clickToPlay('');
