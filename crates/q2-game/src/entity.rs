@@ -347,6 +347,8 @@ pub struct GameEntityData {
     /// for PNOISE_SELF/WEAPON, `mynoise2` for PNOISE_IMPACT).
     pub mynoise: Option<EntityKey>,
     pub mynoise2: Option<EntityKey>,
+    /// When a player noise marker was last made (C `last_sound_time`).
+    pub last_sound_time: f32,
 }
 
 // ---------------------------------------------------------------------------

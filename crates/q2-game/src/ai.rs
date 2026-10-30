@@ -1016,21 +1016,6 @@ fn hes_dead_jim(world: &GameWorld, key: EntityKey) -> bool {
     enemy.game.health <= 0
 }
 
-/// C `edict_t.last_sound_time` of a player noise. C sets it to
-/// `level.time` exactly when it records the noise's level framenum, and
-/// `level.time` is `framenum * FRAMETIME`, so the framenum gives it back;
-/// anything that is not the current noise reads as C's never-set zero.
-fn last_sound_time(world: &GameWorld, noise: EntityKey) -> f32 {
-    let level = &world.level;
-    if level.sound_entity == Some(noise) {
-        level.sound_entity_framenum as f32 * FRAMETIME
-    } else if level.sound2_entity == Some(noise) {
-        level.sound2_entity_framenum as f32 * FRAMETIME
-    } else {
-        0.0
-    }
-}
-
 /// Decide whether to attack, or what else to do, and record what is
 /// known about the enemy in `world.enemy_check`. Returns whether the
 /// monster acted (attacked, changed enemy or gave up). Used by `ai_run`
@@ -1050,7 +1035,9 @@ pub fn ai_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
             return false;
         }
         if flags.contains(AiFlags::SOUND_TARGET) && !visible(world, key, goal) {
-            let heard = enemy.map_or(0.0, |e| last_sound_time(world, e));
+            let heard = enemy
+                .and_then(|e| world.entities.get(e))
+                .map_or(0.0, |e| e.game.last_sound_time);
             let Some(ent) = world.entities.get_mut(key) else {
                 return false;
             };
@@ -3145,6 +3132,32 @@ mod tests {
     fn hear(world: &mut GameWorld, noise: EntityKey) {
         world.level.sound_entity = Some(noise);
         world.level.sound_entity_framenum = world.level.framenum;
+        world.entities.get_mut(noise).unwrap().game.last_sound_time = world.level.time;
+    }
+
+    #[test]
+    fn a_monster_keeps_hunting_a_noise_another_player_has_since_outdone() {
+        // C keeps last_sound_time on the noise edict, so a coop player's
+        // newer noise does not make an older one read as never heard.
+        let mut world = floor_world(Some(200.0)); // the wall hides the noise;
+        let monster = counting_monster(&mut world, 0.0, 0.0);
+        let player = player_at(&mut world, 2000.0, 0.0);
+        let older = noise_at(&mut world, 400.0, 0.0, player);
+        let newer = noise_at(&mut world, 0.0, 400.0, player);
+        world.level.time = 3.0;
+        hear(&mut world, older);
+        world.level.time = 6.0;
+        hear(&mut world, newer);
+        {
+            let e = world.entities.get_mut(monster).unwrap();
+            e.game.enemy = Some(older);
+            e.game.goalentity = Some(older);
+        }
+        mi_mut(&mut world, monster).aiflags = AiFlags::SOUND_TARGET;
+        ai_checkattack(&mut world, monster);
+        assert!(monsterinfo(&world, monster)
+            .aiflags
+            .contains(AiFlags::SOUND_TARGET));
     }
 
     #[test]
@@ -4047,6 +4060,7 @@ mod tests {
         let player = player_at(&mut world, 2000.0, 0.0);
         let noise = noise_at(&mut world, 300.0, 0.0, player);
         world.level.framenum = 10;
+        world.level.time = 1.0;
         hear(&mut world, noise);
         let ent = world.entities.get_mut(monster).unwrap();
         ent.game.enemy = Some(noise);
