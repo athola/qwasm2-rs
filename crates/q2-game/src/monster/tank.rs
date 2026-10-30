@@ -776,7 +776,7 @@ pub fn tank_rocket(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// One bullet of the chaingun sweep: pitched at the enemy, yawed 8
-/// degrees a frame from right to left and back. C ref: `TankMachineGun`.
+/// degrees a frame from left to right and back. C ref: `TankMachineGun`.
 pub fn tank_machine_gun(world: &mut GameWorld, key: EntityKey) {
     let frame = frame_of(world, key);
     let flash = MZ2_TANK_MACHINEGUN_1 + (frame - FRAME_ATTAK406);
@@ -1344,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn tank_spawns_with_c_health_box_callbacks_and_starts_walking() {
+    fn tank_spawns_with_c_health_box_callbacks_and_stands() {
         let (world, _, key) = tank();
         let ent = world.entities.get(key).unwrap();
         assert_eq!(
