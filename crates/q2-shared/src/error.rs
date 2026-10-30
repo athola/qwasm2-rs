@@ -1,6 +1,7 @@
 use thiserror::Error;
 
-/// Replaces Com_Error() + ERR_FATAL/ERR_DROP/ERR_QUIT.
+/// Replaces Com_Error() with ERR_FATAL / ERR_DROP. C's third code,
+/// ERR_DISCONNECT, is not modelled.
 /// The frame loop catches Drop errors and continues.
 /// Fatal errors terminate the process.
 #[derive(Error, Debug)]
@@ -13,7 +14,8 @@ pub enum Q2Error {
     #[error("fatal: {0}")]
     Fatal(String),
 
-    /// ERR_QUIT: Clean shutdown requested.
+    /// Clean shutdown requested. No C Com_Error code: C's `quit` command
+    /// calls Com_Quit directly.
     #[error("quit")]
     Quit,
 
