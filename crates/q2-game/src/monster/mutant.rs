@@ -97,59 +97,7 @@ const fn frame(aifunc: AnimFrameFn, dist: f32, thinkfunc: Option<ThinkFn>) -> Mo
     }
 }
 
-static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-    frame(ai::ai_stand, 0.0, None),
-];
+static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [frame(ai::ai_stand, 0.0, None); 51];
 
 static MUTANT_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
@@ -320,17 +268,7 @@ static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
     endfunc: Some(mutant_run),
 };
 
-static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [frame(ai::ai_move, 0.0, None); 9];
 
 static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
@@ -339,18 +277,7 @@ static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     endfunc: Some(mutant_dead),
 };
 
-static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-    frame(ai::ai_move, 0.0, None),
-];
+static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [frame(ai::ai_move, 0.0, None); 10];
 
 static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
