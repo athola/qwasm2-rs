@@ -942,7 +942,9 @@ const MACHINEGUN_FLASH: [i32; 8] = [
 /// and 6). The machinegun holds the frame for 3-10 frames of fire.
 /// C ref: `soldier_fire`. C dereferences `self->enemy` for aimed shots;
 /// without one there is nothing to aim at, so nothing fires.
-pub fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
+/// Private: only this file's `soldier_fireN` wrappers call it, with
+/// flash numbers 0-7, the length of the flash tables.
+fn soldier_fire(world: &mut GameWorld, key: EntityKey, flash_number: usize) {
     let skin = skinnum(world, key);
     let flash_index = if skin < 2 {
         BLASTER_FLASH[flash_number]
