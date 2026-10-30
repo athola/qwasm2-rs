@@ -239,22 +239,24 @@ impl ServerGameImport {
 
     /// Load a map's collision data and rebuild the area tree (C CM_LoadMap +
     /// SV_ClearWorld). Links and the configstring mirror start empty, as C
-    /// SV_SpawnServer zeroes `sv`. Returns the map checksum.
+    /// SV_SpawnServer zeroes `sv` before CM_LoadMap, so a map that fails to
+    /// load leaves an empty map and nothing from the previous one. Returns
+    /// the map checksum.
     pub fn load_map(&self, bsp: &[u8]) -> Q2Result<u32> {
         let mut inner = self.inner.borrow_mut();
-        let checksum = inner.collision.load_map(bsp)?;
+        inner.links.fill(None);
+        inner.clusters.fill(EntityClusters::List(Vec::new()));
+        inner.areas.fill((0, 0));
+        inner.configstrings.fill(String::new());
+        inner.dirty.fill(false);
+        let loaded = inner.collision.load_map(bsp);
         let (mins, maxs) = inner
             .collision
             .model(0)
             .map(|m| (m.mins, m.maxs))
             .unwrap_or_default();
         inner.world.clear(mins, maxs);
-        inner.links.fill(None);
-        inner.clusters.fill(EntityClusters::List(Vec::new()));
-        inner.areas.fill((0, 0));
-        inner.configstrings.fill(String::new());
-        inner.dirty.fill(false);
-        Ok(checksum)
+        loaded
     }
 
     /// C `SV_FatPVS`: what can be seen from the eye at `org`, as one bit
