@@ -77,10 +77,10 @@ fn eof_without_brace() -> Q2Error {
 const MAX_TOKEN_CHARS: usize = 1024;
 
 /// C COM_Parse's whitespace: every character up to and including ' '.
-/// Deviation: C compares a plain `char`, which is signed on the x86 and
-/// wasm builds, so bytes from 0x80 are whitespace there and not on ARM;
-/// here the entity string is UTF-8 text and non-ASCII characters belong
-/// to words.
+/// Deviation: C compares a plain `char`, whose signedness is
+/// platform-dependent, so whether bytes from 0x80 are whitespace depends
+/// on the build; here the entity string is UTF-8 text and non-ASCII
+/// characters belong to words.
 fn is_space(c: char) -> bool {
     c <= ' '
 }
