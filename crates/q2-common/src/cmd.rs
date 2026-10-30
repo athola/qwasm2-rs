@@ -151,7 +151,16 @@ impl CmdSystem {
         let name = &tokens[0];
         let arg_strings: Vec<&str> = tokens[1..].iter().map(String::as_str).collect();
 
-        if let Some(handler) = self.commands.get(name.as_str()) {
+        // C ref: Cmd_ExecuteString matches with Q_strcasecmp while walking
+        // cmd_functions, which Cmd_AddCommand keeps in strcmp order, so the
+        // smallest case-insensitive match wins.
+        let handler = self
+            .commands
+            .iter()
+            .filter(|(registered, _)| registered.eq_ignore_ascii_case(name))
+            .min_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(_, handler)| handler);
+        if let Some(handler) = handler {
             handler(&arg_strings);
         }
         // Not found: C would try cvars, then forward to the server, then
@@ -310,6 +319,30 @@ mod tests {
         });
         cmd.execute_string("test");
         assert!(called.get());
+    }
+
+    #[test]
+    fn dispatch_ignores_ascii_case_like_c_but_registration_does_not() {
+        let mut cmd = CmdSystem::new();
+        let called = Rc::new(Cell::new(0));
+        let called2 = called.clone();
+        cmd.add_command("test", move |_args| called2.set(called2.get() + 1));
+        cmd.execute_string("TEST");
+        cmd.execute_string("Test");
+        assert_eq!(called.get(), 2);
+        // C Cmd_Exists / Cmd_AddCommand compare with strcmp.
+        assert!(!cmd.exists("TEST"));
+    }
+
+    #[test]
+    fn dispatch_picks_the_first_name_in_strcmp_order_like_the_c_list() {
+        let mut cmd = CmdSystem::new();
+        let ran = Rc::new(std::cell::RefCell::new(Vec::<&str>::new()));
+        let (upper, lower) = (ran.clone(), ran.clone());
+        cmd.add_command("test", move |_args| lower.borrow_mut().push("test"));
+        cmd.add_command("Test", move |_args| upper.borrow_mut().push("Test"));
+        cmd.execute_string("test");
+        assert_eq!(*ran.borrow(), ["Test"]);
     }
 
     #[test]
