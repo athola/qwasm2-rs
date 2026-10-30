@@ -1045,7 +1045,6 @@ mod tests {
 "#;
 
     #[test]
-    #[ignore = "needs monster_start fix from the ai.rs branch (monstersB-4)"]
     fn turret_driver_does_not_fall_before_it_links() {
         // C SP_turret_driver is MOVETYPE_PUSH from the start, so the seat
         // offset turret_driver_link records is taken from the map origin.
