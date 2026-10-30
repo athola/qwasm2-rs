@@ -608,8 +608,16 @@ impl EntityStorage {
     }
 
     /// The key holding entity number `n` (in use or soft-freed), if any.
+    /// `state.number` is public, so debug builds check here that it still
+    /// names this slot.
     pub fn key_for_number(&self, n: usize) -> Option<EntityKey> {
-        self.numbers.get(n).copied().flatten()
+        let key = self.numbers.get(n).copied().flatten();
+        debug_assert!(
+            key.and_then(|k| self.entities.get(k))
+                .is_none_or(|e| usize::try_from(e.state.number) == Ok(n)),
+            "entity {n}'s state.number is out of step with its slot"
+        );
+        key
     }
 
     /// Keys of occupied numbers from `first` upward, in entity-number order
@@ -657,6 +665,18 @@ impl EntityStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "state.number")]
+    fn a_number_out_of_step_with_its_slot_is_caught_on_lookup() {
+        // copy_to_body_que-style state copies must put the number back.
+        let mut storage = EntityStorage::new(16);
+        let key = storage.spawn().unwrap();
+        let number = storage.get(key).unwrap().state.number as usize;
+        storage.get_mut(key).unwrap().state.number = 9;
+        storage.key_for_number(number);
+    }
 
     #[test]
     fn entity_create_and_lookup() {
