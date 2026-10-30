@@ -226,7 +226,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("func_group", misc::sp_info_null, None, None),
     ("info_notnull", misc::sp_info_notnull, None, None),
     ("path_corner", misc::sp_path_corner, None, None),
-    ("point_combat", misc::sp_point_combat, None, None),
+    ("point_combat", misc::sp_point_combat, None, Some(misc::finish_point_combat)),
 
     ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), None),
     ("misc_banner", misc::sp_misc_generic, Some("models/objects/banner/tris.md2"), None),

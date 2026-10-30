@@ -109,7 +109,7 @@ fn has_flag(world: &GameWorld, key: EntityKey, flag: EntityFlags) -> bool {
 }
 
 /// C `vtos`: "(x y z)" in whole units.
-fn vtos(v: Vec3f) -> String {
+pub(crate) fn vtos(v: Vec3f) -> String {
     format!("({} {} {})", v.x as i32, v.y as i32, v.z as i32)
 }
 
