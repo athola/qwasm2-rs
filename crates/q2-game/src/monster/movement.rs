@@ -382,7 +382,7 @@ pub fn sv_new_chase_dir(world: &mut GameWorld, key: EntityKey, goal: Vec3f, dist
     }
 
     // Try the other directions: the longer axis first, or at random.
-    if (world.random_u32() & 3) & 1 != 0 || (deltay as i32).abs() > (deltax as i32).abs() {
+    if (world.random_u32() & 3) & 1 != 0 || deltay.abs() > deltax.abs() {
         std::mem::swap(&mut d1, &mut d2);
     }
     for d in [d1, d2] {
@@ -663,6 +663,19 @@ mod tests {
         assert_eq!(ent.game.ideal_yaw, 90.0, "olddir");
         assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 24.0));
         assert!(ent.game.flags.contains(EntityFlags::PARTIALGROUND));
+    }
+
+    #[test]
+    fn new_chase_dir_tries_the_longer_axis_first_by_float_distance() {
+        // Heading 225 makes the 45 diagonal the turnaround, so the axes
+        // are tried. 10.7 and 10.2 truncate to the same int; C compares
+        // fabsf and takes y (90) first.
+        let mut world = floor_world(None);
+        let key = walker(&mut world, 0.0, 0.0);
+        world.entities.get_mut(key).unwrap().game.ideal_yaw = 225.0;
+        seed(&mut world, |w| w.random_u32() & 1 == 0);
+        sv_new_chase_dir(&mut world, key, Vec3f::new(10.2, 10.7, 24.0), 10.0);
+        assert_eq!(world.entities.get(key).unwrap().game.ideal_yaw, 90.0);
     }
 
     #[test]
