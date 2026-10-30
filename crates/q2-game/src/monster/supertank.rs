@@ -1108,6 +1108,21 @@ mod tests {
     }
 
     #[test]
+    fn supertank_pain_on_hard_spares_the_volley_from_its_first_frame_only() {
+        let (mut world, _, key) = supertank();
+        world.game.skill = crate::constants::SKILL_HARD;
+        set_frame(&mut world, key, FRAME_ATTAK2_1);
+        pain(&mut world, key, 100, 0.5);
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            0.0
+        );
+        set_frame(&mut world, key, FRAME_ATTAK2_1 - 1);
+        pain(&mut world, key, 100, 0.5);
+        assert!(playing(&world, key, &SUPERTANK_MOVE_PAIN3));
+    }
+
+    #[test]
     fn supertank_attack_uses_the_gun_close_and_mostly_rockets_far() {
         for (range, roll, mv) in [
             (160.0, 0.9, &SUPERTANK_MOVE_ATTACK1),
