@@ -338,9 +338,19 @@ pub fn turret_driver_die(
     damage: i32,
     point: Vec3f,
 ) {
-    let Some(breach) = world.entities.get(key).and_then(|e| e.game.target_ent) else {
-        return;
-    };
+    // C dereferences target_ent unchecked. A driver that never linked
+    // (misnamed target) or whose breach is gone has no team to leave, so
+    // only the unlinking is skipped and the driver still dies.
+    let breach = world.entities.get(key).and_then(|e| e.game.target_ent);
+    if let Some(breach) = breach {
+        turret_driver_unlink(world, key, breach);
+    }
+    // C: a driver's gib_health is 0, so infantry_die always gibs it.
+    infantry::infantry_die(world, key, inflictor, attacker, damage, point);
+}
+
+/// Level the gun and take the driver off the end of the turret's team.
+fn turret_driver_unlink(world: &mut GameWorld, key: EntityKey, breach: EntityKey) {
     let Some(b) = world.entities.get_mut(breach) else {
         return;
     };
@@ -368,8 +378,6 @@ pub fn turret_driver_die(
         ent.game.teammaster = None;
         ent.game.flags &= !EntityFlags::TEAMSLAVE;
     }
-    // C: a driver's gib_health is 0, so infantry_die always gibs it.
-    infantry::infantry_die(world, key, inflictor, attacker, damage, point);
 }
 
 /// Track an enemy and tell the breach where to aim, and to fire once the
@@ -1014,6 +1022,26 @@ mod tests {
         let seat = world.entities.get(driver).unwrap().state.origin;
         world.run_frame();
         assert_eq!(world.entities.get(driver).unwrap().state.origin.z, seat.z);
+    }
+
+    #[test]
+    fn turret_driver_without_a_breach_still_dies() {
+        // A misnamed target leaves target_ent unset; C would dereference
+        // NULL, the port skips the unlinking and still dies.
+        let mut world = test_world();
+        let driver = world.spawn().unwrap();
+        world.entities.get_mut(driver).unwrap().game.target = "nothing".to_string();
+        sp_turret_driver(&mut world.entities, driver, &HashMap::new());
+        turret_driver_link(&mut world, driver);
+        assert_eq!(world.entities.get(driver).unwrap().game.target_ent, None);
+        world.entities.get_mut(driver).unwrap().game.health = -10;
+        let count = world.entities.count();
+        turret_driver_die(&mut world, driver, driver, driver, 50, Vec3f::ZERO);
+        assert_eq!(
+            world.entities.get(driver).unwrap().game.deadflag,
+            DeadFlag::Dead
+        );
+        assert_eq!(world.entities.count(), count + 6, "2 bones, 4 meat");
     }
 
     /// A map turret (breach + base team, muzzle target, driver) with a
