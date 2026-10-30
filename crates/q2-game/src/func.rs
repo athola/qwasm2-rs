@@ -416,21 +416,6 @@ pub fn think_accel_move(world: &mut GameWorld, key: EntityKey) {
     ent.think = Some(think_accel_move);
 }
 
-/// `self`, then each `teamchain` member (C `for (ent = self; ent; ent =
-/// ent->teamchain)`).
-fn team_members(world: &GameWorld, first: EntityKey) -> Vec<EntityKey> {
-    let mut members = vec![first];
-    let mut next = world.entities.get(first).and_then(|e| e.game.teamchain);
-    while let Some(k) = next {
-        if members.contains(&k) {
-            break;
-        }
-        members.push(k);
-        next = world.entities.get(k).and_then(|e| e.game.teamchain);
-    }
-    members
-}
-
 // ---------------------------------------------------------------------------
 // Platform (func_plat) callbacks
 // ---------------------------------------------------------------------------
@@ -642,7 +627,7 @@ pub fn door_use(
     }
     let toggle = ent.game.spawnflags & DOOR_TOGGLE != 0;
     let state = ent.moveinfo.as_ref().map(|mi| mi.state);
-    let members = team_members(world, self_key);
+    let members = world.team_chain(self_key);
     let closing = toggle && matches!(state, Some(STATE_UP) | Some(STATE_TOP));
     for member in members {
         if let Some(e) = world.entities.get_mut(member) {
@@ -696,7 +681,7 @@ pub fn door_blocked(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
     if crusher || wait < 0.0 {
         return;
     }
-    for member in team_members(world, master) {
+    for member in world.team_chain(master) {
         if state == STATE_DOWN {
             let activator = world
                 .entities
@@ -813,7 +798,7 @@ pub fn door_killed(
     let Some(master) = world.entities.get(self_key).and_then(|e| e.game.teammaster) else {
         return;
     };
-    for member in team_members(world, master) {
+    for member in world.team_chain(master) {
         if let Some(e) = world.entities.get_mut(member) {
             e.game.health = e.game.max_health;
             e.game.takedamage = TakeDamage::No;
@@ -896,7 +881,7 @@ pub fn think_calc_move_speed(world: &mut GameWorld, key: EntityKey) {
     {
         return; // only the team master does this
     }
-    let members = team_members(world, key);
+    let members = world.team_chain(key);
     let distance = |w: &GameWorld, k: EntityKey| {
         w.entities
             .get(k)
@@ -946,7 +931,7 @@ pub fn think_spawn_door_trigger(world: &mut GameWorld, key: EntityKey) {
         return; // only the team leader spawns a trigger
     }
     let (mut mins, mut maxs) = (ent.absmin, ent.absmax);
-    for member in team_members(world, key).into_iter().skip(1) {
+    for member in world.team_chain(key).into_iter().skip(1) {
         if let Some(m) = world.entities.get(member) {
             mins = mins.min(m.absmin).min(m.absmax);
             maxs = maxs.max(m.absmin).max(m.absmax);

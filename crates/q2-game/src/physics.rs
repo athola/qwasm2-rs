@@ -969,8 +969,9 @@ impl GameWorld {
         }
     }
 
-    /// `key`, then each `teamchain` member, stopping at a repeat.
-    fn team_chain(&self, key: EntityKey) -> Vec<EntityKey> {
+    /// `key`, then each `teamchain` member, stopping at a repeat (C
+    /// `for (ent = self; ent; ent = ent->teamchain)`).
+    pub(crate) fn team_chain(&self, key: EntityKey) -> Vec<EntityKey> {
         let mut team = vec![key];
         let mut next = self.entities.get(key).and_then(|e| e.game.teamchain);
         while let Some(k) = next.filter(|k| !team.contains(k)) {
