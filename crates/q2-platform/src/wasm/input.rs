@@ -6,39 +6,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent};
 
+pub use crate::input_state::WasmInputState;
 pub use crate::keymap::key_code_to_q2;
-
-/// Shared input state that event listeners write to.
-#[derive(Debug, Clone)]
-pub struct WasmInputState {
-    pub keys: [bool; 256],
-    pub mouse_dx: f32,
-    pub mouse_dy: f32,
-    pub mouse_buttons: u8,
-}
-
-impl WasmInputState {
-    /// Release every key and button. Called when the page can no longer
-    /// see the matching key-up or mouse-up (focus lost, pointer lock
-    /// changed), so nothing stays held.
-    fn release_all(&mut self) {
-        self.keys = [false; 256];
-        self.mouse_buttons = 0;
-        self.mouse_dx = 0.0;
-        self.mouse_dy = 0.0;
-    }
-}
-
-impl Default for WasmInputState {
-    fn default() -> Self {
-        Self {
-            keys: [false; 256],
-            mouse_dx: 0.0,
-            mouse_dy: 0.0,
-            mouse_buttons: 0,
-        }
-    }
-}
 
 /// Set up keyboard and mouse event listeners on a canvas.
 /// Returns a shared reference to the input state.
@@ -106,13 +75,14 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
         closure.forget();
     }
 
-    // Release everything whenever pointer lock changes state (acquire or
-    // release): stale deltas from an unlocked window would jump the view,
-    // and a button released outside the canvas would stay down.
+    // Pointer lock gained or lost (also fired again when the locked canvas
+    // asks again): see `WasmInputState::pointer_lock_changed`.
     {
         let state = state.clone();
+        let lock_doc = document.clone();
         let closure = Closure::wrap(Box::new(move |_: Event| {
-            state.borrow_mut().release_all();
+            let locked = lock_doc.pointer_lock_element().is_some();
+            state.borrow_mut().pointer_lock_changed(locked);
         }) as Box<dyn FnMut(_)>);
         document
             .add_event_listener_with_callback("pointerlockchange", closure.as_ref().unchecked_ref())
@@ -180,6 +150,7 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
     // call it through JS and log the refusal instead.
     {
         let canvas_clone = canvas.clone();
+        let lock_doc = document.clone();
         let on_refused = Closure::wrap(Box::new(move |err: JsValue| {
             let reason = js_sys::Reflect::get(&err, &"message".into())
                 .ok()
@@ -188,6 +159,12 @@ pub fn setup_input_listeners(canvas: &HtmlCanvasElement) -> Q2Result<Rc<RefCell<
             web_sys::console::warn_1(&format!("[qwasm2] pointer lock refused: {reason}").into());
         }) as Box<dyn FnMut(JsValue)>);
         let closure = Closure::wrap(Box::new(move |_: MouseEvent| {
+            // Asking again while locked makes the browser fire
+            // pointerlockchange for nothing; every mouse shot is a click.
+            let element: &web_sys::Element = canvas_clone.as_ref();
+            if lock_doc.pointer_lock_element().as_ref() == Some(element) {
+                return;
+            }
             let request = js_sys::Reflect::get(&canvas_clone, &"requestPointerLock".into())
                 .ok()
                 .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
