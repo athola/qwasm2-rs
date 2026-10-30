@@ -13,7 +13,7 @@ pub mod wav;
 
 use std::rc::Rc;
 
-use q2_shared::constants::{CS_PLAYERSKINS, MAX_SOUNDS};
+use q2_shared::constants::{CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
 use q2_shared::types::{EntityState, Vec3f};
 
 use wav::Sound;
@@ -226,6 +226,9 @@ pub struct SoundSystem {
     view_entity: i32,
     /// Stops queued outside `update`.
     queued: Vec<MixCommand>,
+    /// Each entity's origin when it was last in a frame (C
+    /// `cl_entities[n].lerp_origin`), for sounds it starts while absent.
+    last_origin: Vec<Vec3f>,
 }
 
 impl SoundSystem {
@@ -237,6 +240,7 @@ impl SoundSystem {
             pending: Vec::new(),
             view_entity,
             queued: Vec::new(),
+            last_origin: vec![Vec3f::ZERO; MAX_EDICTS],
         }
     }
 
@@ -297,7 +301,8 @@ impl SoundSystem {
     /// C `CL_RegisterSounds`: every `CS_SOUNDS` name up to the first empty
     /// one, loaded now (C `S_EndRegistration`). Sounds stay known across
     /// maps; C frees the ones a map stopped using only when its table runs
-    /// short.
+    /// short. The entities' last origins are forgotten, as C
+    /// `CL_ClearState` clears `cl_entities` before a map.
     pub fn register_sounds<'a>(
         &mut self,
         configstring: impl Fn(usize) -> &'a str,
@@ -305,6 +310,7 @@ impl SoundSystem {
     ) {
         use q2_shared::constants::CS_SOUNDS;
         self.precache.fill(None);
+        self.last_origin.fill(Vec3f::ZERO);
         for i in 1..MAX_SOUNDS {
             let name = configstring(CS_SOUNDS + i);
             if name.is_empty() {
@@ -473,7 +479,8 @@ impl SoundSystem {
     /// One frame of C `SDL_Update` at `now_ms` on the mixer's clock:
     /// drop finished and inaudible channels, respatialize the rest from
     /// `entity_origin` (C `CL_GetEntitySoundOrigin`, the entity's lerped
-    /// origin) unless their origin is fixed, merge the loop sounds of
+    /// origin, or where it was last seen when it is not in `entities`)
+    /// unless their origin is fixed, merge the loop sounds of
     /// `entities` (the current frame), then issue the sounds started since
     /// the last update.
     pub fn update(
@@ -486,6 +493,22 @@ impl SoundSystem {
         let mut mix = Mix {
             commands: std::mem::take(&mut self.queued),
             loops: Vec::new(),
+        };
+        for ent in entities {
+            if let Some(slot) = usize::try_from(ent.number)
+                .ok()
+                .and_then(|n| self.last_origin.get_mut(n))
+            {
+                *slot = entity_origin(ent.number).unwrap_or(ent.origin);
+            }
+        }
+        let last_origin = std::mem::take(&mut self.last_origin);
+        let entity_origin = |n: i32| {
+            entity_origin(n).or_else(|| {
+                usize::try_from(n)
+                    .ok()
+                    .and_then(|n| last_origin.get(n).copied())
+            })
         };
         for i in 0..MAX_CHANNELS {
             let mut ch = self.channels[i];
@@ -566,6 +589,7 @@ impl SoundSystem {
                 delay: ps.timeofs,
             });
         }
+        self.last_origin = last_origin;
         mix
     }
 
