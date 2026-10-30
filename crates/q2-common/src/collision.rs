@@ -3698,7 +3698,9 @@ pub(crate) mod tests {
         cm.load_map(&bsp).unwrap();
         let world = cm.models[0].clone();
         let digest = query_digest(&mut cm, (world.mins, world.maxs), 20_000);
-        assert_eq!(digest, 0x7b75_f1e7_5446_c5ae, "{digest:#x}");
+        // Re-recorded when surface names became C's 15 chars; the old
+        // digest with names cut to 15 chars gives this same value.
+        assert_eq!(digest, 0xebb4_660f_376c_f1df, "{digest:#x}");
     }
 
     /// The minimal map with its node replaced by a chain of `depth` nodes on
