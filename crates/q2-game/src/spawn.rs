@@ -73,7 +73,21 @@ fn eof_without_brace() -> Q2Error {
     Q2Error::Drop("ED_ParseEntity: EOF without closing brace".into())
 }
 
-/// Next token per C `COM_Parse`; `None` at end of input.
+/// C `MAX_TOKEN_CHARS`.
+const MAX_TOKEN_CHARS: usize = 1024;
+
+/// C COM_Parse's whitespace: every character up to and including ' '.
+/// Deviation: C compares a plain `char`, which is signed on the x86 and
+/// wasm builds, so bytes from 0x80 are whitespace there and not on ARM;
+/// here the entity string is UTF-8 text and non-ASCII characters belong
+/// to words.
+fn is_space(c: char) -> bool {
+    c <= ' '
+}
+
+/// Next token per C `COM_Parse`; `None` at end of input, which a NUL also
+/// marks. C stores at most `MAX_TOKEN_CHARS` bytes and blanks a token that
+/// fills them, so a token of that many bytes or more comes out empty.
 fn next_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<String> {
     loop {
         skip_whitespace(chars);
@@ -84,54 +98,47 @@ fn next_token(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<St
         }
         break;
     }
-    match chars.peek()? {
-        '"' => Some(parse_quoted_string(chars)),
-        _ => {
-            let mut word = String::new();
-            while let Some(c) = chars.next_if(|c| !c.is_ascii_whitespace()) {
-                word.push(c);
-            }
-            Some(word)
-        }
-    }
-}
-
-/// Advance past whitespace characters.
-fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    while chars.next_if(|c| c.is_ascii_whitespace()).is_some() {}
-}
-
-/// Parse a `"quoted string"`, consuming the surrounding double quotes.
-/// Returns an empty string if the next character is not `"`.
-fn parse_quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
-    // Expect opening '"'
-    match chars.peek() {
-        Some('"') => {
+    let quoted = match chars.peek()? {
+        '\0' => return None,
+        '"' => {
             chars.next();
+            true
         }
-        _ => return String::new(),
+        _ => false,
+    };
+    let mut raw = String::new();
+    if quoted {
+        // A quoted string runs to the closing quote (or a NUL).
+        raw.extend(chars.take_while(|&c| c != '"' && c != '\0'));
+    } else {
+        while let Some(c) = chars.next_if(|&c| !is_space(c)) {
+            raw.push(c);
+        }
     }
+    if raw.len() >= MAX_TOKEN_CHARS {
+        raw.clear();
+    }
+    Some(if quoted { unescape(&raw) } else { raw })
+}
 
+/// Advance past whitespace characters, stopping at a NUL.
+fn skip_whitespace(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while chars.next_if(|&c| is_space(c) && c != '\0').is_some() {}
+}
+
+/// C ED_NewString: `\n` is a newline, any other escaped character becomes
+/// a lone backslash; a final backslash stays.
+fn unescape(raw: &str) -> String {
+    let mut chars = raw.chars().peekable();
     let mut s = String::new();
-    loop {
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            s.push(c);
+            continue;
+        }
         match chars.next() {
-            Some('"') | None => break,
-            Some('\\') => {
-                // C ED_NewString: `\n` is a newline, any other escaped
-                // character becomes a lone backslash; a final backslash stays.
-                match chars.peek() {
-                    Some('"') | None => s.push('\\'),
-                    Some('n') => {
-                        chars.next();
-                        s.push('\n');
-                    }
-                    Some(_) => {
-                        chars.next();
-                        s.push('\\');
-                    }
-                }
-            }
-            Some(c) => s.push(c),
+            Some('n') => s.push('\n'),
+            _ => s.push('\\'),
         }
     }
     s
@@ -494,6 +501,36 @@ mod tests {
         assert_eq!(entities[0]["classname"], "info_player_start");
         assert_eq!(entities[0]["origin"], "0 0 0");
         assert_eq!(entities[0]["angle"], "90");
+    }
+
+    #[test]
+    fn every_control_byte_separates_tokens_as_in_com_parse() {
+        // C COM_Parse skips and splits on every byte <= ' ', such as \x0B.
+        let entities = parse_entity_string("{\x0Bclassname\x0Bworldspawn\x1F}").unwrap();
+        assert_eq!(entities[0]["classname"], "worldspawn");
+    }
+
+    #[test]
+    fn a_nul_byte_ends_the_entity_string_as_in_com_parse() {
+        let entities =
+            parse_entity_string("{ \"classname\" \"a\" }\0{ \"classname\" \"b\" }").unwrap();
+        assert_eq!(entities.len(), 1);
+    }
+
+    #[test]
+    fn tokens_of_max_token_chars_or_more_come_out_empty() {
+        // C keeps at most 1024 characters and blanks a token that fills
+        // them, so anything from 1024 characters on is empty.
+        for (len, kept) in [(1023, true), (1024, false), (2000, false)] {
+            let long = "x".repeat(len);
+            for text in [format!("\"{long}\""), long.clone()] {
+                let entities =
+                    parse_entity_string(&format!("{{ \"message\" {text} \"classname\" \"a\" }}"))
+                        .unwrap();
+                let expected = if kept { long.as_str() } else { "" };
+                assert_eq!(entities[0]["message"], expected, "{len}");
+            }
+        }
     }
 
     #[test]
