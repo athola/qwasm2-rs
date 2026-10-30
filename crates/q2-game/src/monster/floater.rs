@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn floater_wham_hits_for_5_to_10_and_knocks_back() {
+    fn floater_wham_hits_for_5_to_10_and_pulls_in() {
         let (mut world, gi) = hit_world(false);
         let key = floater(&mut world);
         let player = hit_player(&mut world, &gi, Vec3f::new(50.0, 0.0, 64.0));
@@ -715,8 +715,15 @@ mod tests {
         let mut hits = std::collections::BTreeSet::new();
         for _ in 0..100 {
             world.entities.get_mut(player).unwrap().game.health = 100;
+            world.entities.get_mut(player).unwrap().velocity = Vec3f::ZERO;
             floater_wham(&mut world, key);
             hits.insert(100 - world.entities.get(player).unwrap().game.health);
+            // C kick -50: fire_hit's knockback pulls the player in.
+            let pull = world.entities.get(player).unwrap().velocity;
+            assert!(
+                (pull.length() - 50.0).abs() < 0.01 && pull.x < 0.0,
+                "{pull}"
+            );
         }
         assert_eq!(hits, (5..=10).collect());
         let played = sounds_of(&world, &gi.floor.inner, key);
