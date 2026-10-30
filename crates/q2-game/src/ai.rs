@@ -814,7 +814,7 @@ pub fn find_target(world: &mut GameWorld, key: EntityKey) -> bool {
 /// Pick the next live client, round-robin, for monsters to check this
 /// frame; none if no client is alive. C ref: `AI_SetSightClient` (g_ai.c).
 pub fn ai_set_sight_client(world: &mut GameWorld) {
-    let maxclients = world.game.maxclients.max(0) as usize;
+    let maxclients = world.game.maxclients().max(0) as usize;
     let start = world
         .level
         .sight_client_key

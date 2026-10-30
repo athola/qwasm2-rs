@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn game_locals_default() {
         let gl = crate::world::GameLocals::default();
-        assert_eq!(gl.maxclients, 1);
+        assert_eq!(gl.maxclients(), 1);
         assert_eq!(gl.maxentities, 1024);
     }
 }

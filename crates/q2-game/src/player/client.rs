@@ -57,7 +57,7 @@ impl GameWorld {
         self.init_client_resp(&mut client);
         self.init_client_persistant(&mut client.pers);
         client_userinfo_changed(&mut client.pers, userinfo);
-        if self.game.maxclients > 1 {
+        if self.game.maxclients() > 1 {
             self.gi
                 .dprintf(&format!("{} connected\n", client.pers.netname));
         }
@@ -320,7 +320,7 @@ impl GameWorld {
     /// C ref: `PlayersRangeFromSpot` (player/client.c).
     fn players_range_from_spot(&self, spot: EntityKey) -> f32 {
         let origin = self.spot_origin(spot);
-        (1..=self.game.maxclients.max(0) as usize)
+        (1..=self.game.maxclients().max(0) as usize)
             .filter_map(|n| self.entities.key_for_number(n))
             .filter_map(|k| self.entities.get(k))
             .filter(|p| p.in_use && p.game.health > 0)
@@ -420,7 +420,7 @@ impl GameWorld {
     /// Leave a copy of the player's corpse in the next body queue slot.
     /// C ref: `CopyToBodyQue` (player/client.c).
     fn copy_to_body_que(&mut self, key: EntityKey) {
-        let number = self.game.maxclients + self.level.body_que + 1;
+        let number = self.game.maxclients() + self.level.body_que + 1;
         self.level.body_que = (self.level.body_que + 1) % BODY_QUEUE_SIZE as i32;
         let Some(body) = usize::try_from(number)
             .ok()

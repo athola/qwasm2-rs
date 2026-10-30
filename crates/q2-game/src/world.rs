@@ -81,7 +81,10 @@ pub struct GameLocals {
     /// Target name of the start to use (C `game.spawnpoint`), from the
     /// previous level's exit; empty for a fresh map.
     pub spawnpoint: String,
-    pub maxclients: i32,
+    /// Read with `maxclients()`; only `GameWorld::set_max_clients` writes
+    /// it, keeping it equal to the entity storage's client count and
+    /// `clients.len()`.
+    maxclients: i32,
     pub maxentities: i32,
     pub serverflags: i32,
     /// C `dmflags` cvar (`DF_*` bits); read by deathmatch spawn selection.
@@ -97,6 +100,13 @@ pub struct GameLocals {
     /// How far the view bob cycle advances each frame on the ground; kept
     /// while airborne (C view.c file static `bobmove`).
     pub bobmove: f32,
+}
+
+impl GameLocals {
+    /// C `game.maxclients()`.
+    pub fn maxclients(&self) -> i32 {
+        self.maxclients
+    }
 }
 
 impl Default for GameLocals {
@@ -153,7 +163,7 @@ impl GameWorld {
             ..GameLocals::default()
         };
         let mut entities = EntityStorage::new(maxentities);
-        let maxclients = game.maxclients.max(0) as usize;
+        let maxclients = game.maxclients().max(0) as usize;
         entities.set_max_clients(maxclients);
         Self {
             entities,
@@ -195,6 +205,16 @@ impl GameWorld {
         Some((ent, client))
     }
 
+    /// Set `game.maxclients` (clamped to `MAX_CLIENTS`, as the server clamps
+    /// its cvar) and reserve entity numbers `1..=maxclients` for clients.
+    pub fn set_max_clients(&mut self, max_clients: usize) {
+        let max_clients = max_clients.min(q2_shared::constants::MAX_CLIENTS);
+        self.game.maxclients = max_clients as i32;
+        self.entities.set_max_clients(max_clients);
+        // C InitGame allocates game.clients for maxclients.
+        self.clients.resize_with(max_clients, Default::default);
+    }
+
     /// Spawn a new entity. Returns `None` if storage is full.
     /// C ref: G_Spawn (g_utils.c)
     pub fn spawn(&mut self) -> Option<EntityKey> {
@@ -218,14 +238,14 @@ impl GameWorld {
         // queue after them, are never freed. C always has `bodyque` edicts
         // there in those modes; checking the classname keeps entities
         // spawned without a worldspawn (unit tests) freeable.
-        let body_queue_end = self.game.maxclients + crate::constants::BODY_QUEUE_SIZE as i32;
+        let body_queue_end = self.game.maxclients() + crate::constants::BODY_QUEUE_SIZE as i32;
         let body_queue = (self.game.deathmatch || self.game.coop)
             && number <= body_queue_end
             && self
                 .entities
                 .get(key)
                 .is_some_and(|e| e.game.classname == "bodyque");
-        if number <= self.game.maxclients || body_queue {
+        if number <= self.game.maxclients() || body_queue {
             return;
         }
         self.entities.set_level_time(self.level.time);
@@ -1261,7 +1281,7 @@ impl GameWorld {
         // Walk entity numbers, re-reading the table each step so entities
         // spawned during the frame run in it too (C loops to the growing
         // `globals.num_edicts`).
-        let maxclients = self.game.maxclients.max(0) as usize;
+        let maxclients = self.game.maxclients().max(0) as usize;
         for number in 0..self.game.maxentities.max(0) as usize {
             let Some(key) = self.entities.key_for_number(number) else {
                 continue;
@@ -1474,7 +1494,7 @@ impl GameWorld {
         self.client_end_server_frames();
 
         // Clear some things before going to the next level.
-        for number in 1..=self.game.maxclients.max(0) as usize {
+        for number in 1..=self.game.maxclients().max(0) as usize {
             let Some(ent) = self
                 .entities
                 .key_for_number(number)
@@ -1499,7 +1519,7 @@ impl GameWorld {
         // C SpawnEntities: a new map starts from zeroed edicts and level.
         self.entities = EntityStorage::new(self.game.maxentities.max(0) as usize);
         self.entities
-            .set_max_clients(self.game.maxclients.max(0) as usize);
+            .set_max_clients(self.game.maxclients().max(0) as usize);
         self.level = LevelLocals {
             mapname: mapname.to_string(),
             ..LevelLocals::default()
@@ -1507,7 +1527,7 @@ impl GameWorld {
         // C SP_worldspawn sets this from the maxclients cvar (g_spawn.c).
         self.gi.configstring(
             q2_shared::constants::CS_MAXCLIENTS as i32,
-            &self.game.maxclients.to_string(),
+            &self.game.maxclients().to_string(),
         );
 
         // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
@@ -3267,7 +3287,7 @@ mod tests {
         );
         let after = world.find_by_targetname(None, "after").unwrap();
         // C G_Spawn reuses edicts freed before level time 2.
-        let first = world.game.maxclients as usize + 1;
+        let first = world.game.maxclients() as usize + 1;
         assert_eq!(world.number_of(after), Some(first));
     }
 
