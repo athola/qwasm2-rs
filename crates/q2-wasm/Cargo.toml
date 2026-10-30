@@ -32,6 +32,8 @@ web-sys = { workspace = true, features = [
     "Window",
 ] }
 js-sys = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

@@ -299,6 +299,24 @@ fn load_map_exposes_the_entity_string_and_rejects_bad_bsp() {
 }
 
 #[test]
+fn a_failed_load_map_keeps_nothing_from_the_previous_map() {
+    // C SV_SpawnServer zeroes `sv` before CM_LoadMap fails.
+    let gi = loaded();
+    gi.link_entity(&box_link(5, Vec3f::new(0.0, 0.0, 40.0)));
+    assert_eq!(gi.model_index("models/a.md2"), 1);
+    assert!(gi.load_map(b"not a bsp").is_err());
+    let everything = Vec3f::splat(4096.0);
+    assert_eq!(
+        gi.box_edicts(-everything, everything, 16, 1),
+        Vec::<usize>::new()
+    );
+    assert!(!gi.entity_in_pvs(5, &[0xff; 8]));
+    assert_eq!(gi.entity_areas(5), (0, 0));
+    assert!(gi.drain_configstring_updates().is_empty());
+    assert_eq!(gi.model_index("models/b.md2"), 1, "empty mirror");
+}
+
+#[test]
 fn linked_entity_is_in_the_fat_pvs_and_never_linked_one_is_not() {
     // The fixture has no vis lump, so every cluster sees every other.
     let gi = loaded();
