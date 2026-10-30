@@ -1504,9 +1504,11 @@ impl GameWorld {
 
         let mut inhibit = 0;
         for (index, fields) in parsed.iter().enumerate() {
-            let classname = match fields.get("classname") {
-                Some(cn) => cn.clone(),
-                None => continue,
+            // C G_Spawns the block and ED_CallSpawn frees it again at once,
+            // so skipping it keeps the numbering.
+            let Some(classname) = fields.get("classname").cloned() else {
+                self.gi.dprintf("ED_CallSpawn: NULL classname\n");
+                continue;
             };
 
             // C SpawnEntities: the first block (worldspawn) is g_edicts[0],
@@ -2230,6 +2232,22 @@ mod tests {
             .borrow()
             .iter()
             .any(|m| m == "ED_Alloc: no free edicts\n"));
+    }
+
+    #[test]
+    fn a_block_without_a_classname_is_reported() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            "{ \"classname\" \"worldspawn\" } { \"origin\" \"1 2 3\" }",
+            "",
+        );
+        assert!(gi
+            .dprints
+            .borrow()
+            .iter()
+            .any(|m| m == "ED_CallSpawn: NULL classname\n"));
     }
 
     #[test]
