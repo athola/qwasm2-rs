@@ -529,6 +529,142 @@ mod tests {
         assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
     }
 
+    fn floor_world_of(import: FloorImport) -> (GameWorld, EntityKey) {
+        let (mut world, _) = floor_world_with(import);
+        let key = walker(&mut world, 0.0, 0.0);
+        (world, key)
+    }
+
+    fn origin(world: &GameWorld, key: EntityKey) -> Vec3f {
+        world.entities.get(key).unwrap().state.origin
+    }
+
+    #[test]
+    fn walkmove_steps_up_a_stair_no_higher_than_stepsize() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((20.0, 8.0)),
+            ..Default::default()
+        });
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        let at = origin(&world, key);
+        assert!((at - Vec3f::new(10.0, 0.0, 32.0)).length() < 0.01, "{at}");
+    }
+
+    #[test]
+    fn walkmove_with_ai_nostep_will_not_climb_a_stair() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((20.0, 8.0)),
+            ..Default::default()
+        });
+        let mi = world.entities.get_mut(key).unwrap().monsterinfo.as_mut();
+        mi.unwrap().aiflags |= AiFlags::NOSTEP;
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+    }
+
+    #[test]
+    fn walkmove_refuses_to_hang_over_a_ledge_deeper_than_a_step() {
+        let import = || FloorImport {
+            step: Some((20.0, -30.0)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+
+        // A monster already partly off the ground takes the step anyway.
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::PARTIALGROUND;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key).x, 10.0);
+    }
+
+    #[test]
+    fn walkmove_off_the_floor_falls_only_with_partialground() {
+        let import = || FloorImport {
+            step: Some((-1000.0, -100.0)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(
+            !m_walkmove(&mut world, key, 0.0, 10.0),
+            "walked off an edge"
+        );
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::PARTIALGROUND;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.state.origin, Vec3f::new(10.0, 0.0, 24.0));
+        assert_eq!(ent.game.ground_entity, None);
+    }
+
+    #[test]
+    fn walkmove_keeps_a_dry_walker_out_of_the_water() {
+        let import = || FloorImport {
+            water: Some((10.0, q2_shared::constants::CONTENTS_WATER)),
+            ..Default::default()
+        };
+        let (mut world, key) = floor_world_of(import());
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+
+        let (mut world, key) = floor_world_of(import());
+        world.entities.get_mut(key).unwrap().game.waterlevel = 1;
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0), "already wet");
+    }
+
+    #[test]
+    fn walkmove_under_a_low_ceiling_retries_from_floor_height() {
+        // The step-raised start is in the ceiling (startsolid, not
+        // allsolid), so C retries a step lower.
+        let (mut world, key) = floor_world_of(FloorImport {
+            ceiling: Some(70.0),
+            ..Default::default()
+        });
+        assert!(m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(10.0, 0.0, 24.0));
+
+        // Still in the ceiling a step lower: no move.
+        let (mut world, key) = floor_world_of(FloorImport {
+            ceiling: Some(50.0),
+            ..Default::default()
+        });
+        assert!(!m_walkmove(&mut world, key, 0.0, 10.0));
+        assert_eq!(origin(&world, key), Vec3f::new(0.0, 0.0, 24.0));
+    }
+
+    #[test]
+    fn step_direction_undoes_the_step_until_turned_within_45_degrees() {
+        let mut world = floor_world(None);
+        let key = walker(&mut world, 0.0, 0.0);
+        world.entities.get_mut(key).unwrap().state.angles.y = 180.0;
+        // Turned to 160 of 90: 70 degrees off, so the step is taken back.
+        assert!(sv_step_direction(&mut world, key, 90.0, 10.0));
+        let ent = world.entities.get(key).unwrap();
+        assert!((ent.state.angles.y - 160.0).abs() < 0.01);
+        assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 24.0));
+
+        world.entities.get_mut(key).unwrap().state.angles.y = 100.0;
+        assert!(sv_step_direction(&mut world, key, 90.0, 10.0));
+        let at = origin(&world, key);
+        assert!((at - Vec3f::new(0.0, 10.0, 24.0)).length() < 0.01, "{at}");
+    }
+
+    #[test]
+    fn new_chase_dir_that_cannot_move_keeps_its_heading_and_marks_partialground() {
+        let (mut world, key) = floor_world_of(FloorImport {
+            step: Some((-1000.0, -100.0)),
+            ..Default::default()
+        });
+        world.entities.get_mut(key).unwrap().game.ideal_yaw = 100.0;
+        sv_new_chase_dir(&mut world, key, Vec3f::new(300.0, 300.0, 24.0), 10.0);
+        let ent = world.entities.get(key).unwrap();
+        assert_eq!(ent.game.ideal_yaw, 90.0, "olddir");
+        assert_eq!(ent.state.origin, Vec3f::new(0.0, 0.0, 24.0));
+        assert!(ent.game.flags.contains(EntityFlags::PARTIALGROUND));
+    }
+
     #[test]
     fn change_yaw_turns_by_at_most_yaw_speed_the_short_way() {
         let mut world = floor_world(None);
