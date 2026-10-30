@@ -427,9 +427,9 @@ impl Renderer for Gl3Renderer {
             Some(gl) => gl,
             None => return,
         };
-        if fd.width > 0 && fd.height > 0 {
-            self.canvas = (fd.width, fd.height);
-        }
+        // Only the 3D viewport follows the refdef; the 2D canvas keeps the
+        // drawable size from `begin_frame`, as C GL3_SetGL2D uses vid.width
+        // and vid.height.
 
         // SAFETY: State-only calls on the live context `gl`; no object
         // handles are passed.
@@ -1514,7 +1514,7 @@ mod tests {
         let mut r = Gl3Renderer::headless(no_files());
         r.begin_frame(1280, 720);
         assert_eq!(r.canvas, (1280, 720));
-        // An empty drawable keeps the last usable size, as render_frame does.
+        // An empty drawable keeps the last usable size.
         r.begin_frame(0, 720);
         assert_eq!(r.canvas, (1280, 720));
     }
