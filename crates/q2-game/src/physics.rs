@@ -116,16 +116,9 @@ pub fn clip_velocity(velocity: Vec3f, normal: Vec3f, overbounce: f32) -> (Vec3f,
     (out, blocked)
 }
 
-/// C `AngleVectors`: forward, right, up for `angles` in degrees.
-pub(crate) fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
-    let (sp, cp) = angles.x.to_radians().sin_cos();
-    let (sy, cy) = angles.y.to_radians().sin_cos();
-    let (sr, cr) = angles.z.to_radians().sin_cos();
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
-    let up = Vec3f::new(cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp);
-    (forward, right, up)
-}
+/// C `AngleVectors`, with C's double-precision sin/cos, shared with pmove
+/// so every game-side caller rounds the way the original does.
+pub(crate) use q2_common::pmove::angle_vectors;
 
 /// The world-space bounds of a (possibly rotated) bmodel's 8 corners, so a
 /// rotating pusher only tests what it can really touch.

@@ -642,13 +642,7 @@ impl GameWorld {
             return Vec3f::new(0.0, 0.0, -1.0); // down
         }
 
-        let yaw = angles.y.to_radians();
-        let pitch = angles.x.to_radians();
-        Vec3f::new(
-            yaw.cos() * pitch.cos(),
-            yaw.sin() * pitch.cos(),
-            -pitch.sin(),
-        )
+        crate::physics::angle_vectors(angles).0
     }
 }
 
@@ -2286,6 +2280,27 @@ mod tests {
         // -2 = straight down
         let dir = GameWorld::set_movedir(Vec3f::new(0.0, -2.0, 0.0));
         assert_eq!(dir, Vec3f::new(0.0, 0.0, -1.0));
+    }
+
+    #[test]
+    fn set_movedir_rounds_like_c_double_angle_vectors() {
+        // C AngleVectors: degrees * (M_PI * 2 / 360) in double, stored to
+        // float, then sin/cos in double rounded to float.
+        let sin_cos = |degrees: f32| {
+            let radians =
+                f64::from((f64::from(degrees) * (std::f64::consts::PI * 2.0 / 360.0)) as f32);
+            (radians.sin() as f32, radians.cos() as f32)
+        };
+        for tenth in 0..3600 {
+            let angles = Vec3f::new(tenth as f32 / 20.0, tenth as f32 / 10.0, 0.0);
+            let (sp, cp) = sin_cos(angles.x);
+            let (sy, cy) = sin_cos(angles.y);
+            assert_eq!(
+                GameWorld::set_movedir(angles),
+                Vec3f::new(cp * cy, cp * sy, -sp),
+                "{angles:?}"
+            );
+        }
     }
 
     #[test]

@@ -153,7 +153,7 @@ fn short2angle(s: i16) -> f32 {
 /// Matches `AngleVectors(angles, forward, right, up)` in the C engine,
 /// including its precision: the radian conversion is a double multiply
 /// stored to float, and sin/cos run in double before rounding to float.
-pub(crate) fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
+pub fn angle_vectors(angles: Vec3f) -> (Vec3f, Vec3f, Vec3f) {
     let sin_cos = |degrees: f32| {
         let radians = (f64::from(degrees) * (std::f64::consts::PI * 2.0 / 360.0)) as f32;
         let radians = f64::from(radians);

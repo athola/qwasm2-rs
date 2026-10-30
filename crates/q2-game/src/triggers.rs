@@ -33,9 +33,7 @@ const COUNTER_NOMESSAGE: i32 = 1;
 
 /// C `AngleVectors` forward vector.
 fn angles_forward(angles: Vec3f) -> Vec3f {
-    let (sp, cp) = angles.x.to_radians().sin_cos();
-    let (sy, cy) = angles.y.to_radians().sin_cos();
-    Vec3f::new(cp * cy, cp * sy, -sp)
+    crate::physics::angle_vectors(angles).0
 }
 
 // ---------------------------------------------------------------------------
