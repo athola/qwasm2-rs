@@ -584,16 +584,6 @@ mod tests {
         monster_world(sp_monster_boss2)
     }
 
-    fn mi(world: &GameWorld, key: EntityKey) -> &MonsterInfo {
-        world
-            .entities
-            .get(key)
-            .unwrap()
-            .monsterinfo
-            .as_ref()
-            .unwrap()
-    }
-
     #[test]
     fn boss2_moves_match_c_boss2_c() {
         let charge = Some(ai::ai_charge as AnimFrameFn);
@@ -906,11 +896,6 @@ mod tests {
             enemy_aim(&world, key, -0.2),
             Some(Vec3f::new(600.0, -20.0, 22.0))
         );
-    }
-
-    /// A pain callback that keeps the kick it was handed in `game.count`.
-    fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
-        world.entities.get_mut(key).unwrap().game.count = kick as i32;
     }
 
     #[test]

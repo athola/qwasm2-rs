@@ -9,8 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash};
+use crate::monster::{fire, flash, throw_organic_gibs};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -559,34 +558,7 @@ pub fn infantry_die(
     };
     if ent.game.health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if ent.game.deadflag == DeadFlag::Dead {
@@ -776,7 +748,7 @@ mod tests {
     use super::*;
     use crate::entity::ThinkFn;
     use crate::monster::test_support::{
-        check_move, player_arena, seed, sounds, think_for, ArenaImport,
+        check_move, mi, mi_mut, player_arena, playing, seed, sounds, think_for, ArenaImport,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
@@ -1062,21 +1034,6 @@ mod tests {
         (world, gi, key, enemy)
     }
 
-    fn mi(world: &GameWorld, key: EntityKey) -> &MonsterInfo {
-        monsterinfo(world, key).unwrap()
-    }
-
-    fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
-        monsterinfo_mut(world, key).unwrap()
-    }
-
-    fn is(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
-        mi(world, key)
-            .currentmove
-            .as_ref()
-            .is_some_and(|cm| std::ptr::eq(cm.frames, mv.frames))
-    }
-
     fn snd(chan: i32, name: &str, attn: f32) -> (i32, String, f32) {
         (chan, name.to_string(), attn)
     }
@@ -1085,11 +1042,11 @@ mod tests {
     fn infantry_stand_walk_and_run_set_their_moves() {
         let (mut world, _, key, _) = duel(300.0);
         infantry_walk(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_WALK));
+        assert!(playing(&world, key, &INFANTRY_MOVE_WALK));
         infantry_run(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_RUN));
+        assert!(playing(&world, key, &INFANTRY_MOVE_RUN));
         infantry_stand(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
@@ -1097,14 +1054,14 @@ mod tests {
         let (mut world, _, key, _) = duel(300.0);
         mi_mut(&mut world, key).aiflags = AiFlags::STAND_GROUND;
         infantry_run(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
     fn infantry_fidget_fidgets_and_mutters() {
         let (mut world, gi, key, _) = duel(300.0);
         infantry_fidget(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_FIDGET));
+        assert!(playing(&world, key, &INFANTRY_MOVE_FIDGET));
         assert_eq!(sounds(&gi), [snd(CHAN_VOICE, SOUND_IDLE, ATTN_IDLE)]);
     }
 
@@ -1137,7 +1094,7 @@ mod tests {
             let (mut world, gi, key, enemy) = duel(300.0);
             seed(&mut world, |w| w.random_u32() % 2 == n);
             infantry_pain(&mut world, key, enemy, 0.0, 5);
-            assert!(is(&world, key, mv));
+            assert!(playing(&world, key, mv));
             assert_eq!(sounds(&gi), [snd(CHAN_VOICE, cry, ATTN_NORM)]);
             assert_eq!(
                 world.entities.get(key).unwrap().game.pain_debounce_time,
@@ -1147,7 +1104,7 @@ mod tests {
             // Within the debounce: nothing.
             infantry_stand(&mut world, key);
             infantry_pain(&mut world, key, enemy, 0.0, 5);
-            assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+            assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
             assert_eq!(sounds(&gi).len(), 1);
         }
     }
@@ -1157,7 +1114,7 @@ mod tests {
         let (mut world, gi, key, enemy) = duel(300.0);
         world.game.skill = crate::constants::SKILL_HARDPLUS;
         infantry_pain(&mut world, key, enemy, 0.0, 5);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
         assert!(sounds(&gi).is_empty());
         assert_eq!(
             world.entities.get(key).unwrap().game.pain_debounce_time,
@@ -1330,7 +1287,7 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.health = -39;
         infantry_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
         assert!(sounds(&gi).is_empty());
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]
@@ -1343,7 +1300,7 @@ mod tests {
             let (mut world, gi, key, enemy) = duel(300.0);
             seed(&mut world, |w| w.random_u32() % 3 == n);
             infantry_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
-            assert!(is(&world, key, mv), "{n}");
+            assert!(playing(&world, key, mv), "{n}");
             assert_eq!(sounds(&gi), [snd(CHAN_VOICE, cry, ATTN_NORM)]);
             let ent = world.entities.get(key).unwrap();
             assert_eq!(ent.state.skinnum, 1);
@@ -1384,12 +1341,12 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() > 0.25);
         infantry_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
         assert_eq!(world.entities.get(key).unwrap().game.enemy, None);
 
         seed(&mut world, |w| w.random() <= 0.25);
         infantry_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &INFANTRY_MOVE_DUCK));
+        assert!(playing(&world, key, &INFANTRY_MOVE_DUCK));
         assert_eq!(world.entities.get(key).unwrap().game.enemy, Some(enemy));
     }
 
@@ -1453,10 +1410,10 @@ mod tests {
     fn infantry_attack_smacks_in_melee_range_else_machineguns() {
         let (mut world, _, key, _) = duel(50.0);
         infantry_attack(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_ATTACK2));
+        assert!(playing(&world, key, &INFANTRY_MOVE_ATTACK2));
         let (mut world, _, key, _) = duel(300.0);
         infantry_attack(&mut world, key);
-        assert!(is(&world, key, &INFANTRY_MOVE_ATTACK1));
+        assert!(playing(&world, key, &INFANTRY_MOVE_ATTACK1));
     }
 
     #[test]
@@ -1480,7 +1437,7 @@ mod tests {
             .idle
             .is_some_and(|f| std::ptr::fn_addr_eq(f, infantry_fidget as ThinkFn)));
         assert!(mi.melee.is_none() && mi.search.is_none());
-        assert!(is(&world, key, &INFANTRY_MOVE_STAND));
+        assert!(playing(&world, key, &INFANTRY_MOVE_STAND));
     }
 
     #[test]

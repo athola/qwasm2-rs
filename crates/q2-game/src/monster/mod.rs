@@ -33,7 +33,9 @@ pub mod turret;
 
 use q2_shared::types::Vec3f;
 
+use crate::constants::DeadFlag;
 use crate::entity::{AnimFrameFn, EntityKey, MonsterFrame, MonsterMove, ThinkFn};
+use crate::misc::{throw_gib, throw_head, GibType};
 use crate::world::GameWorld;
 
 /// One C `mframe_t` row; `const` so the move tables can be statics.
@@ -67,6 +69,40 @@ pub(crate) fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str,
     world
         .gi
         .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
+}
+
+/// The organic gib-out shared by the C `*_die` functions: two bones, four
+/// meat chunks, the `head2` head, then dead. Callers play
+/// `misc/udeath.wav` first, on their own channel and attenuation.
+pub(crate) fn throw_organic_gibs(world: &mut GameWorld, key: EntityKey, damage: i32) {
+    for _ in 0..2 {
+        throw_gib(
+            world,
+            key,
+            "models/objects/gibs/bone/tris.md2",
+            damage,
+            GibType::Organic,
+        );
+    }
+    for _ in 0..4 {
+        throw_gib(
+            world,
+            key,
+            "models/objects/gibs/sm_meat/tris.md2",
+            damage,
+            GibType::Organic,
+        );
+    }
+    throw_head(
+        world,
+        key,
+        "models/objects/gibs/head2/tris.md2",
+        damage,
+        GibType::Organic,
+    );
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.deadflag = DeadFlag::Dead;
+    }
 }
 
 /// The enemy's eye: C `enemy->s.origin` plus `viewheight` on z.

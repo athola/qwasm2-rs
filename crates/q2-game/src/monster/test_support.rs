@@ -724,6 +724,12 @@ pub fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
         .unwrap()
 }
 
+/// A `pain` callback that records the hit's kick in `count`, so a test
+/// can read back the kick a shot carried.
+pub fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
+    world.entities.get_mut(key).unwrap().game.count = kick as i32;
+}
+
 /// Whether `key` is playing `mv` (C compares `currentmove` pointers).
 pub fn playing(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
     mi(world, key)

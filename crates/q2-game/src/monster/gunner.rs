@@ -9,8 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash};
+use crate::monster::{fire, flash, throw_organic_gibs};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -558,34 +557,7 @@ pub fn gunner_die(
     let (health, deadflag) = (ent.game.health, ent.game.deadflag);
     if health <= ent.game.gib_health {
         sound(world, key, CHAN_VOICE, "misc/udeath.wav", ATTN_NORM);
-        for _ in 0..2 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/bone/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        for _ in 0..4 {
-            throw_gib(
-                world,
-                key,
-                "models/objects/gibs/sm_meat/tris.md2",
-                damage,
-                GibType::Organic,
-            );
-        }
-        throw_head(
-            world,
-            key,
-            "models/objects/gibs/head2/tris.md2",
-            damage,
-            GibType::Organic,
-        );
-        if let Some(ent) = world.entities.get_mut(key) {
-            ent.game.deadflag = DeadFlag::Dead;
-        }
+        throw_organic_gibs(world, key, damage);
         return;
     }
     if deadflag == DeadFlag::Dead {
@@ -841,7 +813,8 @@ mod tests {
     use crate::entity::ThinkFn;
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{
-        check_move, player_arena, seed, sounds, think_for, ArenaImport,
+        check_move, keep_kick, mi, mi_mut, player_arena, playing, seed, sounds, think_for,
+        ArenaImport,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
@@ -1075,21 +1048,6 @@ mod tests {
         (world, gi, key, enemy)
     }
 
-    fn mi(world: &GameWorld, key: EntityKey) -> &MonsterInfo {
-        monsterinfo(world, key).unwrap()
-    }
-
-    fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
-        monsterinfo_mut(world, key).unwrap()
-    }
-
-    fn is(world: &GameWorld, key: EntityKey, mv: &MonsterMove) -> bool {
-        mi(world, key)
-            .currentmove
-            .as_ref()
-            .is_some_and(|cm| std::ptr::eq(cm.frames, mv.frames))
-    }
-
     fn voice(name: &str, attn: f32) -> (i32, String, f32) {
         (CHAN_VOICE, name.to_string(), attn)
     }
@@ -1131,10 +1089,10 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() > 0.05);
         gunner_fidget(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         seed(&mut world, |w| w.random() <= 0.05);
         gunner_fidget(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_FIDGET));
+        assert!(playing(&world, key, &GUNNER_MOVE_FIDGET));
     }
 
     #[test]
@@ -1142,11 +1100,11 @@ mod tests {
         let (mut world, _, key, _) = duel(300.0);
         let rand = world.level.rand_state;
         gunner_fidget(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         world.entities.get_mut(key).unwrap().game.enemy = None;
         mi_mut(&mut world, key).aiflags = AiFlags::STAND_GROUND;
         gunner_fidget(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         assert_eq!(world.level.rand_state, rand);
     }
 
@@ -1154,16 +1112,16 @@ mod tests {
     fn gunner_stand_walk_run_and_runandshoot_set_their_moves() {
         let (mut world, _, key, _) = duel(300.0);
         gunner_walk(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_WALK));
+        assert!(playing(&world, key, &GUNNER_MOVE_WALK));
         gunner_run(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_RUN));
+        assert!(playing(&world, key, &GUNNER_MOVE_RUN));
         gunner_runandshoot(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_RUNANDSHOOT));
+        assert!(playing(&world, key, &GUNNER_MOVE_RUNANDSHOOT));
         gunner_stand(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         mi_mut(&mut world, key).aiflags = AiFlags::STAND_GROUND;
         gunner_run(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
     }
 
     #[test]
@@ -1192,7 +1150,7 @@ mod tests {
             gunner_stand(&mut world, key);
             gunner_pain(&mut world, key, enemy, 0.0, 5);
             assert_eq!(sounds(&gi).len(), 1);
-            assert!(is(&world, key, &GUNNER_MOVE_STAND));
+            assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         }
     }
 
@@ -1206,12 +1164,12 @@ mod tests {
         ] {
             let (mut world, _, key, enemy) = duel(300.0);
             gunner_pain(&mut world, key, enemy, 0.0, damage);
-            assert!(is(&world, key, mv), "{damage}");
+            assert!(playing(&world, key, mv), "{damage}");
         }
         let (mut world, gi, key, enemy) = duel(300.0);
         world.game.skill = crate::constants::SKILL_HARDPLUS;
         gunner_pain(&mut world, key, enemy, 0.0, 50);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         assert_eq!(sounds(&gi).len(), 1, "still cries out");
     }
 
@@ -1246,7 +1204,7 @@ mod tests {
         let (mut world, gi, key, enemy) = duel(300.0);
         world.entities.get_mut(key).unwrap().game.health = -69;
         gunner_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
-        assert!(is(&world, key, &GUNNER_MOVE_DEATH));
+        assert!(playing(&world, key, &GUNNER_MOVE_DEATH));
         assert_eq!(sounds(&gi), [voice(SOUND_DEATH, ATTN_NORM)]);
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.state.skinnum, 1);
@@ -1255,7 +1213,7 @@ mod tests {
 
         gunner_stand(&mut world, key);
         gunner_die(&mut world, key, enemy, enemy, 5, Vec3f::ZERO);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND), "already dead");
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND), "already dead");
         assert_eq!(sounds(&gi).len(), 1);
     }
 
@@ -1310,21 +1268,16 @@ mod tests {
         world.entities.get_mut(key).unwrap().game.enemy = None;
         seed(&mut world, |w| w.random() > 0.25);
         gunner_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
         seed(&mut world, |w| w.random() <= 0.25);
         gunner_dodge(&mut world, key, enemy, 0.5);
-        assert!(is(&world, key, &GUNNER_MOVE_DUCK));
+        assert!(playing(&world, key, &GUNNER_MOVE_DUCK));
         assert_eq!(world.entities.get(key).unwrap().game.enemy, Some(enemy));
     }
 
     /// The flash number of the last muzzle flash on the wire.
     fn last_flash(wire: &[Wire]) -> &Wire {
         &wire[wire.len() - 2]
-    }
-
-    /// A pain callback that keeps the kick it was handed in `game.count`.
-    fn keep_kick(world: &mut GameWorld, key: EntityKey, _: EntityKey, kick: f32, _: i32) {
-        world.entities.get_mut(key).unwrap().game.count = kick as i32;
     }
 
     #[test]
@@ -1414,23 +1367,23 @@ mod tests {
         let (mut world, _, key, _) = duel(50.0);
         let rand = world.level.rand_state;
         gunner_attack(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ATTACK_CHAIN));
+        assert!(playing(&world, key, &GUNNER_MOVE_ATTACK_CHAIN));
         assert_eq!(world.level.rand_state, rand);
 
         let (mut world, _, key, _) = duel(300.0);
         seed(&mut world, |w| w.random() <= 0.5);
         gunner_attack(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ATTACK_GRENADE));
+        assert!(playing(&world, key, &GUNNER_MOVE_ATTACK_GRENADE));
         seed(&mut world, |w| w.random() > 0.5);
         gunner_attack(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ATTACK_CHAIN));
+        assert!(playing(&world, key, &GUNNER_MOVE_ATTACK_CHAIN));
     }
 
     #[test]
     fn gunner_fire_chain_starts_the_burst() {
         let (mut world, _, key, _) = duel(300.0);
         gunner_fire_chain(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_FIRE_CHAIN));
+        assert!(playing(&world, key, &GUNNER_MOVE_FIRE_CHAIN));
     }
 
     #[test]
@@ -1438,18 +1391,18 @@ mod tests {
         let (mut world, _, key, _) = duel(300.0);
         seed(&mut world, |w| w.random() <= 0.5);
         gunner_refire_chain(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_FIRE_CHAIN));
+        assert!(playing(&world, key, &GUNNER_MOVE_FIRE_CHAIN));
 
         let (mut world, _, key, _) = duel(300.0);
         seed(&mut world, |w| w.random() > 0.5);
         gunner_refire_chain(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN));
+        assert!(playing(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN));
 
         let (mut world, _, key, enemy) = duel(300.0);
         world.entities.get_mut(enemy).unwrap().game.health = 0;
         seed(&mut world, |w| w.random() <= 0.5);
         gunner_refire_chain(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN), "dead");
+        assert!(playing(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN), "dead");
 
         let (mut world, gi, key, _) = duel(300.0);
         *gi.next_trace.borrow_mut() = Some(Trace {
@@ -1458,7 +1411,7 @@ mod tests {
         });
         seed(&mut world, |w| w.random() <= 0.5);
         gunner_refire_chain(&mut world, key);
-        assert!(is(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN), "hidden");
+        assert!(playing(&world, key, &GUNNER_MOVE_ENDFIRE_CHAIN), "hidden");
     }
 
     #[test]
@@ -1482,7 +1435,7 @@ mod tests {
             .search
             .is_some_and(|f| std::ptr::fn_addr_eq(f, gunner_search as ThinkFn)));
         assert!(mi.melee.is_none() && mi.idle.is_none());
-        assert!(is(&world, key, &GUNNER_MOVE_STAND));
+        assert!(playing(&world, key, &GUNNER_MOVE_STAND));
     }
 
     #[test]

@@ -561,6 +561,7 @@ pub fn sp_turret_driver(
 mod tests {
     use super::*;
     use crate::entity::ThinkFn;
+    use crate::monster::test_support::{mi_mut, player_at};
     use crate::world::{test_world, test_world_recording};
 
     fn fields(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -897,18 +898,6 @@ mod tests {
         );
     }
 
-    fn player_at(world: &mut GameWorld, at: Vec3f) -> EntityKey {
-        let player = world.spawn_test_client(crate::entity::ClientData::default());
-        let p = world.entities.get_mut(player).unwrap();
-        p.game.classname = "player".to_string();
-        p.state.origin = at;
-        p.game.health = 100;
-        p.game.viewheight = 22.0;
-        world.link_entity(player);
-        world.level.sight_client_key = Some(player);
-        player
-    }
-
     #[test]
     fn turret_driver_aims_the_breach_and_fires_after_its_reaction_time() {
         let mut world = test_world();
@@ -944,16 +933,6 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(mi.attack_finished, 6.0);
-    }
-
-    fn mi_mut(world: &mut GameWorld, key: EntityKey) -> &mut MonsterInfo {
-        world
-            .entities
-            .get_mut(key)
-            .unwrap()
-            .monsterinfo
-            .as_mut()
-            .unwrap()
     }
 
     #[test]
