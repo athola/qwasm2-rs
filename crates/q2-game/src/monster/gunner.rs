@@ -762,7 +762,8 @@ pub fn gunner_grenade(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// The chaingun in melee range; further off, it or the grenades evenly.
-/// C ref: `gunner_attack`.
+/// C ref: `gunner_attack`. C passes a NULL `self->enemy` to `range`;
+/// without one the port takes it as out of melee range and rolls.
 pub fn gunner_attack(world: &mut GameWorld, key: EntityKey) {
     let melee = world
         .entities
@@ -782,7 +783,8 @@ pub fn gunner_fire_chain(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Keep firing half the time while the enemy lives and is in sight.
-/// C ref: `gunner_refire_chain`.
+/// C ref: `gunner_refire_chain`. C reads `self->enemy->health` without
+/// a NULL check; without an enemy the port ends the burst.
 pub fn gunner_refire_chain(world: &mut GameWorld, key: EntityKey) {
     let enemy = world
         .entities
