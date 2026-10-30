@@ -397,11 +397,14 @@ pub fn sv_new_chase_dir(world: &mut GameWorld, key: EntityKey, goal: Vec3f, dist
         return;
     }
     // Search every direction, clockwise or anticlockwise at random.
-    let mut directions: Vec<f32> = (0..=315).step_by(45).map(|d| d as f32).collect();
-    if world.random_u32() & 1 == 0 {
-        directions.reverse();
-    }
-    for tdir in directions {
+    const DIRECTIONS: [f32; 8] = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0];
+    let ascending = world.random_u32() & 1 != 0;
+    for i in 0..DIRECTIONS.len() {
+        let tdir = DIRECTIONS[if ascending {
+            i
+        } else {
+            DIRECTIONS.len() - 1 - i
+        }];
         if tdir != turnaround && sv_step_direction(world, key, tdir, dist) {
             return;
         }
