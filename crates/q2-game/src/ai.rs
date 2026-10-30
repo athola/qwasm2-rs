@@ -1659,7 +1659,9 @@ pub fn monster_triggered_start(world: &mut GameWorld, key: EntityKey) {
 /// [`swimmonster_start`], `walkmonster_start_go` if none.
 /// The movetype, solid, mass and `pausetime` are the spawn function's,
 /// as in C. C ref: `monster_start` (g_monster.c). Not here: `st.item`,
-/// which `call_spawn` resolves.
+/// which `call_spawn` resolves, and C's `s.skinnum = 0`: C resets it
+/// before SP_* functions such as SP_misc_insane and the soldiers set
+/// their skin, but here those spawn halves have already run.
 pub fn monster_start(world: &mut GameWorld, key: EntityKey) -> bool {
     if world.game.deathmatch {
         world.free_entity(key);
@@ -3556,6 +3558,23 @@ mod tests {
         ai_walk(&mut world, monster, 0.0);
 
         assert_eq!(count(&world, monster), 1100);
+    }
+
+    #[test]
+    fn monster_start_keeps_the_walker_skin_misc_insane_picked() {
+        // C monster_start resets s.skinnum, but C's SP_misc_insane picks
+        // its skin after walkmonster_start; here insane_finish runs first.
+        let skins: Vec<i32> = (0..20)
+            .map(|seed| {
+                let mut world = test_world();
+                world.init_game();
+                world.level.rand_state = seed;
+                let key = world.spawn().unwrap();
+                world.call_spawn(key, "misc_insane", &std::collections::HashMap::new());
+                world.entities.get(key).unwrap().state.skinnum
+            })
+            .collect();
+        assert!(skins.iter().any(|&s| s != 0), "{skins:?}");
     }
 
     #[test]
