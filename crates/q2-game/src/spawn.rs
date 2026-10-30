@@ -228,7 +228,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("path_corner", misc::sp_path_corner, None, None),
     ("point_combat", misc::sp_point_combat, None, None),
 
-    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), None),
+    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), Some(misc::finish_misc_explobox)),
     ("misc_banner", misc::sp_misc_generic, Some("models/objects/banner/tris.md2"), None),
     ("misc_satellite_dish", misc::sp_misc_generic, Some("models/objects/satellite/tris.md2"), None),
     ("misc_gib_arm", misc::sp_misc_gib, Some("models/objects/gibs/arm/tris.md2"), None),

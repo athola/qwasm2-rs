@@ -1420,10 +1420,15 @@ impl GameWorld {
             self.set_model(key, model);
         }
 
-        let is_monster = self
-            .entities
-            .get(key)
-            .is_some_and(|e| e.monsterinfo.is_some());
+        // C runs monster_start from each monster's SP_* function; here the
+        // spawn function's monsterinfo marks a monster. The exception is
+        // misc_explobox, which C gives only AI_NOSTEP (the one user of it)
+        // so M_walkmove keeps the pushed barrel off steps.
+        let is_monster = self.entities.get(key).is_some_and(|e| {
+            e.monsterinfo
+                .as_ref()
+                .is_some_and(|mi| !mi.aiflags.contains(crate::constants::AiFlags::NOSTEP))
+        });
         if is_monster {
             if !crate::ai::monster_start(self, key) {
                 return; // Deathmatch freed the monster.
