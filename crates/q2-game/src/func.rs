@@ -746,9 +746,11 @@ pub fn door_go_up(world: &mut GameWorld, key: EntityKey, activator: Option<Entit
         _ => {}
     }
     // Deviation: a door reopened by door_blocked passes its own activator,
-    // which doors never set, so C calls G_UseTargets(self, NULL). door_use,
-    // button_use, train_use and func_timer_use return on that NULL and
-    // G_UseTargets' message print dereferences it, so no targets fire.
+    // which doors never set, so C calls G_UseTargets(self, NULL). C then
+    // skips the message, still frees killtargets and calls every target's
+    // use with a NULL activator (door_use, button_use, train_use and
+    // func_timer_use return on it; others run). UseFn has no absent
+    // activator, so here nothing is fired at all.
     if let Some(activator) = activator {
         world.use_targets(key, activator);
     }
