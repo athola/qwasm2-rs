@@ -64,6 +64,7 @@ impl LocalGame {
         let mut sv = Server::default();
         sv.map(&mut svs, map_name, bsp, "", &gi, game.as_mut())?;
         svs.connect_local_client(game.as_mut(), userinfo)?;
+        gi.set_client_states(svs.clients.iter().map(|client| client.state));
         let next_map = Rc::new(RefCell::new(None));
         let mut cmd = CmdSystem::new();
         let requested = next_map.clone();
@@ -238,6 +239,8 @@ impl LocalGame {
         self.pending_us = 0;
         if level.kind == LevelKind::Game {
             self.svs.begin_connected_clients(self.game.as_mut());
+            self.gi
+                .set_client_states(self.svs.clients.iter().map(|client| client.state));
         }
         self.send_client_frame();
         Ok(())
@@ -333,6 +336,17 @@ mod tests {
             client_frame: Vec::new(),
         };
         (local, thinks)
+    }
+
+    #[test]
+    fn a_print_to_the_local_player_reaches_the_client() {
+        // C Cmd_Use_f: `gi.cprintf(ent, PRINT_HIGH, "Out of item: %s\n")`.
+        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.take_messages();
+        local.client_command("use Shotgun");
+        let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"Out of item: Shotgun\n\0");
+        assert_eq!(local.take_messages(), vec![print]);
     }
 
     #[test]

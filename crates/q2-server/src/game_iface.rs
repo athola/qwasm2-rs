@@ -23,6 +23,7 @@ use q2_shared::{
     types::*,
 };
 
+use crate::state::ClientState;
 use crate::vis::{entity_clusters, fat_pvs, in_pvs, EntityClusters, MAX_TOTAL_ENT_LEAFS};
 use crate::world::{ServerWorld, AREA_SOLID};
 
@@ -74,6 +75,10 @@ struct GiInner {
     /// Messages the game multicast since the last `take_messages`
     /// (muzzle flashes, temp entities), whole.
     messages: Vec<Vec<u8>>,
+    /// The client slots' states (C `svs.clients[i].state`, slot `i` for
+    /// entity `i + 1`); the slot count is C `maxclients`. No slots until
+    /// the server sets them.
+    clients: Vec<ClientState>,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -123,6 +128,7 @@ impl GiInner {
             command_argv: Vec::new(),
             command_args: String::new(),
             messages: Vec::new(),
+            clients: Vec::new(),
         }
     }
 
@@ -279,9 +285,25 @@ impl ServerGameImport {
             .insert(name.to_string(), value.to_string());
     }
 
+    /// Mirror the client slots' states, one per slot in slot order, for
+    /// the prints and messages the game routes to clients (C reads
+    /// `svs.clients` and `maxclients` there). `Server::map` sets them before
+    /// the settling frames and `LocalGame` after the client connects and
+    /// begins; `ServerStatic`'s connect and begin take no import, so the
+    /// game's `ClientConnect`/`ClientBegin` run against the states from
+    /// before them.
+    pub fn set_client_states(&self, states: impl IntoIterator<Item = ClientState>) {
+        self.inner.borrow_mut().clients = states.into_iter().collect();
+    }
+
     /// The console text queued by `add_command_string` since the last call.
     pub fn take_commands(&self) -> String {
         std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// Whether entity `number` is a client's (C `1..=maxclients`).
+    fn is_client(&self, number: usize) -> bool {
+        (1..=self.inner.borrow().clients.len()).contains(&number)
     }
 
     /// Queue an `svc_print` of `msg` at `level` for the local client.
@@ -476,16 +498,28 @@ impl GameImport for ServerGameImport {
     }
 
     /// C PF_cprintf: to a client as `svc_print`, or the console for none.
+    /// C raises ERR_DROP "cprintf to a non-client" for an entity outside
+    /// `1..=maxclients`; the trait cannot fail, so the print is logged as
+    /// an error and dropped.
     fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
-        if ent_idx.is_some() {
+        let Some(ent) = ent_idx else {
+            return;
+        };
+        if self.is_client(ent) {
             self.queue_print(printlevel, msg);
+        } else {
+            tracing::error!(ent, "cprintf to a non-client");
         }
     }
 
-    /// C PF_centerprintf: an `svc_centerprint` to the client.
+    /// C PF_centerprintf: an `svc_centerprint` to the client; nothing for
+    /// an entity outside `1..=maxclients` (a monster or trigger activator).
     fn centerprintf(&self, ent_idx: Option<usize>, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[centerprintf] {}", msg.trim_end());
+        if !ent_idx.is_some_and(|ent| self.is_client(ent)) {
+            return;
+        }
         let mut message = NetMsg::new();
         message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
         message.write_string(msg);
@@ -872,10 +906,14 @@ impl GameImport for ServerGameImport {
         inner.msg_buf.clear();
     }
 
-    /// C PF_Unicast: the one local client gets the message.
-    fn unicast(&self, _ent_idx: usize, _reliable: bool) {
+    /// C PF_Unicast: the message goes to client `ent_idx`, and nowhere for
+    /// an entity outside `1..=maxclients`. C returns there without
+    /// clearing `sv.multicast`, so the bytes would lead the next message;
+    /// here the buffer is cleared either way.
+    fn unicast(&self, ent_idx: usize, _reliable: bool) {
+        let is_client = self.is_client(ent_idx);
         let mut inner = self.inner.borrow_mut();
-        if !inner.msg_buf.is_empty() {
+        if is_client && !inner.msg_buf.is_empty() {
             let message = inner.msg_buf.data().to_vec();
             inner.messages.push(message);
         }
@@ -951,10 +989,44 @@ mod tests {
         }
     }
 
+    /// An import with one client slot in the game (C maxclients 1).
+    fn one_client() -> ServerGameImport {
+        let gi = ServerGameImport::new();
+        gi.set_client_states([ClientState::Spawned]);
+        gi
+    }
+
+    #[test]
+    fn centerprintf_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.centerprintf(Some(0), "the world");
+        gi.centerprintf(Some(2), "a monster");
+        gi.centerprintf(None, "no entity");
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn cprintf_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.cprintf(Some(0), 1, "the world\n");
+        gi.cprintf(Some(2), 1, "a monster\n");
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn unicast_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.write_byte(4);
+        gi.unicast(0, true);
+        gi.write_byte(5);
+        gi.unicast(2, false);
+        assert!(gi.take_messages().is_empty());
+    }
+
     #[test]
     fn prints_reach_the_local_client_as_svc_print_and_centerprint() {
         use q2_shared::protocol::SvcOp;
-        let gi = ServerGameImport::new();
+        let gi = one_client();
         gi.bprintf(2, "Ann died.\n");
         gi.cprintf(Some(1), 1, "No cells.\n");
         gi.cprintf(None, 1, "console only\n");
@@ -970,7 +1042,7 @@ mod tests {
 
     #[test]
     fn a_unicast_message_is_queued_for_the_local_client() {
-        let gi = ServerGameImport::new();
+        let gi = one_client();
         gi.write_byte(4);
         gi.write_string("xv 0");
         gi.unicast(1, true);

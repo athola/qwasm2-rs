@@ -91,6 +91,7 @@ impl Server {
             }
             client.last_frame = -1;
         }
+        gi.set_client_states(svs.clients.iter().map(|client| client.state));
 
         let checksum = match gi.load_map(bsp) {
             Ok(checksum) => checksum,
@@ -300,6 +301,22 @@ mod tests {
         assert_eq!(sv.configstrings[CS_NAME], "base1");
         assert_eq!(sv.configstrings.len(), MAX_CONFIGSTRINGS);
         assert_eq!(sv.baselines.len(), MAX_EDICTS);
+    }
+
+    #[test]
+    fn map_gives_the_import_the_client_slots_before_the_game_runs() {
+        use q2_game::traits::GameImport;
+        let gi = ServerGameImport::new();
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(2);
+        sv.map(&mut svs, "base1", &[], "", &gi, &mut NullGame::default())
+            .unwrap();
+        gi.take_messages();
+        // C PF_centerprintf: entities 1..=maxclients are clients.
+        gi.centerprintf(Some(2), "slot 2");
+        gi.centerprintf(Some(3), "not a client");
+        assert_eq!(gi.take_messages().len(), 1);
     }
 
     #[test]
