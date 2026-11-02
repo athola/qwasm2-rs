@@ -524,6 +524,15 @@ mod tests {
     }
 
     #[test]
+    fn a_powerup_ending_this_frame_shows_no_timer() {
+        // C ref: G_SetStats, quad_framenum > level.framenum.
+        let (mut world, key, _) = armed_player();
+        world.client_mut(key).unwrap().quad_framenum = 100;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_TIMER_ICON], 0);
+    }
+
+    #[test]
     fn running_power_armor_shows_cells_and_flashes_with_body_armor() {
         let (mut world, key, _) = armed_player();
         let cells = world.find_item_by_name("Cells").unwrap();
@@ -633,6 +642,30 @@ mod tests {
     }
 
     #[test]
+    fn the_pickup_stays_up_until_its_time_has_passed() {
+        // C ref: G_SetStats clears it once level.time > pickup_msg_time.
+        let (mut world, key, _) = armed_player();
+        world.level.time = 3.0;
+        let client = world.client_mut(key).unwrap();
+        client.pickup_msg_time = 3.0;
+        client.ps.stats[STAT_PICKUP_ICON] = 7;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_PICKUP_ICON], 7);
+    }
+
+    #[test]
+    fn the_inventory_shows_only_while_alive() {
+        // C ref: G_SetStats, layouts |= 2 for showinventory and health > 0.
+        let (mut world, key, _) = armed_player();
+        world.client_mut(key).unwrap().showinventory = true;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_LAYOUTS], 2);
+        world.client_mut(key).unwrap().pers.health = 0;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_LAYOUTS], 0);
+    }
+
+    #[test]
     fn stats_reflect_health() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
@@ -732,6 +765,38 @@ mod tests {
         let other = exit_to(&mut world, "q2dm3");
         world.begin_intermission(other);
         assert_eq!(world.level.changemap, "q2dm2");
+    }
+
+    #[test]
+    fn the_intermission_clears_only_the_underwater_view_flag() {
+        use q2_shared::constants::{RDF_NOWORLDMODEL, RDF_UNDERWATER};
+        let (mut world, key, _) = armed_player();
+        world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER | RDF_NOWORLDMODEL;
+        world.move_client_to_intermission(key);
+        assert_eq!(world.client(key).unwrap().ps.rdflags, RDF_NOWORLDMODEL);
+    }
+
+    #[test]
+    fn the_intermission_skips_rand_and_3_spots_from_the_first() {
+        // C ref: BeginIntermission, i = rand() & 3, then G_Find i times.
+        let (mut world, _, _) = armed_player();
+        world.game.deathmatch = true;
+        let spots: Vec<Vec3f> = (0..4).map(|i| Vec3f::new(i as f32, 0.0, 0.0)).collect();
+        for &origin in &spots {
+            spot(&mut world, "info_player_intermission", origin, 0.0);
+        }
+        let exit = exit_to(&mut world, "q2dm2");
+        let mut seen = Vec::new();
+        for seed in 0..16 {
+            world.level.rand_state = seed;
+            let skip = world.random_u32() & 3;
+            world.level.rand_state = seed;
+            world.level.intermission_time = 0.0;
+            world.begin_intermission(exit);
+            assert_eq!(world.level.intermission_origin, spots[skip as usize]);
+            seen.push(skip);
+        }
+        assert!((0..4).all(|skip| seen.contains(&skip)), "{seen:?}");
     }
 
     #[test]
@@ -864,6 +929,50 @@ mod tests {
     }
 
     #[test]
+    fn the_scoreboard_tags_the_last_of_four_players_and_counts_minutes_played() {
+        // C ref: DeathmatchScoreboardMessage, minutes from enter_frame.
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        world.set_max_clients(4);
+        world.game.deathmatch = true;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
+        let mut players = Vec::new();
+        for n in 1..=4 {
+            let key = world.connect_client(n, "\\name\\P").unwrap();
+            world.begin_client(key);
+            world.client_mut(key).unwrap().resp.score = 10 - n as i32;
+            players.push(key);
+        }
+        world.client_mut(players[3]).unwrap().resp.enter_frame = 600;
+        world.level.framenum = 1800;
+        world.deathmatch_scoreboard_message(players[3], None);
+        assert_eq!(
+            gi.strings.borrow().last().unwrap(),
+            "client 0 32 0 9 0 3 client 0 64 1 8 0 3 client 0 96 2 7 0 3 \
+             xv 32 yv 128 picn tag1 client 0 128 3 6 0 2 "
+        );
+    }
+
+    #[test]
+    fn tied_players_keep_slot_order_and_free_slots_are_left_out() {
+        // C ref: DeathmatchScoreboardMessage sorts by score > and skips
+        // edicts not in use.
+        let (mut world, a, b, gi) = dm_pair();
+        world.deathmatch_scoreboard_message(a, None);
+        assert_eq!(
+            gi.strings.borrow().last().unwrap(),
+            "xv 32 yv 32 picn tag1 client 0 32 0 0 0 0 client 0 64 1 0 0 0 "
+        );
+        world.entities.get_mut(b).unwrap().in_use = false;
+        world.deathmatch_scoreboard_message(a, None);
+        assert_eq!(
+            gi.strings.borrow().last().unwrap(),
+            "xv 32 yv 32 picn tag1 client 0 32 0 0 0 0 "
+        );
+    }
+
+    #[test]
     fn the_score_command_toggles_the_scoreboard_in_deathmatch_only() {
         let (mut world, a, _, gi) = dm_pair();
         world.cmd_score(a);
@@ -913,9 +1022,35 @@ mod tests {
     }
 
     #[test]
+    fn the_help_computer_names_each_skill_like_c() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        for (skill, name) in [
+            (SKILL_EASY, "easy"),
+            (SKILL_MEDIUM, "medium"),
+            (SKILL_HARD, "hard"),
+            (SKILL_HARD + 1, "hard+"),
+        ] {
+            world.game.skill = skill;
+            world.help_computer_message();
+            let shown = gi.strings.borrow().last().unwrap().clone();
+            assert!(shown.contains(&format!("string2 \"{name}\" ")), "{shown}");
+        }
+    }
+
+    #[test]
     fn a_dead_deathmatch_player_or_the_intermission_shows_the_scores() {
         let (mut world, a, _, _) = dm_pair();
         world.client_mut(a).unwrap().pers.health = 0;
+        world.update_player_stats(a);
+        assert_eq!(world.client(a).unwrap().ps.stats[STAT_LAYOUTS], 1);
+    }
+
+    #[test]
+    fn a_live_deathmatch_player_sees_the_scores_only_at_the_intermission() {
+        let (mut world, a, _, _) = dm_pair();
+        world.update_player_stats(a);
+        assert_eq!(world.client(a).unwrap().ps.stats[STAT_LAYOUTS], 0);
+        world.level.intermission_time = 5.0;
         world.update_player_stats(a);
         assert_eq!(world.client(a).unwrap().ps.stats[STAT_LAYOUTS], 1);
     }
@@ -976,6 +1111,31 @@ mod tests {
         world.client_mut(key).unwrap().pers.hand = crate::constants::RIGHT_HANDED;
         world.client_mut(key).unwrap().ps.fov = 110.0;
         assert_eq!(helpicon(&mut world), icon, "wide view");
+    }
+
+    #[test]
+    fn a_drawn_gun_shows_no_weapon_icon_whatever_cl_gun_says() {
+        // C ref: G_SetStats, icon only for CENTER_HANDED or fov > 91.
+        let (mut world, key, gi) = armed_player();
+        gi.cvars.borrow_mut().insert("cl_gun".into(), "1".into());
+        world.client_mut(key).unwrap().ps.fov = 91.0;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_HELPICON], 0);
+    }
+
+    #[test]
+    fn the_selected_item_shows_its_icon_and_the_null_item_none() {
+        // C ref: G_SetStats, STAT_SELECTED_ICON from itemlist[selected].
+        let (mut world, key, _) = armed_player();
+        let shells = world.find_item_by_name("Shells").unwrap();
+        world.client_mut(key).unwrap().pers.selected_item = shells as i32;
+        world.update_player_stats(key);
+        let icon = world.gi.image_index("a_shells") as i16;
+        assert_eq!(stats(&world, key)[STAT_SELECTED_ICON], icon);
+        assert_eq!(stats(&world, key)[STAT_SELECTED_ITEM], shells as i16);
+        world.client_mut(key).unwrap().pers.selected_item = 0;
+        world.update_player_stats(key);
+        assert_eq!(stats(&world, key)[STAT_SELECTED_ICON], 0);
     }
 
     #[test]
