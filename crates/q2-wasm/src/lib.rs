@@ -1181,7 +1181,11 @@ fn legend_key_pressed(last_keys: &[bool; 256], keys: &[bool; 256]) -> bool {
     keys[K_F4 as usize] && !last_keys[K_F4 as usize]
 }
 
-/// A key's name as C's `Key_KeynumToString` gives it.
+/// A key's name for the legend. Named keys are spelled as C's
+/// `Key_KeynumToString` spells them; a printable key is shown as its
+/// character upper-cased (`W`, `'`), where C gives the character as is
+/// (`w`) and names `'`, `;` and `"` (`QUOTE`, `SEMICOLON`,
+/// `DOUBLEQUOTE`).
 #[cfg(any(target_arch = "wasm32", test))]
 fn key_name(key: u8) -> String {
     use q2_platform::keymap::*;
@@ -2435,7 +2439,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_legend_lists_every_bound_key_with_c_menu_names() {
+    fn the_key_legend_lists_every_bound_key_under_its_c_menu_label() {
         let legend = key_legend();
         let row = |label: &str| {
             legend
@@ -2444,7 +2448,8 @@ mod tests {
                 .map(|(_, keys)| keys.clone())
                 .unwrap_or_else(|| panic!("no {label} row"))
         };
-        // C menu.c bindnames, with this port's keys.
+        // The labels are C menu.c bindnames; the key names are key_name's,
+        // which upper-cases printable keys.
         assert_eq!(row("attack"), "CTRL, MOUSE1");
         assert_eq!(row("walk forward"), "W, UPARROW");
         assert_eq!(row("up / jump"), "SPACE");
