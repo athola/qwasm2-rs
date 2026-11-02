@@ -377,11 +377,14 @@ impl Engine {
         use q2_client::layout::{execute_layout, HudDraw, LayoutInput};
         let local = &self.local;
         let configstring = |i: usize| local.configstring(i);
+        let fs = &self.fs;
+        let file_exists = |path: &str| fs.file_exists(path);
         let input = LayoutInput {
             width: self.view.width,
             height: self.view.height,
             stats,
             configstrings: &configstring,
+            file_exists: &file_exists,
             serverframe: self.frames.serverframe().unwrap_or(0),
         };
         // C SCR_DrawStats, SCR_DrawLayout, then the centre print and the

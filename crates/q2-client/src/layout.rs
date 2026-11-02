@@ -24,6 +24,10 @@ pub struct LayoutInput<'a> {
     pub stats: &'a [i16; 32],
     /// The client's configstrings, indexed like `cl.configstrings`.
     pub configstrings: &'a dyn Fn(usize) -> &'a str,
+    /// Whether a game file exists, standing in for the `R_RegisterModel`,
+    /// `R_RegisterSkin` and `Draw_FindPic` loads that `CL_LoadClientinfo`
+    /// checks before it trusts a player's icon.
+    pub file_exists: &'a dyn Fn(&str) -> bool,
     /// `cl.frame.serverframe`, for the low-value flash.
     pub serverframe: i32,
 }
@@ -146,30 +150,69 @@ fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, tex
     }
 }
 
-/// A player's name and icon from its `name\model/skin` configstring (the
-/// model and skin split on `/`, else `\`), cut first at `MAX_QPATH - 1`
-/// chars, with the base `male/grunt` icon when the model or skin is
-/// empty.
-///
-/// C ref: `CL_LoadClientinfo` (client/cl_parse.c). Not ported, as each
-/// needs to know which files exist: a model that does not load becomes
-/// `male`; a skin missing for a model other than `male` switches to
-/// `male`; and when the icon, skin, model or weapon model is missing,
-/// `SCR_ExecuteLayoutString` draws `cl.baseclientinfo`'s grunt icon.
-fn client_info(s: &str) -> (String, String) {
+/// `cl.baseclientinfo`'s icon, loaded from `unnamed\male/grunt`. C ref:
+/// CL_PrepRefresh (client/cl_view.c).
+const BASE_ICON: &str = "/players/male/grunt_i.pcx";
+
+/// `s` cut at `MAX_QPATH - 1` chars, as C `Q_strlcpy` / `Com_sprintf` cut
+/// a string into a `[MAX_QPATH]` buffer.
+fn qpath(s: &str) -> &str {
     let end = s
         .char_indices()
         .nth(MAX_QPATH - 1)
         .map_or(s.len(), |(i, _)| i);
-    let s = &s[..end];
-    let (name, skin) = s.split_once('\\').unwrap_or((s, ""));
-    let icon = match skin.split_once('/').or_else(|| skin.split_once('\\')) {
-        Some((model, skin)) if !model.is_empty() && !skin.is_empty() => {
-            format!("/players/{model}/{skin}_i.pcx")
-        }
-        _ => "/players/male/grunt_i.pcx".to_string(),
+    &s[..end]
+}
+
+/// A player's name and scoreboard icon from its `name\model/skin`
+/// configstring, given which game files exist.
+///
+/// C ref: `CL_LoadClientinfo` (client/cl_parse.c): the model and skin split
+/// on `/`, else `\`; a model without `tris.md2` becomes `male`; a skin
+/// missing for a model other than `male` (any case) switches the model to
+/// `male`; a skin still missing falls back to that model's `grunt.pcx`; a
+/// `cyborg` without `weapon.md2` borrows the male one. The icon name uses
+/// the final model and the original skin. `cl_noskins` is not ported (C
+/// default 0). When the skin, icon, model or weapon model is missing,
+/// `SCR_ExecuteLayoutString` (client/cl_screen.c) draws [`BASE_ICON`].
+fn client_info(s: &str, exists: &dyn Fn(&str) -> bool) -> (String, String) {
+    let s = qpath(s);
+    // C leaves `s` at the start of the string when there is no backslash.
+    let (name, s) = s.split_once('\\').unwrap_or((s, s));
+    if s.is_empty() {
+        return (name.to_string(), BASE_ICON.to_string());
+    }
+    // C cuts model_name at the separator, or at its start when there is
+    // none, and takes skin_name from one char past that cut.
+    let (mut model, skin) = match s.find('/').or_else(|| s.find('\\')) {
+        Some(i) => (&s[..i], &s[i + 1..]),
+        None => ("", &s[s.chars().next().map_or(0, char::len_utf8)..]),
     };
-    (name.to_string(), icon)
+    let file = |path: &str| exists(qpath(path));
+    let mut model_ok = file(&format!("players/{model}/tris.md2"));
+    if !model_ok {
+        model = "male";
+        model_ok = file("players/male/tris.md2");
+    }
+    let mut skin_ok = file(&format!("players/{model}/{skin}.pcx"));
+    if !skin_ok && !model.eq_ignore_ascii_case("male") {
+        model = "male";
+        model_ok = file("players/male/tris.md2");
+        skin_ok = file(&format!("players/male/{skin}.pcx"));
+    }
+    if !skin_ok {
+        skin_ok = file(&format!("players/{model}/grunt.pcx"));
+    }
+    let weapon_ok = file(&format!("players/{model}/weapon.md2"))
+        || (model == "cyborg" && file("players/male/weapon.md2"));
+    let icon = qpath(&format!("/players/{model}/{skin}_i.pcx")).to_string();
+    // Draw_FindPic loads a name with a leading '/' as the path without it.
+    let icon_ok = exists(&icon[1..]);
+    if model_ok && skin_ok && weapon_ok && icon_ok {
+        (name.to_string(), icon)
+    } else {
+        (name.to_string(), BASE_ICON.to_string())
+    }
 }
 
 /// The next token, or "" at the end (C COM_Parse returns "").
@@ -295,7 +338,10 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                 let Some(index) = usize::try_from(value).ok().filter(|&v| v < MAX_CLIENTS) else {
                     continue;
                 };
-                let (name, icon) = client_info((input.configstrings)(CS_PLAYERSKINS + index));
+                let (name, icon) = client_info(
+                    (input.configstrings)(CS_PLAYERSKINS + index),
+                    input.file_exists,
+                );
                 draw_string(&mut out, x + 32, y, &name, 0x80);
                 draw_string(&mut out, x + 32, y + 8, "Score: ", 0x80);
                 draw_string(&mut out, x + 32 + 7 * 8, y + 8, &score.to_string(), 0x80);
@@ -317,8 +363,18 @@ mod tests {
     const H: i32 = 480;
 
     fn run(program: &str, stats: &[i16; 32], strings: &[(usize, &'static str)]) -> Vec<HudDraw> {
+        run_with_files(program, stats, strings, &[])
+    }
+
+    fn run_with_files(
+        program: &str,
+        stats: &[i16; 32],
+        strings: &[(usize, &'static str)],
+        files: &[&str],
+    ) -> Vec<HudDraw> {
         let lookup =
             |i: usize| -> &str { strings.iter().find(|(k, _)| *k == i).map_or("", |(_, v)| v) };
+        let exists = |path: &str| files.contains(&path);
         execute_layout(
             program,
             &LayoutInput {
@@ -326,9 +382,29 @@ mod tests {
                 height: H,
                 stats,
                 configstrings: &lookup,
+                file_exists: &exists,
                 serverframe: 0,
             },
         )
+    }
+
+    /// The files a complete player loads: model, skin, weapon model and
+    /// icon. C ref: CL_LoadClientinfo.
+    fn player_files(model: &str, skin: &str) -> Vec<String> {
+        vec![
+            format!("players/{model}/tris.md2"),
+            format!("players/{model}/{skin}.pcx"),
+            format!("players/{model}/weapon.md2"),
+            format!("players/{model}/{skin}_i.pcx"),
+        ]
+    }
+
+    fn strings(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    fn icon_with(s: &str, files: &[String]) -> String {
+        client_info(s, &|path: &str| files.iter().any(|f| f == path)).1
     }
 
     fn pic(x: i32, y: i32, name: &str) -> HudDraw {
@@ -401,16 +477,185 @@ mod tests {
     #[test]
     fn a_backslash_also_separates_the_model_from_the_skin() {
         // C CL_LoadClientinfo tries "/" and then "\\".
-        let (name, icon) = client_info("Bob\\female\\athena");
+        let files = player_files("female", "athena");
+        let (name, icon) = client_info("Bob\\female\\athena", &|p: &str| {
+            files.iter().any(|f| f == p)
+        });
         assert_eq!(name, "Bob");
         assert_eq!(icon, "/players/female/athena_i.pcx");
+    }
+
+    #[test]
+    fn a_player_with_all_its_files_uses_its_own_icon() {
+        let files = player_files("female", "athena");
+        assert_eq!(
+            icon_with("Bob\\female/athena", &files),
+            "/players/female/athena_i.pcx"
+        );
+    }
+
+    #[test]
+    fn a_model_without_tris_md2_becomes_male() {
+        // C: `if (!ci->model) strcpy(model_name, "male")`, before the skin
+        // and icon names are built.
+        let files = player_files("male", "athena");
+        assert_eq!(
+            icon_with("Bob\\x/athena", &files),
+            "/players/male/athena_i.pcx"
+        );
+    }
+
+    #[test]
+    fn a_skin_missing_for_a_non_male_model_switches_the_model_to_male() {
+        // C: "see if the male has it (this is for CTF's skins)".
+        let mut files = player_files("male", "ctf_r");
+        files.push("players/female/tris.md2".into());
+        files.push("players/female/weapon.md2".into());
+        files.push("players/female/ctf_r_i.pcx".into());
+        assert_eq!(
+            icon_with("Bob\\female/ctf_r", &files),
+            "/players/male/ctf_r_i.pcx"
+        );
+    }
+
+    #[test]
+    fn a_skin_missing_for_male_falls_back_to_grunt_but_keeps_the_skin_icon_name() {
+        // C loads players/male/grunt.pcx as the skin, and builds the icon
+        // name from the original skin_name.
+        let files = strings(&[
+            "players/male/tris.md2",
+            "players/male/grunt.pcx",
+            "players/male/weapon.md2",
+            "players/male/foo_i.pcx",
+        ]);
+        assert_eq!(
+            icon_with("Bob\\male/foo", &files),
+            "/players/male/foo_i.pcx"
+        );
+    }
+
+    #[test]
+    fn the_male_check_ignores_case_like_q_stricmp() {
+        // A "MALE" model with no such skin does not switch to "male".
+        let files = strings(&[
+            "players/MALE/tris.md2",
+            "players/MALE/grunt.pcx",
+            "players/MALE/weapon.md2",
+            "players/MALE/foo_i.pcx",
+        ]);
+        assert_eq!(
+            icon_with("Bob\\MALE/foo", &files),
+            "/players/MALE/foo_i.pcx"
+        );
+    }
+
+    #[test]
+    fn a_player_with_no_skin_and_no_grunt_skin_uses_the_base_icon() {
+        let files = strings(&[
+            "players/male/tris.md2",
+            "players/male/weapon.md2",
+            "players/male/foo_i.pcx",
+        ]);
+        assert_eq!(icon_with("Bob\\male/foo", &files), BASE_ICON);
+    }
+
+    #[test]
+    fn a_player_with_no_model_at_all_uses_the_base_icon() {
+        let mut files = player_files("female", "athena");
+        files.retain(|f| f != "players/female/tris.md2");
+        assert_eq!(icon_with("Bob\\female/athena", &files), BASE_ICON);
+    }
+
+    #[test]
+    fn a_player_with_no_icon_uses_the_base_icon() {
+        let mut files = player_files("female", "athena");
+        files.retain(|f| f != "players/female/athena_i.pcx");
+        assert_eq!(icon_with("Bob\\female/athena", &files), BASE_ICON);
+    }
+
+    #[test]
+    fn a_player_with_no_weapon_model_uses_the_base_icon() {
+        let mut files = player_files("female", "athena");
+        files.retain(|f| f != "players/female/weapon.md2");
+        assert_eq!(icon_with("Bob\\female/athena", &files), BASE_ICON);
+    }
+
+    #[test]
+    fn a_cyborg_without_a_weapon_model_borrows_the_male_one() {
+        let mut files = player_files("cyborg", "oni911");
+        files.retain(|f| f != "players/cyborg/weapon.md2");
+        files.push("players/male/weapon.md2".into());
+        assert_eq!(
+            icon_with("Bob\\cyborg/oni911", &files),
+            "/players/cyborg/oni911_i.pcx"
+        );
+    }
+
+    #[test]
+    fn a_configstring_without_a_backslash_parses_the_whole_string_as_model_and_skin() {
+        // C keeps `s` at the start: no separator leaves model_name "" and
+        // skin_name `s + 1`, so the model becomes male and the skin "ob".
+        let files = strings(&[
+            "players/male/tris.md2",
+            "players/male/grunt.pcx",
+            "players/male/weapon.md2",
+            "players/male/ob_i.pcx",
+        ]);
+        let (name, icon) = client_info("Bob", &|p: &str| files.iter().any(|f| f == p));
+        assert_eq!(name, "Bob");
+        assert_eq!(icon, "/players/male/ob_i.pcx");
+    }
+
+    #[test]
+    fn file_names_are_cut_at_max_qpath_minus_one_chars_like_com_sprintf() {
+        let skin = "s".repeat(59);
+        let cut = |path: String| path.chars().take(MAX_QPATH - 1).collect::<String>();
+        let icon = cut(format!("/players/m/{skin}_i.pcx"));
+        let files = vec![
+            "players/m/tris.md2".to_string(),
+            cut(format!("players/m/{skin}.pcx")),
+            "players/m/weapon.md2".to_string(),
+            icon[1..].to_string(),
+        ];
+        assert_eq!(icon_with(&format!("B\\m/{skin}"), &files), icon);
+    }
+
+    #[test]
+    fn a_client_block_draws_the_base_icon_for_a_player_whose_files_are_missing() {
+        // C SCR_ExecuteLayoutString: `if (!ci->icon) ci = &cl.baseclientinfo`.
+        let draws = run(
+            "client 0 0 1 0 0 0",
+            &[0; 32],
+            &[(CS_PLAYERSKINS + 1, "Bob\\female/athena")],
+        );
+        assert!(draws.contains(&pic(W / 2 - 160, H / 2 - 120, BASE_ICON)));
+    }
+
+    #[test]
+    fn a_client_block_draws_the_icon_of_a_player_whose_files_exist() {
+        let files = player_files("female", "athena");
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        let draws = run_with_files(
+            "client 0 0 1 0 0 0",
+            &[0; 32],
+            &[(CS_PLAYERSKINS + 1, "Bob\\female/athena")],
+            &files,
+        );
+        assert!(draws.contains(&pic(
+            W / 2 - 160,
+            H / 2 - 120,
+            "/players/female/athena_i.pcx"
+        )));
     }
 
     #[test]
     fn a_player_configstring_is_cut_at_max_qpath_minus_one_chars() {
         // C copies it into `ci->cinfo[MAX_QPATH]` before splitting it, so
         // a long name loses its own tail and the model and skin.
-        let (name, icon) = client_info(&format!("{}\\female/athena", "\u{e1}".repeat(70)));
+        let (name, icon) = client_info(
+            &format!("{}\\female/athena", "\u{e1}".repeat(70)),
+            &|_: &str| false,
+        );
         assert_eq!(name, "\u{e1}".repeat(63));
         assert_eq!(icon, "/players/male/grunt_i.pcx");
     }
