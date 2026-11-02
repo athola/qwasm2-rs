@@ -166,10 +166,11 @@ impl GameWorld {
         };
         client.pers.last_weapon = client.pers.weapon;
         client.pers.weapon = client.newweapon.take();
+        client.machinegun_shots = 0;
         let weapon = client.pers.weapon;
 
         let item = weapon.and_then(|w| self.items.get(w));
-        let weapmodel = item.map_or(0, |item| item.tag);
+        let weapmodel = item.map_or(0, |item| item.weapmodel);
         let ammo = item.map(|item| item.ammo).filter(|a| !a.is_empty());
         let ammo_index = ammo.and_then(|a| self.find_item_by_name(a)).unwrap_or(0);
         let view_model = item.map(|item| item.view_model);
@@ -2258,6 +2259,26 @@ mod tests {
         let client = world.client(key).unwrap();
         assert_eq!(client.grenade_time, 0.0);
         assert_eq!(client.pers.weapon, world.find_item_by_name("Blaster"));
+    }
+
+    #[test]
+    fn hand_grenades_put_weap_grenades_in_the_skin_for_vwep() {
+        let (mut world, key, _) = ready();
+        world.entities.get_mut(key).unwrap().state.modelindex = 255;
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        let skinnum = world.entities.get(key).unwrap().state.skinnum;
+        assert_eq!(skinnum >> 8, crate::items::WEAP_GRENADES);
+    }
+
+    #[test]
+    fn changing_weapon_resets_the_machinegun_climb() {
+        let (mut world, key, _) = ready();
+        let blaster = world.find_item_by_name("Blaster");
+        let client = world.client_mut(key).unwrap();
+        client.machinegun_shots = 7;
+        client.newweapon = blaster;
+        world.change_weapon(key);
+        assert_eq!(world.client(key).unwrap().machinegun_shots, 0);
     }
 
     #[test]

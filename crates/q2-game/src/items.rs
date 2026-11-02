@@ -168,7 +168,10 @@ pub struct ItemDef {
     pub ammo: &'static str,
     /// Item classification flags.
     pub flags: ItemFlags,
-    /// Sub-type tag (ARMOR_*, AMMO_*, WEAP_*).
+    /// The player model's weapon number for vwep skins (C `weapmodel`):
+    /// a WEAP_* for the guns and hand grenades, else 0.
+    pub weapmodel: i32,
+    /// Sub-type tag (ARMOR_*, AMMO_*; 0 for the guns, as in C).
     pub tag: i32,
     /// Armor info (only for armor items).
     pub armor_info: Option<ArmorInfo>,
@@ -223,6 +226,7 @@ pub const WEAP_SHOTGUN: i32 = 2;
 pub const WEAP_SUPERSHOTGUN: i32 = 3;
 pub const WEAP_MACHINEGUN: i32 = 4;
 pub const WEAP_CHAINGUN: i32 = 5;
+pub const WEAP_GRENADES: i32 = 6;
 pub const WEAP_GRENADELAUNCHER: i32 = 7;
 pub const WEAP_ROCKETLAUNCHER: i32 = 8;
 pub const WEAP_HYPERBLASTER: i32 = 9;
@@ -245,6 +249,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
         quantity: 0,
         ammo: "",
         flags: ItemFlags::empty(),
+        weapmodel: 0,
         tag: 0,
         armor_info: None,
         pickup: None,
@@ -269,6 +274,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: ArmorType::Body as i32,
             armor_info: Some(BODY_ARMOR_INFO),
             pickup: Some(pickup_armor),
@@ -289,6 +295,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: ArmorType::Combat as i32,
             armor_info: Some(COMBAT_ARMOR_INFO),
             pickup: Some(pickup_armor),
@@ -309,6 +316,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: ArmorType::Jacket as i32,
             armor_info: Some(JACKET_ARMOR_INFO),
             pickup: Some(pickup_armor),
@@ -329,6 +337,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 2,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: ARMOR_SHARD,
             armor_info: None,
             pickup: Some(pickup_armor),
@@ -349,6 +358,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_power_armor),
@@ -369,6 +379,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::ARMOR,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_power_armor),
@@ -389,7 +400,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_BLASTER,
+            weapmodel: WEAP_BLASTER,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -409,7 +421,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Shells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_SHOTGUN,
+            weapmodel: WEAP_SHOTGUN,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -429,7 +442,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 2,
             ammo: "Shells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_SUPERSHOTGUN,
+            weapmodel: WEAP_SUPERSHOTGUN,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -449,7 +463,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Bullets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_MACHINEGUN,
+            weapmodel: WEAP_MACHINEGUN,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -469,7 +484,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Bullets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_CHAINGUN,
+            weapmodel: WEAP_CHAINGUN,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -489,6 +505,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 5,
             ammo: "grenades",
             flags: ItemFlags::AMMO | ItemFlags::WEAPON,
+            weapmodel: WEAP_GRENADES,
             tag: AMMO_GRENADES,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -509,7 +526,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Grenades",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_GRENADELAUNCHER,
+            weapmodel: WEAP_GRENADELAUNCHER,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -529,7 +547,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Rockets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_ROCKETLAUNCHER,
+            weapmodel: WEAP_ROCKETLAUNCHER,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -549,7 +568,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Cells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_HYPERBLASTER,
+            weapmodel: WEAP_HYPERBLASTER,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -569,7 +589,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 1,
             ammo: "Slugs",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_RAILGUN,
+            weapmodel: WEAP_RAILGUN,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -589,7 +610,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 50,
             ammo: "Cells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
-            tag: WEAP_BFG,
+            weapmodel: WEAP_BFG,
+            tag: 0,
             armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
@@ -609,6 +631,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 10,
             ammo: "",
             flags: ItemFlags::AMMO,
+            weapmodel: 0,
             tag: AMMO_SHELLS,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -629,6 +652,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 50,
             ammo: "",
             flags: ItemFlags::AMMO,
+            weapmodel: 0,
             tag: AMMO_BULLETS,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -649,6 +673,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 50,
             ammo: "",
             flags: ItemFlags::AMMO,
+            weapmodel: 0,
             tag: AMMO_CELLS,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -669,6 +694,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 5,
             ammo: "",
             flags: ItemFlags::AMMO,
+            weapmodel: 0,
             tag: AMMO_ROCKETS,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -689,6 +715,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 10,
             ammo: "",
             flags: ItemFlags::AMMO,
+            weapmodel: 0,
             tag: AMMO_SLUGS,
             armor_info: None,
             pickup: Some(pickup_ammo),
@@ -709,6 +736,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
@@ -729,6 +757,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 300,
             ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
@@ -749,6 +778,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
@@ -769,6 +799,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
@@ -789,6 +820,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_powerup),
@@ -809,6 +841,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::empty(),
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_ancient_head),
@@ -829,6 +862,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::empty(),
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_adrenaline),
@@ -849,6 +883,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 60,
             ammo: "",
             flags: ItemFlags::empty(),
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_bandolier),
@@ -869,6 +904,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 180,
             ammo: "",
             flags: ItemFlags::empty(),
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_pack),
@@ -889,9 +925,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -908,9 +945,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -927,9 +965,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -946,9 +985,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -965,9 +1005,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -984,9 +1025,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1003,9 +1045,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1022,9 +1065,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1041,9 +1085,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1061,6 +1106,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             quantity: 0,
             ammo: "",
             flags: ItemFlags::empty(),
+            weapmodel: 0,
             tag: 0,
             armor_info: None,
             pickup: Some(pickup_health),
@@ -1080,8 +1126,18 @@ pub fn build_item_list() -> Vec<ItemDef> {
 /// Pickup handler for armor items: a shard adds 2 to the worn armor (or
 /// gives 2 jacket armor), new armor is worn as is, and otherwise the
 /// better type is kept with some of the other salvaged into it.
+/// Deathmatch map armor comes back after 20 seconds.
 /// C ref: `Pickup_Armor` (g_items.c:910-1011)
 fn pickup_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !take_armor(world, item_ent, player) {
+        return false;
+    }
+    respawn_unless_dropped(world, item_ent, 20.0);
+    true
+}
+
+/// The inventory half of C `Pickup_Armor`; false when the armor is refused.
+fn take_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
         return false;
     };
@@ -1132,8 +1188,6 @@ fn pickup_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -
     true
 }
 
-/// Pickup handler for ammo items.
-/// C ref: `Pickup_Ammo` (g_items.c:714-764)
 /// C `Add_Ammo`: up to the cap for its kind; false when already full.
 fn add_ammo(world: &mut GameWorld, player: EntityKey, ammo: usize, count: i32) -> bool {
     let tag = world.items[ammo].tag;
@@ -1226,22 +1280,30 @@ fn pickup_ammo_carrier(
 }
 
 /// C ref: `Pickup_Bandolier` (g_items.c).
-fn pickup_bandolier(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
-    pickup_ammo_carrier(world, player, AMMO_MAX_BANDOLIER, &["Bullets", "Shells"])
+fn pickup_bandolier(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !pickup_ammo_carrier(world, player, AMMO_MAX_BANDOLIER, &["Bullets", "Shells"]) {
+        return false;
+    }
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
+    true
 }
 
 /// C ref: `Pickup_Pack` (g_items.c).
-fn pickup_pack(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
-    pickup_ammo_carrier(
+fn pickup_pack(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !pickup_ammo_carrier(
         world,
         player,
         AMMO_MAX_PACK,
         &["Bullets", "Shells", "Cells", "Grenades", "Rockets", "Slugs"],
-    )
+    ) {
+        return false;
+    }
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
+    true
 }
 
-/// Pickup handler for weapon items.
-/// C ref: `Pickup_Weapon` (player/weapon.c:268-336)
 /// Take a weapon and a load of its ammo (none from a dropped one). With
 /// weapons stay or in coop, a player who has it leaves a map weapon for
 /// the others; deathmatch map weapons respawn after 30 seconds. A new
@@ -1320,7 +1382,8 @@ fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
 
 /// Pickup handler for health items. Stimpacks and mega health
 /// (`HEALTH_IGNORE_MAX`) go over max health; mega health (`HEALTH_TIMED`)
-/// then rots back down while the item waits, unseen.
+/// then rots back down while the item waits, unseen. Other deathmatch map
+/// health comes back after 30 seconds.
 /// C ref: `Pickup_Health` (g_items.c:831-874)
 fn pickup_health(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some((amount, style)) = world
@@ -1353,6 +1416,8 @@ fn pickup_health(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
             item.solid = Solid::Not;
         }
         world.link_entity(item_ent);
+    } else {
+        respawn_unless_dropped(world, item_ent, 30.0);
     }
     true
 }
@@ -1390,8 +1455,8 @@ pub fn drop_ammo(world: &mut GameWorld, key: EntityKey, item: usize) {
     world.validate_selected_item(key);
 }
 
-/// Drain the mega health bonus one point a second, then go away.
-/// C ref: `MegaHealth_think` (single player: no respawn).
+/// Drain the mega health bonus one point a second, then go away, or in
+/// deathmatch come back 20 seconds later. C ref: `MegaHealth_think`.
 pub fn megahealth_think(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let owner = world.entities.get(key).and_then(|e| e.owner);
@@ -1404,31 +1469,38 @@ pub fn megahealth_think(world: &mut GameWorld, key: EntityKey) {
             return;
         }
     }
-    world.free_entity(key);
+    if !respawn_unless_dropped(world, key, 20.0) {
+        world.free_entity(key);
+    }
 }
 
-/// Adrenaline: one more max health, healed to it. C ref:
-/// `Pickup_Adrenaline` (single player).
-fn pickup_adrenaline(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
+/// Adrenaline: one more max health (not in deathmatch), healed to it.
+/// C ref: `Pickup_Adrenaline`.
+fn pickup_adrenaline(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    let deathmatch = world.game.deathmatch;
     let Some(ent) = world.entities.get_mut(player) else {
         return false;
     };
-    ent.game.max_health += 1;
+    if !deathmatch {
+        ent.game.max_health += 1;
+    }
     ent.game.health = ent.game.health.max(ent.game.max_health);
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
     true
 }
 
 /// Ancient Head: two more max health. C ref: `Pickup_AncientHead`.
-fn pickup_ancient_head(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
+fn pickup_ancient_head(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some(ent) = world.entities.get_mut(player) else {
         return false;
     };
     ent.game.max_health += 2;
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
     true
 }
 
-/// Pickup handler for powerups and keys: one more in the inventory.
-/// C ref: `Pickup_Powerup` and `Pickup_Key` (single player).
 /// Carry a powerup, within the skill limit (medium two, hard one) and
 /// leaving coop's stay-put powerups to players without one; deathmatch
 /// map powerups come back after `quantity` seconds. C ref:
@@ -1452,12 +1524,36 @@ fn pickup_powerup(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey)
     if let Some(client) = world.client_mut(player) {
         client.pers.inventory[item_idx] += 1;
     }
-    let dropped = world
-        .entities
-        .get(item_ent)
-        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
-    if world.game.deathmatch && !dropped {
-        set_respawn(world, item_ent, respawn);
+    respawn_unless_dropped(world, item_ent, respawn);
+    true
+}
+
+/// Carry a key: one more in single player and deathmatch, one of each
+/// kind in coop. C ref: `Pickup_Key`.
+///
+/// C coop tracks power cubes in `pers.power_cubes`, a bit per cube from
+/// `SpawnItem`; that field is not ported, so a coop power cube counts like
+/// any single-player key.
+fn pickup_key(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    let Some(ent) = world.entities.get(item_ent) else {
+        return false;
+    };
+    let Some(item_idx) = ent.game.item else {
+        return false;
+    };
+    let cube = ent.game.classname == "key_power_cube";
+    let coop = world.game.coop;
+    let Some(client) = world.client_mut(player) else {
+        return false;
+    };
+    let held = &mut client.pers.inventory[item_idx];
+    if coop && !cube {
+        if *held != 0 {
+            return false;
+        }
+        *held = 1;
+    } else {
+        *held += 1;
     }
     true
 }
@@ -1475,6 +1571,32 @@ pub fn set_respawn(world: &mut GameWorld, key: EntityKey, delay: f32) {
     ent.game.nextthink = time + delay;
     ent.think = Some(do_respawn);
     world.link_entity(key);
+}
+
+/// Respawn a picked-up map item after `delay` seconds in deathmatch; a
+/// dropped item is not respawned. C: the `!(ent->spawnflags & DROPPED_ITEM)
+/// && deathmatch->value` guard around `SetRespawn` in `g_items.c`. True
+/// when the item will respawn.
+fn respawn_unless_dropped(world: &mut GameWorld, item_ent: EntityKey, delay: f32) -> bool {
+    let dropped = world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
+    let respawn = world.game.deathmatch && !dropped;
+    if respawn {
+        set_respawn(world, item_ent, delay);
+    }
+    respawn
+}
+
+/// `SetRespawn` delay of items that respawn after their `quantity`.
+fn quantity_delay(world: &GameWorld, item_ent: EntityKey) -> f32 {
+    world
+        .entities
+        .get(item_ent)
+        .and_then(|e| e.game.item)
+        .and_then(|i| world.items.get(i))
+        .map_or(0.0, |it| it.quantity as f32)
 }
 
 /// Take one of `item` from the player's inventory to use it.
@@ -1751,6 +1873,10 @@ pub const DROPPED_ITEM: i32 = 0x0001_0000;
 /// Set on an item a player dropped (C `DROPPED_PLAYER_ITEM`).
 pub const DROPPED_PLAYER_ITEM: i32 = 0x0002_0000;
 const ITEM_TARGETS_USED: i32 = 0x0004_0000;
+/// dmflags that keep items out of a deathmatch map (C shared.h).
+const DF_NO_HEALTH: i32 = 0x0000_0001;
+const DF_NO_ITEMS: i32 = 0x0000_0002;
+const DF_NO_ARMOR: i32 = 0x0000_0800;
 /// C `EV_ITEM_RESPAWN` (shared.h `entity_event_t`).
 const EV_ITEM_RESPAWN: i32 = 1;
 
@@ -1768,7 +1894,9 @@ pub fn health_spawn(classname: &str) -> Option<(&'static str, i32)> {
 
 impl GameWorld {
     /// Make `key` a world item that drops to the floor once the other
-    /// solids are in. C ref: `SpawnItem`.
+    /// solids are in, unless deathmatch dmflags rule it out. C ref:
+    /// `SpawnItem`; the coop power cube numbering (`level.power_cubes`)
+    /// is not ported.
     pub fn spawn_item(&mut self, key: EntityKey, item: usize) {
         self.precache_item(item);
         let flags = self.items.get(item).map_or(0, |it| it.world_model_flags);
@@ -1786,11 +1914,50 @@ impl GameWorld {
             tracing::debug!(classname = %ent.game.classname, "item has invalid spawnflags set");
             ent.game.spawnflags = 0;
         }
+        if self.game.deathmatch && self.dmflags_remove(key, item) {
+            self.free_entity(key);
+            return;
+        }
+        // Don't let them drop items that stay in a coop game. C clears
+        // the shared `item->drop`; `self.items` is this game's copy.
+        let coop = self.game.coop;
+        if let Some(def) = self.items.get_mut(item) {
+            if coop && def.flags.contains(ItemFlags::STAY_COOP) {
+                def.drop_fn = None;
+            }
+        }
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
         ent.game.item = Some(item);
         ent.game.nextthink = time + 2.0 * FRAMETIME; // items start after other solids
         ent.think = Some(droptofloor);
         ent.state.effects = flags;
         ent.state.renderfx = q2_shared::constants::RF_GLOW;
+    }
+}
+
+impl GameWorld {
+    /// Whether dmflags keep this item out of a deathmatch map: armor
+    /// (`DF_NO_ARMOR`), powerups (`DF_NO_ITEMS`), health (`DF_NO_HEALTH`),
+    /// and plain ammo and the BFG (`DF_INFINITE_AMMO`). C ref: `SpawnItem`.
+    fn dmflags_remove(&self, key: EntityKey, item: usize) -> bool {
+        let dmflags = self.game.dmflags;
+        let Some(def) = self.items.get(item) else {
+            return false;
+        };
+        let handler = |f: PickupFn| def.pickup.is_some_and(|p| std::ptr::fn_addr_eq(p, f));
+        let bfg = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.game.classname == "weapon_bfg");
+        (dmflags & DF_NO_ARMOR != 0 && (handler(pickup_armor) || handler(pickup_power_armor)))
+            || (dmflags & DF_NO_ITEMS != 0 && handler(pickup_powerup))
+            || (dmflags & DF_NO_HEALTH != 0
+                && (handler(pickup_health)
+                    || handler(pickup_adrenaline)
+                    || handler(pickup_ancient_head)))
+            || (dmflags & DF_INFINITE_AMMO != 0 && (def.flags == ItemFlags::AMMO || bfg))
     }
 }
 
@@ -1917,8 +2084,9 @@ pub fn use_item(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activ
     world.link_entity(key);
 }
 
-/// C ref: `Touch_Item` (single player: no deathmatch instant use, no coop
-/// stay; pickup sounds and the screen flash are not ported).
+/// A player takes the item: the pickup flash, icon and sound, deathmatch
+/// instant use, the item's targets, then the item goes unless it
+/// respawns or stays in coop. C ref: `Touch_Item`.
 pub fn touch_item(
     world: &mut GameWorld,
     key: EntityKey,
@@ -2970,6 +3138,53 @@ mod tests {
     }
 
     #[test]
+    fn deathmatch_dmflags_remove_their_items_at_spawn() {
+        for (dmflags, removed, kept) in [
+            (
+                DF_NO_ARMOR,
+                &["item_armor_jacket", "item_power_screen"][..],
+                "item_quad",
+            ),
+            (DF_NO_ITEMS, &["item_quad"][..], "item_armor_jacket"),
+            (
+                DF_NO_HEALTH,
+                &["item_health", "item_adrenaline", "item_ancient_head"][..],
+                "item_quad",
+            ),
+            // C compares flags == IT_AMMO, so hand grenades stay.
+            (
+                DF_INFINITE_AMMO,
+                &["ammo_shells", "weapon_bfg"][..],
+                "ammo_grenades",
+            ),
+        ] {
+            let mut world = armor_world();
+            world.game.deathmatch = true;
+            world.game.dmflags = dmflags;
+            for &classname in removed {
+                let key = item_entity(&mut world, classname, 0);
+                assert!(!world.entities.get(key).unwrap().in_use, "{classname}");
+            }
+            let key = item_entity(&mut world, kept, 0);
+            assert!(world.entities.get(key).unwrap().in_use, "{kept}");
+        }
+        let mut world = armor_world();
+        world.game.dmflags = DF_NO_ARMOR;
+        let key = item_entity(&mut world, "item_armor_jacket", 0);
+        assert!(world.entities.get(key).unwrap().in_use, "single player");
+    }
+
+    #[test]
+    fn coop_stay_items_cannot_be_dropped_once_one_spawns() {
+        let mut world = armor_world();
+        world.game.coop = true;
+        let shotgun = world.find_item("weapon_shotgun").unwrap();
+        assert!(world.items[shotgun].drop_fn.is_some());
+        item_entity(&mut world, "weapon_shotgun", 0);
+        assert!(world.items[shotgun].drop_fn.is_none());
+    }
+
+    #[test]
     fn pickup_armor_of_a_weaker_type_tops_up_the_worn_armor() {
         let mut world = armor_world();
         let player = client_with(&mut world, &[("item_armor_body", 100)]);
@@ -3287,6 +3502,161 @@ mod tests {
             .game
             .flags
             .contains(EntityFlags::RESPAWN));
+    }
+
+    fn pick_up(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+        let item = world.entities.get(item_ent).unwrap().game.item.unwrap();
+        let pickup = world.items[item].pickup.expect("pickup handler");
+        pickup(world, item_ent, player)
+    }
+
+    #[test]
+    fn keys_have_no_skill_limit_so_hard_skill_collects_every_power_cube() {
+        let (mut world, key, _) = powered();
+        world.game.skill = SKILL_HARD;
+        let cube = world.find_item("key_power_cube").unwrap();
+        for _ in 0..2 {
+            let ent = powerup_on_floor(&mut world, "key_power_cube");
+            assert!(pick_up(&mut world, ent, key));
+        }
+        assert_eq!(world.client(key).unwrap().pers.inventory[cube], 2);
+    }
+
+    #[test]
+    fn coop_gives_each_player_one_of_a_key() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let pass = powerup_on_floor(&mut world, "key_pass");
+        assert!(pick_up(&mut world, pass, key));
+        assert!(!pick_up(&mut world, pass, key), "already holds one");
+        let index = world.find_item("key_pass").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.inventory[index], 1);
+    }
+
+    /// Pick up the map item `classname` in deathmatch at time 10, hurt to
+    /// 50 health, and assert it waits to respawn `delay` seconds later instead of being
+    /// freed.
+    fn assert_deathmatch_respawn(
+        classname: &str,
+        delay: f32,
+        setup: fn(&mut GameWorld, EntityKey),
+    ) {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let ent = powerup_on_floor(&mut world, classname);
+        setup(&mut world, ent);
+        world.entities.get_mut(key).unwrap().game.health = 50;
+        assert!(pick_up(&mut world, ent, key), "{classname} picked up");
+        let e = world.entities.get(ent).expect("not freed");
+        assert!(e.game.flags.contains(EntityFlags::RESPAWN), "{classname}");
+        assert_ne!(e.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert!(e
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, do_respawn as crate::entity::ThinkFn)));
+        assert_eq!(e.game.nextthink, 10.0 + delay, "{classname}");
+    }
+
+    fn no_setup(_: &mut GameWorld, _: EntityKey) {}
+
+    fn medium_health(world: &mut GameWorld, ent: EntityKey) {
+        world.entities.get_mut(ent).unwrap().game.count = 10;
+    }
+
+    #[test]
+    fn deathmatch_health_respawns_after_30_seconds() {
+        assert_deathmatch_respawn("item_health", 30.0, medium_health);
+    }
+
+    #[test]
+    fn deathmatch_armor_respawns_after_20_seconds() {
+        assert_deathmatch_respawn("item_armor_jacket", 20.0, no_setup);
+        assert_deathmatch_respawn("item_armor_shard", 20.0, no_setup);
+    }
+
+    #[test]
+    fn deathmatch_adrenaline_ancient_head_bandolier_and_pack_respawn_after_their_quantity() {
+        for classname in [
+            "item_adrenaline",
+            "item_ancient_head",
+            "item_bandolier",
+            "item_pack",
+        ] {
+            let (world, _, _) = powered();
+            let item = world.find_item(classname).unwrap();
+            let delay = world.items[item].quantity as f32;
+            assert!(delay > 0.0, "{classname}");
+            assert_deathmatch_respawn(classname, delay, no_setup);
+        }
+    }
+
+    #[test]
+    fn a_dropped_deathmatch_bandolier_does_not_respawn() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        let ent = powerup_on_floor(&mut world, "item_bandolier");
+        world.entities.get_mut(ent).unwrap().game.spawnflags = DROPPED_ITEM;
+        assert!(pick_up(&mut world, ent, key));
+        let e = world.entities.get(ent).unwrap();
+        assert!(!e.game.flags.contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn deathmatch_adrenaline_heals_without_raising_max_health() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.entities.get_mut(key).unwrap().game.health = 40;
+        let ent = powerup_on_floor(&mut world, "item_adrenaline");
+        assert!(pick_up(&mut world, ent, key));
+        let player = world.entities.get(key).unwrap();
+        assert_eq!(player.game.max_health, 100);
+        assert_eq!(player.game.health, 100);
+    }
+
+    #[test]
+    fn deathmatch_mega_health_respawns_20_seconds_after_it_wears_off() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let ent = powerup_on_floor(&mut world, "item_health");
+        world.entities.get_mut(ent).unwrap().owner = Some(key);
+        megahealth_think(&mut world, ent);
+        let e = world.entities.get(ent).expect("not freed");
+        assert!(e
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, do_respawn as crate::entity::ThinkFn)));
+        assert_eq!(e.game.nextthink, 30.0);
+
+        world.game.deathmatch = false;
+        let ent = powerup_on_floor(&mut world, "item_health");
+        world.entities.get_mut(ent).unwrap().owner = Some(key);
+        megahealth_think(&mut world, ent);
+        assert!(
+            !world.entities.get(ent).unwrap().in_use,
+            "single player frees it"
+        );
+    }
+
+    #[test]
+    fn the_last_grenades_drop_while_the_super_shotgun_is_in_hand() {
+        let (mut world, key, _) = powered();
+        let grenades = own(&mut world, key, "Grenades", 3);
+        let ssg = own(&mut world, key, "Super Shotgun", 1);
+        world.client_mut(key).unwrap().pers.weapon = Some(ssg);
+        drop_ammo(&mut world, key, grenades);
+        assert_eq!(world.client(key).unwrap().pers.inventory[grenades], 0);
+    }
+
+    #[test]
+    fn coop_lets_a_player_carry_several_power_cubes() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let cube = world.find_item("key_power_cube").unwrap();
+        for _ in 0..2 {
+            let ent = powerup_on_floor(&mut world, "key_power_cube");
+            assert!(pick_up(&mut world, ent, key));
+        }
+        assert_eq!(world.client(key).unwrap().pers.inventory[cube], 2);
     }
 
     #[test]

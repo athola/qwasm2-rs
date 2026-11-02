@@ -74,9 +74,9 @@ impl GameWorld {
 
     /// Place a connected client into the game world at a spawn point.
     /// C ref: `PutClientInServer` (player/client.c). Not ported: the
-    /// help-computer counts coop carries across a respawn, and
-    /// `air_finished` and `pain`, which only player drowning (P_WorldEffects)
-    /// and player_pain read, neither of which is ported.
+    /// help-computer counts (`game_helpchanged`, `helpchanged`) that coop
+    /// carries across a respawn. No `pain` callback is set: C's
+    /// `player_pain` is empty, `P_DamageFeedback` does the work.
     pub fn begin_client(&mut self, key: EntityKey) {
         // Before health is set back up, so farthest ranging does not count
         // this client.
@@ -745,8 +745,8 @@ impl GameWorld {
     }
 
     /// The player's looping sound: frying in lava or slime, else the
-    /// weapon's hum. C ref: `G_SetClientSound` (player/view.c), without
-    /// the help-computer beep.
+    /// railgun or BFG hum, else the weapon's own sound; plus the
+    /// help-computer beep. C ref: `G_SetClientSound` (player/view.c).
     fn set_client_sound(&mut self, key: EntityKey) {
         // New help: flag it, and beep (no more than three times).
         let (game_helpchanged, framenum) = (self.game.helpchanged, self.level.framenum);
@@ -773,6 +773,16 @@ impl GameWorld {
             );
         }
         let fry = self.gi.sound_index("player/fry.wav");
+        let weap = self
+            .client(key)
+            .and_then(|c| c.pers.weapon)
+            .and_then(|w| self.items.get(w))
+            .map_or("", |it| it.classname);
+        let hum = match weap {
+            "weapon_railgun" => Some(self.gi.sound_index("weapons/rg_hum.wav")),
+            "weapon_bfg" => Some(self.gi.sound_index("weapons/bfg_hum.wav")),
+            _ => None,
+        };
         let Some((ent, client)) = self.entity_and_client_mut(key) else {
             return;
         };
@@ -780,7 +790,11 @@ impl GameWorld {
             && ent.game.watertype
                 & (q2_shared::constants::CONTENTS_LAVA | q2_shared::constants::CONTENTS_SLIME)
                 != 0;
-        ent.state.sound = if burning { fry } else { client.weapon_sound };
+        ent.state.sound = if burning {
+            fry
+        } else {
+            hum.unwrap_or(client.weapon_sound)
+        };
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
@@ -801,9 +815,44 @@ impl GameWorld {
     }
 
     /// Build one client's view, effects, sound and status bar for this
-    /// frame. C ref: `ClientEndServerFrame` (player/view.c).
+    /// frame. C ref: `ClientEndServerFrame` (player/view.c). Not ported:
+    /// `P_FallingDamage` (needs `client.oldvelocity`, which the client
+    /// struct lacks), the spectator and chase-cam stats, `G_SetClientFrame`
+    /// (#32) and the inventory refresh (`InventoryMessage`).
     pub fn client_end_server_frame(&mut self, key: EntityKey) {
+        // A plat push or explosion knockback since ClientThink moved the
+        // body; copy it into pmove so the view does not lag a frame
+        // behind ("sinking into plats").
+        if let Some((ent, client)) = self.entity_and_client_mut(key) {
+            for i in 0..3 {
+                client.ps.pmove.origin[i] = (ent.state.origin[i] * 8.0) as i32 as i16;
+                client.ps.pmove.velocity[i] = (ent.velocity[i] * 8.0) as i32 as i16;
+            }
+        }
+        // At the end-of-unit layout the player gets no normal movement
+        // attributes: no blend, the default fov, only the stats.
+        if self.level.intermission_time != 0.0 {
+            if let Some(client) = self.client_mut(key) {
+                client.ps.blend[3] = 0.0;
+                client.ps.fov = 90.0;
+            }
+            self.update_player_stats(key);
+            return;
+        }
         self.world_effects(key);
+        // Turn the body to the view so others can tell where the player
+        // looks, leaning into strafes.
+        if let Some((ent, client)) = self.entity_and_client_mut(key) {
+            let v_angle = client.v_angle;
+            let (_, right, _) = crate::physics::angle_vectors(v_angle);
+            ent.state.angles.x = if v_angle.x > 180.0 {
+                (-360.0 + v_angle.x) / 3.0
+            } else {
+                v_angle.x / 3.0
+            };
+            ent.state.angles.y = v_angle.y;
+            ent.state.angles.z = super::view::calc_roll(ent.velocity, right) * 4.0;
+        }
         // C works out the bob before P_DamageFeedback; the feedback does
         // not touch the bob, so the view offset computes it here.
         self.damage_feedback(key);
@@ -812,6 +861,7 @@ impl GameWorld {
         // After the view offset, so eye contents are right.
         self.calc_blend(key);
         self.update_player_stats(key);
+        self.set_client_event(key, &bob);
         self.set_client_effects(key);
         self.set_client_sound(key);
         // If the scoreboard is up, update it.
@@ -819,6 +869,17 @@ impl GameWorld {
         if showscores && self.level.framenum & 31 == 0 {
             let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
             self.deathmatch_scoreboard_message(key, enemy);
+            if let Some(number) = self.number_of(key) {
+                self.gi.unicast(number, false);
+            }
+        }
+        // If the help computer is up, update it.
+        let showhelp = self.client(key).is_some_and(|c| c.showhelp);
+        if showhelp && self.level.framenum & 31 == 0 {
+            if let Some(client) = self.client_mut(key) {
+                client.pers.helpchanged = 0;
+            }
+            self.help_computer_message();
             if let Some(number) = self.number_of(key) {
                 self.gi.unicast(number, false);
             }
@@ -897,8 +958,8 @@ pub(crate) fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
 }
 
 /// The player's die callback. C ref: `player_die` (player/client.c),
-/// without the obituary, weapon toss, gibs, death animation and sounds.
-/// Single player has no respawn: C reloads the last save on a button
+/// without `LookAtKiller` (the dead view keeps its yaw) and the death
+/// animation (#32). Single player has no respawn: C reloads the last save on a button
 /// press, and there is no save/load yet (#15).
 pub fn player_die(
     world: &mut GameWorld,
@@ -918,6 +979,9 @@ pub fn player_die(
     ent.state.angles.x = 0.0;
     ent.state.angles.z = 0.0;
     ent.state.sound = 0;
+    if let Some(client) = ent.client.and_then(|slot| world.clients.get_mut(slot)) {
+        client.weapon_sound = 0;
+    }
     ent.maxs.z = -8.0;
     ent.svflags |= SvFlags::DEADMONSTER.bits();
     let first_death = ent.game.deadflag == DeadFlag::No;
@@ -993,9 +1057,12 @@ pub fn player_die(
 }
 
 /// What a self-kill message calls the player (C `IsFemale`, `IsNeutral`
-/// on the userinfo `gender`).
+/// on the userinfo `gender`; a gender containing "crakhor" is female).
 fn pronoun(userinfo: &str) -> (&'static str, &'static str) {
     let gender = extract_info_value(userinfo, "gender").unwrap_or_default();
+    if gender.contains("crakhor") {
+        return ("her", "herself");
+    }
     match gender.chars().next() {
         Some('f' | 'F') => ("her", "herself"),
         Some('m' | 'M') => ("his", "himself"),
@@ -1659,6 +1726,94 @@ mod tests {
         world.client_mut(key).unwrap().weapon_sound = 0;
         world.client_end_server_frames();
         assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
+    }
+
+    #[test]
+    fn the_frame_end_copies_a_pushed_origin_and_velocity_into_pmove() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(100.5, -20.25, 30.0);
+        ent.velocity = Vec3f::new(10.0, 0.0, -5.0);
+        world.client_end_server_frame(key);
+        let pmove = &world.client(key).unwrap().ps.pmove;
+        assert_eq!(pmove.origin, [804, -162, 240]);
+        assert_eq!(pmove.velocity, [80, 0, -40]);
+    }
+
+    #[test]
+    fn the_body_faces_where_the_player_looks_and_leans_into_strafes() {
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let v_angle = Vec3f::new(350.0, 45.0, 0.0);
+        world.client_mut(key).unwrap().v_angle = v_angle;
+        let (_, right, _) = crate::physics::angle_vectors(v_angle);
+        world.entities.get_mut(key).unwrap().velocity = right * 100.0;
+        world.client_end_server_frame(key);
+        let angles = world.entities.get(key).unwrap().state.angles;
+        assert!((angles.x - -10.0 / 3.0).abs() < 1e-4, "{angles:?}");
+        assert_eq!(angles.y, 45.0);
+        // sv_rollangle 2 at half of sv_rollspeed 200, times 4.
+        assert!((angles.z - 4.0).abs() < 1e-4, "{angles:?}");
+    }
+
+    #[test]
+    fn open_help_is_resent_every_32_frames_and_stops_the_beep() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let client = world.client_mut(key).unwrap();
+        client.showhelp = true;
+        client.pers.helpchanged = 2;
+        world.level.framenum = 64;
+        gi.unicasts.borrow_mut().clear();
+        world.client_end_server_frame(key);
+        assert_eq!(world.client(key).unwrap().pers.helpchanged, 0);
+        assert_eq!(gi.unicasts.borrow().as_slice(), &[(1, false)]);
+    }
+
+    #[test]
+    fn a_crakhor_gender_is_female_as_in_c() {
+        assert_eq!(pronoun("\\gender\\crakhor"), ("her", "herself"));
+        assert_eq!(pronoun("\\gender\\mcrakhor"), ("her", "herself"));
+        assert_eq!(pronoun("\\gender\\male"), ("his", "himself"));
+        assert_eq!(pronoun("\\gender\\none"), ("its", "itself"));
+    }
+
+    #[test]
+    fn dying_silences_the_weapon_hum() {
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.client_mut(key).unwrap().weapon_sound = world.gi.sound_index("weapons/hyprbl1a.wav");
+        world.entities.get_mut(key).unwrap().game.health = -10;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        world.client_end_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
+    }
+
+    #[test]
+    fn the_railgun_and_bfg_hum_while_held() {
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        for (classname, sound) in [
+            ("weapon_railgun", "weapons/rg_hum.wav"),
+            ("weapon_bfg", "weapons/bfg_hum.wav"),
+        ] {
+            world.client_mut(key).unwrap().pers.weapon = world.find_item(classname);
+            world.client_end_server_frames();
+            let hum = world.gi.sound_index(sound);
+            assert_eq!(
+                world.entities.get(key).unwrap().state.sound,
+                hum,
+                "{classname}"
+            );
+        }
     }
 
     fn dead_player(

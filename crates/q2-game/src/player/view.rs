@@ -1,5 +1,5 @@
-//! Player view — camera offset, view bob, damage kicks, fall effects.
-//! C ref: `player/view.c` (1,426 lines)
+//! Player view: camera offset, view bob and lean, damage kicks, blends,
+//! world effects and footsteps. C ref: `player/view.c`.
 
 use q2_shared::types::*;
 
@@ -26,29 +26,57 @@ const FRAME_CRPAIN4: i32 = 172;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
-/// C `bob_up` cvar default.
+/// C `bob_up`, `bob_pitch`, `bob_roll`, `run_pitch` and `run_roll` cvar
+/// defaults.
 const BOB_UP: f32 = 0.005;
+const BOB_PITCH: f32 = 0.002;
+const BOB_ROLL: f32 = 0.002;
+const RUN_PITCH: f32 = 0.002;
+const RUN_ROLL: f32 = 0.005;
 
 impl GameWorld {
-    /// Advance the walk bob and set the eye offset: eye height plus bob
-    /// (at most 6) and the shot and damage kicks, bounded to the player
-    /// box. Returns the bob for the gun offset.
+    /// Advance the walk bob and set the view kick and eye offset: the shot
+    /// and damage kicks, pitch and roll from running, strafing and the bob,
+    /// and the eye height plus bob (at most 6) and the shot's origin kick,
+    /// bounded to the player box. The dead look up and lean over. Returns
+    /// the bob for the gun offset.
     /// C ref: `ClientEndServerFrame`'s bob setup and `SV_CalcViewOffset`
-    /// (player/view.c).
+    /// (player/view.c). Not ported: the fall kick and fall height (no
+    /// `fall_time`/`fall_value`, as `P_FallingDamage` is not ported) and
+    /// the dead view's `killer_yaw` (no `LookAtKiller`), so the dead keep
+    /// their yaw.
     pub fn update_player_view(&mut self, key: EntityKey) -> Bob {
         let bob = self.calc_bob(key);
-        // The last shot's kick (C: base angles are `kick_angles`, cleared
-        // for the dead; the origin kick adds to the eye, clamped).
         let now = self.level.time;
         if let Some((ent, client)) = self.entity_and_client_mut(key) {
-            client.ps.kick_angles = if ent.game.deadflag != crate::constants::DeadFlag::No {
-                Vec3f::ZERO
+            if ent.game.deadflag != crate::constants::DeadFlag::No {
+                // Fix the angle and add no kick.
+                client.ps.kick_angles = Vec3f::ZERO;
+                client.ps.viewangles.z = 40.0;
+                client.ps.viewangles.x = -15.0;
             } else {
-                // Plus the damage kick, fading over DAMAGE_TIME.
-                let ratio = ((client.v_dmg_time - now) / DAMAGE_TIME).max(0.0);
-                client.kick_angles
-                    + Vec3f::new(ratio * client.v_dmg_pitch, 0.0, ratio * client.v_dmg_roll)
-            };
+                let mut angles = client.kick_angles;
+                // The damage kick, fading over DAMAGE_TIME.
+                let mut ratio = (client.v_dmg_time - now) / DAMAGE_TIME;
+                if ratio < 0.0 {
+                    ratio = 0.0;
+                    client.v_dmg_pitch = 0.0;
+                    client.v_dmg_roll = 0.0;
+                }
+                angles.x += ratio * client.v_dmg_pitch;
+                angles.z += ratio * client.v_dmg_roll;
+                // Lean with the velocity.
+                let (forward, right, _) = crate::physics::angle_vectors(client.v_angle);
+                angles.x += ent.velocity.dot(forward) * RUN_PITCH;
+                angles.z += ent.velocity.dot(right) * RUN_ROLL;
+                // Rock with the bob, more when crouching.
+                let ducked = client.ps.pmove.pm_flags & q2_common::pmove::PMF_DUCKED != 0;
+                let crouch = if ducked { 6.0 } else { 1.0 };
+                angles.x += bob.fracsin * BOB_PITCH * bob.xyspeed * crouch;
+                let roll = bob.fracsin * BOB_ROLL * bob.xyspeed * crouch;
+                angles.z += if bob.cycle & 1 != 0 { -roll } else { roll };
+                client.ps.kick_angles = angles;
+            }
             // Eye height comes from the entity's viewheight, which pmove
             // lowers when ducking, plus at most 6 of bob.
             let bob = (bob.fracsin * bob.xyspeed * BOB_UP).min(6.0);
@@ -61,6 +89,53 @@ impl GameWorld {
         }
         bob
     }
+}
+
+impl GameWorld {
+    /// A footstep event when the walk bob is about to start a new cycle,
+    /// as `g_footsteps` (default 1) allows: 1 on the ground above 225
+    /// speed, 2 on the ground, 3 or more always. C ref: `G_SetClientEvent`
+    /// (player/view.c).
+    pub fn set_client_event(&mut self, key: EntityKey, bob: &Bob) {
+        let footsteps = q2_common::cvar::parse_value(&self.gi.cvar("g_footsteps", "1"));
+        let bobmove = self.game.bobmove;
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        if ent.state.event != 0 || ent.game.health <= 0 {
+            return;
+        }
+        let on_ground = ent.game.ground_entity.is_some();
+        let allowed = if footsteps == 1.0 {
+            on_ground && bob.xyspeed > 225.0
+        } else if footsteps == 2.0 {
+            on_ground
+        } else {
+            footsteps >= 3.0
+        };
+        if allowed && (client.bobtime + bobmove) as i32 != bob.cycle {
+            ent.state.event = q2_shared::constants::EV_FOOTSTEP;
+        }
+    }
+}
+
+/// C `sv_rollangle` and `sv_rollspeed` cvar defaults.
+const SV_ROLLANGLE: f32 = 2.0;
+const SV_ROLLSPEED: f32 = 200.0;
+
+/// The lean for sideways speed along `right`: up to `sv_rollangle`
+/// degrees, reached at `sv_rollspeed`. C ref: `SV_CalcRoll`
+/// (player/view.c).
+pub fn calc_roll(velocity: Vec3f, right: Vec3f) -> f32 {
+    let side = velocity.dot(right);
+    let sign = if side < 0.0 { -1.0 } else { 1.0 };
+    let side = side.abs();
+    let side = if side < SV_ROLLSPEED {
+        side * SV_ROLLANGLE / SV_ROLLSPEED
+    } else {
+        SV_ROLLANGLE
+    };
+    side * sign
 }
 
 /// This frame's walk bob (C `ClientEndServerFrame`'s file statics).
@@ -394,10 +469,11 @@ impl GameWorld {
 
         // Start a pain animation if still in the player model.
         if client.anim_priority < ANIM_PAIN && modelindex == 255 {
-            self.pain_anim_cycle = (self.pain_anim_cycle + 1) % 3;
             let (first, last) = if ducked {
                 (FRAME_CRPAIN1, FRAME_CRPAIN4)
             } else {
+                // C steps its static pain counter for standing pains only.
+                self.pain_anim_cycle = (self.pain_anim_cycle + 1) % 3;
                 [
                     (FRAME_PAIN101, FRAME_PAIN104),
                     (FRAME_PAIN201, FRAME_PAIN204),
@@ -855,6 +931,34 @@ mod tests {
     }
 
     #[test]
+    fn only_standing_pains_advance_the_pain_animation_cycle() {
+        let (mut world, key, _) = hurt_player();
+        world.entities.get_mut(key).unwrap().state.modelindex = 255;
+        world.pain_anim_cycle = 1;
+        let client = world.client_mut(key).unwrap();
+        client.ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        client.anim_priority = 0;
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.pain_anim_cycle, 1, "ducked");
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            super::FRAME_CRPAIN1 - 1
+        );
+
+        let client = world.client_mut(key).unwrap();
+        client.ps.pmove.pm_flags &= !q2_common::pmove::PMF_DUCKED;
+        client.anim_priority = 0;
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.pain_anim_cycle, 2);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            super::FRAME_PAIN301 - 1
+        );
+    }
+
+    #[test]
     fn no_damage_this_frame_clears_the_flashes_and_does_nothing_else() {
         let (mut world, key, gi) = hurt_player();
         world.client_mut(key).unwrap().ps.stats[STAT_FLASHES] = 3;
@@ -1270,6 +1374,112 @@ mod tests {
         world.world_effects(key);
         assert_eq!(health(&world, key), 98);
         assert_eq!(world.means_of_death, crate::constants::MeansOfDeath::Lava);
+    }
+
+    /// A player running at `speed` on the world, `bobtime` into the bob.
+    fn runner(speed: f32, bobtime: f32) -> (GameWorld, EntityKey) {
+        let mut world = crate::world::test_world();
+        let ground = world.entities.spawn_numbered(0).unwrap();
+        let key = player_in(&mut world);
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.ground_entity = Some(ground);
+        ent.velocity = Vec3f::new(speed, 0.0, 0.0);
+        world.client_mut(key).unwrap().bobtime = bobtime;
+        (world, key)
+    }
+
+    fn event(world: &GameWorld, key: EntityKey) -> i32 {
+        world.entities.get(key).unwrap().state.event
+    }
+
+    #[test]
+    fn running_pitches_and_strafing_rolls_the_view() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        // Airborne, so no bob: only the run terms.
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(100.0, -100.0, 0.0);
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        // v_angle 0: forward +x, right -y.
+        assert!(
+            close(kick, Vec3f::new(100.0 * 0.002, 0.0, 100.0 * 0.005)),
+            "{kick:?}"
+        );
+    }
+
+    #[test]
+    fn the_walk_bob_pitches_and_rolls_the_view_more_when_ducked() {
+        // Bob time 1.5: odd cycle, |sin| 1, so the roll swings negative.
+        let (mut world, key) = runner(300.0, 1.25);
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        assert!(close(kick, Vec3f::new(0.6 + 0.6, 0.0, -0.6)), "{kick:?}");
+
+        // Ducked: bob time 0.875 * 4 = 3.5, and both terms times 6.
+        let (mut world, key) = runner(300.0, 0.625);
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        assert!(close(kick, Vec3f::new(0.6 + 3.6, 0.0, -3.6)), "{kick:?}");
+    }
+
+    #[test]
+    fn a_spent_damage_kick_is_cleared() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        world.level.time = 10.0;
+        let client = world.client_mut(key).unwrap();
+        client.v_dmg_time = 9.0;
+        client.v_dmg_pitch = 5.0;
+        client.v_dmg_roll = -5.0;
+        world.update_player_view(key);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.v_dmg_pitch, client.v_dmg_roll), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_dead_look_up_and_lean_over() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        world.entities.get_mut(key).unwrap().game.deadflag = crate::constants::DeadFlag::Dead;
+        world.update_player_view(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.kick_angles, Vec3f::ZERO);
+        assert_eq!(
+            (client.ps.viewangles.x, client.ps.viewangles.z),
+            (-15.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn running_steps_into_the_next_bob_cycle_make_a_footstep() {
+        // 0.6 + 0.25 = 0.85 this frame; 0.85 + 0.25 crosses into cycle 1.
+        let (mut world, key) = runner(300.0, 0.6);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), q2_shared::constants::EV_FOOTSTEP);
+
+        let (mut world, key) = runner(300.0, 0.0);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), 0, "still in cycle 0");
+
+        let (mut world, key) = runner(220.0, 0.6);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), 0, "g_footsteps 1 needs over 225");
+    }
+
+    #[test]
+    fn intermission_freezes_the_view_and_stops_lava_burning() {
+        let (mut world, key, _) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_LAVA);
+        world.level.intermission_time = 15.0;
+        let client = world.client_mut(key).unwrap();
+        client.ps.blend = [1.0, 0.0, 0.0, 0.5];
+        client.ps.fov = 110.0;
+        world.client_end_server_frame(key);
+        assert_eq!(health(&world, key), 100);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.blend[3], 0.0);
+        assert_eq!(client.ps.fov, 90.0);
     }
 
     #[test]
