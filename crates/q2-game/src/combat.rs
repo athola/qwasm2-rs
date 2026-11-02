@@ -2,8 +2,7 @@
 //!
 //! Port of `g_combat.c`: damage application, armor absorption, knockback,
 //! kill tracking, radius (splash) damage, power armor and
-//! `M_ReactToDamage`. Not ported: the per-frame client damage blends, the skill
-//! and deathmatch rules for players, and temp-entity effects.
+//! `M_ReactToDamage`.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_combat.c`
@@ -401,6 +400,15 @@ impl GameWorld {
 
         let mut damage = damage;
         let mut knockback = knockback as f32;
+
+        // Easy mode takes half damage (C `damage *= 0.5` on an int).
+        let target_is_client = self.client(target).is_some();
+        if self.game.skill == SKILL_EASY && !self.game.deathmatch && target_is_client {
+            damage = (damage as f64 * 0.5) as i32;
+            if damage == 0 {
+                damage = 1;
+            }
+        }
 
         // Surprise bonus: 2x damage if monster hasn't seen the attacker.
         let is_monster = self
@@ -947,6 +955,61 @@ mod tests {
         assert_eq!((client.damage_blood, client.damage_knockback), (20, 14));
         assert_eq!((client.damage_armor, client.damage_parmor), (0, 0));
         assert_eq!(client.damage_from, point);
+    }
+
+    #[test]
+    fn easy_skill_halves_damage_to_players_outside_deathmatch_but_never_to_0() {
+        let (mut world, _) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.game.skill = SKILL_EASY;
+        let health = |world: &mut GameWorld, damage| {
+            world.entities.get_mut(key).unwrap().game.health = 100;
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                damage,
+                0,
+                DamageFlags::empty(),
+                MeansOfDeath::Unknown,
+            );
+            world.entities.get(key).unwrap().game.health
+        };
+        // C: damage *= 0.5 truncates, and a 0 result becomes 1.
+        assert_eq!(health(&mut world, 31), 100 - 15);
+        assert_eq!(health(&mut world, 1), 99);
+        assert_eq!(health(&mut world, 0), 99);
+        world.game.deathmatch = true;
+        assert_eq!(health(&mut world, 31), 100 - 31);
+        world.game.deathmatch = false;
+        world.game.skill = 1;
+        assert_eq!(health(&mut world, 31), 100 - 31);
+
+        // Monsters take full damage at easy skill.
+        world.game.skill = SKILL_EASY;
+        let monster = world.spawn().unwrap();
+        let m = world.entities.get_mut(monster).unwrap();
+        m.svflags = q2_shared::constants::SVF_MONSTER;
+        m.game.takedamage = TakeDamage::Yes;
+        m.game.health = 100;
+        m.game.enemy = Some(key);
+        world.t_damage(
+            monster,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            31,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        assert_eq!(world.entities.get(monster).unwrap().game.health, 100 - 31);
     }
 
     #[test]
