@@ -364,7 +364,12 @@ pub fn func_clock_think(world: &mut GameWorld, key: EntityKey) {
             let pathtarget = ent.game.pathtarget.clone();
             let savetarget = std::mem::replace(&mut ent.game.target, pathtarget);
             let savemessage = std::mem::take(&mut ent.game.message);
-            // C passes a NULL activator for a clock nobody used.
+            // Deviation: C passes a NULL activator for a clock nobody used,
+            // and target_laser_use, misc_viper_use, misc_viper_bomb_use,
+            // misc_strogg_ship_use, door_use, train_use and the other uses
+            // that return on !activator then do nothing. UseFn has no
+            // absent activator (issue #34), so the clock stands in and
+            // those targets run.
             let activator = ent.game.activator.unwrap_or(key);
             world.use_targets(key, activator);
             let Some(ent) = world.entities.get_mut(key) else {

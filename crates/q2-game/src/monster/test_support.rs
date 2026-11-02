@@ -558,7 +558,7 @@ pub fn monster_arena(
 /// Run a monster's `spawn::SPAWNS` row as `call_spawn` does: spawn
 /// function, finish function, model, `monster_start`, link.
 pub fn spawn_monster(world: &mut GameWorld, classname: &str, origin: Vec3f) -> EntityKey {
-    let &(_, sfn, model, finish) = crate::spawn::find_spawn(classname).unwrap();
+    let &(_, sfn, model, finish, _) = crate::spawn::find_spawn(classname).unwrap();
     let key = world.spawn().unwrap();
     world.entities.get_mut(key).unwrap().state.origin = origin;
     let fields = HashMap::from([("classname".to_string(), classname.to_string())]);

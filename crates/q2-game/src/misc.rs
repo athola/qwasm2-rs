@@ -21,7 +21,9 @@ use std::collections::HashMap;
 // Callbacks
 // ---------------------------------------------------------------------------
 
-use q2_shared::constants::{EF_GIB, EF_TELEPORTER, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT};
+use q2_shared::constants::{
+    EF_FLIES, EF_GIB, EF_TELEPORTER, EV_OTHER_TELEPORT, EV_PLAYER_TELEPORT,
+};
 
 /// Move a touching client to the teleporter's destination, hold it briefly
 /// and reset its view, telefragging whatever is at the destination.
@@ -269,8 +271,6 @@ pub enum GibType {
     Metallic,
 }
 
-/// `EF_FLIES` (shared.h): the corpse fly swarm a head no longer has.
-const EF_FLIES: u32 = 0x0000_4000;
 /// The gib that animates when it lands (C `sm_meat_index`).
 const SM_MEAT_MODEL: &str = "models/objects/gibs/sm_meat/tris.md2";
 

@@ -2458,7 +2458,7 @@ mod tests {
         let fields: HashMap<String, String> = [("classname".to_string(), class.to_string())].into();
         world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(0.0, 0.0, 24.0);
         world.entities.get_mut(key).unwrap().game.classname = class.to_string();
-        let &(_, spawn, _, finish) = crate::spawn::find_spawn(class).unwrap();
+        let &(_, spawn, _, finish, _) = crate::spawn::find_spawn(class).unwrap();
         spawn(&mut world.entities, key, &fields);
         finish.unwrap()(&mut world, key, &fields);
         ai::monster_start(&mut world, key);

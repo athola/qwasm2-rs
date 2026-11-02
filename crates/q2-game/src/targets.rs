@@ -2,7 +2,7 @@
 //!
 //! Port of `g_target.c`. Each target has a `use` callback that fires when
 //! the entity is triggered. Ported: target_explosion, target_speaker,
-//! target_changelevel (without intermission), target_secret, target_goal,
+//! target_changelevel, target_secret, target_goal,
 //! target_help, target_laser.
 //! The other C target classes (temp_entity, splash, spawner, blaster,
 //! crosslevel_*, lightramp, earthquake) are registered as
@@ -154,14 +154,20 @@ pub fn finish_target_help(
     key: EntityKey,
     _fields: &HashMap<String, String>,
 ) {
-    let has_message = world
-        .entities
-        .get(key)
-        .is_some_and(|e| !e.game.message.is_empty());
-    if world.game.deathmatch || !has_message {
-        if !has_message {
-            world.gi.dprintf("target_help with no message\n");
-        }
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    if ent.game.message.is_empty() {
+        let warning = format!(
+            "{} with no message at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        world.gi.dprintf(&warning);
         world.free_entity(key);
         return;
     }
@@ -456,7 +462,10 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
                 }
                 ent.game.enemy = found;
             }
-            None => ent.game.movedir = GameWorld::set_movedir(ent.state.angles),
+            None => {
+                ent.game.movedir = GameWorld::set_movedir(ent.state.angles);
+                ent.state.angles = Vec3f::ZERO; // C G_SetMovedir: VectorClear
+            }
         }
     }
     ent.use_fn = Some(target_laser_use);
@@ -558,6 +567,19 @@ pub fn sp_target_generic(
             .cloned()
             .unwrap_or_else(|| "target".to_string());
         ent.use_fn = Some(target_generic_use);
+    }
+}
+
+/// No `use` until `target_laser_start` sets it a second later, so an early
+/// use does nothing. C ref: `SP_target_laser`; `finish_target_laser`
+/// schedules the start.
+pub fn sp_target_laser(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.game.classname = "target_laser".to_string();
     }
 }
 
@@ -792,6 +814,96 @@ mod tests {
         assert_eq!(laser_sparks(&gi), 1);
         // Facing angles 0: along +x, 2048 units.
         assert_eq!(ent.game.movedir, Vec3f::X);
+    }
+
+    fn help_world(
+        deathmatch: bool,
+        message: &str,
+        spawnflags: i32,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.game.deathmatch = deathmatch;
+        let help = world.spawn().unwrap();
+        let ent = world.entities.get_mut(help).unwrap();
+        ent.game.classname = "target_help".into();
+        ent.game.message = message.into();
+        ent.game.spawnflags = spawnflags;
+        ent.state.origin = Vec3f::new(1.0, 2.0, 3.0);
+        finish_target_help(&mut world, help, &HashMap::new());
+        (world, help, gi)
+    }
+
+    #[test]
+    fn target_help_with_spawnflag_1_sets_the_first_help_message() {
+        let (mut world, help, _) = help_world(false, "find the key", 1);
+        let use_fn = world.entities.get(help).unwrap().use_fn.unwrap();
+        use_fn(&mut world, help, help, help);
+        assert_eq!(world.game.helpmessage1, "find the key");
+        assert_eq!(world.game.helpmessage2, "");
+        assert_eq!(world.game.helpchanged, 1);
+    }
+
+    #[test]
+    fn target_help_without_spawnflag_1_sets_the_second_help_message() {
+        let (mut world, help, _) = help_world(false, "open the door", 0);
+        let use_fn = world.entities.get(help).unwrap().use_fn.unwrap();
+        use_fn(&mut world, help, help, help);
+        use_fn(&mut world, help, help, help);
+        assert_eq!(world.game.helpmessage1, "");
+        assert_eq!(world.game.helpmessage2, "open the door");
+        assert_eq!(world.game.helpchanged, 2);
+    }
+
+    #[test]
+    fn target_help_without_a_message_is_freed_with_a_warning() {
+        let (world, help, gi) = help_world(false, "", 0);
+        assert!(!world.entities.is_live(help));
+        assert_eq!(
+            *gi.dprints.borrow(),
+            ["target_help with no message at (1 2 3)\n"]
+        );
+    }
+
+    #[test]
+    fn target_help_is_freed_silently_in_deathmatch() {
+        // C checks deathmatch before the message, so no warning either way.
+        for message in ["objective", ""] {
+            let (world, help, gi) = help_world(true, message, 0);
+            assert!(!world.entities.is_live(help), "{message:?}");
+            assert!(gi.dprints.borrow().is_empty(), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn a_target_laser_ignores_uses_until_it_starts() {
+        // C SP_target_laser leaves `use` NULL until target_laser_start.
+        let mut world = test_world();
+        let laser = world.spawn().unwrap();
+        world.entities.get_mut(laser).unwrap().game.target = "aim".into();
+        let fields = HashMap::from([("classname".to_string(), "target_laser".to_string())]);
+        world.call_spawn(laser, "target_laser", &fields);
+        assert!(world.entities.get(laser).unwrap().use_fn.is_none());
+    }
+
+    #[test]
+    fn an_untargeted_target_laser_clears_its_angles_like_g_setmovedir() {
+        let (mut world, laser, gi) = laser_world(1);
+        world.entities.get_mut(laser).unwrap().state.angles = Vec3f::new(0.0, 90.0, 0.0);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        gi.queued_traces
+            .borrow_mut()
+            .push_back(wall(Vec3f::new(0.0, 300.0, 0.0)));
+        start(&mut world, laser);
+        let ent = world.entities.get(laser).unwrap();
+        assert_eq!(
+            ent.game.movedir,
+            GameWorld::set_movedir(Vec3f::new(0.0, 90.0, 0.0))
+        );
+        assert_eq!(ent.state.angles, Vec3f::ZERO, "C G_SetMovedir: VectorClear");
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! commander's body, the vipers and their bomb, the strogg ship and the
 //! debug `viewthing`.
 //!
-//! None of these is a monster in C (none runs `monster_start`), so none
-//! gets `monsterinfo` here: `call_spawn` would take it for a monster.
+//! None of these is a monster in C (none runs `monster_start`); their
+//! `spawn::SPAWNS` rows say so.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_misc.c`
@@ -152,9 +152,8 @@ pub fn misc_deadsoldier_die(
 }
 
 /// C ref: `SP_misc_deadsoldier`; the deathmatch removal is in
-/// `finish_misc_deadsoldier`. C also sets `AI_GOOD_GUY`, which only
-/// matters to a live monster: this corpse has no monsterinfo (see the
-/// module doc).
+/// `finish_misc_deadsoldier`. `AI_GOOD_GUY` keeps medics from taking the
+/// corpse as a patient (C `medic_FindDeadMonster`).
 pub fn sp_misc_deadsoldier(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -177,6 +176,7 @@ pub fn sp_misc_deadsoldier(
     ent.game.takedamage = TakeDamage::Yes;
     ent.svflags |= (SvFlags::MONSTER | SvFlags::DEADMONSTER).bits();
     ent.die = Some(misc_deadsoldier_die);
+    ent.monsterinfo.get_or_insert_with(Box::default).aiflags |= AiFlags::GOOD_GUY;
 }
 
 /// Dead soldiers are removed in deathmatch. C ref: `SP_misc_deadsoldier`.
@@ -834,8 +834,21 @@ mod tests {
         );
         let model = "models/deadbods/dude/tris.md2";
         assert!(gi.models.borrow().iter().any(|m| m == model));
-        assert!(e.monsterinfo.is_none());
+        let aiflags = e.monsterinfo.as_ref().map(|mi| mi.aiflags);
+        assert_eq!(aiflags, Some(AiFlags::GOOD_GUY), "C AI_GOOD_GUY");
         assert_eq!(world.level.total_monsters, 0);
+    }
+
+    #[test]
+    fn medics_do_not_take_a_deadsoldier_as_a_patient() {
+        // C medic_FindDeadMonster skips AI_GOOD_GUY corpses.
+        let (mut world, _) = spawned(r#"{ "classname" "misc_deadsoldier" }"#);
+        let medic = world.spawn().unwrap();
+        world.entities.get_mut(medic).unwrap().state.origin = Vec3f::new(64.0, 0.0, 0.0);
+        assert_eq!(
+            crate::monster::medic::medic_find_dead_monster(&world, medic),
+            None
+        );
     }
 
     #[test]
