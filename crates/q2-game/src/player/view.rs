@@ -63,6 +63,25 @@ impl GameWorld {
     }
 }
 
+/// C `sv_rollangle` and `sv_rollspeed` cvar defaults.
+const SV_ROLLANGLE: f32 = 2.0;
+const SV_ROLLSPEED: f32 = 200.0;
+
+/// The lean for sideways speed along `right`: up to `sv_rollangle`
+/// degrees, reached at `sv_rollspeed`. C ref: `SV_CalcRoll`
+/// (player/view.c).
+pub fn calc_roll(velocity: Vec3f, right: Vec3f) -> f32 {
+    let side = velocity.dot(right);
+    let sign = if side < 0.0 { -1.0 } else { 1.0 };
+    let side = side.abs();
+    let side = if side < SV_ROLLSPEED {
+        side * SV_ROLLANGLE / SV_ROLLSPEED
+    } else {
+        SV_ROLLANGLE
+    };
+    side * sign
+}
+
 /// This frame's walk bob (C `ClientEndServerFrame`'s file statics).
 #[derive(Debug, Clone, Copy)]
 pub struct Bob {
