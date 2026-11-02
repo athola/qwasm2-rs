@@ -1,8 +1,10 @@
 //! The mission packs' particle effects (rogue, xatrix, CTF): their trails,
 //! steam and smoke, the heat beam's rings and the tracker's dark shells.
 //! C ref: the cl_newfx.c part of client/cl_effects.c, plus `CL_FlagTrail`,
-//! `CL_IonripperTrail`, `CL_TrapParticles` and `CL_SmokeTrail`, which
-//! nothing in C calls but the opt-in explosion smoke does. C's
+//! `CL_IonripperTrail` and `CL_TrapParticles` from the base part of
+//! cl_effects.c, which `CL_AddPacketEntities` calls (EF_FLAG1/EF_FLAG2,
+//! EF_IONRIPPER, EF_TRAP). `CL_SmokeTrail` has no C caller; only the
+//! opt-in explosion smoke (`?cl_fxextra=1`) reaches it. C's
 //! `CL_QuadTrail` and `CL_Tracker_Explode`, which nothing calls (id
 //! commented out the tracker one), are left out; ADR-003 says why.
 //!
