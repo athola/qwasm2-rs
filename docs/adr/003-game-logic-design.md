@@ -132,10 +132,11 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Player trail nodes are data.** C keeps the eight trail nodes as
   `player_trail` edicts; here they are plain data on `GameWorld`, so they
   take no entity numbers. Monsters follow them as C's `ai_run` does.
-- **No cvars for the game rules.** Skill, deathmatch, coop and dmflags
-  are fields with no cvar path; other cvars the game reads, such as
-  `cl_gun` and `g_commanderbody_nogod`, go through `GameImport::cvar`,
-  which `LocalGame::set_cvar` fills. Player footsteps play
+- **No cvars for the game rules.** Skill, deathmatch, coop, dmflags,
+  fraglimit, timelimit and sv_maplist are fields with no cvar path, so
+  the deathmatch rules never end a browser match; other cvars the game
+  reads, such as `cl_gun` and `g_commanderbody_nogod`, go through
+  `GameImport::cvar`, which `LocalGame::set_cvar` fills. Player footsteps play
   (`g_footsteps` 1); `g_monsterfootsteps` stays off (its C default), so
   monster footsteps are silent.
 - **Sound routing.** One local client hears every sound (no PHS or
@@ -170,10 +171,9 @@ effects, and the deathmatch rules end matches through C's intermission.
   reach the browser.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
-  `menu_loadgame`, which nothing handles), the random pick in an item
-  team's respawn, the inventory layout and its refresh
-  (`InventoryMessage`), the `fov`/`spectator` userinfo, the spectator and
-  chase-camera stats, `SP_FixCoopSpots`, falling damage
+  `menu_loadgame`, which nothing handles), the inventory layout and its
+  refresh (`InventoryMessage`), the `fov`/`spectator` userinfo, the
+  spectator and chase-camera stats, `SP_FixCoopSpots`, falling damage
   (`P_FallingDamage`), the dead view turning to the killer
   (`LookAtKiller`), and coop's per-cube tracking (`pers.power_cubes`), so
   a coop power cube counts like any key.
