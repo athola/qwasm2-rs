@@ -284,6 +284,11 @@ impl GameWorld {
             .is_some_and(|mi| mi.aiflags.contains(AiFlags::GOOD_GUY));
         if dying_monster && !good_guy {
             self.level.killed_monsters += 1;
+            if self.game.coop {
+                if let Some(client) = self.client_mut(attacker) {
+                    client.resp.score += 1;
+                }
+            }
             // Medics won't heal monsters that they kill themselves.
             let by_medic = self
                 .entities
@@ -2423,6 +2428,41 @@ mod tests {
         world.killed(monster, attacker, attacker, 10, Vec3f::ZERO);
 
         assert_eq!(world.level.killed_monsters, 0);
+    }
+
+    /// A player in `coop` kills a live monster (a good guy if `good_guy`);
+    /// returns the player's score.
+    fn score_after_killing_monster(coop: bool, good_guy: bool) -> i32 {
+        let mut world = test_world();
+        world.game.coop = coop;
+        let player = world.spawn_test_client(Default::default());
+        let monster = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(monster).unwrap();
+            ent.svflags |= SvFlags::MONSTER.bits();
+            ent.monsterinfo = Some(Box::new(crate::entity::MonsterInfo {
+                aiflags: if good_guy {
+                    AiFlags::GOOD_GUY
+                } else {
+                    AiFlags::empty()
+                },
+                ..Default::default()
+            }));
+        }
+        world.killed(monster, player, player, 10, Vec3f::ZERO);
+        world.client(player).unwrap().resp.score
+    }
+
+    #[test]
+    fn killed_monster_scores_a_point_for_a_coop_player() {
+        // C Killed: `if (coop->value && attacker->client) resp.score++`.
+        assert_eq!(score_after_killing_monster(true, false), 1);
+    }
+
+    #[test]
+    fn killed_monster_scores_nothing_outside_coop_or_for_a_good_guy() {
+        assert_eq!(score_after_killing_monster(false, false), 0);
+        assert_eq!(score_after_killing_monster(true, true), 0);
     }
 
     // -- M_ReactToDamage and the monster branch of T_Damage --
