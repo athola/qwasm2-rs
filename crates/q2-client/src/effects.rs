@@ -1133,6 +1133,195 @@ mod tests {
     }
 
     #[test]
+    fn every_monster_flash_group_lights_and_sounds_like_c() {
+        const YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
+        const ROCKET: [f32; 3] = [1.0, 0.5, 0.2];
+        const BFG: [f32; 3] = [0.5, 1.0, 0.5];
+        // C ref: CL_AddMuzzleFlash2's switch; the first and last case of
+        // each group, so a case dropped from either end shows.
+        // Flashes, light colour, and sound with its attenuation.
+        type Group = (&'static [i32], [f32; 3], Option<(&'static str, f32)>);
+        let groups: &[Group] = &[
+            (
+                &[MZ2_INFANTRY_MACHINEGUN_1, MZ2_INFANTRY_MACHINEGUN_13],
+                YELLOW,
+                Some(("infantry/infatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_SOLDIER_MACHINEGUN_1, MZ2_SOLDIER_MACHINEGUN_8],
+                YELLOW,
+                Some(("soldier/solatck3.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_GUNNER_MACHINEGUN_1, MZ2_GUNNER_MACHINEGUN_8],
+                YELLOW,
+                Some(("gunner/gunatck2.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_ACTOR_MACHINEGUN_1, MZ2_TURRET_MACHINEGUN],
+                YELLOW,
+                Some(("infantry/infatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_BOSS2_MACHINEGUN_L1, MZ2_CARRIER_MACHINEGUN_L2],
+                YELLOW,
+                Some(("infantry/infatck1.wav", ATTN_NONE)),
+            ),
+            (
+                &[MZ2_SOLDIER_BLASTER_1, MZ2_TURRET_BLASTER],
+                YELLOW,
+                Some(("soldier/solatck2.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_FLYER_BLASTER_1, MZ2_FLYER_BLASTER_2],
+                YELLOW,
+                Some(("flyer/flyatck3.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_MEDIC_BLASTER_1],
+                YELLOW,
+                Some(("medic/medatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_HOVER_BLASTER_1],
+                YELLOW,
+                Some(("hover/hovatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_FLOAT_BLASTER_1],
+                YELLOW,
+                Some(("floater/fltatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_SOLDIER_SHOTGUN_1, MZ2_SOLDIER_SHOTGUN_8],
+                YELLOW,
+                Some(("soldier/solatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_TANK_BLASTER_1, MZ2_TANK_BLASTER_3],
+                YELLOW,
+                Some(("tank/tnkatck3.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_CHICK_ROCKET_1, MZ2_TURRET_ROCKET],
+                ROCKET,
+                Some(("chick/chkatck2.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_TANK_ROCKET_1, MZ2_TANK_ROCKET_3],
+                ROCKET,
+                Some(("tank/tnkatck1.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_SUPERTANK_ROCKET_1, MZ2_CARRIER_ROCKET_1],
+                ROCKET,
+                Some(("tank/rocket.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_GUNNER_GRENADE_1, MZ2_GUNNER_GRENADE_4],
+                [1.0, 0.5, 0.0],
+                Some(("gunner/gunatck3.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_GLADIATOR_RAILGUN_1, MZ2_WIDOW_RAIL],
+                [0.5, 0.5, 1.0],
+                None,
+            ),
+            (&[MZ2_MAKRON_BFG], BFG, None),
+            (
+                &[MZ2_MAKRON_BLASTER_1, MZ2_MAKRON_BLASTER_17],
+                YELLOW,
+                Some(("makron/blaster.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_JORG_MACHINEGUN_L1, MZ2_JORG_MACHINEGUN_L6],
+                YELLOW,
+                Some(("boss3/xfire.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_JORG_MACHINEGUN_R1, MZ2_JORG_MACHINEGUN_R6],
+                YELLOW,
+                None,
+            ),
+            (&[MZ2_JORG_BFG_1], BFG, None),
+            (
+                &[MZ2_BOSS2_MACHINEGUN_R1, MZ2_CARRIER_MACHINEGUN_R2],
+                YELLOW,
+                None,
+            ),
+            (
+                &[MZ2_STALKER_BLASTER, MZ2_WIDOW_RUN_8],
+                [0.0, 1.0, 0.0],
+                Some(("tank/tnkatck3.wav", ATTN_NORM)),
+            ),
+            (
+                &[MZ2_WIDOW_DISRUPTOR],
+                [-1.0, -1.0, -1.0],
+                Some(("weapons/disint2.wav", ATTN_NORM)),
+            ),
+        ];
+        for &(flashes, color, sound) in groups {
+            for &flash in flashes {
+                let mut fx = Effects::default();
+                let sounds = fx.muzzle_flash2(&player_at(7, 0.0), flash, 0.0, &mut rng(&[0]));
+                let light = fx.dlights().next().unwrap();
+                assert_eq!((light.color, light.die), (color, 0.0), "{flash}");
+                let heard: Vec<_> = sounds
+                    .iter()
+                    .map(|s| (s.name.as_str(), s.entchannel, s.attenuation))
+                    .collect();
+                let want: Vec<_> = sound
+                    .map(|(n, a)| (n, CHAN_WEAPON, a))
+                    .into_iter()
+                    .collect();
+                assert_eq!(heard, want, "{flash}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_monster_flash_c_has_no_case_for_lights_without_changing_colour_or_sound() {
+        let mut fx = Effects::default();
+        let monster = player_at(7, 0.0);
+        fx.muzzle_flash2(&monster, MZ2_WIDOW_DISRUPTOR, 0.0, &mut rng(&[0]));
+        // C ref: CL_AddMuzzleFlash2 places the light, then its switch has
+        // no case (and no default) for these numbers.
+        for flash in [MZ2_MAKRON_RAILGUN_1, MZ2_CARRIER_GRENADE, 0] {
+            let sounds = fx.muzzle_flash2(&monster, flash, 10.0, &mut rng(&[3]));
+            assert!(sounds.is_empty(), "{flash}");
+            let light = fx.dlights().next().unwrap();
+            assert_eq!(light.color, [-1.0, -1.0, -1.0], "{flash}");
+            assert_eq!((light.radius, light.die), (203.0, 10.0), "{flash}");
+        }
+        assert!(fx.take_particles().is_empty());
+    }
+
+    #[test]
+    fn a_respawn_flash_lights_yellow_and_queues_its_logout_effect() {
+        let mut fx = Effects::default();
+        let sounds = fx.muzzle_flash(&player_at(1, 0.0), MZ_RESPAWN, 10.0, &mut rng(&[0]));
+        let light = fx.dlights().next().unwrap();
+        assert_eq!((light.color, light.die), ([1.0, 1.0, 0.0], 11.0));
+        assert_eq!(names(&sounds), [("weapons/grenlf1a.wav", CHAN_WEAPON, 0.0)]);
+        assert_eq!(
+            fx.take_particles(),
+            [(player_at(1, 0.0).origin, FlashParticles::Logout(MZ_RESPAWN))]
+        );
+    }
+
+    #[test]
+    fn a_player_flash_c_has_no_case_for_keeps_the_lights_colour_and_is_silent() {
+        let mut fx = Effects::default();
+        fx.muzzle_flash(&player_at(1, 0.0), MZ_RAILGUN, 10.0, &mut rng(&[0]));
+        // 99 is no MZ_* number: C's switch has no case and no default.
+        let sounds = fx.muzzle_flash(&player_at(1, 0.0), 99, 20.0, &mut rng(&[4]));
+        assert!(sounds.is_empty());
+        let light = fx.dlights().next().unwrap();
+        assert_eq!(light.color, [0.5, 0.5, 1.0]);
+        assert_eq!((light.radius, light.die), (204.0, 20.0));
+    }
+
+    #[test]
     fn the_widow_plasma_beam_lights_bigger_and_longer() {
         let mut fx = Effects::default();
         let sounds = fx.muzzle_flash2(
