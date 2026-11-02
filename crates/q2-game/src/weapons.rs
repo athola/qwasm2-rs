@@ -968,9 +968,8 @@ impl GameWorld {
     }
 
     /// Fire a grenade. Creates a bouncing projectile entity.
-    /// C ref: `fire_grenade` (g_weapon.c:646-684). C adds `crandom() * 10`
-    /// jitter to the upward and sideways push; there is no game RNG, so
-    /// the push is the C mean.
+    /// C ref: `fire_grenade` (g_weapon.c), with its two `crandom() * 10`
+    /// offsets up and to the right.
     #[allow(clippy::too_many_arguments)]
     pub fn fire_grenade(
         &mut self,
@@ -1156,8 +1155,8 @@ impl GameWorld {
         self.player_noise(owner, tr.endpos, PlayerNoise::Impact);
     }
 
-    /// Fire a BFG projectile. C ref: `fire_bfg` (g_weapon.c:1188-1231),
-    /// without the laser think (the blast flies until it hits or times out).
+    /// Fire a BFG projectile. C ref: `fire_bfg` (g_weapon.c); `bfg_think`
+    /// lasers nearby targets each frame until the ball hits something.
     pub fn fire_bfg(
         &mut self,
         owner: EntityKey,
