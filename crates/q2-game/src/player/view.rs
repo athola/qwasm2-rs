@@ -26,29 +26,57 @@ const FRAME_CRPAIN4: i32 = 172;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
-/// C `bob_up` cvar default.
+/// C `bob_up`, `bob_pitch`, `bob_roll`, `run_pitch` and `run_roll` cvar
+/// defaults.
 const BOB_UP: f32 = 0.005;
+const BOB_PITCH: f32 = 0.002;
+const BOB_ROLL: f32 = 0.002;
+const RUN_PITCH: f32 = 0.002;
+const RUN_ROLL: f32 = 0.005;
 
 impl GameWorld {
-    /// Advance the walk bob and set the eye offset: eye height plus bob
-    /// (at most 6) and the shot and damage kicks, bounded to the player
-    /// box. Returns the bob for the gun offset.
+    /// Advance the walk bob and set the view kick and eye offset: the shot
+    /// and damage kicks, pitch and roll from running, strafing and the bob,
+    /// and the eye height plus bob (at most 6) and the shot's origin kick,
+    /// bounded to the player box. The dead look up and lean over. Returns
+    /// the bob for the gun offset.
     /// C ref: `ClientEndServerFrame`'s bob setup and `SV_CalcViewOffset`
-    /// (player/view.c).
+    /// (player/view.c). Not ported: the fall kick and fall height (no
+    /// `fall_time`/`fall_value`, as `P_FallingDamage` is not ported) and
+    /// the dead view's `killer_yaw` (no `LookAtKiller`), so the dead keep
+    /// their yaw.
     pub fn update_player_view(&mut self, key: EntityKey) -> Bob {
         let bob = self.calc_bob(key);
-        // The last shot's kick (C: base angles are `kick_angles`, cleared
-        // for the dead; the origin kick adds to the eye, clamped).
         let now = self.level.time;
         if let Some((ent, client)) = self.entity_and_client_mut(key) {
-            client.ps.kick_angles = if ent.game.deadflag != crate::constants::DeadFlag::No {
-                Vec3f::ZERO
+            if ent.game.deadflag != crate::constants::DeadFlag::No {
+                // Fix the angle and add no kick.
+                client.ps.kick_angles = Vec3f::ZERO;
+                client.ps.viewangles.z = 40.0;
+                client.ps.viewangles.x = -15.0;
             } else {
-                // Plus the damage kick, fading over DAMAGE_TIME.
-                let ratio = ((client.v_dmg_time - now) / DAMAGE_TIME).max(0.0);
-                client.kick_angles
-                    + Vec3f::new(ratio * client.v_dmg_pitch, 0.0, ratio * client.v_dmg_roll)
-            };
+                let mut angles = client.kick_angles;
+                // The damage kick, fading over DAMAGE_TIME.
+                let mut ratio = (client.v_dmg_time - now) / DAMAGE_TIME;
+                if ratio < 0.0 {
+                    ratio = 0.0;
+                    client.v_dmg_pitch = 0.0;
+                    client.v_dmg_roll = 0.0;
+                }
+                angles.x += ratio * client.v_dmg_pitch;
+                angles.z += ratio * client.v_dmg_roll;
+                // Lean with the velocity.
+                let (forward, right, _) = crate::physics::angle_vectors(client.v_angle);
+                angles.x += ent.velocity.dot(forward) * RUN_PITCH;
+                angles.z += ent.velocity.dot(right) * RUN_ROLL;
+                // Rock with the bob, more when crouching.
+                let ducked = client.ps.pmove.pm_flags & q2_common::pmove::PMF_DUCKED != 0;
+                let crouch = if ducked { 6.0 } else { 1.0 };
+                angles.x += bob.fracsin * BOB_PITCH * bob.xyspeed * crouch;
+                let roll = bob.fracsin * BOB_ROLL * bob.xyspeed * crouch;
+                angles.z += if bob.cycle & 1 != 0 { -roll } else { roll };
+                client.ps.kick_angles = angles;
+            }
             // Eye height comes from the entity's viewheight, which pmove
             // lowers when ducking, plus at most 6 of bob.
             let bob = (bob.fracsin * bob.xyspeed * BOB_UP).min(6.0);
@@ -1362,6 +1390,65 @@ mod tests {
 
     fn event(world: &GameWorld, key: EntityKey) -> i32 {
         world.entities.get(key).unwrap().state.event
+    }
+
+    #[test]
+    fn running_pitches_and_strafing_rolls_the_view() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        // Airborne, so no bob: only the run terms.
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(100.0, -100.0, 0.0);
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        // v_angle 0: forward +x, right -y.
+        assert!(
+            close(kick, Vec3f::new(100.0 * 0.002, 0.0, 100.0 * 0.005)),
+            "{kick:?}"
+        );
+    }
+
+    #[test]
+    fn the_walk_bob_pitches_and_rolls_the_view_more_when_ducked() {
+        // Bob time 1.5: odd cycle, |sin| 1, so the roll swings negative.
+        let (mut world, key) = runner(300.0, 1.25);
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        assert!(close(kick, Vec3f::new(0.6 + 0.6, 0.0, -0.6)), "{kick:?}");
+
+        // Ducked: bob time 0.875 * 4 = 3.5, and both terms times 6.
+        let (mut world, key) = runner(300.0, 0.625);
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        world.update_player_view(key);
+        let kick = world.client(key).unwrap().ps.kick_angles;
+        assert!(close(kick, Vec3f::new(0.6 + 3.6, 0.0, -3.6)), "{kick:?}");
+    }
+
+    #[test]
+    fn a_spent_damage_kick_is_cleared() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        world.level.time = 10.0;
+        let client = world.client_mut(key).unwrap();
+        client.v_dmg_time = 9.0;
+        client.v_dmg_pitch = 5.0;
+        client.v_dmg_roll = -5.0;
+        world.update_player_view(key);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.v_dmg_pitch, client.v_dmg_roll), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_dead_look_up_and_lean_over() {
+        let mut world = crate::world::test_world();
+        let key = player_in(&mut world);
+        world.entities.get_mut(key).unwrap().game.deadflag = crate::constants::DeadFlag::Dead;
+        world.update_player_view(key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.kick_angles, Vec3f::ZERO);
+        assert_eq!(
+            (client.ps.viewangles.x, client.ps.viewangles.z),
+            (-15.0, 40.0)
+        );
     }
 
     #[test]
