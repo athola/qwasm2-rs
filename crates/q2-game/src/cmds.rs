@@ -10,13 +10,23 @@ use crate::world::GameWorld;
 
 impl GameWorld {
     /// Run the client command in `gi.argv`/`gi.args` for `key`. C ref:
-    /// `ClientCommand` (g_cmds.c); commands not ported here change
+    /// `ClientCommand` (g_cmds.c): `score` and `help` work at any time, the
+    /// rest not during intermission. Commands not ported here change
     /// nothing (C would say them as chat).
     pub fn client_command(&mut self, key: EntityKey) {
         if self.client(key).is_none() {
             return; // not fully in game yet
         }
-        match self.gi.argv(0).to_ascii_lowercase().as_str() {
+        let cmd = self.gi.argv(0).to_ascii_lowercase();
+        match cmd.as_str() {
+            "score" => return self.cmd_score(key),
+            "help" => return self.cmd_help(key),
+            _ => {}
+        }
+        if self.level.intermission_time != 0.0 {
+            return;
+        }
+        match cmd.as_str() {
             "use" => self.cmd_use(key),
             "drop" => self.cmd_drop(key),
             "invnext" => self.select_next_item(key, ItemFlags::all()),
@@ -30,8 +40,6 @@ impl GameWorld {
             "weapprev" => self.cmd_weap_cycle(key, 1),
             "weapnext" => self.cmd_weap_cycle(key, MAX_ITEMS - 1),
             "weaplast" => self.cmd_weap_last(key),
-            "help" => self.cmd_help(key),
-            "score" => self.cmd_score(key),
             _ => {}
         }
     }
@@ -311,6 +319,18 @@ mod tests {
         assert_eq!(world.client(key).unwrap().pers.inventory[shotgun], 0);
         let dropped = world.find_by_classname(None, "weapon_shotgun").unwrap();
         assert_eq!(world.entities.get(dropped).unwrap().owner, Some(key));
+    }
+
+    #[test]
+    fn intermission_ignores_item_commands_but_still_shows_help() {
+        let (mut world, key, gi) = player();
+        let shotgun = give(&mut world, key, "Shotgun", 1);
+        world.level.intermission_time = 5.0;
+        run(&mut world, &gi, key, "drop Shotgun");
+        assert_eq!(world.client(key).unwrap().pers.inventory[shotgun], 1);
+        assert!(world.find_by_classname(None, "weapon_shotgun").is_none());
+        run(&mut world, &gi, key, "help");
+        assert!(world.client(key).unwrap().showhelp);
     }
 
     #[test]
