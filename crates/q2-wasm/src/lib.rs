@@ -589,8 +589,7 @@ impl Engine {
         entities.extend(fx_render_entities(&effects.entities, &self.models));
         lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
-        let mut dlights = render_dlights(&self.effects);
-        dlights.extend(fx_dlights(&lights));
+        let dlights = frame_dlights(&lights, &self.effects);
         self.renderer
             .render_frame(&fd, &entities, &dlights, &fx_particles(&effects.particles));
         self.draw_hud(&stats);
@@ -884,6 +883,20 @@ fn fx_particles(particles: &[q2_client::particles::DrawParticle]) -> Vec<q2_rend
             alpha: p.alpha,
         })
         .collect()
+}
+
+/// The frame's dynamic lights in C `V_RenderView` order: the trail and
+/// temp-entity `lights` (C `CL_AddPacketEntities`, `CL_AddTEnts`), then
+/// cl_dlights (C `CL_AddDLights`). The renderer keeps the first
+/// `MAX_DLIGHTS`, as C `V_AddLight` drops the rest.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_dlights(
+    lights: &[q2_client::fx::FxLight],
+    effects: &q2_client::effects::Effects,
+) -> Vec<q2_render_api::DLight> {
+    let mut dlights = fx_dlights(lights);
+    dlights.extend(render_dlights(effects));
+    dlights
 }
 
 /// C `V_AddLight` for the effects' lights.
@@ -2326,6 +2339,30 @@ mod tests {
         assert_eq!(lights[0].intensity, 203.0);
         assert_eq!(lights[0].color, Vec3f::new(0.5, 0.5, 1.0));
         assert_eq!(lights[0].origin, Vec3f::new(18.0, -16.0, 0.0));
+    }
+
+    // C V_RenderView adds the entity trail lights (CL_AddPacketEntities)
+    // and temp-entity lights (CL_AddTEnts) before cl_dlights
+    // (CL_AddDLights), and V_AddLight drops every light past MAX_DLIGHTS,
+    // so a crowded frame loses muzzle flashes first.
+    #[test]
+    fn frame_lights_list_trail_and_temp_entity_lights_before_cl_dlights() {
+        use q2_client::fx::FxLight;
+        use q2_shared::types::{EntityState, Vec3f};
+        let mut effects = q2_client::effects::Effects::default();
+        let player = EntityState {
+            number: 1,
+            ..Default::default()
+        };
+        effects.muzzle_flash(&player, q2_shared::constants::MZ_RAILGUN, 0.0, &mut || 3);
+        let trail = FxLight {
+            origin: Vec3f::ONE,
+            intensity: 200.0,
+            color: [1.0, 1.0, 0.0],
+        };
+        let lights = frame_dlights(&[trail], &effects);
+        let intensities: Vec<f32> = lights.iter().map(|l| l.intensity).collect();
+        assert_eq!(intensities, [200.0, 203.0]);
     }
 
     #[test]
