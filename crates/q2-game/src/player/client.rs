@@ -815,7 +815,10 @@ impl GameWorld {
     }
 
     /// Build one client's view, effects, sound and status bar for this
-    /// frame. C ref: `ClientEndServerFrame` (player/view.c).
+    /// frame. C ref: `ClientEndServerFrame` (player/view.c). Not ported:
+    /// `P_FallingDamage` (needs `client.oldvelocity`, which the client
+    /// struct lacks), the spectator and chase-cam stats, `G_SetClientFrame`
+    /// (#32) and the inventory refresh (`InventoryMessage`).
     pub fn client_end_server_frame(&mut self, key: EntityKey) {
         // A plat push or explosion knockback since ClientThink moved the
         // body; copy it into pmove so the view does not lag a frame
@@ -866,6 +869,17 @@ impl GameWorld {
         if showscores && self.level.framenum & 31 == 0 {
             let enemy = self.entities.get(key).and_then(|e| e.game.enemy);
             self.deathmatch_scoreboard_message(key, enemy);
+            if let Some(number) = self.number_of(key) {
+                self.gi.unicast(number, false);
+            }
+        }
+        // If the help computer is up, update it.
+        let showhelp = self.client(key).is_some_and(|c| c.showhelp);
+        if showhelp && self.level.framenum & 31 == 0 {
+            if let Some(client) = self.client_mut(key) {
+                client.pers.helpchanged = 0;
+            }
+            self.help_computer_message();
             if let Some(number) = self.number_of(key) {
                 self.gi.unicast(number, false);
             }
@@ -1737,6 +1751,21 @@ mod tests {
         assert_eq!(angles.y, 45.0);
         // sv_rollangle 2 at half of sv_rollspeed 200, times 4.
         assert!((angles.z - 4.0).abs() < 1e-4, "{angles:?}");
+    }
+
+    #[test]
+    fn open_help_is_resent_every_32_frames_and_stops_the_beep() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        let client = world.client_mut(key).unwrap();
+        client.showhelp = true;
+        client.pers.helpchanged = 2;
+        world.level.framenum = 64;
+        gi.unicasts.borrow_mut().clear();
+        world.client_end_server_frame(key);
+        assert_eq!(world.client(key).unwrap().pers.helpchanged, 0);
+        assert_eq!(gi.unicasts.borrow().as_slice(), &[(1, false)]);
     }
 
     #[test]
