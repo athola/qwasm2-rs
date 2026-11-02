@@ -50,8 +50,10 @@ impl GameWorld {
         self.gi.cprintf(self.number_of(key), PRINT_HIGH, msg);
     }
 
-    /// The item named by `gi.args`, if the player has one of it.
-    fn named_owned_item(&self, key: EntityKey) -> Option<usize> {
+    /// The item named by `gi.args`, after printing "unknown item" for a
+    /// name that matches nothing; the callers check ownership. C ref: the
+    /// `FindItem` part of `Cmd_Use_f` and `Cmd_Drop_f` (g_cmds.c).
+    fn named_item(&self, key: EntityKey) -> Option<usize> {
         let name = self.gi.args();
         let Some(index) = self.find_item_by_name(&name) else {
             self.print_to(key, &format!("unknown item: {name}\n"));
@@ -67,7 +69,7 @@ impl GameWorld {
 
     /// C ref: `Cmd_Use_f`.
     fn cmd_use(&mut self, key: EntityKey) {
-        let Some(index) = self.named_owned_item(key) else {
+        let Some(index) = self.named_item(key) else {
             return;
         };
         let Some(use_fn) = self.items[index].use_fn else {
@@ -83,7 +85,7 @@ impl GameWorld {
 
     /// C ref: `Cmd_Drop_f`.
     fn cmd_drop(&mut self, key: EntityKey) {
-        let Some(index) = self.named_owned_item(key) else {
+        let Some(index) = self.named_item(key) else {
             return;
         };
         let Some(drop_fn) = self.items[index].drop_fn else {
