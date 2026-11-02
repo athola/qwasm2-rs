@@ -2,7 +2,7 @@
 //! are small programs over the player's stats. C ref:
 //! `SCR_ExecuteLayoutString` (client/cl_screen.c), at HUD scale 1.
 
-use q2_common::cmd::is_separator;
+use q2_common::cmd::com_parse;
 use q2_shared::constants::{
     CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
 };
@@ -59,31 +59,17 @@ const SB_NUMS: [[&str; 11]; 2] = [
 const CHAR_WIDTH: i32 = 16;
 const STAT_MINUS: usize = 10;
 
-/// C COM_Parse over a whole program: tokens split on `is_separator`, `"`
-/// quoted strings, `//` comments. Unlike `cmd::tokenize` (Cmd_TokenizeString)
-/// it has no 80-token limit, as server layouts can be longer.
+/// C COM_Parse over a whole program. Unlike `cmd::tokenize`
+/// (Cmd_TokenizeString) it crosses newlines and has no 80-token limit, as
+/// server layouts can be longer.
 fn tokens(program: &str) -> Vec<&str> {
-    let mut out = Vec::new();
     let mut rest = program;
-    loop {
-        rest = rest.trim_start_matches(is_separator);
-        if rest.is_empty() {
-            return out;
-        }
-        if let Some(comment) = rest.strip_prefix("//") {
-            rest = comment.split_once('\n').map_or("", |(_, r)| r);
-            continue;
-        }
-        if let Some(quoted) = rest.strip_prefix('"') {
-            let (token, r) = quoted.split_once('"').unwrap_or((quoted, ""));
-            out.push(token);
-            rest = r;
-            continue;
-        }
-        let end = rest.find(is_separator).unwrap_or(rest.len());
-        out.push(&rest[..end]);
-        rest = &rest[end..];
-    }
+    std::iter::from_fn(|| {
+        let (token, after) = com_parse(rest)?;
+        rest = after;
+        Some(token)
+    })
+    .collect()
 }
 
 /// C strtol(token, NULL, 10): leading sign and digits, 0 when none.
@@ -525,6 +511,17 @@ mod tests {
         assert_eq!(tokens("a\u{a0}b\u{ff}c"), ["a", "b", "c"]);
         assert_eq!(tokens("\u{80}\"\u{e1}\"\u{80}"), ["\u{e1}"]);
         assert_eq!(tokens("a\u{2003}b"), ["a\u{2003}b"]);
+    }
+
+    #[test]
+    fn a_token_reaching_max_token_chars_is_blanked_like_com_parse() {
+        // C COM_Parse: `if (len == MAX_TOKEN_CHARS) len = 0;`.
+        let long = "a".repeat(1024);
+        assert!(run(&format!("string {long}"), &[0; 32], &[]).is_empty());
+        assert_eq!(
+            run(&format!("string {}", &long[1..]), &[0; 32], &[]).len(),
+            1023
+        );
     }
 
     #[test]

@@ -186,73 +186,60 @@ impl Default for CmdSystem {
 /// negative and count as separators too.
 ///
 /// C ref: COM_Parse `(c = *data) <= ' '` and `while (c > 32)`.
-pub fn is_separator(c: char) -> bool {
+fn is_separator(c: char) -> bool {
     c <= ' ' || ('\u{80}'..='\u{ff}').contains(&c)
 }
 
-/// Tokenize a command string, handling quoted strings and `//` comments
-/// like C `Cmd_TokenizeString`/`COM_Parse`.
+/// C COM_Parse: the next token of `data` and the text after it, or `None`
+/// when only whitespace and `//` comments are left (C returns "" and sets
+/// `*data_p` to NULL). Tokens split on `is_separator`; a `"` starts a
+/// token that runs to the next `"` or the end; `//` before a token skips
+/// to the end of the line and then all whitespace, newlines included. A
+/// token reaching `MAX_TOKEN_CHARS` chars (wire bytes) becomes "".
+///
+/// C ref: `COM_Parse` (common/shared/shared.c).
+pub fn com_parse(data: &str) -> Option<(&str, &str)> {
+    let mut rest = data;
+    loop {
+        rest = rest.trim_start_matches(is_separator);
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.strip_prefix("//") {
+            Some(comment) => rest = comment.split_once('\n').map_or("", |(_, r)| r),
+            None => break,
+        }
+    }
+    let (token, rest) = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split_once('"').unwrap_or((quoted, "")),
+        None => rest.split_at(rest.find(is_separator).unwrap_or(rest.len())),
+    };
+    let blanked = token.chars().nth(MAX_TOKEN_CHARS - 1).is_some();
+    Some((if blanked { "" } else { token }, rest))
+}
+
+/// Tokenize one command like C `Cmd_TokenizeString`: `com_parse` tokens up
+/// to the first newline between tokens, at most `MAX_STRING_TOKENS`.
 ///
 /// `"say \"hello world\""` becomes `["say", "hello world"]`.
 pub fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
-
+    let mut rest = text;
     loop {
-        // Skip whitespace up to a newline, which ends the command (C
-        // Cmd_TokenizeString); the rest belongs to the caller.
-        while let Some(&c) = chars.peek() {
-            if is_separator(c) && c != '\n' {
-                chars.next();
-            } else {
-                break;
-            }
+        // Skip whitespace up to a newline, which ends the command; the
+        // rest belongs to the caller.
+        rest = rest.trim_start_matches(|c| is_separator(c) && c != '\n');
+        if rest.is_empty() || rest.starts_with('\n') {
+            return tokens;
         }
-
-        if matches!(chars.peek(), None | Some('\n')) {
-            break;
-        }
-
-        // `//` at the start of a token comments out the rest of the line.
-        // C COM_Parse then skips all whitespace, newlines included, and
-        // returns the next token.
-        let mut lookahead = chars.clone();
-        if lookahead.next() == Some('/') && lookahead.next() == Some('/') {
-            while chars.next_if(|&c| c != '\n').is_some() {}
-            while chars.next_if(|&c| is_separator(c)).is_some() {}
-            continue;
-        }
-
-        let mut token = String::new();
-        if chars.peek() == Some(&'"') {
-            // Quoted token
-            chars.next(); // consume opening quote
-            for c in chars.by_ref() {
-                if c == '"' {
-                    break;
-                }
-                token.push(c);
-            }
-        } else {
-            // Bare word token
-            while let Some(&c) = chars.peek() {
-                if is_separator(c) {
-                    break;
-                }
-                token.push(c);
-                chars.next();
-            }
-        }
-
-        if token.chars().count() >= MAX_TOKEN_CHARS {
-            token.clear();
-        }
+        let Some((token, after)) = com_parse(rest) else {
+            return tokens;
+        };
         if tokens.len() < MAX_STRING_TOKENS {
-            tokens.push(token);
+            tokens.push(token.to_owned());
         }
+        rest = after;
     }
-
-    tokens
 }
 
 /// Split a command buffer string into individual commands like C
@@ -315,6 +302,14 @@ mod tests {
         assert_eq!(tokenize("\"a\u{e9}b\""), ["a\u{e9}b"]);
         // Above U+00FF is no Q2 byte; it stays in the token.
         assert_eq!(tokenize("a\u{100}b"), ["a\u{100}b"]);
+    }
+
+    #[test]
+    fn com_parse_crosses_newlines_and_ends_after_a_trailing_comment() {
+        assert_eq!(com_parse(" // c\n\n\"\" x"), Some(("", " x")));
+        assert_eq!(com_parse("a\nb"), Some(("a", "\nb")));
+        assert_eq!(com_parse("\"open"), Some(("open", "")));
+        assert_eq!(com_parse(" \n// only a comment"), None);
     }
 
     #[test]
