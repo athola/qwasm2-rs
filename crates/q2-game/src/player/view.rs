@@ -855,6 +855,30 @@ mod tests {
     }
 
     #[test]
+    fn the_view_blend_tests_the_contents_at_the_eye() {
+        // C SV_CalcBlend: vieworg = s.origin + viewoffset.
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = player_in(&mut world);
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(10.0, 20.0, 30.0);
+        world.client_mut(key).unwrap().ps.viewoffset = Vec3f::new(1.0, 2.0, 22.0);
+        world.calc_blend(key);
+        assert_eq!(
+            gi.contents_points.borrow().first(),
+            Some(&Vec3f::new(11.0, 22.0, 52.0))
+        );
+    }
+
+    #[test]
+    fn leaving_liquid_clears_the_underwater_flag_and_tint() {
+        let (mut world, _) = crate::world::test_world_recording();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER;
+        world.calc_blend(key);
+        let client = world.client(key).unwrap();
+        assert_eq!((client.ps.blend, client.ps.rdflags), ([0.0; 4], 0));
+    }
+
+    #[test]
     fn powerups_tint_the_view_and_warn_three_seconds_before_running_out() {
         let (mut world, gi) = crate::world::test_world_recording();
         let key = player_in(&mut world);

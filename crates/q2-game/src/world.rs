@@ -986,6 +986,10 @@ pub struct MockGameImport {
     pub trace_masks: RefCell<Vec<i32>>,
     /// End point of every `trace` call, in order.
     pub trace_ends: RefCell<Vec<Vec3f>>,
+    /// `(mins, maxs)` of every `trace` call, in order.
+    pub trace_boxes: RefCell<Vec<(Vec3f, Vec3f)>>,
+    /// Every point `point_contents` was asked about, in order.
+    pub contents_points: RefCell<Vec<Vec3f>>,
     pub configstrings: RefCell<Vec<(i32, String)>>,
     /// Returned by the next `trace` call instead of an unobstructed trace.
     pub next_trace: RefCell<Option<Trace>>,
@@ -1110,12 +1114,13 @@ impl GameImport for MockGameImport {
     fn trace(
         &self,
         _start: Vec3f,
-        _mins: Vec3f,
-        _maxs: Vec3f,
+        mins: Vec3f,
+        maxs: Vec3f,
         end: Vec3f,
         pass_ent: Option<usize>,
         content_mask: i32,
     ) -> Trace {
+        self.trace_boxes.borrow_mut().push((mins, maxs));
         self.trace_pass_ents.borrow_mut().push(pass_ent);
         self.trace_masks.borrow_mut().push(content_mask);
         self.trace_ends.borrow_mut().push(end);
@@ -1140,7 +1145,8 @@ impl GameImport for MockGameImport {
         }
     }
 
-    fn point_contents(&self, _: Vec3f) -> i32 {
+    fn point_contents(&self, point: Vec3f) -> i32 {
+        self.contents_points.borrow_mut().push(point);
         self.contents.get()
     }
     fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {

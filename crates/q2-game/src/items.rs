@@ -2702,6 +2702,11 @@ mod tests {
             gi.trace_masks.borrow().last(),
             Some(&q2_shared::constants::CONTENTS_SOLID)
         );
+        // C Drop_Item traces with the dropped item's own -16..16 box.
+        assert_eq!(
+            gi.trace_boxes.borrow().last(),
+            Some(&(Vec3f::splat(-16.0), Vec3f::splat(16.0)))
+        );
     }
 
     #[test]
