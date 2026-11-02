@@ -151,7 +151,8 @@ impl ServerText {
         }
         if now < self.center_until {
             let mut y = if self.center.len() <= 4 {
-                (height as f32 * 0.35) as i32
+                // C `(viddef.height * 0.35) / scale`, a double product.
+                (f64::from(height) * 0.35) as i32
             } else {
                 48
             };
@@ -289,6 +290,16 @@ mod tests {
         assert_eq!(r.len(), 4);
         assert_eq!(r[0], (168, "x".repeat(40)));
         assert_eq!(r[1], (176, "a".to_string()));
+    }
+
+    #[test]
+    fn the_centre_print_row_is_35_percent_in_double() {
+        let mut text = ServerText::default();
+        text.message(&center("hi"), 0, 80);
+        // C `viddef.height * 0.35` is a double: 251.99... at 720, not the
+        // 252 an f32 product rounds to.
+        assert_eq!(rows(&text.draws(640, 720, 0))[0].0, 251);
+        assert_eq!(rows(&text.draws(640, 360, 0))[0].0, 125);
     }
 
     #[test]
