@@ -893,6 +893,20 @@ mod tests {
     }
 
     #[test]
+    fn a_target_laser_that_hits_nothing_ends_on_the_world_with_sparks() {
+        // SV_Trace names the world when nothing is hit, so C's not-a-body
+        // branch runs: sparks (the laser just turned on) at the far end.
+        let (mut world, laser, gi) = laser_world(1);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        start(&mut world, laser);
+        assert_eq!(laser_sparks(&gi), 1);
+        assert_eq!(
+            world.entities.get(laser).unwrap().state.old_origin,
+            Vec3f::new(2048.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
     fn a_target_laser_with_a_missing_target_warns_in_c_form() {
         let (mut world, laser, gi) = laser_world(0);
         let ent = world.entities.get_mut(laser).unwrap();
@@ -969,13 +983,13 @@ mod tests {
         start(&mut world, laser);
         assert_eq!(world.entities.get(laser).unwrap().game.enemy, Some(target));
         assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::Y);
-        let before = laser_sparks(&gi);
+        assert_eq!(laser_sparks(&gi), 1, "turned on: sparks at the world");
         world.entities.get_mut(target).unwrap().absmin = Vec3f::new(100.0, 0.0, -10.0);
         gi.queued_traces.borrow_mut().push_back(wall(Vec3f::X));
         let think = world.entities.get(laser).unwrap().think.unwrap();
         think(&mut world, laser);
         assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::X);
-        assert_eq!(laser_sparks(&gi), before + 1);
+        assert_eq!(laser_sparks(&gi), 2);
     }
 
     #[test]

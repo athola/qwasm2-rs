@@ -1125,7 +1125,9 @@ impl GameImport for MockGameImport {
         if let Some(trace) = self.queued_traces.borrow_mut().pop_front() {
             return trace;
         }
-        // Default trace: no collision, endpoint reached.
+        // Default trace: no collision, endpoint reached. Like the server
+        // (C SV_Trace sets `clip.trace.ent = ge->edicts`), it names the
+        // world even when nothing is hit.
         Trace {
             fraction: 1.0,
             endpos: end,
@@ -1134,7 +1136,7 @@ impl GameImport for MockGameImport {
             plane: Plane::default(),
             surface: None,
             contents: 0,
-            ent_index: None,
+            ent_index: Some(0),
         }
     }
 
