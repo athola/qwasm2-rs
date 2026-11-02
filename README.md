@@ -20,9 +20,9 @@ WebGL2, and runs player movement in the browser.
 > status bar; game sounds play through WebAudio. The player carries,
 > switches and fires every weapon (number keys, `[` `]` `'` Enter, F7/F8
 > for gamma), with the first-person gun, gunfire sounds and muzzle
-> flashes; powerups, drowning and lava work. Explosions, impacts and
-> particles are not drawn yet, and a dead player cannot restart until
-> savegames (#15).
+> flashes; powerups, drowning and lava work. Explosions, impacts, trails
+> and the other temp entities are drawn with particles, beams and
+> sprites. A dead player cannot restart until savegames (#15).
 > Expect breaking changes.
 
 ## Progress
