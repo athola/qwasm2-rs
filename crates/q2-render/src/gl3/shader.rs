@@ -23,6 +23,9 @@ layout(location = 2) in vec2 a_lightmap_uv;
 layout(location = 3) in vec4 a_styles;
 layout(location = 4) in vec3 a_normal;
 uniform mat4 u_view_proj;
+// Model to world (C transModel): identity for the world, the entity's
+// matrix for a brush entity.
+uniform mat4 u_model;
 uniform int u_mode;
 uniform float u_scroll;
 // Light style brightness, four styles per vector (C lightstyles[].rgb).
@@ -49,9 +52,11 @@ void main() {
         v_uv.x += u_scroll;
     }
     v_lightmap_uv = a_lightmap_uv;
-    v_world_pos = a_position;
-    v_normal = a_normal;
-    gl_Position = u_view_proj * vec4(a_position, 1.0);
+    // C vertexSrc3Dlm: dynamic lights are tested in world space.
+    vec4 world_pos = u_model * vec4(a_position, 1.0);
+    v_world_pos = world_pos.xyz;
+    v_normal = normalize((u_model * vec4(a_normal, 0.0)).xyz);
+    gl_Position = u_view_proj * world_pos;
 }
 "#;
 
@@ -130,6 +135,7 @@ void main() {
 /// Uniform locations of the world program.
 pub struct WorldUniforms {
     pub view_proj: Option<glow::UniformLocation>,
+    pub model: Option<glow::UniformLocation>,
     pub mode: Option<glow::UniformLocation>,
     pub alpha: Option<glow::UniformLocation>,
     pub time: Option<glow::UniformLocation>,
@@ -259,6 +265,7 @@ pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, World
     let uniforms = unsafe {
         WorldUniforms {
             view_proj: gl.get_uniform_location(program, "u_view_proj"),
+            model: gl.get_uniform_location(program, "u_model"),
             mode: gl.get_uniform_location(program, "u_mode"),
             alpha: gl.get_uniform_location(program, "u_alpha"),
             time: gl.get_uniform_location(program, "u_time"),
@@ -415,6 +422,21 @@ mod tests {
         let lights = FRAGMENT_SRC.find("light += u_dlight_color").unwrap();
         let overbright = FRAGMENT_SRC.find("light *= OVERBRIGHT").unwrap();
         assert!(lights < overbright);
+    }
+
+    // C vertexSrc3Dlm: passWorldCoord and passNormal go through transModel,
+    // so a moved or rotated brush entity is lit where it now stands.
+    #[test]
+    fn dynamic_lights_see_brush_entities_at_their_moved_position_like_c() {
+        for line in [
+            "uniform mat4 u_model;",
+            "vec4 world_pos = u_model * vec4(a_position, 1.0);",
+            "v_world_pos = world_pos.xyz;",
+            "v_normal = normalize((u_model * vec4(a_normal, 0.0)).xyz);",
+            "gl_Position = u_view_proj * world_pos;",
+        ] {
+            assert!(VERTEX_SRC.contains(line), "{line}");
+        }
     }
 
     #[test]

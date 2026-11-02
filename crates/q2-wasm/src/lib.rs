@@ -176,24 +176,16 @@ impl Engine {
                 fx_sounds.extend(self.fx.entity_event(state, time_ms, &mut randk));
             }
         }
-        let mut sounds: Vec<q2_client::effects::FlashSound> = messages
-            .iter()
-            .flat_map(|m| self.effects.message(m, entity, time, &mut randk))
-            .collect();
-        for message in messages {
-            fx_sounds.extend(
-                self.fx
-                    .temp_entity(message, time_ms, servertime, &mut randk),
-            );
-        }
-        // C allocates these in cl_dlights while it parses the temp entity.
-        for light in self.fx.take_dlights() {
-            self.effects.add_dlight(light, time);
-        }
-        for (origin, kind) in self.effects.take_particles() {
-            self.fx
-                .flash_particles(origin, kind, time_ms, servertime, &mut randk);
-        }
+        let (mut sounds, message_sounds) = run_effect_messages(
+            &mut self.effects,
+            &mut self.fx,
+            messages,
+            entity,
+            time_ms,
+            servertime,
+            &mut randk,
+        );
+        fx_sounds.extend(message_sounds);
         // C con.linewidth: the screen in characters less a margin.
         let linewidth = usize::try_from(self.view.width / 8 - 2).unwrap_or(1);
         for message in messages {
@@ -589,8 +581,7 @@ impl Engine {
         entities.extend(fx_render_entities(&effects.entities, &self.models));
         lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
-        let mut dlights = render_dlights(&self.effects);
-        dlights.extend(fx_dlights(&lights));
+        let dlights = frame_dlights(&lights, &self.effects);
         self.renderer
             .render_frame(&fd, &entities, &dlights, &fx_particles(&effects.particles));
         self.draw_hud(&stats);
@@ -884,6 +875,57 @@ fn fx_particles(particles: &[q2_client::particles::DrawParticle]) -> Vec<q2_rend
             alpha: p.alpha,
         })
         .collect()
+}
+
+/// Run this frame's muzzle flash and temp entity messages one at a time in
+/// packet order, each taking its dlight slot and particles as it is
+/// parsed. Returns the flash and effect sounds. C ref:
+/// `CL_ParseServerMessage`'s `svc_muzzleflash`, `svc_muzzleflash2` and
+/// `svc_temp_entity` cases.
+#[cfg(any(target_arch = "wasm32", test))]
+fn run_effect_messages(
+    effects: &mut q2_client::effects::Effects,
+    fx: &mut q2_client::fx::ClientFx,
+    messages: &[Vec<u8>],
+    entity: impl Fn(i32) -> Option<q2_shared::types::EntityState>,
+    time_ms: i32,
+    servertime: i32,
+    randk: &mut impl FnMut() -> u32,
+) -> (
+    Vec<q2_client::effects::FlashSound>,
+    Vec<q2_client::fx::FxSound>,
+) {
+    let time = time_ms as f32;
+    let mut sounds = Vec::new();
+    let mut fx_sounds = Vec::new();
+    for message in messages {
+        // At most one of these acts: each message is one svc op.
+        sounds.extend(effects.message(message, &entity, time, randk));
+        // C CL_AddMuzzleFlash2 draws its particles as it parses.
+        for (origin, kind) in effects.take_particles() {
+            fx.flash_particles(origin, kind, time_ms, servertime, randk);
+        }
+        fx_sounds.extend(fx.temp_entity(message, time_ms, servertime, randk));
+        // C allocates these in cl_dlights while it parses the temp entity.
+        for light in fx.take_dlights() {
+            effects.add_dlight(light, time);
+        }
+    }
+    (sounds, fx_sounds)
+}
+
+/// The frame's dynamic lights in C `V_RenderView` order: the trail and
+/// temp-entity `lights` (C `CL_AddPacketEntities`, `CL_AddTEnts`), then
+/// cl_dlights (C `CL_AddDLights`). The renderer keeps the first
+/// `MAX_DLIGHTS`, as C `V_AddLight` drops the rest.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_dlights(
+    lights: &[q2_client::fx::FxLight],
+    effects: &q2_client::effects::Effects,
+) -> Vec<q2_render_api::DLight> {
+    let mut dlights = fx_dlights(lights);
+    dlights.extend(render_dlights(effects));
+    dlights
 }
 
 /// C `V_AddLight` for the effects' lights.
@@ -2326,6 +2368,69 @@ mod tests {
         assert_eq!(lights[0].intensity, 203.0);
         assert_eq!(lights[0].color, Vec3f::new(0.5, 0.5, 1.0));
         assert_eq!(lights[0].origin, Vec3f::new(18.0, -16.0, 0.0));
+    }
+
+    // C V_RenderView adds the entity trail lights (CL_AddPacketEntities)
+    // and temp-entity lights (CL_AddTEnts) before cl_dlights
+    // (CL_AddDLights), and V_AddLight drops every light past MAX_DLIGHTS,
+    // so a crowded frame loses muzzle flashes first.
+    #[test]
+    fn frame_lights_list_trail_and_temp_entity_lights_before_cl_dlights() {
+        use q2_client::fx::FxLight;
+        use q2_shared::types::{EntityState, Vec3f};
+        let mut effects = q2_client::effects::Effects::default();
+        let player = EntityState {
+            number: 1,
+            ..Default::default()
+        };
+        effects.muzzle_flash(&player, q2_shared::constants::MZ_RAILGUN, 0.0, &mut || 3);
+        let trail = FxLight {
+            origin: Vec3f::ONE,
+            intensity: 200.0,
+            color: [1.0, 1.0, 0.0],
+        };
+        let lights = frame_dlights(&[trail], &effects);
+        let intensities: Vec<f32> = lights.iter().map(|l| l.intensity).collect();
+        assert_eq!(intensities, [200.0, 203.0]);
+    }
+
+    // C CL_ParseServerMessage runs svc_temp_entity and svc_muzzleflash in
+    // packet order, each allocating its cl_dlights slot as it is parsed,
+    // so a temp entity sent before a flash takes the earlier slot.
+    #[test]
+    fn effect_messages_run_in_packet_order_like_c() {
+        use q2_common::net_msg::NetMsg;
+        use q2_shared::constants::{MZ_RAILGUN, TE_TRACKER_EXPLOSION};
+        use q2_shared::protocol::SvcOp;
+        use q2_shared::types::{EntityState, Vec3f};
+        let mut tent = NetMsg::new();
+        tent.write_byte(SvcOp::TempEntity as i32);
+        tent.write_byte(TE_TRACKER_EXPLOSION);
+        tent.write_position(Vec3f::new(64.0, 32.0, 8.0));
+        let mut flash = NetMsg::new();
+        flash.write_byte(SvcOp::MuzzleFlash as i32);
+        flash.write_short(1);
+        flash.write_byte(MZ_RAILGUN);
+        let messages = [tent.data().to_vec(), flash.data().to_vec()];
+        let player = EntityState {
+            number: 1,
+            ..Default::default()
+        };
+        let entity = |n: i32| (n == 1).then(|| player.clone());
+        let mut effects = q2_client::effects::Effects::default();
+        let mut fx = q2_client::fx::ClientFx::default();
+        let (flash_sounds, fx_sounds) = run_effect_messages(
+            &mut effects,
+            &mut fx,
+            &messages,
+            entity,
+            1000,
+            1000,
+            &mut || 3,
+        );
+        assert!(!flash_sounds.is_empty() && !fx_sounds.is_empty());
+        let radii: Vec<f32> = effects.dlights().map(|l| l.radius).collect();
+        assert_eq!(radii, [150.0, 203.0], "tracker light, then the flash");
     }
 
     #[test]

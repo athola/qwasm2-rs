@@ -173,6 +173,41 @@ test.describe('Qwasm2 with the demo pak', () => {
     await expect.poll(fullscreenId).toBe('game-container');
   });
 
+  test('CP-5: A refused fullscreen request is logged and skips the keyboard lock', async ({ page }) => {
+    test.setTimeout(90000);
+    const pageErrors: string[] = [];
+    const warnings: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+    page.on('console', msg => {
+      if (msg.type() === 'warning') {
+        warnings.push(msg.text());
+      }
+    });
+    await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
+    // `serve` redirects qwasm2.html to /qwasm2 without the query string.
+    await page.goto('qwasm2?vid_fullscreen=1');
+    await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
+    // Refuse as a browser does without user activation or allowfullscreen,
+    // and count keyboard lock requests.
+    await page.evaluate(() => {
+      const w = window as Window & { keyboardLocks?: number };
+      w.keyboardLocks = 0;
+      Element.prototype.requestFullscreen = () =>
+        Promise.reject(new TypeError('Permissions check failed'));
+      const keyboard = (navigator as Navigator & { keyboard?: { lock: () => Promise<void> } }).keyboard;
+      if (keyboard) {
+        keyboard.lock = () => {
+          w.keyboardLocks! += 1;
+          return Promise.resolve();
+        };
+      }
+    });
+    await page.locator('#canvas').click();
+    await expect.poll(() => warnings.some(w => w.includes('[qwasm2] fullscreen refused'))).toBe(true);
+    expect(pageErrors).toEqual([]);
+    expect(await page.evaluate(() => (window as Window & { keyboardLocks?: number }).keyboardLocks)).toBe(0);
+  });
+
   test('CP-5: Audio context runs after a click on the canvas, without errors', async ({ page }) => {
     test.setTimeout(90000);
     const errors: { text: string; url: string }[] = [];
