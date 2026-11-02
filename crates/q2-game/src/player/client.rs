@@ -29,9 +29,6 @@ const PLAYER_MAX_HEALTH: i32 = 100;
 const PLAYER_MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const PLAYER_MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 
-/// C `DF_SPAWN_FARTHEST` (shared.h) dmflags bit.
-const DF_SPAWN_FARTHEST: i32 = 0x0000_0200;
-
 impl GameWorld {
     /// Handle a new client connection. Allocates a player entity.
     /// C ref: `ClientConnect` (player/client.c).

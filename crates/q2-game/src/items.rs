@@ -1874,10 +1874,6 @@ pub const DROPPED_ITEM: i32 = 0x0001_0000;
 /// Set on an item a player dropped (C `DROPPED_PLAYER_ITEM`).
 pub const DROPPED_PLAYER_ITEM: i32 = 0x0002_0000;
 const ITEM_TARGETS_USED: i32 = 0x0004_0000;
-/// dmflags that keep items out of a deathmatch map (C shared.h).
-const DF_NO_HEALTH: i32 = 0x0000_0001;
-const DF_NO_ITEMS: i32 = 0x0000_0002;
-const DF_NO_ARMOR: i32 = 0x0000_0800;
 
 /// C's health spawns (SP_item_health*): the "Health" item with a model and
 /// amount of its own.

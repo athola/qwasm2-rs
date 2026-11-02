@@ -348,6 +348,16 @@ pub const DF_INSTANT_ITEMS: i32 = 0x0000_0010;
 /// `dmflags` bit: firing uses no ammo (C `DF_INFINITE_AMMO`).
 pub const DF_INFINITE_AMMO: i32 = 0x0000_2000;
 
+/// `dmflags` bits that keep health, other items and armor out of a
+/// deathmatch map (C `DF_NO_HEALTH`, `DF_NO_ITEMS`, `DF_NO_ARMOR`).
+pub const DF_NO_HEALTH: i32 = 0x0000_0001;
+pub const DF_NO_ITEMS: i32 = 0x0000_0002;
+pub const DF_NO_ARMOR: i32 = 0x0000_0800;
+
+/// `dmflags` bit: deathmatch spawns at the spot farthest from the other
+/// players (C `DF_SPAWN_FARTHEST`).
+pub const DF_SPAWN_FARTHEST: i32 = 0x0000_0200;
+
 pub const POWER_ARMOR_NONE: i32 = 0;
 pub const POWER_ARMOR_SCREEN: i32 = 1;
 pub const POWER_ARMOR_SHIELD: i32 = 2;
