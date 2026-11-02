@@ -231,6 +231,16 @@ impl LocalGame {
     /// `Q2Error::Drop`, leaving the current map running where C would end
     /// the server (`killserver`) after the movie.
     pub fn change_map(&mut self, level: &MapRequest, bsp: &[u8]) -> Q2Result<()> {
+        if matches!(level.kind, LevelKind::Game | LevelKind::Pic) {
+            // C's client parses the old level's last messages before the
+            // new `svc_serverdata`, and CL_ClearState then clears the
+            // effects they started (CL_ClearEffects, CL_ClearTEnts) and
+            // S_StopAllSounds their sounds: none reach the new level.
+            self.sent_messages.clear();
+            self.sent_sounds.clear();
+            self.gi.take_messages();
+            self.gi.take_sounds();
+        }
         match level.kind {
             LevelKind::Game => self.sv.map(
                 &mut self.svs,
@@ -397,6 +407,36 @@ mod tests {
         assert!(local.take_sounds().is_empty(), "no server frame yet");
         local.frame(100_000);
         assert_eq!(local.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn messages_from_the_old_level_are_dropped_by_a_map_change() {
+        // C's client parses them against the old level, then CL_ClearState
+        // clears the effects they started; nothing reaches the new level.
+        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.client_command("use Shotgun");
+        local.gi.sound(Some(LOCAL_PLAYER), 0, 1, 1.0, 1.0, 0.0);
+        local.frame(100_000);
+        local
+            .change_map(&MapRequest::parse("victory.pcx"), &[])
+            .expect("a picture level loads");
+        assert!(local.take_messages().is_empty());
+        assert!(local.take_sounds().is_empty());
+    }
+
+    #[test]
+    fn a_skipped_cinematic_keeps_the_running_maps_messages() {
+        // The current map keeps running until the caller follows the next
+        // server, so what it sent is still its own.
+        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.client_command("use Shotgun");
+        local.frame(100_000);
+        local
+            .change_map(&MapRequest::parse("intro.cin+base1"), &[])
+            .expect("the cinematic is skipped");
+        assert_eq!(local.take_messages().len(), 1);
     }
 
     #[test]

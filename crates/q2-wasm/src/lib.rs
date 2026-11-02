@@ -457,12 +457,14 @@ impl Engine {
         // the movement command is capped.
         self.local.frame(elapsed_us);
         let mut sounds = self.local.take_sounds();
-        let messages = self.local.take_messages();
         if let Some(level) = self.local.take_map_change() {
             if let Err(e) = self.change_map(&level, &mut sounds) {
                 console::error_1(&q2err_to_js(e));
             }
         }
+        // Taken after the map change, which drops the old level's messages
+        // (C CL_ClearState): none run against the new level's frame.
+        let messages = self.local.take_messages();
         self.frames.advance(elapsed_us);
         let new_frame = self.sync_frame();
         let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
