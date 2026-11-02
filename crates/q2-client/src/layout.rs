@@ -270,8 +270,8 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             }
             // A deathmatch scoreboard entry; "ctf" is not ported.
             "client" => {
-                let bx = input.width / 2 - 160 + strtol(arg(&mut toks));
-                let by = input.height / 2 - 120 + strtol(arg(&mut toks));
+                x = input.width / 2 - 160 + strtol(arg(&mut toks));
+                y = input.height / 2 - 120 + strtol(arg(&mut toks));
                 let value = strtol(arg(&mut toks));
                 let (score, ping, time) = (
                     strtol(arg(&mut toks)),
@@ -283,16 +283,12 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                     continue;
                 };
                 let (name, icon) = client_info((input.configstrings)(CS_PLAYERSKINS + index));
-                draw_string(&mut out, bx + 32, by, &name, 0x80);
-                draw_string(&mut out, bx + 32, by + 8, "Score: ", 0x80);
-                draw_string(&mut out, bx + 32 + 7 * 8, by + 8, &score.to_string(), 0x80);
-                draw_string(&mut out, bx + 32, by + 16, &format!("Ping:  {ping}"), 0);
-                draw_string(&mut out, bx + 32, by + 24, &format!("Time:  {time}"), 0);
-                out.push(HudDraw::Pic {
-                    x: bx,
-                    y: by,
-                    name: icon,
-                });
+                draw_string(&mut out, x + 32, y, &name, 0x80);
+                draw_string(&mut out, x + 32, y + 8, "Score: ", 0x80);
+                draw_string(&mut out, x + 32 + 7 * 8, y + 8, &score.to_string(), 0x80);
+                draw_string(&mut out, x + 32, y + 16, &format!("Ping:  {ping}"), 0);
+                draw_string(&mut out, x + 32, y + 24, &format!("Time:  {time}"), 0);
+                out.push(HudDraw::Pic { x, y, name: icon });
             }
             _ => {}
         }
@@ -369,6 +365,24 @@ mod tests {
         assert!(alt(y + 8).iter().all(|&a| a), "Score: row");
         assert!(alt(y + 16).iter().all(|&a| !a));
         assert!(alt(y + 24).iter().all(|&a| !a));
+    }
+
+    #[test]
+    fn a_client_block_moves_the_origin_for_the_draws_after_it() {
+        // C SCR_ExecuteLayoutString assigns the running x and y.
+        let draws = run("client 10 32 1 7 50 3 string hi", &[0; 32], &[]);
+        let (x, y) = (W / 2 - 160 + 10, H / 2 - 120 + 32);
+        assert_eq!(
+            draws[draws.len() - 2..],
+            [
+                HudDraw::Char { x, y, ch: b'h' },
+                HudDraw::Char {
+                    x: x + 8,
+                    y,
+                    ch: b'i'
+                }
+            ]
+        );
     }
 
     #[test]
