@@ -287,6 +287,7 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
                         sprite,
                         entity,
                         scene.view_right_up,
+                        translucent,
                     );
                 }
             }

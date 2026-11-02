@@ -410,9 +410,9 @@ pub fn draw_beam(
     }
 }
 
-/// One sprite facing the view (`right`, `up`) with the fx program bound:
-/// a translucent one blends at the entity's alpha, the rest are alpha
-/// tested. C ref: `GL3_DrawSpriteModel`.
+/// One sprite facing the view (`right`, `up`) with the fx program bound,
+/// in the `translucent` entity pass or the opaque one (see
+/// `sprite_style`). C ref: `GL3_DrawSpriteModel`.
 pub fn draw_sprite(
     gl: &glow::Context,
     fx: &FxGpu,
@@ -420,6 +420,7 @@ pub fn draw_sprite(
     sprite: &SpriteModel,
     entity: &RenderEntity,
     (right, up): (Vec3f, Vec3f),
+    translucent: bool,
 ) {
     let Some(frame) = sprite
         .frames
@@ -441,7 +442,7 @@ pub fn draw_sprite(
             vertices: &sprite_vertices(entity.origin, &frame.size, right, up),
             mode: glow::TRIANGLE_FAN,
             texture,
-            style: sprite_style(entity),
+            style: sprite_style(entity, translucent),
         },
     );
 }
@@ -453,14 +454,17 @@ fn beam_style(entity: &RenderEntity, palette: &Palette) -> FxStyle {
         color: beam_color(entity, palette),
         alpha_test: false,
         blend: true,
+        depth_write: false,
         intensity: BEAM_INTENSITY,
     }
 }
 
 /// How a sprite is shaded: alpha tested at full alpha, blended otherwise,
-/// scaled by gl3_intensity. C ref: `GL3_DrawSpriteModel`,
-/// `fragmentSrc3Dsprite`, `fragmentSrc3DspriteAlpha`.
-fn sprite_style(entity: &RenderEntity) -> FxStyle {
+/// scaled by gl3_intensity. No sprite in the `translucent` pass writes
+/// depth, as C `GL3_DrawEntitiesOnList` masks depth for that whole pass.
+/// C ref: `GL3_DrawSpriteModel`, `fragmentSrc3Dsprite`,
+/// `fragmentSrc3DspriteAlpha`.
+fn sprite_style(entity: &RenderEntity, translucent: bool) -> FxStyle {
     let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
         entity.alpha
     } else {
@@ -470,6 +474,7 @@ fn sprite_style(entity: &RenderEntity) -> FxStyle {
         color: [1.0, 1.0, 1.0, alpha],
         alpha_test: alpha == 1.0,
         blend: alpha != 1.0,
+        depth_write: !translucent && alpha == 1.0,
         intensity: SPRITE_INTENSITY,
     }
 }
@@ -518,8 +523,8 @@ pub fn draw_particles(
 struct FxStyle {
     color: [f32; 4],
     alpha_test: bool,
-    /// Blend without writing depth.
     blend: bool,
+    depth_write: bool,
     /// Colour scale before gamma.
     intensity: f32,
 }
@@ -545,11 +550,15 @@ fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
         if style.blend {
             gl.enable(glow::BLEND);
             set_alpha_blend(gl);
+        }
+        if !style.depth_write {
             gl.depth_mask(false);
         }
         gl.draw_arrays(draw.mode, 0, count);
-        if style.blend {
+        if !style.depth_write {
             gl.depth_mask(true);
+        }
+        if style.blend {
             gl.disable(glow::BLEND);
         }
         gl.bind_vertex_array(None);
@@ -647,23 +656,50 @@ mod tests {
     #[test]
     fn sprites_are_scaled_by_gl3_intensity_and_beams_are_not() {
         let sprite = RenderEntity::default();
-        assert_eq!(sprite_style(&sprite).intensity, 1.5);
+        assert_eq!(sprite_style(&sprite, false).intensity, 1.5);
         let beam = beam(Vec3f::ZERO, Vec3f::Z, 4);
         assert_eq!(beam_style(&beam, &grey_palette()).intensity, 1.0);
     }
 
     #[test]
     fn an_opaque_sprite_is_alpha_tested_and_a_translucent_one_blends() {
-        let opaque = sprite_style(&RenderEntity::default());
-        assert!(opaque.alpha_test && !opaque.blend);
+        let opaque = sprite_style(&RenderEntity::default(), false);
+        assert!(opaque.alpha_test && !opaque.blend && opaque.depth_write);
         assert_eq!(opaque.color, [1.0, 1.0, 1.0, 1.0]);
-        let translucent = sprite_style(&RenderEntity {
-            flags: RF_TRANSLUCENT,
-            alpha: 0.5,
-            ..Default::default()
-        });
-        assert!(!translucent.alpha_test && translucent.blend);
+        let translucent = sprite_style(
+            &RenderEntity {
+                flags: RF_TRANSLUCENT,
+                alpha: 0.5,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(!translucent.alpha_test && translucent.blend && !translucent.depth_write);
         assert_eq!(translucent.color, [1.0, 1.0, 1.0, 0.5]);
+    }
+
+    // C GL3_DrawEntitiesOnList turns depth writes off for the whole
+    // translucent pass (gl3_main.c glDepthMask(0)), so an RF_TRANSLUCENT
+    // sprite at alpha 1.0, alpha tested rather than blended, writes no
+    // depth either.
+    #[test]
+    fn a_full_alpha_sprite_in_the_translucent_pass_writes_no_depth() {
+        let style = sprite_style(
+            &RenderEntity {
+                flags: RF_TRANSLUCENT,
+                alpha: 1.0,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(style.alpha_test && !style.blend);
+        assert!(!style.depth_write);
+    }
+
+    #[test]
+    fn a_beam_blends_without_writing_depth() {
+        let style = beam_style(&beam(Vec3f::ZERO, Vec3f::Z, 4), &grey_palette());
+        assert!(style.blend && !style.depth_write);
     }
 
     #[test]
