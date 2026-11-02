@@ -276,6 +276,7 @@ impl Effects {
             .filter(|&f| f <= 210)
             .map(|f| MONSTER_FLASH_OFFSET[f])
         else {
+            tracing::debug!("CL_AddMuzzleFlash2: bad offset {flash}");
             return Vec::new();
         };
         let (forward, right, _) = angle_vectors(monster.angles);
@@ -319,7 +320,9 @@ impl Effects {
     /// Run one server message for its effects: a player or monster muzzle
     /// flash against the entity it names (`entity` looks up its current
     /// state, C `cl_entities[n].current`). Other messages, and flashes of
-    /// entities the client does not have, do nothing. Returns the sounds
+    /// entities the client does not have, do nothing; a short body or an
+    /// entity outside 1..MAX_EDICTS-1 is logged and does nothing (C drops
+    /// the connection). Returns the sounds
     /// to start. C ref: `CL_ParseServerMessage`'s `svc_muzzleflash` and
     /// `svc_muzzleflash2` cases.
     pub fn message(
@@ -338,6 +341,17 @@ impl Effects {
         }
         let number = msg.read_short();
         let flash = msg.read_byte();
+        // C acts on a short body and drops at the next op ("Bad server
+        // message"); a cut flash byte reads -1, so this drops it first.
+        if msg.is_overflowed() {
+            tracing::warn!("bad {op:?}: message ends early");
+            return Vec::new();
+        }
+        // C ref: Com_Error(ERR_DROP, "CL_AddMuzzleFlash{,2}: bad entity").
+        if !(1..MAX_EDICTS as i32).contains(&number) {
+            tracing::warn!("bad {op:?}: bad entity {number}");
+            return Vec::new();
+        }
         let Some(state) = entity(number) else {
             return Vec::new();
         };
@@ -1179,6 +1193,32 @@ mod tests {
         assert!(fx.message(&temp, nobody, 0.0, &mut rng(&[0])).is_empty());
         assert!(fx.message(&[], nobody, 0.0, &mut rng(&[0])).is_empty());
         assert_eq!(fx.dlights().count(), 0);
+    }
+
+    #[test]
+    fn a_flash_cut_short_or_naming_a_bad_entity_does_nothing() {
+        use q2_shared::protocol::SvcOp;
+        let mut fx = Effects::default();
+        let anyone = |n: i32| Some(player_at(n, 0.0));
+        let mut draws = 0;
+        let mut randk = || {
+            draws += 1;
+            0
+        };
+        for op in [SvcOp::MuzzleFlash, SvcOp::MuzzleFlash2] {
+            // Cut after the entity number: no flash byte.
+            let short = [op as u8, 1, 0];
+            assert!(fx.message(&short, anyone, 0.0, &mut randk).is_empty());
+            // C Com_Error "bad entity" outside 1..MAX_EDICTS-1.
+            for number in [0, MAX_EDICTS as i16, -1] {
+                let [lo, hi] = number.to_le_bytes();
+                let flash = [op as u8, lo, hi, MZ_BLASTER as u8];
+                assert!(fx.message(&flash, anyone, 0.0, &mut randk).is_empty());
+            }
+        }
+        assert_eq!(fx.dlights().count(), 0);
+        assert!(fx.take_particles().is_empty());
+        assert_eq!(draws, 0);
     }
 
     #[test]
