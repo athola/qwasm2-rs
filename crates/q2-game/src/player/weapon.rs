@@ -469,31 +469,15 @@ pub fn weapon_generic(
             .weapon
             .and_then(|w| world.items.get(w))
             .map_or(0, |item| item.quantity);
-        let now = world.level.time;
-        let Some((ent, client)) = world.entity_and_client_mut(key) else {
+        let Some(client) = world.client_mut(key) else {
             return;
         };
         if client.ammo_index == 0 || client.pers.inventory[client.ammo_index] >= per_shot {
             client.ps.gunframe = fire_first;
             client.weaponstate = WeaponState::Firing;
-            client.anim_priority = ANIM_ATTACK;
-            if client.ps.pmove.pm_flags & PMF_DUCKED != 0 {
-                ent.state.frame = FRAME_CRATTAK1 - 1;
-                client.anim_end = FRAME_CRATTAK9;
-            } else {
-                ent.state.frame = FRAME_ATTACK1 - 1;
-                client.anim_end = FRAME_ATTACK8;
-            }
+            attack_animation(world, key, 1);
         } else {
-            if now >= ent.game.pain_debounce_time {
-                ent.game.pain_debounce_time = now + 1.0;
-                let number = world.number_of(key);
-                let noammo = world.gi.sound_index("weapons/noammo.wav");
-                world
-                    .gi
-                    .sound(number, CHAN_VOICE, noammo, 1.0, ATTN_NORM, 0.0);
-            }
-            world.no_ammo_weapon_change(key);
+            click_and_switch(world, key);
         }
     }
 
