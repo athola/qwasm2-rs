@@ -1,7 +1,7 @@
 //! Deathmatch rules: ending the match on the frag or time limit and
 //! picking the next map, and which players are on a team. C ref:
-//! `CheckDMRules`, `EndDMLevel` (g_main.c), `CreateTargetChangeLevel`
-//! (g_utils.c), `ClientTeam`, `OnSameTeam` (g_cmds.c). The scoreboard
+//! `CheckDMRules`, `EndDMLevel`, `CreateTargetChangeLevel` (g_main.c),
+//! `ClientTeam`, `OnSameTeam` (g_cmds.c). The scoreboard
 //! layout is in `player::hud`.
 
 use q2_shared::constants::PRINT_HIGH;
@@ -69,10 +69,11 @@ impl GameWorld {
         }
     }
 
-    /// A changelevel to `map` made on the fly. C ref:
-    /// `CreateTargetChangeLevel` (g_utils.c).
+    /// A changelevel to `map` made on the fly, which also becomes
+    /// `level.nextmap`. C ref: `CreateTargetChangeLevel` (g_main.c).
     pub fn create_target_changelevel(&mut self, map: &str) -> Option<EntityKey> {
         let key = self.spawn()?;
+        self.level.nextmap = map.to_string();
         let ent = self.entities.get_mut(key)?;
         ent.game.classname = "target_changelevel".into();
         ent.game.map = map.to_string();
@@ -197,6 +198,15 @@ mod tests {
             "base1",
             "not in the list: nextmap"
         );
+    }
+
+    #[test]
+    fn a_changelevel_made_on_the_fly_also_sets_the_next_map() {
+        // C CreateTargetChangeLevel copies the map into level.nextmap.
+        let (mut world, _, _) = match_world();
+        let exit = world.create_target_changelevel("q2dm5").unwrap();
+        assert_eq!(world.entities.get(exit).unwrap().game.map, "q2dm5");
+        assert_eq!(world.level.nextmap, "q2dm5");
     }
 
     #[test]
