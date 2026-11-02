@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use q2_common::pmove::Pmove;
-use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID};
+use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID, MZ_LOGIN};
 use q2_shared::types::*;
 
 use crate::constants::*;
@@ -29,8 +29,6 @@ const PLAYER_MAX_HEALTH: i32 = 100;
 const PLAYER_MINS: Vec3f = Vec3f::new(-16.0, -16.0, -24.0);
 const PLAYER_MAXS: Vec3f = Vec3f::new(16.0, 16.0, 32.0);
 
-/// C `MZ_LOGIN` (shared.h): the muzzle flash of a player entering the game.
-const MZ_LOGIN: i32 = 9;
 /// C `DF_SPAWN_FARTHEST` (shared.h) dmflags bit.
 const DF_SPAWN_FARTHEST: i32 = 0x0000_0200;
 

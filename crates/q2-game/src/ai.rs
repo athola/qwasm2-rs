@@ -22,17 +22,12 @@ use crate::constants::*;
 use crate::entity::{Entity, EntityKey, MonsterInfo, ThinkFn};
 use crate::monster::movement;
 use crate::world::GameWorld;
+use q2_shared::constants::{
+    EF_COLOR_SHELL, EF_FLIES, EF_POWERSCREEN, RF_SHELL_BLUE, RF_SHELL_GREEN, RF_SHELL_RED,
+};
 
 /// C `MELEE_DISTANCE` (local.h).
 pub const MELEE_DISTANCE: f32 = 80.0;
-
-/// C `entity_state_t` effects and render flags (shared.h).
-const EF_COLOR_SHELL: u32 = 0x0000_0100;
-const EF_POWERSCREEN: u32 = 0x0000_0200;
-pub const EF_FLIES: u32 = 0x0000_4000;
-const RF_SHELL_RED: i32 = 1024;
-const RF_SHELL_GREEN: i32 = 2048;
-const RF_SHELL_BLUE: i32 = 4096;
 
 /// Monster spawnflags (C uses the bare numbers): wake only on really
 /// seeing a player, spawn when triggered, and the flag `monster_start`

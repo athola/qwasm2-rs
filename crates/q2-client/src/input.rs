@@ -1,3 +1,4 @@
+use q2_shared::constants::{BUTTON_ANY, BUTTON_ATTACK, BUTTON_USE};
 use q2_shared::types::*;
 
 /// Default `cl_forwardspeed`, `cl_sidespeed` and `cl_upspeed` (cl_main.c),
@@ -5,12 +6,6 @@ use q2_shared::types::*;
 const CL_FORWARDSPEED: f32 = 200.0;
 const CL_SIDESPEED: f32 = 200.0;
 const CL_UPSPEED: f32 = 200.0;
-
-/// `usercmd_t.buttons` bits (shared.h).
-pub const BUTTON_ATTACK: u8 = 1;
-pub const BUTTON_USE: u8 = 2;
-/// Any key whatsoever.
-pub const BUTTON_ANY: u8 = 128;
 
 /// Input state
 #[derive(Debug)]

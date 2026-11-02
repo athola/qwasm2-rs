@@ -10,6 +10,7 @@
 use crate::constants::*;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
+use q2_shared::constants::EV_ITEM_RESPAWN;
 use q2_shared::types::*;
 
 // ---------------------------------------------------------------------------
@@ -1877,8 +1878,6 @@ const ITEM_TARGETS_USED: i32 = 0x0004_0000;
 const DF_NO_HEALTH: i32 = 0x0000_0001;
 const DF_NO_ITEMS: i32 = 0x0000_0002;
 const DF_NO_ARMOR: i32 = 0x0000_0800;
-/// C `EV_ITEM_RESPAWN` (shared.h `entity_event_t`).
-const EV_ITEM_RESPAWN: i32 = 1;
 
 /// C's health spawns (SP_item_health*): the "Health" item with a model and
 /// amount of its own.

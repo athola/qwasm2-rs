@@ -1,7 +1,7 @@
 //! Technician (floater): flies, fires blaster bursts, claws and zaps up
 //! close, explodes when killed. C ref: `~/Qwasm2/src/game/monster/float/float.c`.
 
-use q2_shared::constants::{EF_HYPERBLASTER, MZ2_FLOAT_BLASTER_1};
+use q2_shared::constants::{EF_HYPERBLASTER, MZ2_FLOAT_BLASTER_1, SPLASH_SPARKS};
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::*;
 
@@ -15,9 +15,6 @@ use crate::monster::{
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
-
-/// C `SPLASH_SPARKS`, the `TE_SPLASH` colour (shared.h).
-const SPLASH_SPARKS: i32 = 1;
 
 const SOUND_ATTACK2: &str = "floater/fltatck2.wav";
 const SOUND_ATTACK3: &str = "floater/fltatck3.wav";
