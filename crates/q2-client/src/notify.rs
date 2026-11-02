@@ -76,10 +76,11 @@ impl ServerText {
         let mut i = 0;
         while i < text.len() {
             let c = text[i];
-            // Count the word's length to wrap it whole.
+            // Count the word's length to wrap it whole. C tests
+            // `txt[l] <= ' '` on a signed char, so 0x80-0xFF end it too.
             let word = text[i..]
                 .iter()
-                .take_while(|&&b| b > b' ')
+                .take_while(|&&b| b > b' ' && b < 0x80)
                 .take(linewidth)
                 .count();
             let x = self.line_len();
@@ -333,6 +334,33 @@ mod tests {
                 ch: 0xE1
             }]
         );
+    }
+
+    fn line_bytes(text: &ServerText) -> Vec<Vec<u8>> {
+        text.lines.iter().map(|(line, _)| line.clone()).collect()
+    }
+
+    #[test]
+    fn a_high_byte_ends_a_word_for_wrapping_like_signed_char_c() {
+        // C counts the word with `txt[l] <= ' '` on a signed char, so
+        // 0xE1 stops the count: "ab\xE1" fits, then "cd" wraps.
+        let mut text = ServerText::default();
+        text.message(
+            &[
+                SvcOp::Print as u8,
+                PRINT_HIGH as u8,
+                b'a',
+                b'b',
+                0xE1,
+                b'c',
+                b'd',
+                b'\n',
+                0,
+            ],
+            0,
+            4,
+        );
+        assert_eq!(line_bytes(&text), [vec![b'a', b'b', 0xE1], b"cd".to_vec()]);
     }
 
     #[test]
