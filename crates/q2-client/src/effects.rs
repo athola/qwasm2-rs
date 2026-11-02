@@ -11,6 +11,21 @@ use q2_shared::types::{EntityState, Vec3f};
 /// C `MAX_DLIGHTS`.
 pub const MAX_DLIGHTS: usize = 32;
 
+// The xatrix and rogue player flashes, which no ported game sends yet.
+// C ref: `MZ_*` (common/header/shared.h).
+const MZ_IONRIPPER: i32 = 16;
+const MZ_BLUEHYPERBLASTER: i32 = 17;
+const MZ_PHALANX: i32 = 18;
+const MZ_ETF_RIFLE: i32 = 30;
+const MZ_SHOTGUN2: i32 = 32;
+const MZ_HEATBEAM: i32 = 33;
+const MZ_BLASTER2: i32 = 34;
+const MZ_TRACKER: i32 = 35;
+const MZ_NUKE1: i32 = 36;
+const MZ_NUKE2: i32 = 37;
+const MZ_NUKE4: i32 = 38;
+const MZ_NUKE8: i32 = 39;
+
 use crate::sound::{ATTN_NONE, ATTN_NORM, CHAN_AUTO, CHAN_WEAPON};
 
 /// A client dynamic light (C `cdlight_t`). `die` is in client
@@ -112,8 +127,10 @@ impl Effects {
     }
 
     /// A player's weapon fired: a light ahead and right of the player and
-    /// the weapon's sound. `weapon` carries `MZ_SILENCED`. Returns the
-    /// sounds to start. C ref: `CL_AddMuzzleFlash`.
+    /// the weapon's sound. `weapon` carries `MZ_SILENCED`. Covers the
+    /// baseq2, xatrix and rogue flashes; any other number keeps the
+    /// light's old colour and plays nothing, as C's switch has no default.
+    /// Returns the sounds to start. C ref: `CL_AddMuzzleFlash`.
     pub fn muzzle_flash(
         &mut self,
         player: &EntityState,
@@ -218,6 +235,45 @@ impl Effects {
                 match weapon {
                     MZ_LOGIN => [0.0, 1.0, 0.0],
                     MZ_LOGOUT => [1.0, 0.0, 0.0],
+                    _ => [1.0, 1.0, 0.0],
+                }
+            }
+            MZ_BLUEHYPERBLASTER => {
+                sound(CHAN_WEAPON, "weapons/hyprbf1a.wav".into(), 0.0);
+                [0.0, 0.0, 1.0]
+            }
+            MZ_PHALANX => {
+                sound(CHAN_WEAPON, "weapons/plasshot.wav".into(), 0.0);
+                [1.0, 0.5, 0.5]
+            }
+            MZ_IONRIPPER => {
+                sound(CHAN_WEAPON, "weapons/rippfire.wav".into(), 0.0);
+                [1.0, 0.5, 0.5]
+            }
+            MZ_ETF_RIFLE => {
+                sound(CHAN_WEAPON, "weapons/nail1.wav".into(), 0.0);
+                [0.9, 0.7, 0.0]
+            }
+            MZ_SHOTGUN2 => {
+                sound(CHAN_WEAPON, "weapons/shotg2.wav".into(), 0.0);
+                [1.0, 1.0, 0.0]
+            }
+            MZ_BLASTER2 => {
+                sound(CHAN_WEAPON, "weapons/blastf1a.wav".into(), 0.0);
+                [0.0, 1.0, 0.0]
+            }
+            MZ_TRACKER => {
+                // C: "negative flashes handled the same in gl/soft until
+                // CL_AddDLights".
+                sound(CHAN_WEAPON, "weapons/disint2.wav".into(), 0.0);
+                [-1.0, -1.0, -1.0]
+            }
+            MZ_HEATBEAM | MZ_NUKE1 | MZ_NUKE2 | MZ_NUKE4 | MZ_NUKE8 => {
+                self.alloc_dlight(entnum, time).die = time + 100.0;
+                match weapon {
+                    MZ_NUKE1 => [1.0, 0.0, 0.0],
+                    MZ_NUKE4 => [0.0, 0.0, 1.0],
+                    MZ_NUKE8 => [0.0, 1.0, 1.0],
                     _ => [1.0, 1.0, 0.0],
                 }
             }
@@ -815,6 +871,76 @@ mod tests {
             fx.clear();
         }
         assert_eq!(mismatched, 0);
+    }
+
+    #[test]
+    fn mission_pack_player_flashes_light_and_sound_like_c() {
+        for (weapon, color, sound, die) in [
+            (
+                MZ_BLUEHYPERBLASTER,
+                [0.0, 0.0, 1.0],
+                Some("weapons/hyprbf1a.wav"),
+                500.0,
+            ),
+            (
+                MZ_PHALANX,
+                [1.0, 0.5, 0.5],
+                Some("weapons/plasshot.wav"),
+                500.0,
+            ),
+            (
+                MZ_IONRIPPER,
+                [1.0, 0.5, 0.5],
+                Some("weapons/rippfire.wav"),
+                500.0,
+            ),
+            (
+                MZ_ETF_RIFLE,
+                [0.9, 0.7, 0.0],
+                Some("weapons/nail1.wav"),
+                500.0,
+            ),
+            (
+                MZ_SHOTGUN2,
+                [1.0, 1.0, 0.0],
+                Some("weapons/shotg2.wav"),
+                500.0,
+            ),
+            (MZ_HEATBEAM, [1.0, 1.0, 0.0], None, 600.0),
+            (
+                MZ_BLASTER2,
+                [0.0, 1.0, 0.0],
+                Some("weapons/blastf1a.wav"),
+                500.0,
+            ),
+            (
+                MZ_TRACKER,
+                [-1.0, -1.0, -1.0],
+                Some("weapons/disint2.wav"),
+                500.0,
+            ),
+            (MZ_NUKE1, [1.0, 0.0, 0.0], None, 600.0),
+            (MZ_NUKE2, [1.0, 1.0, 0.0], None, 600.0),
+            (MZ_NUKE4, [0.0, 0.0, 1.0], None, 600.0),
+            (MZ_NUKE8, [0.0, 1.0, 1.0], None, 600.0),
+        ] {
+            let mut fx = Effects::default();
+            let sounds = fx.muzzle_flash(
+                &player_at(1, 0.0),
+                weapon | MZ_SILENCED,
+                500.0,
+                &mut rng(&[0]),
+            );
+            let light = fx.dlights().next().unwrap();
+            assert_eq!((light.color, light.die), (color, die), "{weapon}");
+            match sound {
+                Some(name) => {
+                    assert_eq!(names(&sounds), [(name, CHAN_WEAPON, 0.0)], "{weapon}");
+                    assert_eq!(sounds[0].volume, 0.2, "{weapon}");
+                }
+                None => assert!(sounds.is_empty(), "{weapon}"),
+            }
+        }
     }
 
     #[test]
