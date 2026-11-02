@@ -12,6 +12,7 @@ use super::shader::{
 use super::sky::{sky_box_vertices, SKY_TEX_ORDER, VERTEX_FLOATS as SKY_VERTEX_FLOATS};
 use super::texture::{upload_rgba, Image, Sampling, WorldImages, CLAMPED_SAMPLING, WORLD_SAMPLING};
 use super::world::{Batch, Shading, Translucency, WorldMesh, VERTEX_FLOATS};
+use super::IDENTITY_MAT4;
 
 /// Uploaded world model: vertex buffer, textures and the draw list.
 pub struct WorldGpu {
@@ -242,6 +243,7 @@ pub fn draw_sky(gl: &glow::Context, uniforms: &WorldUniforms, sky: &SkyGpu, view
         gl.disable(glow::DEPTH_TEST);
         gl.disable(glow::CULL_FACE);
         gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, &IDENTITY_MAT4);
         gl.uniform_1_i32(uniforms.mode.as_ref(), MODE_SKY);
         gl.uniform_1_f32(uniforms.scroll.as_ref(), 0.0);
         gl.active_texture(glow::TEXTURE0);
@@ -275,6 +277,8 @@ impl BatchFilter {
 /// One world or brush-entity draw.
 pub struct BatchDraw<'a> {
     pub view_proj: &'a [f32; 16],
+    /// Model to world (C `transModel`): identity for the world.
+    pub model: &'a [f32; 16],
     pub time: f32,
     /// Texture animation frame (C `R_TextureAnimation`).
     pub frame: i32,
@@ -319,6 +323,7 @@ pub fn draw_batches(
     // currently bound program.
     unsafe {
         gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, draw.view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, draw.model);
         gl.uniform_1_f32(uniforms.time.as_ref(), draw.time);
         gl.bind_vertex_array(Some(world.vao));
         let (mut blending, mut writing_depth) = (false, true);

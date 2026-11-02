@@ -531,6 +531,7 @@ impl Renderer for Gl3Renderer {
             if let Some(world) = &self.world {
                 let draw = BatchDraw {
                     view_proj: &view_proj,
+                    model: &IDENTITY_MAT4,
                     time: fd.time,
                     // C GL3_DrawWorld animates world textures at 2 fps.
                     frame: (fd.time * 2.0) as i32,
@@ -902,6 +903,11 @@ fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16]
     ];
     m
 }
+
+/// C `gl3_identityMat4`.
+const IDENTITY_MAT4: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut r = [0.0f32; 16];

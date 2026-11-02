@@ -4,9 +4,11 @@
 //!
 //! MD2 models outside the view frustum are skipped (C `CullAliasModel`).
 //!
+//! Brush entities are lit by the frame's dynamic lights through their model
+//! matrix, as C `vertexSrc3Dlm` does with `transModel`.
+//!
 //! Not modelled relative to C: frustum culling of brush entities,
-//! `RF_IR_VISIBLE`, the null-model placeholder, entity shadows and dynamic
-//! lights on brush models. Beams and sprites are drawn in the same passes
+//! `RF_IR_VISIBLE`, the null-model placeholder and entity shadows. Beams and sprites are drawn in the same passes
 //! through `fx`. Entities whose model is none of the above are skipped.
 
 use glow::HasContext;
@@ -314,9 +316,9 @@ fn draw_brush(
         return;
     };
     let matrix = brush_matrix(vec3(entity.origin), vec3(entity.angles));
-    let view_proj = mat4_mul(&scene.view_proj, &matrix);
     let draw = BatchDraw {
-        view_proj: &view_proj,
+        view_proj: &scene.view_proj,
+        model: &matrix,
         time: scene.refdef.time,
         frame: entity.frame,
         filter,
