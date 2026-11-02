@@ -481,14 +481,13 @@ impl Renderer for Gl3Renderer {
         particles: &[Particle],
     ) {
         // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
-        // goes over it. The 2D shader scales the colour by intensity2D, as
-        // C's fragmentSrc2Dcolor does.
+        // goes over it.
         if fd.blend[3] > 0.0 {
             self.ui_queue.push(pics::quad(
                 pics::QuadImage::White,
                 (fd.x, fd.y, fd.width, fd.height),
                 [0.0, 0.0, 1.0, 1.0],
-                fd.blend,
+                flash_color(fd, self.vid_gamma),
             ));
         }
         let gl = match &self.gl {
@@ -920,6 +919,26 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
         }
     }
     r
+}
+
+/// The 2D quad colour that draws `fd.blend` as C does. Dry, C
+/// `GL3_Draw_Flash` (fragmentSrc2Dcolor) scales by intensity2D and applies
+/// gamma, as the 2D shader here does, so the blend is passed as is. With
+/// `RDF_UNDERWATER` and a world, C `GL3_SetupGL` binds the post-process FBO
+/// (`gl3_usefbo` defaults to 1) and `GL3_DrawFrameBufferObject`
+/// (fragmentSrc2Dpostprocess) mixes `v_blend` with neither, so the rgb is
+/// pre-divided by [`shader::INTENSITY_2D`] and raised to `vid_gamma` to
+/// cancel the shader's `pow(rgb, 1/vid_gamma)`. The water warp of that pass
+/// is not ported. C ref: `GL3_RenderFrame`.
+fn flash_color(fd: &RefDef, vid_gamma: f32) -> [f32; 4] {
+    let [r, g, b, a] = fd.blend;
+    if fd.rdflags & (RDF_NOWORLDMODEL | q2_shared::constants::RDF_UNDERWATER)
+        != q2_shared::constants::RDF_UNDERWATER
+    {
+        return fd.blend;
+    }
+    let raw = |c: f32| c.powf(vid_gamma) / shader::INTENSITY_2D;
+    [raw(r), raw(g), raw(b), a]
 }
 
 #[cfg(test)]
@@ -1885,6 +1904,47 @@ mod tests {
             &[],
         );
         assert!(r.ui_queue.is_empty(), "no alpha, no flash");
+    }
+
+    /// The colour queued for the full-view flash of `fd`.
+    fn queued_flash_color(r: &mut Gl3Renderer, fd: &RefDef) -> [f32; 4] {
+        r.ui_queue.clear();
+        r.render_frame(fd, &[], &[], &[]);
+        assert_eq!(r.ui_queue.len(), 1);
+        r.ui_queue[0].vertices[4..8].try_into().unwrap()
+    }
+
+    #[test]
+    fn an_underwater_view_blend_is_mixed_without_intensity_2d_or_gamma() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let water = RefDef {
+            width: 100,
+            height: 50,
+            blend: [0.5, 0.3, 0.2, 0.4],
+            rdflags: q2_shared::constants::RDF_UNDERWATER,
+            ..Default::default()
+        };
+        // C GL3_DrawFrameBufferObject mixes v_blend as given; the 2D shader
+        // multiplies by INTENSITY_2D, so the queued rgb is pre-divided.
+        let got = queued_flash_color(&mut r, &water);
+        for (got, want) in got.iter().zip([0.5 / 1.5, 0.3 / 1.5, 0.2 / 1.5, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
+        // ... and the 2D shader's pow(rgb, 1/vid_gamma) is cancelled too.
+        r.set_gamma(2.0);
+        let got = queued_flash_color(&mut r, &water);
+        for (got, want) in got.iter().zip([0.25 / 1.5, 0.09 / 1.5, 0.04 / 1.5, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
+        // No FBO without a world (C GL3_SetupGL): the dry flash, unscaled.
+        let no_world = RefDef {
+            rdflags: q2_shared::constants::RDF_UNDERWATER | RDF_NOWORLDMODEL,
+            ..water.clone()
+        };
+        let got = queued_flash_color(&mut r, &no_world);
+        for (got, want) in got.iter().zip([0.5, 0.3, 0.2, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
     }
 
     #[test]

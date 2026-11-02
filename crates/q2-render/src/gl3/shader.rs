@@ -357,6 +357,9 @@ void main() {
 }
 "#;
 
+/// C `gl3_intensity_2D` default, the `INTENSITY_2D` of [`UI_FRAGMENT_SRC`].
+pub const INTENSITY_2D: f32 = 1.5;
+
 const UI_FRAGMENT_SRC: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D u_texture;
@@ -444,6 +447,12 @@ mod tests {
         // C fragmentSrcAliasColor: the vertex colour through gamma.
         assert!(ALIAS_FRAGMENT_SRC.contains("uniform int u_color_only;"));
         assert!(ALIAS_FRAGMENT_SRC.contains("if (u_color_only != 0) {"));
+    }
+
+    #[test]
+    fn the_2d_shader_scales_by_the_rust_intensity_2d() {
+        let line = format!("const float INTENSITY_2D = {INTENSITY_2D:?};");
+        assert!(UI_FRAGMENT_SRC.contains(&line), "{line}");
     }
 
     #[test]
