@@ -7,6 +7,7 @@
 //! # C source reference
 //! `~/Qwasm2/src/game/g_items.c`
 
+use crate::ai::vtos;
 use crate::constants::*;
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
@@ -1900,8 +1901,13 @@ impl GameWorld {
             _ => {}
         }
         if ent.game.spawnflags != 0 && ent.game.classname != "key_power_cube" {
-            tracing::debug!(classname = %ent.game.classname, "item has invalid spawnflags set");
             ent.game.spawnflags = 0;
+            let msg = format!(
+                "{} at {} has invalid spawnflags set\n",
+                ent.game.classname,
+                vtos(ent.state.origin)
+            );
+            self.gi.dprintf(&msg);
         }
         if self.game.deathmatch && self.dmflags_remove(key, item) {
             self.free_entity(key);
@@ -1985,7 +1991,12 @@ pub fn droptofloor(world: &mut GameWorld, key: EntityKey) {
         q2_shared::constants::MASK_SOLID,
     );
     if tr.startsolid {
-        tracing::debug!(?origin, "droptofloor: startsolid");
+        let classname = world
+            .entities
+            .get(key)
+            .map_or("", |e| e.game.classname.as_str());
+        let msg = format!("droptofloor: {classname} startsolid at {}\n", vtos(origin));
+        world.gi.dprintf(&msg);
         world.free_entity(key);
         return;
     }
@@ -2435,7 +2446,8 @@ mod tests {
 
     #[test]
     fn item_stuck_in_solid_is_removed() {
-        let (mut world, gi) = spawned("{ \"classname\" \"ammo_shells\" }");
+        let (mut world, gi) =
+            spawned("{ \"classname\" \"ammo_shells\" \"origin\" \"8 -16 24.5\" }");
         let key = world.find_by_classname(None, "ammo_shells").unwrap();
         world.run_frame();
         *gi.next_trace.borrow_mut() = Some(Trace {
@@ -2444,6 +2456,20 @@ mod tests {
         });
         world.run_frame();
         assert!(!world.entities.get(key).is_some_and(|e| e.in_use));
+        // C droptofloor reports it with gi.dprintf.
+        let report = "droptofloor: ammo_shells startsolid at (8 -16 24)\n".to_string();
+        assert!(gi.dprints.borrow().contains(&report));
+    }
+
+    #[test]
+    fn an_item_with_spawnflags_is_reported_and_cleared() {
+        // C SpawnItem: only key_power_cube may carry spawnflags.
+        let (world, gi) =
+            spawned("{ \"classname\" \"ammo_shells\" \"spawnflags\" \"2\" \"origin\" \"1 2 3\" }");
+        let key = world.find_by_classname(None, "ammo_shells").unwrap();
+        assert_eq!(world.entities.get(key).unwrap().game.spawnflags, 0);
+        let report = "ammo_shells at (1 2 3) has invalid spawnflags set\n".to_string();
+        assert!(gi.dprints.borrow().contains(&report));
     }
 
     #[test]
