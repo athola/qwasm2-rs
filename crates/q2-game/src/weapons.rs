@@ -365,6 +365,12 @@ pub fn bfg_touch(
     world
         .gi
         .sound(number, CHAN_VOICE, boom, 1.0, ATTN_NORM, 0.0);
+    // C reads `other->takedamage` again here, after the damage; a freed
+    // edict is zeroed, so one that is gone takes no damage.
+    let other_takes_damage = world
+        .entities
+        .get(other_key)
+        .is_some_and(|e| e.in_use && e.game.takedamage != TakeDamage::No);
     let sprite = world.gi.model_index("sprites/s_bfg3.sp2");
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(self_key) else {
@@ -372,7 +378,10 @@ pub fn bfg_touch(
     };
     ent.solid = Solid::Not;
     ent.touch = None;
-    ent.state.origin -= ent.velocity * FRAMETIME;
+    // Move it back a bit from walls so the effects aren't cut off.
+    if !other_takes_damage {
+        ent.state.origin -= ent.velocity.normalize_or_zero() * 40.0;
+    }
     ent.velocity = Vec3f::ZERO;
     ent.state.modelindex = sprite;
     ent.state.frame = 0;
@@ -2383,6 +2392,28 @@ mod tests {
         assert_eq!(health(target), 800);
         assert_eq!(health(near), 1000 - 175);
         assert_eq!(health(far), 1000);
+    }
+
+    #[test]
+    fn a_bfg_ball_backs_40_off_a_wall_but_stays_where_it_hits_a_target() {
+        // C bfg_touch: only off something that takes no damage, and by
+        // 40 units whatever the speed.
+        let (mut world, owner, _) = shooter();
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 300, 1000.0);
+        let ball = world.find_by_classname(None, "bfg blast").unwrap();
+        world.entities.get_mut(ball).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let wall = world.entities.key_for_number(0).unwrap();
+        bfg_touch(&mut world, ball, wall, None, None);
+        let at = world.entities.get(ball).unwrap().state.origin;
+        assert_eq!(at, Vec3f::new(60.0, 0.0, 0.0));
+
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 400, 1000.0);
+        let ball = world.find_by_classname(Some(ball), "bfg blast").unwrap();
+        world.entities.get_mut(ball).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let target = target_at(&mut world, Vec3f::new(110.0, 0.0, 0.0), 1000);
+        bfg_touch(&mut world, ball, target, None, None);
+        let at = world.entities.get(ball).unwrap().state.origin;
+        assert_eq!(at, Vec3f::new(100.0, 0.0, 0.0));
     }
 
     #[test]
