@@ -916,6 +916,19 @@ pub fn weapon_chaingun(world: &mut GameWorld, key: EntityKey) {
     );
 }
 
+/// Where the hyperblaster's barrel puts the bolt on `gunframe`. C computes
+/// the rotation in double, stores it in a float, then takes double
+/// `sin`/`cos` of it. C ref: `Weapon_HyperBlaster_Fire` (player/weapon.c).
+fn hyperblaster_offset(gunframe: i32) -> Vec3f {
+    let rotation = (f64::from(gunframe - 5) * 2.0 * std::f64::consts::PI / 6.0) as f32;
+    let rotation = f64::from(rotation);
+    Vec3f::new(
+        (-4.0 * rotation.sin()) as f32,
+        0.0,
+        (4.0 * rotation.cos()) as f32,
+    )
+}
+
 /// A bolt a frame from a barrel turning through six positions, looping
 /// while held and loaded. C ref: `Weapon_HyperBlaster_Fire`.
 pub fn weapon_hyperblaster_fire(world: &mut GameWorld, key: EntityKey) {
@@ -932,8 +945,7 @@ pub fn weapon_hyperblaster_fire(world: &mut GameWorld, key: EntityKey) {
         if ammo == 0 {
             click_and_switch(world, key);
         } else {
-            let rotation = (gunframe - 5) as f32 * 2.0 * std::f32::consts::PI / 6.0;
-            let offset = Vec3f::new(-4.0 * rotation.sin(), 0.0, 4.0 * rotation.cos());
+            let offset = hyperblaster_offset(gunframe);
             let effect = if gunframe == 6 || gunframe == 9 {
                 EF_HYPERBLASTER
             } else {
@@ -2029,6 +2041,16 @@ mod tests {
             0,
             "wound down at 12"
         );
+    }
+
+    #[test]
+    fn the_hyperblaster_barrel_offset_matches_c_double_math_on_frame_10() {
+        // C stores (10 - 5) * 2 * M_PI / 6 (double) in a float, then takes
+        // double sin/cos; the all-f32 chain rounds the rotation differently.
+        let offset = hyperblaster_offset(10);
+        assert_eq!(offset.x.to_bits(), 3.464_101_8_f32.to_bits());
+        assert_eq!(offset.y, 0.0);
+        assert_eq!(offset.z.to_bits(), 1.999_999_6_f32.to_bits());
     }
 
     #[test]
