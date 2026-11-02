@@ -14,6 +14,7 @@
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::world::GameWorld;
+use q2_shared::constants::CHAN_RELIABLE;
 use q2_shared::types::{Multicast, Solid, Vec3f};
 use std::collections::HashMap;
 
@@ -218,11 +219,11 @@ fn target_speaker_use(
         };
         return;
     }
-    // CHAN_VOICE, plus CHAN_RELIABLE with spawnflag 4.
+    // Spawnflag 4 sends it reliably.
     let chan = if ent.game.spawnflags & 4 != 0 {
-        2 | 16
+        CHAN_VOICE | CHAN_RELIABLE
     } else {
-        2
+        CHAN_VOICE
     };
     let (origin, noise, volume, attenuation) = (
         ent.state.origin,
@@ -1300,7 +1301,15 @@ mod tests {
         }
         target_speaker_use(&mut world, speaker, speaker, speaker);
         let played = gi.positioned_sounds.borrow().clone();
-        assert_eq!(played, vec![(Vec3f::new(1.0, 2.0, 3.0), number, 2 | 16, 9)]);
+        assert_eq!(
+            played,
+            vec![(
+                Vec3f::new(1.0, 2.0, 3.0),
+                number,
+                CHAN_VOICE | CHAN_RELIABLE,
+                9
+            )]
+        );
     }
 
     #[test]

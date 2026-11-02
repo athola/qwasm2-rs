@@ -487,6 +487,7 @@ pub const CHAN_VOICE: i32 = 2;
 pub const CHAN_ITEM: i32 = 3;
 pub const CHAN_BODY: i32 = 4;
 pub const CHAN_NO_PHS_ADD: i32 = 8;
+pub const CHAN_RELIABLE: i32 = 16;
 
 // Sound attenuations (shared.h ATTN_*).
 pub const ATTN_NONE: f32 = 0.0;
