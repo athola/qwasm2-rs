@@ -459,7 +459,11 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
         match target {
             Some((name, found)) => {
                 if found.is_none() {
-                    bad_target = Some((ent.state.origin, name.to_string()));
+                    bad_target = Some(format!(
+                        "{} at {}: {name} is a bad target\n",
+                        ent.game.classname,
+                        crate::ai::vtos(ent.state.origin)
+                    ));
                 }
                 ent.game.enemy = found;
             }
@@ -477,10 +481,8 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
     ent.mins = Vec3f::splat(-8.0);
     ent.maxs = Vec3f::splat(8.0);
     let on = ent.game.spawnflags & LASER_ON != 0;
-    if let Some((origin, name)) = bad_target {
-        world.gi.dprintf(&format!(
-            "target_laser at {origin:?}: {name} is a bad target\n"
-        ));
+    if let Some(message) = bad_target {
+        world.gi.dprintf(&message);
     }
     world.link_entity(self_key);
     if on {
@@ -888,6 +890,20 @@ mod tests {
         let fields = HashMap::from([("classname".to_string(), "target_laser".to_string())]);
         world.call_spawn(laser, "target_laser", &fields);
         assert!(world.entities.get(laser).unwrap().use_fn.is_none());
+    }
+
+    #[test]
+    fn a_target_laser_with_a_missing_target_warns_in_c_form() {
+        let (mut world, laser, gi) = laser_world(0);
+        let ent = world.entities.get_mut(laser).unwrap();
+        ent.game.target = "nowhere".into();
+        ent.state.origin = Vec3f::new(1.0, 2.0, 3.0);
+        let start = ent.think.unwrap();
+        start(&mut world, laser);
+        assert_eq!(
+            *gi.dprints.borrow(),
+            ["target_laser at (1 2 3): nowhere is a bad target\n"]
+        );
     }
 
     #[test]
