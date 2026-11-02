@@ -38,8 +38,10 @@ pub const NAME_LEN: usize = 56;
 const HEADER_LEN: usize = 12;
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    run(&Args::parse())
+}
 
+fn run(args: &Args) -> Result<()> {
     let allowlist = args.allow.as_deref().map(parse_allowlist).transpose()?;
 
     let src = fs::read(&args.r#in).with_context(|| format!("reading {}", args.r#in.display()))?;
@@ -48,7 +50,7 @@ fn main() -> Result<()> {
     if allowlist.is_some() && entry_count(&out) == 0 && entry_count(&src) > 0 {
         bail!(
             "--allow {:?} matched no file in {}",
-            args.allow.unwrap_or_default(),
+            args.allow.as_deref().unwrap_or_default(),
             args.r#in.display()
         );
     }
@@ -678,6 +680,93 @@ mod tests {
         for raw in ["", " , ", ".", "*."] {
             assert!(parse_allowlist(raw).is_err(), "{raw:?}");
         }
+    }
+
+    /// `--in <dir>/src.pak` holding `files`, `--out <dir>/web/out.pak`.
+    fn cli(dir: &Path, files: &[(&str, &[u8])], extra: &[&str]) -> Args {
+        let src = dir.join("src.pak");
+        fs::write(&src, make_pak(files)).unwrap();
+        let out = dir.join("web/out.pak");
+        let mut argv = vec![
+            "q2-pak-repack".to_string(),
+            "--in".into(),
+            src.display().to_string(),
+            "--out".into(),
+            out.display().to_string(),
+        ];
+        argv.extend(extra.iter().map(|s| s.to_string()));
+        Args::try_parse_from(argv).unwrap()
+    }
+
+    #[test]
+    fn run_writes_filtered_pak_and_brotli_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let files: &[(&str, &[u8])] = &[("maps/q2dm1.bsp", b"BSP"), ("sound/a.wav", b"WAV")];
+        let args = cli(dir.path(), files, &["--allow", "*.BSP", "--brotli"]);
+
+        run(&args).unwrap();
+
+        let out = fs::read(&args.out).unwrap();
+        assert_eq!(out, make_pak(&[("maps/q2dm1.bsp", b"BSP")]));
+        assert!(br_path(&args.out).exists());
+    }
+
+    #[test]
+    fn run_fails_and_writes_nothing_when_allow_matches_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = cli(
+            dir.path(),
+            &[("maps/q2dm1.bsp", b"BSP")],
+            &["--allow", "wav"],
+        );
+        let err = run(&args).unwrap_err().to_string();
+        assert!(err.contains("matched no file"), "{err}");
+        assert!(!args.out.exists());
+    }
+
+    #[test]
+    fn run_accepts_an_allowlist_on_an_empty_pak() {
+        // Nothing to match is not a typo in --allow.
+        let dir = tempfile::tempdir().unwrap();
+        let args = cli(dir.path(), &[], &["--allow", "bsp"]);
+        run(&args).unwrap();
+        assert_eq!(entry_count(&fs::read(&args.out).unwrap()), 0);
+    }
+
+    #[test]
+    fn run_names_the_missing_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = cli(dir.path(), &[], &[]);
+        args.r#in = dir.path().join("absent.pak");
+        let err = format!("{:#}", run(&args).unwrap_err());
+        assert!(err.contains("absent.pak"), "{err}");
+    }
+
+    #[test]
+    fn in_and_out_are_required() {
+        assert!(Args::try_parse_from(["q2-pak-repack", "--in", "a.pak"]).is_err());
+        assert!(Args::try_parse_from(["q2-pak-repack", "--out", "b.pak"]).is_err());
+    }
+
+    #[test]
+    fn write_atomic_failure_leaves_no_target_and_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("pak0-web.pak");
+        let err = write_atomic(&out, |_| bail!("disk full")).unwrap_err();
+        assert!(format!("{err:#}").contains("disk full"), "{err:#}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn write_outputs_fails_when_stale_br_cannot_be_removed() {
+        // A directory where the .br should be: remove_file fails with
+        // something other than NotFound, and the pak must not be written.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("pak0-web.pak");
+        fs::create_dir(br_path(&out)).unwrap();
+        let err = write_outputs(&out, &make_pak(&[]), false).unwrap_err();
+        assert!(format!("{err:#}").contains("removing stale"), "{err:#}");
+        assert!(!out.exists());
     }
 
     #[test]
