@@ -313,21 +313,6 @@ fn word_lines(code: &str, word: &str) -> Vec<usize> {
     lines
 }
 
-/// `// SAFETY:` in the run of comment lines directly above `line` (1-based),
-/// or on the line itself.
-fn has_safety_comment(src: &str, line: usize) -> bool {
-    let lines: Vec<&str> = src.lines().collect();
-    if lines[line - 1].contains("// SAFETY:") {
-        return true;
-    }
-    lines[..line - 1]
-        .iter()
-        .rev()
-        .map(|l| l.trim())
-        .take_while(|l| l.starts_with("//"))
-        .any(|l| l.starts_with("// SAFETY:"))
-}
-
 /// Every `.rs` file under `crates/`, with its crate directory name.
 fn shown(path: &Path) -> String {
     let rel = path.strip_prefix(crates_dir()).unwrap_or(path);
@@ -353,33 +338,28 @@ fn rust_sources() -> Vec<(String, PathBuf)> {
     out
 }
 
-fn unsafe_violations(krate: &str, src: &str) -> Vec<(usize, &'static str)> {
+/// 1-based lines using `unsafe` in a crate other than q2-render. Whether a
+/// q2-render block has its `// SAFETY:` comment is clippy's
+/// `undocumented_unsafe_blocks` (denied in the workspace Cargo.toml).
+fn unsafe_violations(krate: &str, src: &str) -> Vec<usize> {
+    if krate == UNSAFE_CRATE {
+        return Vec::new();
+    }
     word_lines(&code_only(src), "unsafe")
-        .into_iter()
-        .filter_map(|line| {
-            if krate != UNSAFE_CRATE {
-                Some((line, "unsafe outside q2-render"))
-            } else if !has_safety_comment(src, line) {
-                Some((line, "unsafe without a `// SAFETY:` comment above it"))
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 #[test]
-fn unsafe_only_in_q2_render_and_always_with_a_safety_comment() {
+fn unsafe_only_in_q2_render() {
     let mut broken = Vec::new();
     for (krate, path) in rust_sources() {
         let src = fs::read_to_string(&path).unwrap();
-        for (line, why) in unsafe_violations(&krate, &src) {
-            broken.push(format!("{}:{line}: {why}", shown(&path)));
+        for line in unsafe_violations(&krate, &src) {
+            broken.push(format!("{}:{line}", shown(&path)));
         }
     }
     assert!(
         broken.is_empty(),
-        "unsafe rule broken (CLAUDE.md Rules, ADR-001 \"Unsafe\", {ADR_001}):\n  {}",
+        "unsafe outside q2-render (CLAUDE.md Rules, ADR-001 \"Unsafe\", {ADR_001}):\n  {}",
         broken.join("\n  ")
     );
 }
@@ -437,16 +417,8 @@ let c = '"';
 }
 
 #[test]
-fn unsafe_scan_requires_safety_directly_above() {
-    let ok = "// SAFETY: context is live.\n// More detail.\nunsafe { f() };\n";
-    assert!(unsafe_violations(UNSAFE_CRATE, ok).is_empty());
-    let gap = "// SAFETY: context is live.\nlet x = 1;\nunsafe { f() };\n";
-    assert_eq!(
-        unsafe_violations(UNSAFE_CRATE, gap),
-        [(3, "unsafe without a `// SAFETY:` comment above it")]
-    );
-    assert_eq!(
-        unsafe_violations("q2-game", ok),
-        [(3, "unsafe outside q2-render")]
-    );
+fn unsafe_scan_flags_every_crate_but_q2_render() {
+    let src = "// SAFETY: context is live.\nunsafe { f() };\n";
+    assert!(unsafe_violations(UNSAFE_CRATE, src).is_empty());
+    assert_eq!(unsafe_violations("q2-game", src), [2]);
 }
