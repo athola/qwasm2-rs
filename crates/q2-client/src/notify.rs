@@ -11,7 +11,7 @@ use q2_common::net_msg::NetMsg;
 use q2_shared::constants::PRINT_CHAT;
 use q2_shared::protocol::SvcOp;
 
-use crate::layout::HudDraw;
+use crate::layout::{wire_bytes, HudDraw};
 
 /// Notify lines kept on screen (C `NUM_CON_TIMES`).
 const NUM_CON_TIMES: usize = 4;
@@ -31,7 +31,8 @@ pub struct ServerText {
     lines: VecDeque<(Vec<u8>, i32)>,
     /// Whether the newest line is still being printed.
     line_open: bool,
-    center: Vec<String>,
+    /// The centre print's lines as wire bytes, at most 40 each.
+    center: Vec<Vec<u8>>,
     center_until: i32,
     /// The last `svc_layout` (C `cl.layout`), drawn while `STAT_LAYOUTS`
     /// bit 1 is set.
@@ -51,7 +52,7 @@ impl ServerText {
                 let text = msg.read_string();
                 let chat = level == PRINT_CHAT;
                 self.con_print(
-                    text.as_bytes(),
+                    &wire_bytes(&text).collect::<Vec<_>>(),
                     if chat { 0x80 } else { 0 },
                     now,
                     linewidth.max(1),
@@ -116,21 +117,13 @@ impl ServerText {
     }
 
     /// C `SCR_CenterPrint`: show `text` centred and clear the notify
-    /// lines (C `Con_ClearNotify`).
+    /// lines (C `Con_ClearNotify`). One entry per `'\n'`-separated line,
+    /// so the count is C's `scr_center_lines`; C `SCR_DrawCenterString`
+    /// draws at most 40 characters of each and skips the rest.
     fn center_print(&mut self, text: &str, now: i32) {
         self.center = text
             .split('\n')
-            .flat_map(|line| {
-                let chars: Vec<char> = line.chars().collect();
-                if chars.is_empty() {
-                    vec![String::new()]
-                } else {
-                    chars
-                        .chunks(CENTER_LINE)
-                        .map(|c| c.iter().collect())
-                        .collect()
-                }
-            })
+            .map(|line| wire_bytes(line).take(CENTER_LINE).collect())
             .collect();
         self.center_until = now + SCR_CENTERTIME_MS;
         self.lines.clear();
@@ -159,13 +152,14 @@ impl ServerText {
         }
         if now < self.center_until {
             let mut y = if self.center.len() <= 4 {
-                (height as f32 * 0.35) as i32
+                // C `(viddef.height * 0.35) / scale`, a double product.
+                (f64::from(height) * 0.35) as i32
             } else {
                 48
             };
             for line in &self.center {
-                let x = (width - line.chars().count() as i32 * 8) / 2;
-                for (i, ch) in line.bytes().enumerate() {
+                let x = (width - line.len() as i32 * 8) / 2;
+                for (i, &ch) in line.iter().enumerate() {
                     out.push(HudDraw::Char {
                         x: x + 8 * i as i32,
                         y,
@@ -284,6 +278,61 @@ mod tests {
         assert_eq!(r[1], (176, "Use the key".to_string()));
         assert!(matches!(draws[0], HudDraw::Char { x, .. } if x == (640 - 18 * 8) / 2));
         assert!(text.draws(640, 480, 2600).is_empty());
+    }
+
+    #[test]
+    fn a_centre_print_line_is_cut_at_40_characters() {
+        let mut text = ServerText::default();
+        let long = "x".repeat(60);
+        text.message(&center(&format!("{long}\na\nb\nc")), 0, 80);
+        // C draws the first 40 characters, drops the rest and, counting
+        // four lines, still starts from 35% down.
+        let r = rows(&text.draws(640, 480, 0));
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[0], (168, "x".repeat(40)));
+        assert_eq!(r[1], (176, "a".to_string()));
+    }
+
+    #[test]
+    fn the_centre_print_row_is_35_percent_in_double() {
+        let mut text = ServerText::default();
+        text.message(&center("hi"), 0, 80);
+        // C `viddef.height * 0.35` is a double: 251.99... at 720, not the
+        // 252 an f32 product rounds to.
+        assert_eq!(rows(&text.draws(640, 720, 0))[0].0, 251);
+        assert_eq!(rows(&text.draws(640, 360, 0))[0].0, 125);
+    }
+
+    #[test]
+    fn a_high_byte_draws_as_one_glyph_of_its_value() {
+        // NetMsg::read_string keeps byte 0xE1 as the char U+00E1, two
+        // bytes in UTF-8; C draws the one byte.
+        let mut text = ServerText::default();
+        text.message(
+            &[SvcOp::Print as u8, PRINT_HIGH as u8, 0xE1, b'\n', 0],
+            0,
+            80,
+        );
+        let draws = text.draws(640, 480, 0);
+        assert_eq!(
+            draws,
+            [HudDraw::Char {
+                x: 8,
+                y: 0,
+                ch: 0xE1
+            }]
+        );
+
+        text.message(&[SvcOp::CenterPrint as u8, 0xE1, 0], 0, 80);
+        let draws = text.draws(640, 480, 0);
+        assert_eq!(
+            draws,
+            [HudDraw::Char {
+                x: (640 - 8) / 2,
+                y: 168,
+                ch: 0xE1
+            }]
+        );
     }
 
     #[test]
