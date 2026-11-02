@@ -3,8 +3,8 @@
 //! commander's body, the vipers and their bomb, the strogg ship and the
 //! debug `viewthing`.
 //!
-//! None of these is a monster in C (none runs `monster_start`), so none
-//! gets `monsterinfo` here: `call_spawn` would take it for a monster.
+//! None of these is a monster in C (none runs `monster_start`); their
+//! `spawn::SPAWNS` rows say so.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_misc.c`

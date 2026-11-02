@@ -1435,7 +1435,7 @@ impl GameWorld {
             return;
         }
 
-        let Some(&(_, sfn, model, finish)) = crate::spawn::find_spawn(classname) else {
+        let Some(&(_, sfn, model, finish, is_monster)) = crate::spawn::find_spawn(classname) else {
             self.gi
                 .dprintf(&format!("{classname} doesn't have a spawn function\n"));
             return;
@@ -1461,15 +1461,8 @@ impl GameWorld {
             self.set_model(key, model);
         }
 
-        // C runs monster_start from each monster's SP_* function; here the
-        // spawn function's monsterinfo marks a monster. The exception is
-        // misc_explobox, which C gives only AI_NOSTEP (the one user of it)
-        // so M_walkmove keeps the pushed barrel off steps.
-        let is_monster = self.entities.get(key).is_some_and(|e| {
-            e.monsterinfo
-                .as_ref()
-                .is_some_and(|mi| !mi.aiflags.contains(crate::constants::AiFlags::NOSTEP))
-        });
+        // C runs monster_start from each monster's SP_* function; the
+        // SPAWNS row says which ones do.
         if is_monster {
             if !crate::ai::monster_start(self, key) {
                 return; // Deathmatch freed the monster.
