@@ -215,16 +215,46 @@ pub fn setup_input_listeners(
 }
 
 /// Take `#game-container` (the canvas and its overlays; else the canvas)
-/// fullscreen, then lock the keyboard to the page where the browser has
-/// `navigator.keyboard.lock` (Chromium). Refusals are logged.
+/// fullscreen, then, once the browser grants it, lock the keyboard to the
+/// page where the browser has `navigator.keyboard.lock` (Chromium).
+/// Refusals are logged.
 fn enter_fullscreen(document: &web_sys::Document, canvas: &web_sys::Element) {
     let target = document
         .get_element_by_id("game-container")
         .unwrap_or_else(|| canvas.clone());
-    if let Err(e) = target.request_fullscreen() {
-        web_sys::console::warn_1(&e);
+    // Called through Reflect for the Promise web_sys's binding drops: a
+    // refusal rejects it rather than throwing.
+    let request = js_sys::Reflect::get(&target, &"requestFullscreen".into())
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+    let Some(request) = request else {
+        web_sys::console::warn_1(&"[qwasm2] no Fullscreen API".into());
         return;
+    };
+    match request.call0(&target) {
+        Ok(result) => match result.dyn_into::<js_sys::Promise>() {
+            Ok(promise) => {
+                // Once per entry into fullscreen, so leaking these is small.
+                let granted = Closure::wrap(
+                    Box::new(|_: JsValue| lock_keyboard()) as Box<dyn FnMut(JsValue)>
+                );
+                let refused = Closure::wrap(Box::new(|err: JsValue| {
+                    web_sys::console::warn_2(&"[qwasm2] fullscreen refused:".into(), &err);
+                }) as Box<dyn FnMut(JsValue)>);
+                let _ = promise.then2(&granted, &refused);
+                granted.forget();
+                refused.forget();
+            }
+            // Browsers from before the promise-returning API.
+            Err(_) => lock_keyboard(),
+        },
+        Err(e) => web_sys::console::warn_2(&"[qwasm2] fullscreen refused:".into(), &e),
     }
+}
+
+/// Lock the keyboard to the page (`navigator.keyboard.lock`), so browser
+/// shortcuts reach the game in fullscreen. Refusals are logged.
+fn lock_keyboard() {
     let Some(window) = web_sys::window() else {
         return;
     };
