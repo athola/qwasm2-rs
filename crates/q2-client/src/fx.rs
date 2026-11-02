@@ -6,10 +6,13 @@
 //! `CL_AddPacketEntities` (client/cl_entities.c), for the base game and
 //! the mission packs (rogue, xatrix, CTF).
 //!
-//! Per frame the browser calls, in C's order: `temp_entity` for each
-//! svc_temp_entity, `entity_event` once per entity of each new server
-//! frame, `EntityTrails::run` for the drawn entities' trails, then
-//! `frame_view`.
+//! Per frame the browser calls, in C's order: `entity_event` once per
+//! entity of each new server frame, then `temp_entity` for each
+//! svc_temp_entity, `EntityTrails::run` for the drawn entities' trails,
+//! then `frame_view`. Both effect kinds draw from the same randk stream, so
+//! the order matters: C's `SV_SendClientDatagram` (server/sv_send.c) writes
+//! the frame before the multicast datagram, so `CL_FireEntityEvents` runs
+//! before `CL_ParseTEnt` for the same packet.
 //!
 //! Not ported: C's `ex_explosion`, `ex_mflash` and `ex_poly2` explosion
 //! kinds, which nothing in C creates. The lights of TE_FLASHLIGHT and
