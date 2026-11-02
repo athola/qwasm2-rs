@@ -166,6 +166,7 @@ impl GameWorld {
         };
         client.pers.last_weapon = client.pers.weapon;
         client.pers.weapon = client.newweapon.take();
+        client.machinegun_shots = 0;
         let weapon = client.pers.weapon;
 
         let item = weapon.and_then(|w| self.items.get(w));
@@ -2167,6 +2168,17 @@ mod tests {
         equip(&mut world, key, "Grenades", "Grenades", 5);
         let skinnum = world.entities.get(key).unwrap().state.skinnum;
         assert_eq!(skinnum >> 8, crate::items::WEAP_GRENADES);
+    }
+
+    #[test]
+    fn changing_weapon_resets_the_machinegun_climb() {
+        let (mut world, key, _) = ready();
+        let blaster = world.find_item_by_name("Blaster");
+        let client = world.client_mut(key).unwrap();
+        client.machinegun_shots = 7;
+        client.newweapon = blaster;
+        world.change_weapon(key);
+        assert_eq!(world.client(key).unwrap().machinegun_shots, 0);
     }
 
     #[test]
