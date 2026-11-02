@@ -14,7 +14,6 @@
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::world::GameWorld;
-use q2_shared::constants::CHAN_RELIABLE;
 use q2_shared::types::{Multicast, Solid, Vec3f};
 use std::collections::HashMap;
 
