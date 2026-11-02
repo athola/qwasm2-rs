@@ -127,9 +127,17 @@ fn draw_field(out: &mut Vec<HudDraw>, x: i32, y: i32, color: usize, width: i32, 
     }
 }
 
+/// The wire bytes of a string `NetMsg::read_string` returned, one char
+/// per byte (U+0000..U+00FF), mapped back the way `NetMsg::write_string`
+/// maps them. C ref: the raw `char`s C passes to `Draw_Char`.
+pub(crate) fn wire_bytes(text: &str) -> impl Iterator<Item = u8> + '_ {
+    text.chars()
+        .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
+}
+
 /// C DrawString / DrawAltString (`xor` 0x80).
 fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
-    for (i, ch) in text.bytes().enumerate() {
+    for (i, ch) in wire_bytes(text).enumerate() {
         out.push(HudDraw::Char {
             x: x + 8 * i as i32,
             y,
@@ -142,7 +150,7 @@ fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
 fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, text: &str, xor: u8) {
     for (n, line) in text.split('\n').enumerate() {
         let lx = if centerwidth != 0 {
-            x + (centerwidth - line.len() as i32 * 8) / 2
+            x + (centerwidth - line.chars().count() as i32 * 8) / 2
         } else {
             x
         };
@@ -472,6 +480,29 @@ mod tests {
                 y: 0,
                 ch: b'a'
             }
+        );
+    }
+
+    #[test]
+    fn a_high_byte_draws_as_one_glyph_of_its_value() {
+        // A layout or configstring as NetMsg::read_string returns it: byte
+        // 0xE1 is the char U+00E1. C draws, and centres, the one byte.
+        let stats = [0; 32];
+        assert_eq!(
+            run("string \u{e1}", &stats, &[]),
+            [HudDraw::Char {
+                x: 0,
+                y: 0,
+                ch: 0xE1
+            }]
+        );
+        assert_eq!(
+            run("cstring \u{e1}", &stats, &[]),
+            [HudDraw::Char {
+                x: (320 - 8) / 2,
+                y: 0,
+                ch: 0xE1
+            }]
         );
     }
 
