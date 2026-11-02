@@ -297,7 +297,7 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                 };
                 let (name, icon) = client_info((input.configstrings)(CS_PLAYERSKINS + index));
                 draw_string(&mut out, bx + 32, by, &name, 0x80);
-                draw_string(&mut out, bx + 32, by + 8, "Score: ", 0);
+                draw_string(&mut out, bx + 32, by + 8, "Score: ", 0x80);
                 draw_string(&mut out, bx + 32 + 7 * 8, by + 8, &score.to_string(), 0x80);
                 draw_string(&mut out, bx + 32, by + 16, &format!("Ping:  {ping}"), 0);
                 draw_string(&mut out, bx + 32, by + 24, &format!("Time:  {time}"), 0);
@@ -367,11 +367,21 @@ mod tests {
         assert_eq!(chars_at(&draws, y + 8), "Score: 7");
         assert_eq!(chars_at(&draws, y + 16), "Ping:  50");
         assert_eq!(chars_at(&draws, y + 24), "Time:  3");
-        // The name and the score are in the alternate colour.
-        let name = draws
-            .iter()
-            .find(|d| matches!(d, HudDraw::Char { y: cy, .. } if *cy == y));
-        assert!(matches!(name, Some(HudDraw::Char { ch, .. }) if ch & 0x80 != 0));
+        // C DrawAltString: the name and the whole score row are in the
+        // alternate colour, Ping and Time are not.
+        let alt = |row: i32| {
+            draws
+                .iter()
+                .filter_map(|d| match d {
+                    HudDraw::Char { y: cy, ch, .. } if *cy == row => Some(ch & 0x80 != 0),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(alt(y).iter().all(|&a| a));
+        assert!(alt(y + 8).iter().all(|&a| a), "Score: row");
+        assert!(alt(y + 16).iter().all(|&a| !a));
+        assert!(alt(y + 24).iter().all(|&a| !a));
     }
 
     #[test]
