@@ -623,6 +623,56 @@ mod tests {
         assert_eq!(&v[5..], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0, 0.5]);
     }
 
+    #[test]
+    fn a_particle_colour_is_the_palette_entry_of_its_low_byte() {
+        let particles = [Particle {
+            origin: Vec3f::ZERO,
+            color: 0x1e8,
+            alpha: 1.0,
+        }];
+        let v = particle_vertices(&particles, Vec3f::X, 480, &grey_palette());
+        assert_eq!(&v[5..8], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0]);
+    }
+
+    // C PerpendicularVector projects the axis of src's smallest component,
+    // the first one on a tie, onto the plane normal to src.
+    #[test]
+    fn the_perpendicular_follows_the_smallest_axis_of_the_direction() {
+        assert_eq!(perpendicular(Vec3f::Z), Vec3f::X);
+        assert_eq!(perpendicular(Vec3f::X), Vec3f::Y);
+        let src = Vec3f::new(0.6, 0.0, 0.8);
+        assert_eq!(perpendicular(src), Vec3f::Y);
+        let src = Vec3f::new(0.2, 0.9, 0.3).normalize();
+        let p = perpendicular(src);
+        assert!(p.dot(src).abs() < 1e-6 && (p.length() - 1.0).abs() < 1e-6);
+        // The x axis less its part along src.
+        assert!(p.x > 0.0 && p.y < 0.0);
+    }
+
+    #[test]
+    fn rotating_around_a_direction_turns_counterclockwise_seen_from_its_tip() {
+        // C RotatePointAroundVector.
+        let turned = rotate_around(Vec3f::Z, Vec3f::X, 90.0);
+        assert!((turned - Vec3f::Y).length() < 1e-6, "{turned:?}");
+        let turned = rotate_around(Vec3f::Z, Vec3f::new(1.0, 0.0, 5.0), 180.0);
+        assert!(
+            (turned - Vec3f::new(-1.0, 0.0, 5.0)).length() < 1e-5,
+            "{turned:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_sp2_registers_no_sprite() {
+        let loader: FileLoader = Box::new(|name| match name {
+            "bad.sp2" => Some(b"IDS2 not a sprite".to_vec()),
+            _ => None,
+        });
+        let mut images = ImageStore::default();
+        for name in ["bad.sp2", "gone.sp2"] {
+            assert!(load_sprite_model(None, &loader, None, &mut images, name).is_none());
+        }
+    }
+
     fn beam(origin: Vec3f, oldorigin: Vec3f, width: i32) -> RenderEntity {
         RenderEntity {
             origin,
