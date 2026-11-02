@@ -391,6 +391,7 @@ pub fn bfg_touch(
     ent.game.nextthink = time + FRAMETIME;
     ent.game.enemy = Some(other_key);
     let at = ent.state.origin;
+    world.link_entity(self_key);
     temp_entity(world, TE_BFG_BIGEXPLOSION, &[at], None, at, Multicast::PVS);
 }
 
@@ -2414,6 +2415,30 @@ mod tests {
         bfg_touch(&mut world, ball, target, None, None);
         let at = world.entities.get(ball).unwrap().state.origin;
         assert_eq!(at, Vec3f::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_bfg_ball_is_relinked_where_it_stops_and_no_longer_solid() {
+        // C bfg_touch ends its changes with gi.linkentity(self), so the
+        // server clips against the backed-off, non-solid sprite.
+        let (mut world, owner, gi) = shooter();
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 300, 1000.0);
+        let ball = world.find_by_classname(None, "bfg blast").unwrap();
+        world.entities.get_mut(ball).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let wall = world.entities.key_for_number(0).unwrap();
+        gi.links.borrow_mut().clear();
+        bfg_touch(&mut world, ball, wall, None, None);
+        let number = world.number_of(ball).unwrap();
+        let link = *gi
+            .links
+            .borrow()
+            .iter()
+            .rfind(|l| l.number == number)
+            .expect("relinked");
+        assert_eq!(
+            (link.origin, link.solid),
+            (Vec3f::new(60.0, 0.0, 0.0), Solid::Not)
+        );
     }
 
     #[test]
