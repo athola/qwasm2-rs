@@ -467,6 +467,7 @@ impl GameWorld {
         }
 
         let mut take = damage;
+        let mut save = 0;
 
         // Check god mode.
         let godmode = self
@@ -481,6 +482,7 @@ impl GameWorld {
         };
         if godmode && !dflags.contains(DamageFlags::NO_PROTECTION) {
             take = 0;
+            save = damage;
             self.spawn_damage(te_sparks, point, normal);
         }
 
@@ -509,6 +511,7 @@ impl GameWorld {
                 );
             }
             take = 0;
+            save = damage;
         }
 
         let psave = self.check_power_armor(target, point, normal, take, dflags);
@@ -547,7 +550,8 @@ impl GameWorld {
         // become screen blends and view kicks at the end of the frame.
         if let Some(client) = self.client_mut(target) {
             client.damage_parmor += psave;
-            client.damage_armor += asave;
+            // C: treat cheat/powerup savings the same as armor.
+            client.damage_armor += asave + save;
             client.damage_blood += take;
             client.damage_knockback += knockback as i32;
             client.damage_from = point;
@@ -838,6 +842,8 @@ mod tests {
             .map(|w| w[1])
             .collect();
         assert_eq!(te, [TE_SPARKS]);
+        // C: "treat cheat/powerup savings the same as armor".
+        assert_eq!(world.client(key).unwrap().damage_armor, 10);
 
         gi.writes.borrow_mut().clear();
         world
@@ -968,6 +974,8 @@ mod tests {
         hit(&mut world, DamageFlags::empty());
         hit(&mut world, DamageFlags::empty());
         assert_eq!(world.entities.get(key).unwrap().game.health, 100);
+        // C counts the blocked damage as armor savings for the feedback.
+        assert_eq!(world.client(key).unwrap().damage_armor, 60);
         let protect4 = world.gi.sound_index("items/protect4.wav");
         let heard = gi
             .sound_calls
