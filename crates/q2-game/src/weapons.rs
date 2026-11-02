@@ -1186,7 +1186,6 @@ impl GameWorld {
             bfg.game.movetype = MoveType::FlyMissile;
             bfg.solid = Solid::Bbox;
             bfg.owner = Some(owner);
-            bfg.game.dmg = 200; // Core explosion damage is hardcoded.
             bfg.game.radius_dmg = damage;
             bfg.game.dmg_radius = damage_radius;
             bfg.state.effects |= EF_BFG | EF_ANIM_ALLFAST;
@@ -1983,7 +1982,6 @@ mod tests {
 
         let bfg_key = world.find_by_classname(None, "bfg blast").unwrap();
         let bfg = world.entities.get(bfg_key).unwrap();
-        assert_eq!(bfg.game.dmg, 200); // Hardcoded core damage.
         assert_eq!(bfg.game.radius_dmg, 200);
         assert!((bfg.game.dmg_radius - 1000.0).abs() < 0.01);
     }
