@@ -897,9 +897,9 @@ fn run_effect_messages(
     for message in messages {
         // At most one of these acts: each message is one svc op.
         sounds.extend(effects.message(message, &entity, time, randk));
-        // C CL_AddMuzzleFlash2 draws its particles as it parses.
+        // C draws a flash's particles as it parses, then the tank's sound.
         for (origin, kind) in effects.take_particles() {
-            fx.flash_particles(origin, kind, time_ms, servertime, randk);
+            sounds.extend(fx.flash_particles(origin, kind, time_ms, servertime, randk));
         }
         fx_sounds.extend(fx.temp_entity(message, time_ms, servertime, randk));
         // C allocates these in cl_dlights while it parses the temp entity.
