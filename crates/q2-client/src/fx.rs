@@ -381,7 +381,9 @@ impl ClientFx {
 
     /// A flash's particles: a monster gun's sparks
     /// (`CL_ParticleEffect(origin, vec3_origin, 0, 40)`) and
-    /// `CL_SmokeAndFlash`, or a player's `CL_LogoutEffect`.
+    /// `CL_SmokeAndFlash`, or a player's `CL_LogoutEffect`. Returns the
+    /// tank machinegun's sound, whose letter C draws after the sparks.
+    /// C ref: `CL_AddMuzzleFlash`, `CL_AddMuzzleFlash2`.
     pub fn flash_particles(
         &mut self,
         origin: Vec3f,
@@ -389,14 +391,14 @@ impl ClientFx {
         time: i32,
         servertime: i32,
         randk: &mut impl FnMut() -> u32,
-    ) {
+    ) -> Option<NamedSound> {
         use crate::effects::FlashParticles;
         match kind {
             FlashParticles::Logout(weapon) => {
                 self.particles.logout_effect(origin, weapon, time, randk);
-                return;
+                return None;
             }
-            FlashParticles::SparksAndSmoke => {
+            FlashParticles::SparksAndSmoke | FlashParticles::TankMachinegun(_) => {
                 let spray = Spray {
                     org: origin,
                     dir: Vec3f::ZERO,
@@ -408,6 +410,12 @@ impl ClientFx {
             FlashParticles::Smoke => {}
         }
         self.smoke_and_flash(origin, time, servertime);
+        let FlashParticles::TankMachinegun(entnum) = kind else {
+            return None;
+        };
+        let letter = char::from(b'a' + (randk() % 5) as u8);
+        let name = format!("tank/tnkatk2{letter}.wav");
+        Some(NamedSound::on(entnum, CHAN_WEAPON, &name, ATTN_NORM))
     }
 
     /// Not in C (opt-in `extras`): a 64-unit column of grey smoke rising
@@ -815,8 +823,8 @@ impl ClientFx {
 
     /// A beam from entity `ent` (start, end, and with `with_offset` an
     /// offset added to its start) that lasts 200 ms, replacing that
-    /// entity's beam. A full list drops it (C "beam list overflow").
-    /// C ref: `CL_ParseBeam`, `CL_ParseBeam2`.
+    /// entity's beam. A full list drops it with a warning (C prints
+    /// "beam list overflow!"). C ref: `CL_ParseBeam`, `CL_ParseBeam2`.
     fn parse_beam(&mut self, msg: &mut NetMsg, model: &'static str, with_offset: bool, time: i32) {
         let entity = msg.read_short();
         let (start, end) = (read_pos(msg), read_pos(msg));
@@ -830,22 +838,25 @@ impl ClientFx {
             .iter()
             .position(|b| b.entity == entity)
             .or_else(|| free_beam(&self.beams, time));
-        if let Some(b) = slot.map(|slot| &mut self.beams[slot]) {
-            *b = Beam {
-                entity,
-                model: Some(model),
-                endtime: time + 200,
-                offset,
-                start,
-                end,
-                ..*b
-            };
-        }
+        let Some(b) = slot.map(|slot| &mut self.beams[slot]) else {
+            tracing::warn!("beam list overflow");
+            return;
+        };
+        *b = Beam {
+            entity,
+            model: Some(model),
+            endtime: time + 200,
+            offset,
+            start,
+            end,
+            ..*b
+        };
     }
 
     /// A 200 ms lightning bolt from one entity to another, replacing the
-    /// bolt between the same two. Returns the source entity, which the
-    /// sound follows. C ref: `CL_ParseLightning`.
+    /// bolt between the same two; a full list drops it with C's warning.
+    /// Returns the source entity, which the sound follows.
+    /// C ref: `CL_ParseLightning`.
     fn parse_lightning(&mut self, msg: &mut NetMsg, time: i32) -> i32 {
         let entity = msg.read_short();
         let dest_entity = msg.read_short();
@@ -855,17 +866,19 @@ impl ClientFx {
             .iter()
             .position(|b| b.entity == entity && b.dest_entity == dest_entity)
             .or_else(|| free_beam(&self.beams, time));
-        if let Some(slot) = slot {
-            self.beams[slot] = Beam {
-                entity,
-                dest_entity,
-                model: Some(MOD_LIGHTNING),
-                endtime: time + 200,
-                offset: Vec3f::ZERO,
-                start,
-                end,
-            };
-        }
+        let Some(slot) = slot else {
+            tracing::warn!("beam list overflow");
+            return entity;
+        };
+        self.beams[slot] = Beam {
+            entity,
+            dest_entity,
+            model: Some(MOD_LIGHTNING),
+            endtime: time + 200,
+            offset: Vec3f::ZERO,
+            start,
+            end,
+        };
         entity
     }
 
@@ -873,8 +886,8 @@ impl ClientFx {
     /// for 200 ms, or new for 100 ms ("to prevent multiple heatbeams").
     /// A player's beam starts at C's fixed gun offset (2, 7, -3); a
     /// monster's (`monster`) has none and draws as a player heat beam.
-    /// C's branch reading an offset from the message has no caller.
-    /// C ref: `CL_ParsePlayerBeam`.
+    /// C's branch reading an offset from the message has no caller. A full
+    /// list drops it with C's warning. C ref: `CL_ParsePlayerBeam`.
     fn parse_player_beam(&mut self, msg: &mut NetMsg, monster: bool, time: i32) {
         let entity = msg.read_short();
         let (start, end) = (read_pos(msg), read_pos(msg));
@@ -887,17 +900,19 @@ impl ClientFx {
             Some(slot) => (Some(slot), time + 200),
             None => (free_beam(&self.player_beams, time), time + 100),
         };
-        if let Some(b) = slot.map(|slot| &mut self.player_beams[slot]) {
-            *b = Beam {
-                entity,
-                model: Some(MOD_HEATBEAM),
-                endtime,
-                offset,
-                start,
-                end,
-                ..*b
-            };
-        }
+        let Some(b) = slot.map(|slot| &mut self.player_beams[slot]) else {
+            tracing::warn!("beam list overflow");
+            return;
+        };
+        *b = Beam {
+            entity,
+            model: Some(MOD_HEATBEAM),
+            endtime,
+            offset,
+            start,
+            end,
+            ..*b
+        };
     }
 
     /// TE_STEAM: with id -1 one puff now, else a sustain that puffs every
@@ -2613,6 +2628,32 @@ mod tests {
         fx.flash_particles(P, FlashParticles::Smoke, 1000, 1000, &mut rng(&[0]));
         assert_eq!(fx.particles.len(), 0);
         // Both start a server frame back; the flash lasts that frame.
+        let frame = fx.frame(950, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
+        assert_eq!(models(&frame), [Some(MOD_SMOKE), Some(MOD_FLASH)]);
+    }
+
+    #[test]
+    fn a_tank_machinegun_picks_its_sound_letter_after_the_40_sparks() {
+        use crate::effects::FlashParticles;
+        let mut fx = ClientFx::default();
+        let mut draws = 0;
+        // C: 40 sparks of 9 draws, then 'a' + randk() % 5.
+        let mut randk = || {
+            draws += 1;
+            if draws == 361 {
+                2
+            } else {
+                0
+            }
+        };
+        let sound =
+            fx.flash_particles(P, FlashParticles::TankMachinegun(7), 1000, 1000, &mut randk);
+        assert_eq!(draws, 361);
+        assert_eq!(fx.particles.len(), 40);
+        let sound = sound.unwrap();
+        assert_eq!(sound.name, "tank/tnkatk2c.wav");
+        assert_eq!((sound.entnum, sound.entchannel), (7, CHAN_WEAPON));
+        assert_eq!(sound.attenuation, ATTN_NORM);
         let frame = fx.frame(950, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
         assert_eq!(models(&frame), [Some(MOD_SMOKE), Some(MOD_FLASH)]);
     }

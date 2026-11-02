@@ -44,6 +44,9 @@ pub enum FlashParticles {
     Smoke,
     /// 40 sparks of palette colour 0, then the smoke.
     SparksAndSmoke,
+    /// `SparksAndSmoke`, then entity n's `tank/tnkatk2a.wav` .. `e`,
+    /// whose letter C draws from randk after the sparks.
+    TankMachinegun(i32),
     /// C `CL_LogoutEffect` for this `MZ_LOGIN`, `MZ_LOGOUT` or
     /// `MZ_RESPAWN` flash.
     Logout(i32),
@@ -273,6 +276,7 @@ impl Effects {
             .filter(|&f| f <= 210)
             .map(|f| MONSTER_FLASH_OFFSET[f])
         else {
+            tracing::debug!("CL_AddMuzzleFlash2: bad offset {flash}");
             return Vec::new();
         };
         let (forward, right, _) = angle_vectors(monster.angles);
@@ -285,7 +289,7 @@ impl Effects {
         light.radius = radius;
         light.minlight = 32.0;
         light.die = time;
-        if let Some(smoke) = monster_flash_smoke(flash) {
+        if let Some(smoke) = monster_flash_smoke(flash, entnum) {
             self.flash_particles.push((origin, smoke));
         }
         let Some(def) = monster_flash(flash) else {
@@ -300,10 +304,8 @@ impl Effects {
         let (name, attenuation) = match def.sound {
             FlashSoundName::None => return Vec::new(),
             FlashSoundName::Named(name, attenuation) => (name.to_string(), attenuation),
-            FlashSoundName::TankMachinegun => {
-                let letter = char::from(b'a' + (randk() % 5) as u8);
-                (format!("tank/tnkatk2{letter}.wav"), ATTN_NORM)
-            }
+            // Started by `FlashParticles::TankMachinegun`, after the sparks.
+            FlashSoundName::TankMachinegun => return Vec::new(),
         };
         vec![NamedSound::on(entnum, CHAN_WEAPON, &name, attenuation)]
     }
@@ -318,7 +320,9 @@ impl Effects {
     /// Run one server message for its effects: a player or monster muzzle
     /// flash against the entity it names (`entity` looks up its current
     /// state, C `cl_entities[n].current`). Other messages, and flashes of
-    /// entities the client does not have, do nothing. Returns the sounds
+    /// entities the client does not have, do nothing; a short body or an
+    /// entity outside 1..MAX_EDICTS-1 is logged and does nothing (C drops
+    /// the connection). Returns the sounds
     /// to start. C ref: `CL_ParseServerMessage`'s `svc_muzzleflash` and
     /// `svc_muzzleflash2` cases.
     pub fn message(
@@ -337,6 +341,17 @@ impl Effects {
         }
         let number = msg.read_short();
         let flash = msg.read_byte();
+        // C acts on a short body and drops at the next op ("Bad server
+        // message"); a cut flash byte reads -1, so this drops it first.
+        if msg.is_overflowed() {
+            tracing::warn!("bad {op:?}: message ends early");
+            return Vec::new();
+        }
+        // C ref: Com_Error(ERR_DROP, "CL_AddMuzzleFlash{,2}: bad entity").
+        if !(1..MAX_EDICTS as i32).contains(&number) {
+            tracing::warn!("bad {op:?}: bad entity {number}");
+            return Vec::new();
+        }
         let Some(state) = entity(number) else {
             return Vec::new();
         };
@@ -352,7 +367,8 @@ impl Effects {
 enum FlashSoundName {
     None,
     Named(&'static str, f32),
-    /// `tank/tnkatk2a.wav` .. `e`, at random.
+    /// `tank/tnkatk2a.wav` .. `e`, at random, picked by
+    /// `FlashParticles::TankMachinegun`.
     TankMachinegun,
 }
 
@@ -366,8 +382,8 @@ struct MonsterFlash {
 
 /// C `CL_AddMuzzleFlash2`'s switch, as data.
 /// The base game's machineguns spark and smoke; the soldier's shotgun
-/// only smokes.
-fn monster_flash_smoke(flash: i32) -> Option<FlashParticles> {
+/// only smokes. `entnum` is the monster, for the tank's sound.
+fn monster_flash_smoke(flash: i32, entnum: i32) -> Option<FlashParticles> {
     match flash {
         MZ2_INFANTRY_MACHINEGUN_1
         | MZ2_INFANTRY_MACHINEGUN_2
@@ -413,25 +429,6 @@ fn monster_flash_smoke(flash: i32) -> Option<FlashParticles> {
         | MZ2_BOSS2_MACHINEGUN_L5
         | MZ2_CARRIER_MACHINEGUN_L1
         | MZ2_CARRIER_MACHINEGUN_L2
-        | MZ2_TANK_MACHINEGUN_1
-        | MZ2_TANK_MACHINEGUN_2
-        | MZ2_TANK_MACHINEGUN_3
-        | MZ2_TANK_MACHINEGUN_4
-        | MZ2_TANK_MACHINEGUN_5
-        | MZ2_TANK_MACHINEGUN_6
-        | MZ2_TANK_MACHINEGUN_7
-        | MZ2_TANK_MACHINEGUN_8
-        | MZ2_TANK_MACHINEGUN_9
-        | MZ2_TANK_MACHINEGUN_10
-        | MZ2_TANK_MACHINEGUN_11
-        | MZ2_TANK_MACHINEGUN_12
-        | MZ2_TANK_MACHINEGUN_13
-        | MZ2_TANK_MACHINEGUN_14
-        | MZ2_TANK_MACHINEGUN_15
-        | MZ2_TANK_MACHINEGUN_16
-        | MZ2_TANK_MACHINEGUN_17
-        | MZ2_TANK_MACHINEGUN_18
-        | MZ2_TANK_MACHINEGUN_19
         | MZ2_JORG_MACHINEGUN_L1
         | MZ2_JORG_MACHINEGUN_L2
         | MZ2_JORG_MACHINEGUN_L3
@@ -451,6 +448,25 @@ fn monster_flash_smoke(flash: i32) -> Option<FlashParticles> {
         | MZ2_BOSS2_MACHINEGUN_R5
         | MZ2_CARRIER_MACHINEGUN_R1
         | MZ2_CARRIER_MACHINEGUN_R2 => Some(FlashParticles::SparksAndSmoke),
+        MZ2_TANK_MACHINEGUN_1
+        | MZ2_TANK_MACHINEGUN_2
+        | MZ2_TANK_MACHINEGUN_3
+        | MZ2_TANK_MACHINEGUN_4
+        | MZ2_TANK_MACHINEGUN_5
+        | MZ2_TANK_MACHINEGUN_6
+        | MZ2_TANK_MACHINEGUN_7
+        | MZ2_TANK_MACHINEGUN_8
+        | MZ2_TANK_MACHINEGUN_9
+        | MZ2_TANK_MACHINEGUN_10
+        | MZ2_TANK_MACHINEGUN_11
+        | MZ2_TANK_MACHINEGUN_12
+        | MZ2_TANK_MACHINEGUN_13
+        | MZ2_TANK_MACHINEGUN_14
+        | MZ2_TANK_MACHINEGUN_15
+        | MZ2_TANK_MACHINEGUN_16
+        | MZ2_TANK_MACHINEGUN_17
+        | MZ2_TANK_MACHINEGUN_18
+        | MZ2_TANK_MACHINEGUN_19 => Some(FlashParticles::TankMachinegun(entnum)),
         MZ2_SOLDIER_SHOTGUN_1
         | MZ2_SOLDIER_SHOTGUN_2
         | MZ2_SOLDIER_SHOTGUN_3
@@ -1067,7 +1083,7 @@ mod tests {
         );
         assert!(fx.take_particles().is_empty(), "taken once");
         for flash in [
-            MZ2_TANK_MACHINEGUN_19,
+            MZ2_SUPERTANK_MACHINEGUN_1,
             MZ2_JORG_MACHINEGUN_R6,
             MZ2_TURRET_MACHINEGUN,
         ] {
@@ -1080,15 +1096,20 @@ mod tests {
     }
 
     #[test]
-    fn tank_machineguns_pick_one_of_five_sounds() {
+    fn tank_machineguns_leave_their_sound_to_the_particles_drawn_first() {
         let mut fx = Effects::default();
         let sounds = fx.muzzle_flash2(
             &player_at(7, 0.0),
             MZ2_TANK_MACHINEGUN_1,
             0.0,
-            &mut rng(&[0, 2]),
+            &mut rng(&[0]),
         );
-        assert_eq!(sounds[0].name, "tank/tnkatk2c.wav");
+        assert!(sounds.is_empty(), "C picks the letter after the sparks");
+        let muzzle = fx.dlights().next().unwrap().origin;
+        assert_eq!(
+            fx.take_particles(),
+            [(muzzle, FlashParticles::TankMachinegun(7))]
+        );
     }
 
     #[test]
@@ -1172,6 +1193,32 @@ mod tests {
         assert!(fx.message(&temp, nobody, 0.0, &mut rng(&[0])).is_empty());
         assert!(fx.message(&[], nobody, 0.0, &mut rng(&[0])).is_empty());
         assert_eq!(fx.dlights().count(), 0);
+    }
+
+    #[test]
+    fn a_flash_cut_short_or_naming_a_bad_entity_does_nothing() {
+        use q2_shared::protocol::SvcOp;
+        let mut fx = Effects::default();
+        let anyone = |n: i32| Some(player_at(n, 0.0));
+        let mut draws = 0;
+        let mut randk = || {
+            draws += 1;
+            0
+        };
+        for op in [SvcOp::MuzzleFlash, SvcOp::MuzzleFlash2] {
+            // Cut after the entity number: no flash byte.
+            let short = [op as u8, 1, 0];
+            assert!(fx.message(&short, anyone, 0.0, &mut randk).is_empty());
+            // C Com_Error "bad entity" outside 1..MAX_EDICTS-1.
+            for number in [0, MAX_EDICTS as i16, -1] {
+                let [lo, hi] = number.to_le_bytes();
+                let flash = [op as u8, lo, hi, MZ_BLASTER as u8];
+                assert!(fx.message(&flash, anyone, 0.0, &mut randk).is_empty());
+            }
+        }
+        assert_eq!(fx.dlights().count(), 0);
+        assert!(fx.take_particles().is_empty());
+        assert_eq!(draws, 0);
     }
 
     #[test]

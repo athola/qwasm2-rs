@@ -1,6 +1,7 @@
 //! The client particle pool and its generic sprays. C ref:
 //! client/cl_particles.c. The effect-specific sprays of cl_effects.c are
-//! in `particle_fx`.
+//! in `particle_fx`. C's `CL_GenericParticleEffect` has no caller in C
+//! and is left out.
 
 use q2_shared::types::Vec3f;
 
@@ -166,38 +167,6 @@ impl Particles {
         }
     }
 
-    /// A spray whose colour range (`color + (randk & numcolors)`), spread
-    /// (`randk & dirspread`) and fade time are arguments.
-    /// C ref: `CL_GenericParticleEffect`.
-    pub fn generic_particle_effect(
-        &mut self,
-        spray: Spray,
-        numcolors: i32,
-        dirspread: i32,
-        alphavel: f32,
-        time: i32,
-        randk: &mut impl FnMut() -> u32,
-    ) {
-        for _ in 0..spray.count {
-            let Some(p) = self.alloc() else { return };
-            p.time = time as f32;
-            p.color = spray.color
-                + if numcolors > 1 {
-                    randk() as i32 & numcolors
-                } else {
-                    0
-                };
-            let d = (randk() as i32 & dirspread) as f32;
-            for j in 0..3 {
-                p.org[j] = spray.org[j] + jitter(randk) + d * spray.dir[j];
-                p.vel[j] = crandk(randk) * 20.0;
-            }
-            p.accel = Vec3f::new(0.0, 0.0, -PARTICLE_GRAVITY);
-            p.alpha = 1.0;
-            p.alphavel = -1.0 / (0.5 + frandk(randk) * alphavel);
-        }
-    }
-
     /// Free the particles that faded out by client time `time` (ms) and
     /// return the rest where they are now, newest first as C's active list
     /// runs. C ref: `CL_AddParticles`.
@@ -295,34 +264,6 @@ mod tests {
         particles.particle_effect3(spray(Vec3f::ZERO, Vec3f::X, 0xd0, 1), 0, &mut rng(&[5]));
         assert_eq!(particles.active[0].color, 0xd0);
         assert_eq!(particles.active[0].accel.z, PARTICLE_GRAVITY);
-    }
-
-    #[test]
-    fn generic_effect_masks_colour_and_spread_with_its_arguments() {
-        let mut particles = Particles::default();
-        let mut r = rng(&[0xff]);
-        particles.generic_particle_effect(
-            spray(Vec3f::ZERO, Vec3f::Z, 0x40, 1),
-            3,
-            15,
-            0.5,
-            0,
-            &mut r,
-        );
-        let p = particles.active[0];
-        assert_eq!(p.color, 0x43);
-        // d = 0xff & 15, plus the (0xff & 7) - 4 jitter.
-        assert_eq!(p.org.z, 15.0 + 3.0);
-        particles.clear();
-        particles.generic_particle_effect(
-            spray(Vec3f::ZERO, Vec3f::Z, 0x40, 1),
-            1,
-            15,
-            0.5,
-            0,
-            &mut r,
-        );
-        assert_eq!(particles.active[0].color, 0x40, "one colour is not offset");
     }
 
     #[test]
