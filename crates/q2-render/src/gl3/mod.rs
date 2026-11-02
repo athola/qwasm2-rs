@@ -477,15 +477,14 @@ impl Renderer for Gl3Renderer {
         particles: &[Particle],
     ) {
         // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
-        // goes over it.
+        // goes over it. The 2D shader scales the colour by intensity2D, as
+        // C's fragmentSrc2Dcolor does.
         if fd.blend[3] > 0.0 {
-            let [r, g, b, a] = fd.blend;
-            let scale = 1.0 / UI_INTENSITY_2D;
             self.ui_queue.push(pics::quad(
                 pics::QuadImage::White,
                 (fd.x, fd.y, fd.width, fd.height),
                 [0.0, 0.0, 1.0, 1.0],
-                [r * scale, g * scale, b * scale, a],
+                fd.blend,
             ));
         }
         let gl = match &self.gl {
@@ -759,9 +758,6 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
 }
-
-/// The 2D shader's colour scale (C `gl3_intensity_2D`).
-const UI_INTENSITY_2D: f32 = 1.5;
 
 /// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
 const MAX_DLIGHTS: usize = 32;
@@ -1855,10 +1851,10 @@ mod tests {
         assert_eq!(r.ui_queue.len(), 1);
         let flash = &r.ui_queue[0];
         assert_eq!(flash.image, pics::QuadImage::White);
-        // The 2D shader scales colour by INTENSITY_2D; C's flash shader
-        // does not, so the colour is divided back out.
+        // Queued unscaled: the 2D shader applies INTENSITY_2D, as C
+        // GL3_Draw_Flash's fragmentSrc2Dcolor does (`color.rgb * intensity2D`).
         let color = &flash.vertices[4..8];
-        for (got, want) in color.iter().zip([0.4, 0.2, 0.0, 0.5]) {
+        for (got, want) in color.iter().zip([0.6, 0.3, 0.0, 0.5]) {
             assert!((got - want).abs() < 1e-6, "{color:?}");
         }
         assert_eq!((flash.vertices[0], flash.vertices[1]), (0.0, 0.0));
