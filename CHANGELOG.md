@@ -2,72 +2,9 @@
 
 All notable changes to qwasm2-rs are documented here.
 
-## [0.1.2] - Unreleased
+## [0.1.3] - Unreleased
 
 ### Changed (breaking)
-- `GameImport::set_model` returns `ModelInfo` (index and inline-model
-  bounds); `Pmove::ground_entity` is the entity number (`Option<usize>`)
-  and `Pmove` gains `touchents`; `Renderer` no longer requires `Send` and
-  gains `draw_get_pic_size`; `RefDef` gains `lightstyles`
-  (`[f32; MAX_LIGHTSTYLES]`)
-- From the full review: `CVarSystem::get` returns `Option`; failed
-  `NetMsg` reads advance the cursor like C and `read_float` past the end
-  is -1.0; the zone module, `num_models`, `reliable_pending`, the panicking
-  `read_*` helpers, `Server::models` and `lerp_entity` are removed;
-  `fire_blaster` takes C's `effect`; `sv_new_chase_dir` takes a goal
-  position. New: `q2_client::frame::FrameHistory`,
-  `q2_server::ents::build_client_frame`, `LocalGame::take_map_change`,
-  `ServerGameImport::{take_commands, client_phs, entity_in_phs}`,
-  `ClientPersistent::ammo_max`, `deathtarget`, `GameWorld::trail`.
-  Content/mask/effect/area constants live once, in q2-shared
-- `GameExport::init` takes no import (`GameWorld::new` receives an
-  `Rc<dyn GameImport>`), client calls take entity numbers, and
-  `GameImport::link_entity` takes an `EntityLink`; `GameLogic`,
-  `PlayerController` and `q2_game::spawn::find_player_start` are removed
-- `Server::map` takes the BSP bytes, the import and the game
-- Entity and usercmd encoding now match C protocol 34 byte for byte (8-bit
-  entity angles, FRAME8/FRAME16 as in C, `event` sent whenever non-zero,
-  usercmd `msec`/`lightlevel` written last); new entities delta from
-  baselines. The client rejects any other protocol version
-- `Server::frame` takes `&ServerGameImport` and runs game frames at 10 Hz;
-  server time is `u32` milliseconds and `frametime` is gone
-- `GameLogic::new(max_clients)` replaces `Default`; `GameImport`,
-  `GameExport` and `PakReader` no longer require `Send + Sync`
-- `parse_server_message`, `write_delta_entity`,
-  `write_packet_entities_list`, `read_dir`, `parse_entity_string` and
-  `calc_fov` return `Q2Result`; `NetChan::new` takes a source and qport
-- `Q2Error`/`Q2Result` are defined in `q2_shared::error` (still re-exported
-  from `q2_common::error`); `Renderer::init` and the q2-platform wasm
-  functions return `Q2Result` instead of `Result<_, String>`
-- `CollisionMap::areas_connected` and `set_area_portal_state` return
-  `Q2Result` and reject out-of-range indices like C ERR_DROP
-- BSP header constants and lump directory live in `q2_common::bsp_file`;
-  `q2_render::bsp` no longer exports its own `LUMP_*`/`BspLump`, and
-  `BspData::entities` is gone (use `CollisionMap::entity_string`)
-- The server reads the game only through `GameExport`, which gains
-  `num_edicts`, `edict(n) -> Option<EdictView>` and
-  `client_player_state(n)`; `LocalGame` holds a `Box<dyn GameExport>`,
-  `LocalGame::game()` and `FrameEntity` are removed, `entity_count` is
-  `num_edicts`, and `Server::map` takes a spawnpoint
-- `Gl3Renderer::new(gl, loader)` replaces `set_gl_context`,
-  `set_file_loader` and `load_bsp`; `Renderer::begin_registration`
-  returns `Q2Result` and loads the map's world; `register_image` returns
-  real handles and `end_registration` frees untouched models and skins
-- Monster moves are per-frame tables: `MonsterMove.frames` holds
-  `MonsterFrame { aifunc, dist, thinkfunc }`; `frame_fn`/`dist` are gone
-- Spawn data is one table, `spawn::SPAWNS`; the `register_*_spawns`
-  methods, `classname_model` and `SpawnTable::insert` are removed;
-  `ClientPersistent::weapon`/`last_weapon` are item indices
-- `Entity::client` is the client's slot in `GameWorld::clients`
-  (`world.client(key)`/`client_mut`); `GameImport` gains
-  `positioned_sound`, `set_area_portal_state`, `areas_connected` and
-  `entity_areas`; `Renderer` gains `begin_frame` and `light_level`, and
-  `RefDef` gains `areabits`; `ServerState::Pic`, `LocalGame::{picture,
-  take_sounds, area_bits, player_area}`; monster constants and
-  `gib_health` are shared (`STUB_STAND_FRAMES` removed)
-- `q2_shared::constants::ERR_QUIT` is now `ERR_DISCONNECT`, C's name for
-  code 2; `GameExport` gains `clear_entity_events` (C `SV_PrepWorldFrame`);
-  `q2_common::pmove::angle_vectors` and `BspHeader::records` are public
 - `Renderer` gains the required `set_hand`;
   `ServerStatic::connect_local_client` takes the client's `userinfo`
 
@@ -238,6 +175,84 @@ All notable changes to qwasm2-rs are documented here.
   `meansOfDeath`; bouncing grenades clatter (`grenlb1b`, or one of two
   hand grenade sounds) and launched grenades get C's random lift and
   drift
+
+### Fixed
+- Multicasts reach the local client only as C `SV_Multicast` routes
+  them: through the origin's PVS or PHS and connected areas, and
+  unreliable ones only once the client is in the game, so effects in
+  unseen rooms no longer light or sound through walls
+- Centre prints, prints and unicasts go only to client entities
+  (C `1..=maxclients`), so a trigger or monster activator's message no
+  longer shows on the player's screen
+
+## [0.1.2] - 2026-10-30
+
+### Changed (breaking)
+- `GameImport::set_model` returns `ModelInfo` (index and inline-model
+  bounds); `Pmove::ground_entity` is the entity number (`Option<usize>`)
+  and `Pmove` gains `touchents`; `Renderer` no longer requires `Send` and
+  gains `draw_get_pic_size`; `RefDef` gains `lightstyles`
+  (`[f32; MAX_LIGHTSTYLES]`)
+- From the full review: `CVarSystem::get` returns `Option`; failed
+  `NetMsg` reads advance the cursor like C and `read_float` past the end
+  is -1.0; the zone module, `num_models`, `reliable_pending`, the panicking
+  `read_*` helpers, `Server::models` and `lerp_entity` are removed;
+  `fire_blaster` takes C's `effect`; `sv_new_chase_dir` takes a goal
+  position. New: `q2_client::frame::FrameHistory`,
+  `q2_server::ents::build_client_frame`, `LocalGame::take_map_change`,
+  `ServerGameImport::{take_commands, client_phs, entity_in_phs}`,
+  `ClientPersistent::ammo_max`, `deathtarget`, `GameWorld::trail`.
+  Content/mask/effect/area constants live once, in q2-shared
+- `GameExport::init` takes no import (`GameWorld::new` receives an
+  `Rc<dyn GameImport>`), client calls take entity numbers, and
+  `GameImport::link_entity` takes an `EntityLink`; `GameLogic`,
+  `PlayerController` and `q2_game::spawn::find_player_start` are removed
+- `Server::map` takes the BSP bytes, the import and the game
+- Entity and usercmd encoding now match C protocol 34 byte for byte (8-bit
+  entity angles, FRAME8/FRAME16 as in C, `event` sent whenever non-zero,
+  usercmd `msec`/`lightlevel` written last); new entities delta from
+  baselines. The client rejects any other protocol version
+- `Server::frame` takes `&ServerGameImport` and runs game frames at 10 Hz;
+  server time is `u32` milliseconds and `frametime` is gone
+- `GameLogic::new(max_clients)` replaces `Default`; `GameImport`,
+  `GameExport` and `PakReader` no longer require `Send + Sync`
+- `parse_server_message`, `write_delta_entity`,
+  `write_packet_entities_list`, `read_dir`, `parse_entity_string` and
+  `calc_fov` return `Q2Result`; `NetChan::new` takes a source and qport
+- `Q2Error`/`Q2Result` are defined in `q2_shared::error` (still re-exported
+  from `q2_common::error`); `Renderer::init` and the q2-platform wasm
+  functions return `Q2Result` instead of `Result<_, String>`
+- `CollisionMap::areas_connected` and `set_area_portal_state` return
+  `Q2Result` and reject out-of-range indices like C ERR_DROP
+- BSP header constants and lump directory live in `q2_common::bsp_file`;
+  `q2_render::bsp` no longer exports its own `LUMP_*`/`BspLump`, and
+  `BspData::entities` is gone (use `CollisionMap::entity_string`)
+- The server reads the game only through `GameExport`, which gains
+  `num_edicts`, `edict(n) -> Option<EdictView>` and
+  `client_player_state(n)`; `LocalGame` holds a `Box<dyn GameExport>`,
+  `LocalGame::game()` and `FrameEntity` are removed, `entity_count` is
+  `num_edicts`, and `Server::map` takes a spawnpoint
+- `Gl3Renderer::new(gl, loader)` replaces `set_gl_context`,
+  `set_file_loader` and `load_bsp`; `Renderer::begin_registration`
+  returns `Q2Result` and loads the map's world; `register_image` returns
+  real handles and `end_registration` frees untouched models and skins
+- Monster moves are per-frame tables: `MonsterMove.frames` holds
+  `MonsterFrame { aifunc, dist, thinkfunc }`; `frame_fn`/`dist` are gone
+- Spawn data is one table, `spawn::SPAWNS`; the `register_*_spawns`
+  methods, `classname_model` and `SpawnTable::insert` are removed;
+  `ClientPersistent::weapon`/`last_weapon` are item indices
+- `Entity::client` is the client's slot in `GameWorld::clients`
+  (`world.client(key)`/`client_mut`); `GameImport` gains
+  `positioned_sound`, `set_area_portal_state`, `areas_connected` and
+  `entity_areas`; `Renderer` gains `begin_frame` and `light_level`, and
+  `RefDef` gains `areabits`; `ServerState::Pic`, `LocalGame::{picture,
+  take_sounds, area_bits, player_area}`; monster constants and
+  `gib_health` are shared (`STUB_STAND_FRAMES` removed)
+- `q2_shared::constants::ERR_QUIT` is now `ERR_DISCONNECT`, C's name for
+  code 2; `GameExport` gains `clear_entity_events` (C `SV_PrepWorldFrame`);
+  `q2_common::pmove::angle_vectors` and `BspHeader::records` are public
+
+### Added
 - Gamma is tunable: `?gamma=1.2` sets `vid_gamma` at load and F7/F8 step
   it by 0.1 in game, within C's brightness slider range 0.1..2.0; the
   shaders read it as C's `gamma` uniform (`1/vid_gamma`) through the new
@@ -319,13 +334,6 @@ All notable changes to qwasm2-rs are documented here.
   wire size from ~46 MB to ~26 MB
 
 ### Fixed
-- Multicasts reach the local client only as C `SV_Multicast` routes
-  them: through the origin's PVS or PHS and connected areas, and
-  unreliable ones only once the client is in the game, so effects in
-  unseen rooms no longer light or sound through walls
-- Centre prints, prints and unicasts go only to client entities
-  (C `1..=maxclients`), so a trigger or monster activator's message no
-  longer shows on the player's screen
 - `BossExplode` ran a ninth explosion before gibbing; the click prompt
   swallowed the click that locks the pointer and starts audio
 - Soldier animations used the wrong model frames for stand, walk, pain
