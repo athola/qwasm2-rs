@@ -3,9 +3,9 @@
 //! Port of the fire functions of `g_weapon.c`, with C's damage, speeds,
 //! models and temp entities. The fire sounds are the client's (muzzle
 //! flashes).
-//! The fire functions also make p_weapon.c's PNOISE_WEAPON `PlayerNoise`
-//! at the muzzle when a client fires (a no-op for monsters), so the
-//! player's weapon code does not repeat it.
+//! As in C, the weapon noise (PNOISE_WEAPON `PlayerNoise`) is the player
+//! fire routines' (player/weapon.rs), once per shot; these functions make
+//! only the impact noise.
 //!
 //! # Weapon types
 //! - **Hitscan**: fire_bullet, fire_shotgun, fire_rail, fire_hit — instant trace
@@ -668,7 +668,6 @@ impl GameWorld {
         check_dodge(self, owner, start, dir, speed);
 
         self.link_entity(bolt_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
 
         // A muzzle behind a wall or inside a target hits it at once.
         let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
@@ -721,7 +720,6 @@ impl GameWorld {
             vspread,
             means_of_death,
         );
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// One bullet: traced from the muzzle with spread, redirected and
@@ -907,7 +905,6 @@ impl GameWorld {
                 means_of_death,
             );
         }
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Fire a rocket. Creates a projectile entity.
@@ -948,7 +945,6 @@ impl GameWorld {
 
         check_dodge(self, owner, start, dir, speed);
         self.link_entity(rocket_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Fire a grenade. Creates a bouncing projectile entity.
@@ -996,7 +992,6 @@ impl GameWorld {
         self.launch_projectile(gren_key, dir, "models/objects/grenade/tris.md2");
 
         self.link_entity(gren_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// A hand grenade: tossed up and to a random side, set to go off after
@@ -1073,7 +1068,6 @@ impl GameWorld {
         let mut ignore = Some(owner);
         let mut water = false;
         let mut mask = MASK_SHOT | CONTENTS_SLIME | CONTENTS_LAVA;
-        self.player_noise(owner, start, PlayerNoise::Weapon);
         let mut tr = Trace::default();
         while let Some(pass) = ignore {
             tr = self.gi.trace(
@@ -1186,7 +1180,6 @@ impl GameWorld {
         check_dodge(self, owner, start, dir, speed);
 
         self.link_entity(bfg_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Melee attack on `owner`'s enemy. `aim` is (range, right offset, up
