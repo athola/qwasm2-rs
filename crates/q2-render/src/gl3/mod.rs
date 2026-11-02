@@ -531,16 +531,7 @@ impl Renderer for Gl3Renderer {
         let view_proj = build_view_projection(fd);
         let world_batches = |filter| {
             if let Some(world) = &self.world {
-                let draw = BatchDraw {
-                    view_proj: &view_proj,
-                    model: &IDENTITY_MAT4,
-                    time: fd.time,
-                    // C GL3_DrawWorld animates world textures at 2 fps.
-                    frame: (fd.time * 2.0) as i32,
-                    filter,
-                    translucent_entity: false,
-                    areabits: fd.areabits.as_deref(),
-                };
+                let draw = world_draw(fd, &view_proj, filter);
                 if let Some(batches) = world.model_batches(0) {
                     draw_batches(gl, uniforms, world, batches, &draw);
                 }
@@ -764,6 +755,21 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let proj = perspective_matrix(fd);
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
+}
+
+/// One pass over the world model: untransformed, culled by the view's
+/// area bits, its textures animating at 2 fps (C `GL3_DrawWorld`'s
+/// `ent.frame = (int)(gl3_newrefdef.time * 2)`).
+fn world_draw<'a>(fd: &'a RefDef, view_proj: &'a [f32; 16], filter: BatchFilter) -> BatchDraw<'a> {
+    BatchDraw {
+        view_proj,
+        model: &IDENTITY_MAT4,
+        time: fd.time,
+        frame: (fd.time * 2.0) as i32,
+        filter,
+        translucent_entity: false,
+        areabits: fd.areabits.as_deref(),
+    }
 }
 
 /// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
@@ -1665,6 +1671,43 @@ mod tests {
             panic!("expected an MD2 model");
         };
         assert_eq!(model.skins, vec![None]);
+    }
+
+    #[test]
+    fn a_bare_extension_is_no_model_name_even_when_the_file_exists() {
+        let mut r = Gl3Renderer::headless(Box::new(|path| {
+            (path == ".md2").then(|| synthetic_md2("skin.pcx"))
+        }));
+        assert_eq!(r.register_model(".md2"), ModelHandle::NONE);
+    }
+
+    #[test]
+    fn the_world_is_drawn_untransformed_by_area_with_textures_at_2_fps_like_c() {
+        let fd = RefDef {
+            time: 3.7,
+            areabits: Some(vec![0b10]),
+            ..Default::default()
+        };
+        let view_proj = build_view_projection(&fd);
+        let draw = world_draw(&fd, &view_proj, BatchFilter::Translucent);
+        // C GL3_DrawWorld: ent.frame = (int)(time * 2).
+        assert_eq!(draw.frame, 7);
+        assert_eq!(draw.time, 3.7);
+        assert_eq!(draw.model, &IDENTITY_MAT4);
+        assert!(std::ptr::eq(draw.view_proj, &view_proj));
+        assert_eq!(draw.filter, BatchFilter::Translucent);
+        assert!(!draw.translucent_entity);
+        assert_eq!(draw.areabits, Some(&[0b10u8][..]));
+    }
+
+    #[test]
+    fn set_hand_keeps_the_cvar_for_the_gun_draw() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert_eq!(r.hand, 0);
+        r.set_hand(1);
+        assert_eq!(r.hand, 1);
+        r.set_hand(2);
+        assert_eq!(r.hand, 2);
     }
 
     /// "IDS2" with one frame per `(name, width, height)`, hung from its centre.

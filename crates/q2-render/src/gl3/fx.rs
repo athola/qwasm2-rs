@@ -9,7 +9,7 @@ use q2_shared::types::Vec3f;
 
 use super::alias::angle_vectors;
 use super::draw::{
-    create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, StreamBuffer,
+    create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, Attribute, StreamBuffer,
 };
 use super::images::{ImageKind, ImageStore};
 use super::shader::{bind_samplers, link_program};
@@ -21,6 +21,8 @@ use crate::files::{palette::Palette, sp2::load_sp2};
 pub const PARTICLE_FLOATS: usize = 9;
 /// Floats per beam or sprite vertex: position(3), uv(2).
 pub const FX_FLOATS: usize = 5;
+const PARTICLE_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 1, 3), (2, 1, 4), (3, 4, 5)];
+const FX_ATTRIBUTES: [Attribute; 2] = [(0, 3, 0), (1, 2, 3)];
 /// C `gl3_particle_size` at a 480 pixel tall view.
 const PARTICLE_SIZE: f32 = 40.0;
 /// C `NUM_BEAM_SEGS`: sides of a beam's tube.
@@ -309,12 +311,8 @@ impl FxGpu {
 pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
     let particle_program = link_program(gl, PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC);
     let fx_program = link_program(gl, FX_VERTEX_SRC, FX_FRAGMENT_SRC);
-    let particle_stream = create_stream_buffer(
-        gl,
-        PARTICLE_FLOATS,
-        &[(0, 3, 0), (1, 1, 3), (2, 1, 4), (3, 4, 5)],
-    );
-    let fx_stream = create_stream_buffer(gl, FX_FLOATS, &[(0, 3, 0), (1, 2, 3)]);
+    let particle_stream = create_stream_buffer(gl, PARTICLE_FLOATS, &PARTICLE_ATTRIBUTES);
+    let fx_stream = create_stream_buffer(gl, FX_FLOATS, &FX_ATTRIBUTES);
     match (particle_program, fx_program, particle_stream, fx_stream) {
         (Ok(particle_program), Ok(fx_program), Ok(particle_stream), Ok(fx_stream)) => {
             bind_samplers(gl, fx_program, &["u_texture"]);
@@ -594,6 +592,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn particle_and_fx_vertices_feed_every_input_of_their_shaders() {
+        use super::super::draw::assert_layout;
+        assert_layout(
+            &PARTICLE_ATTRIBUTES,
+            PARTICLE_FLOATS,
+            PARTICLE_VERTEX_SRC,
+            true,
+        );
+        assert_layout(&FX_ATTRIBUTES, FX_FLOATS, FX_VERTEX_SRC, true);
+    }
+
     fn grey_palette() -> Palette {
         Palette(std::array::from_fn(|i| [i as u8, i as u8, 255 - i as u8]))
     }
@@ -611,6 +621,56 @@ mod tests {
         assert_eq!(v[3], 80.0, "40 at 480 tall, scaled");
         assert_eq!(v[4], 100.0);
         assert_eq!(&v[5..], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0, 0.5]);
+    }
+
+    #[test]
+    fn a_particle_colour_is_the_palette_entry_of_its_low_byte() {
+        let particles = [Particle {
+            origin: Vec3f::ZERO,
+            color: 0x1e8,
+            alpha: 1.0,
+        }];
+        let v = particle_vertices(&particles, Vec3f::X, 480, &grey_palette());
+        assert_eq!(&v[5..8], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0]);
+    }
+
+    // C PerpendicularVector projects the axis of src's smallest component,
+    // the first one on a tie, onto the plane normal to src.
+    #[test]
+    fn the_perpendicular_follows_the_smallest_axis_of_the_direction() {
+        assert_eq!(perpendicular(Vec3f::Z), Vec3f::X);
+        assert_eq!(perpendicular(Vec3f::X), Vec3f::Y);
+        let src = Vec3f::new(0.6, 0.0, 0.8);
+        assert_eq!(perpendicular(src), Vec3f::Y);
+        let src = Vec3f::new(0.2, 0.9, 0.3).normalize();
+        let p = perpendicular(src);
+        assert!(p.dot(src).abs() < 1e-6 && (p.length() - 1.0).abs() < 1e-6);
+        // The x axis less its part along src.
+        assert!(p.x > 0.0 && p.y < 0.0);
+    }
+
+    #[test]
+    fn rotating_around_a_direction_turns_counterclockwise_seen_from_its_tip() {
+        // C RotatePointAroundVector.
+        let turned = rotate_around(Vec3f::Z, Vec3f::X, 90.0);
+        assert!((turned - Vec3f::Y).length() < 1e-6, "{turned:?}");
+        let turned = rotate_around(Vec3f::Z, Vec3f::new(1.0, 0.0, 5.0), 180.0);
+        assert!(
+            (turned - Vec3f::new(-1.0, 0.0, 5.0)).length() < 1e-5,
+            "{turned:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_sp2_registers_no_sprite() {
+        let loader: FileLoader = Box::new(|name| match name {
+            "bad.sp2" => Some(b"IDS2 not a sprite".to_vec()),
+            _ => None,
+        });
+        let mut images = ImageStore::default();
+        for name in ["bad.sp2", "gone.sp2"] {
+            assert!(load_sprite_model(None, &loader, None, &mut images, name).is_none());
+        }
     }
 
     fn beam(origin: Vec3f, oldorigin: Vec3f, width: i32) -> RenderEntity {

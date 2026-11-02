@@ -22,8 +22,8 @@ use super::alias::{
     entity_vertices, AliasModel, FrustumPlane, ALIAS_VERTEX_FLOATS, MAX_SKINS,
 };
 use super::draw::{
-    create_stream_buffer, draw_batches, draw_mesh, free_stream_buffer, BatchDraw, BatchFilter,
-    MeshDraw, StreamBuffer,
+    create_stream_buffer, draw_batches, draw_mesh, free_stream_buffer, Attribute, BatchDraw,
+    BatchFilter, MeshDraw, StreamBuffer,
 };
 use super::entity::{alias_matrix, brush_matrix};
 use super::images::{ImageKind, ImageStore};
@@ -35,7 +35,10 @@ use super::shader::{
     compile_alias_program, compile_ui_program, AliasUniforms, UiUniforms, WorldUniforms,
 };
 use super::texture::{notexture, upload_rgba, FileLoader, CLAMPED_SAMPLING};
-use crate::files::{md2::load_md2, palette::Palette};
+use crate::files::{
+    md2::{load_md2, Md2Model},
+    palette::Palette,
+};
 
 /// Programs, stream buffers and fallback textures for entities and 2D.
 pub struct ExtraGpu {
@@ -51,15 +54,18 @@ pub struct ExtraGpu {
     pub notexture: glow::Texture,
 }
 
+/// MD2 vertices: position(3), uv(2), colour(4).
+const ALIAS_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 4, 5)];
+/// 2D vertices: position(2), uv(2), colour(4).
+const UI_ATTRIBUTES: [Attribute; 3] = [(0, 2, 0), (1, 2, 2), (2, 4, 4)];
+
 /// Every step is attempted; if any fails, the objects the others made are
 /// freed before the first error is returned, so a retried `init` leaks none.
 pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
     let alias = compile_alias_program(gl);
     let ui = compile_ui_program(gl);
-    // Layouts: alias is position(3) uv(2) colour(4); 2D is position(2) uv(2) colour(4).
-    let alias_stream =
-        create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &[(0, 3, 0), (1, 2, 3), (2, 4, 5)]);
-    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &[(0, 2, 0), (1, 2, 2), (2, 4, 4)]);
+    let alias_stream = create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &ALIAS_ATTRIBUTES);
+    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &UI_ATTRIBUTES);
     let white = upload_rgba(gl, 1, 1, &[255; 4], &CLAMPED_SAMPLING);
     let checker = notexture();
     let notexture = upload_rgba(
@@ -335,14 +341,77 @@ fn draw_brush(
 /// rotated brush entity's glass stays where the entity spawned; here it
 /// keeps the entity's matrix. The world program must be bound.
 pub fn draw_brush_alpha_faces(scene: &EntityScene, entities: &[RenderEntity]) {
-    for entity in entities
+    for (entity, submodel) in brush_entities(entities, scene.models) {
+        draw_brush(scene, entity, submodel, BatchFilter::Translucent, false);
+    }
+}
+
+/// Every brush entity with its inline model, whatever its translucency;
+/// beams and the viewer's own model are left out as in the entity passes.
+fn brush_entities<'a, A>(
+    entities: &'a [RenderEntity],
+    models: &'a ModelRegistry<A>,
+) -> impl Iterator<Item = (&'a RenderEntity, usize)> + 'a {
+    entities
         .iter()
         .filter(|e| e.flags & (RF_VIEWERMODEL | RF_BEAM) == 0)
-    {
-        if let Some(Model::Brush { submodel }) = scene.models.get(entity.model) {
-            draw_brush(scene, entity, *submodel, BatchFilter::Translucent, false);
-        }
+        .filter_map(|e| match models.get(e.model)? {
+            Model::Brush { submodel } => Some((e, *submodel)),
+            _ => None,
+        })
+}
+
+/// The face culled while drawing an MD2, or `None` when it is not drawn:
+/// only the gun follows C cvar `hand`. C ref: `GL3_DrawAliasModel`.
+fn alias_cull_face(flags: i32, hand: i32) -> Option<u32> {
+    if flags & RF_WEAPONMODEL != 0 {
+        super::gun_cull_face(hand)
+    } else {
+        Some(super::CULL_FACE)
     }
+}
+
+/// The frames an MD2 draws, or `None` when it is culled. C culls every
+/// MD2 but the gun, and the cull writes each frame reset on its own back
+/// into the entity before the draw sees it; the gun only gets the draw's
+/// check, which resets both. C ref: `CullAliasModel`, `GL3_DrawAliasModel`.
+fn alias_frames(
+    md2: &Md2Model,
+    entity: &RenderEntity,
+    frustum: &[FrustumPlane; 4],
+) -> Option<(usize, usize)> {
+    let weapon = entity.flags & RF_WEAPONMODEL != 0;
+    let frame_count = md2.frames.len();
+    let (frame, oldframe) = if weapon {
+        clamp_frames(entity.frame, entity.oldframe, frame_count)
+    } else {
+        clamp_frames_independently(entity.frame, entity.oldframe, frame_count)
+    };
+    let culled = match (md2.frames.get(frame), md2.frames.get(oldframe)) {
+        (Some(this), Some(old)) => {
+            let (origin, angles) = (vec3(entity.origin), vec3(entity.angles));
+            !weapon && cull_alias(this, old, origin, angles, frustum)
+        }
+        _ => true,
+    };
+    (!culled).then_some((frame, oldframe))
+}
+
+/// A colour shell samples white; a skin whose image did not load, or
+/// none, draws as the notexture checker (C `gl3_notexture` fallback).
+fn alias_texture(
+    entity: &RenderEntity,
+    skins: &[Option<usize>],
+    images: &ImageStore,
+    (white, notexture): (glow::Texture, glow::Texture),
+) -> glow::Texture {
+    if super::alias::shell_light(entity.flags).is_some() {
+        return white;
+    }
+    entity_skin(entity.skin, entity.skinnum, skins)
+        .and_then(|index| images.get(index))
+        .and_then(|image| image.texture)
+        .unwrap_or(notexture)
 }
 
 /// One MD2 with the alias program bound. C ref: `GL3_DrawAliasModel`.
@@ -351,28 +420,13 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
         return;
     };
     let origin = vec3(entity.origin);
-    let frame_count = model.md2.frames.len();
     let weapon = entity.flags & RF_WEAPONMODEL != 0;
-    let gun_cull = super::gun_cull_face(scene.hand);
-    if weapon && gun_cull.is_none() {
+    let Some(cull_face) = alias_cull_face(entity.flags, scene.hand) else {
         return;
-    }
-    // C culls every MD2 but the gun, and the cull writes each frame
-    // reset on its own back into the entity before the draw sees it.
-    let (frame, oldframe) = if weapon {
-        clamp_frames(entity.frame, entity.oldframe, frame_count)
-    } else {
-        clamp_frames_independently(entity.frame, entity.oldframe, frame_count)
     };
-    let culled = match (model.md2.frames.get(frame), model.md2.frames.get(oldframe)) {
-        (Some(frame), Some(oldframe)) => {
-            !weapon && cull_alias(frame, oldframe, origin, vec3(entity.angles), &scene.frustum)
-        }
-        _ => true,
-    };
-    if culled {
+    let Some((frame, oldframe)) = alias_frames(&model.md2, entity, &scene.frustum) else {
         return;
-    }
+    };
     let entity = &RenderEntity {
         frame: i32::try_from(frame).unwrap_or(0),
         oldframe: i32::try_from(oldframe).unwrap_or(0),
@@ -387,14 +441,12 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
         return;
     };
     let shell = super::alias::shell_light(entity.flags).is_some();
-    let texture = if shell {
-        scene.extra.white
-    } else {
-        entity_skin(entity.skin, entity.skinnum, &model.skins)
-            .and_then(|index| scene.images.get(index))
-            .and_then(|image| image.texture)
-            .unwrap_or(scene.extra.notexture)
-    };
+    let texture = alias_texture(
+        entity,
+        &model.skins,
+        scene.images,
+        (scene.extra.white, scene.extra.notexture),
+    );
     let matrix = alias_matrix(origin, vec3(entity.angles));
     let view_proj = if weapon {
         &scene.gun_view_proj
@@ -407,10 +459,10 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
         // SAFETY: state-only call on the live context.
         unsafe { scene.gl.depth_range_f32(near, far) };
     }
-    let mirrored = weapon && gun_cull != Some(super::CULL_FACE);
-    if let (true, Some(face)) = (mirrored, gun_cull) {
+    let mirrored = cull_face != super::CULL_FACE;
+    if mirrored {
         // SAFETY: state-only call on the live context.
-        unsafe { scene.gl.cull_face(face) };
+        unsafe { scene.gl.cull_face(cull_face) };
     }
     draw_mesh(
         scene.gl,
@@ -440,6 +492,157 @@ mod tests {
     use super::*;
     use q2_render_api::ModelHandle;
     use q2_shared::constants::RF_BEAM;
+
+    #[test]
+    fn md2_and_2d_vertices_feed_every_input_of_their_shaders() {
+        use super::super::draw::assert_layout;
+        use super::super::shader::{ALIAS_VERTEX_SRC, UI_VERTEX_SRC};
+        assert_layout(
+            &ALIAS_ATTRIBUTES,
+            ALIAS_VERTEX_FLOATS,
+            ALIAS_VERTEX_SRC,
+            true,
+        );
+        assert_layout(&UI_ATTRIBUTES, UI_VERTEX_FLOATS, UI_VERTEX_SRC, true);
+    }
+
+    /// A model of `frames` 16-unit boxes at the model origin.
+    fn boxes(frames: usize) -> Md2Model {
+        let frame = crate::files::md2::Md2Frame {
+            name: "f".into(),
+            scale: [16.0 / 255.0; 3],
+            translate: [-8.0; 3],
+            verts: Vec::new(),
+        };
+        Md2Model {
+            skin_width: 8,
+            skin_height: 8,
+            skins: Vec::new(),
+            st: Vec::new(),
+            triangles: Vec::new(),
+            frames: vec![frame; frames],
+        }
+    }
+
+    fn at(x: f32, flags: i32, frame: i32, oldframe: i32) -> RenderEntity {
+        RenderEntity {
+            origin: q2_shared::types::Vec3f::new(x, 0.0, 0.0),
+            flags,
+            frame,
+            oldframe,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_the_gun_follows_hand_like_c_drawaliasmodel() {
+        for hand in [0, 1, 2] {
+            assert_eq!(alias_cull_face(0, hand), Some(super::super::CULL_FACE));
+        }
+        assert_eq!(
+            alias_cull_face(RF_WEAPONMODEL, 0),
+            Some(super::super::CULL_FACE)
+        );
+        assert_eq!(alias_cull_face(RF_WEAPONMODEL, 1), Some(glow::BACK));
+        assert_eq!(alias_cull_face(RF_WEAPONMODEL, 2), None);
+    }
+
+    #[test]
+    fn md2s_outside_the_view_are_culled_but_the_gun_never_is() {
+        // Eye at the origin looking down +x.
+        let frustum = super::super::alias::frustum([0.0; 3], [0.0; 3], 90.0, 90.0);
+        let md2 = boxes(1);
+        assert_eq!(
+            alias_frames(&md2, &at(500.0, 0, 0, 0), &frustum),
+            Some((0, 0))
+        );
+        assert_eq!(alias_frames(&md2, &at(-500.0, 0, 0, 0), &frustum), None);
+        let gun = at(-500.0, RF_WEAPONMODEL, 0, 0);
+        assert_eq!(alias_frames(&md2, &gun, &frustum), Some((0, 0)));
+    }
+
+    #[test]
+    fn bad_frames_reset_one_by_one_except_on_the_gun_like_c() {
+        let frustum = super::super::alias::frustum([0.0; 3], [0.0; 3], 90.0, 90.0);
+        let md2 = boxes(2);
+        // C CullAliasModel resets only the bad frame; the gun skips the
+        // cull and GL3_DrawAliasModel resets both.
+        assert_eq!(
+            alias_frames(&md2, &at(500.0, 0, 5, 1), &frustum),
+            Some((0, 1))
+        );
+        let gun = at(500.0, RF_WEAPONMODEL, 5, 1);
+        assert_eq!(alias_frames(&md2, &gun, &frustum), Some((0, 0)));
+        // A model without frames has nothing to draw.
+        assert_eq!(alias_frames(&boxes(0), &at(500.0, 0, 0, 0), &frustum), None);
+    }
+
+    #[test]
+    fn the_alpha_pass_takes_every_brush_entity_but_beams_and_the_viewer() {
+        let mut models = ModelRegistry::<&'static str>::default();
+        let alias = models.register("a.md2", || Some(Model::Alias("a")));
+        let brush = models.register_inline("*1", Some(2));
+        let ent = |model, flags| RenderEntity {
+            model,
+            flags,
+            ..Default::default()
+        };
+        let list = [
+            // C DrawInlineBModel chains SURF_TRANS faces whatever the
+            // entity's own flags.
+            ent(brush, RF_TRANSLUCENT),
+            ent(brush, RF_VIEWERMODEL),
+            ent(brush, RF_BEAM),
+            ent(alias, 0),
+            ent(brush, 0),
+        ];
+        let picked: Vec<(usize, usize)> = brush_entities(&list, &models)
+            .map(|(e, submodel)| {
+                (
+                    list.iter().position(|l| std::ptr::eq(l, e)).unwrap(),
+                    submodel,
+                )
+            })
+            .collect();
+        assert_eq!(picked, [(0, 1), (4, 1)]);
+    }
+
+    #[test]
+    fn a_shell_samples_white_and_a_missing_skin_the_checker() {
+        let texture = |n| glow::NativeTexture(std::num::NonZeroU32::new(n).unwrap());
+        let (white, notexture) = (texture(1), texture(2));
+        let images = ImageStore::default();
+        let shell = RenderEntity {
+            flags: q2_shared::constants::RF_SHELL_RED,
+            ..Default::default()
+        };
+        let skins = [Some(0)];
+        assert_eq!(
+            alias_texture(&shell, &skins, &images, (white, notexture)),
+            white
+        );
+        let plain = RenderEntity::default();
+        // C falls back to gl3_notexture with no skin, or one not loaded.
+        let no_skins: [Option<usize>; 0] = [];
+        for skins in [&no_skins[..], &[None], &skins] {
+            assert_eq!(
+                alias_texture(&plain, skins, &images, (white, notexture)),
+                notexture
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_md2_registers_no_model() {
+        let loader: FileLoader = Box::new(|name| match name {
+            "bad.md2" => Some(b"IDP2 not a model".to_vec()),
+            _ => None,
+        });
+        let mut images = ImageStore::default();
+        for name in ["bad.md2", "gone.md2"] {
+            assert!(load_alias_model(None, &loader, None, &mut images, name).is_none());
+        }
+    }
 
     fn sprite() -> Model<&'static str> {
         Model::Sprite(super::super::fx::SpriteModel { frames: Vec::new() })
