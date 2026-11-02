@@ -161,8 +161,9 @@ pub type FinishFn = fn(&mut GameWorld, EntityKey, &HashMap<String, String>);
 /// `GameWorld` half, both applied by `call_spawn`. The last column is true
 /// when the C spawn function ends in `walkmonster_start`,
 /// `flymonster_start` or `swimmonster_start`, so `call_spawn` runs
-/// `monster_start` for it. `turret_driver` is the one other row set:
-/// C SP_turret_driver inlines `monster_start`'s counting and setup.
+/// `monster_start` for it. `turret_driver` is the one other row set: C
+/// SP_turret_driver inlines only part of `monster_start` (the count,
+/// flags, use and clipmask), and the port runs the whole of it.
 pub type SpawnEntry = (
     &'static str,
     SpawnFn,
@@ -679,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_spawns_c_ends_in_a_monster_start_are_monsters() {
+    fn monster_rows_are_c_monster_start_spawns_plus_turret_driver() {
         // grep -l "monster_start(self)" ~/Qwasm2/src/game/monster/*/*.c
         const C_MONSTERS: &[&str] = &[
             "misc_insane",
@@ -705,7 +706,11 @@ mod tests {
             "monster_boss2",
             "monster_makron",
             "monster_jorg",
-            // C SP_turret_driver copies monster_start's setup inline.
+            // The exception: C SP_turret_driver never calls monster_start;
+            // it inlines part of it (the monster count, SVF_MONSTER,
+            // monster_use, the clipmask, st.item). The port runs the whole
+            // of monster_start on it, which also sets max_health,
+            // air_finished and the default checkattack.
             "turret_driver",
         ];
         let monsters: Vec<&str> = SPAWNS.iter().filter(|e| e.4).map(|e| e.0).collect();
