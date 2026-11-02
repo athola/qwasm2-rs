@@ -1477,7 +1477,7 @@ impl GameWorld {
 
     /// The item a monster drops on death, from its `item` key. C ref:
     /// `monster_start` (g_monster.c), which reads `st.item`.
-    fn monster_start_item(
+    pub(crate) fn monster_start_item(
         &mut self,
         key: EntityKey,
         classname: &str,

@@ -461,14 +461,12 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
 
 /// Take the seat: own the breach (and its team), face its way, record
 /// where the driver sits relative to it, and join the end of its team.
-/// C ref: `turret_driver_link`. Also puts back the MOVETYPE_PUSH that
-/// `monster_start` (which C's SP_turret_driver does not call) replaced.
+/// C ref: `turret_driver_link`.
 pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
-    ent.game.movetype = MoveType::Push;
     ent.think = Some(turret_driver_think);
     ent.game.nextthink = time + FRAMETIME;
     let (target, origin) = (ent.game.target.clone(), ent.state.origin);
@@ -510,16 +508,9 @@ pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// The `EntityStorage` half of C `SP_turret_driver`; `GameWorld::call_spawn`
-/// then runs `monster_start`, which does the rest of C's inline monster
-/// setup (deathmatch removal, `total_monsters`, SVF_MONSTER, RF_FRAMELERP,
-/// DAMAGE_AIM, `monster_use`, MASK_MONSTERSOLID, `old_origin`) and keeps
-/// the `turret_driver_link` think. It also does what C's driver never
-/// gets: MOVETYPE_STEP until `turret_driver_link` puts PUSH back,
-/// `max_health`, `air_finished`, the `M_CheckAttack` checkattack, a
-/// forever `pausetime` and the SIGHT-to-AMBUSH spawnflag rewrite. The
-/// stand is `infantry_stand`, which C's HuntTarget calls for this
-/// STAND_GROUND monster once FindTarget succeeds.
+/// The `EntityStorage` half of C `SP_turret_driver`; `turret_driver_finish`
+/// does the rest. The stand is `infantry_stand`, which C's HuntTarget
+/// calls for this STAND_GROUND monster once FindTarget succeeds.
 pub fn sp_turret_driver(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -544,6 +535,37 @@ pub fn sp_turret_driver(
         ..Default::default()
     }));
     ent.think = Some(turret_driver_link);
+}
+
+/// The `GameWorld` half of C `SP_turret_driver`: removal in deathmatch,
+/// then the part of `monster_start` C inlines (the monster count,
+/// SVF_MONSTER, RF_FRAMELERP, DAMAGE_AIM, `monster_use`,
+/// MASK_MONSTERSOLID, `old_origin`, `st.item`) and the first think. Not
+/// the rest of `monster_start`: C leaves `max_health`, `air_finished`,
+/// `checkattack` and the spawnflags alone. C ref: `SP_turret_driver`.
+pub fn turret_driver_finish(
+    world: &mut GameWorld,
+    key: EntityKey,
+    fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    world.level.total_monsters += 1;
+    let time = world.level.time;
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.svflags |= SvFlags::MONSTER.bits();
+    ent.state.renderfx |= q2_shared::constants::RF_FRAMELERP;
+    ent.game.takedamage = TakeDamage::Aim;
+    ent.use_fn = Some(ai::monster_use);
+    ent.clipmask = MASK_MONSTERSOLID;
+    ent.state.old_origin = ent.state.origin;
+    ent.game.nextthink = time + FRAMETIME;
+    let classname = ent.game.classname.clone();
+    world.monster_start_item(key, &classname, fields);
 }
 
 // ==========================================================================
@@ -868,6 +890,57 @@ mod tests {
             ent.think.unwrap(),
             turret_driver_link as ThinkFn
         ));
+    }
+
+    /// C SP_turret_driver inlines only part of monster_start, so
+    /// max_health, air_finished, checkattack and the spawnflags stay as
+    /// the spawn left them.
+    #[test]
+    fn turret_driver_spawn_does_only_cs_inline_monster_setup() {
+        let mut world = test_world();
+        world.init_items();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.classname = "turret_driver".to_string();
+        ent.game.spawnflags = 1; // monster_start would make this AMBUSH
+        ent.state.origin = Vec3f::new(-32.0, 0.0, 48.0);
+        let spawn_fields = fields(&[("classname", "turret_driver"), ("item", "ammo_shells")]);
+        world.call_spawn(key, "turret_driver", &spawn_fields);
+
+        assert_eq!(world.level.total_monsters, 1);
+        let ent = world.entities.get(key).unwrap();
+        assert_ne!(ent.svflags & SvFlags::MONSTER.bits(), 0);
+        assert_ne!(ent.state.renderfx & q2_shared::constants::RF_FRAMELERP, 0);
+        assert_eq!(ent.game.takedamage, TakeDamage::Aim);
+        assert!(ent
+            .use_fn
+            .is_some_and(|f| std::ptr::fn_addr_eq(f, ai::monster_use as crate::entity::UseFn)));
+        assert_eq!(ent.clipmask, MASK_MONSTERSOLID);
+        assert_eq!(ent.state.old_origin, ent.state.origin);
+        assert_eq!(ent.game.nextthink, 1.1);
+        assert_eq!(ent.game.movetype, MoveType::Push);
+        assert!(ent.game.item.is_some(), "st.item looked up");
+        // What monster_start would have added and C's driver never gets.
+        assert_eq!(ent.game.max_health, 0);
+        assert_eq!(ent.game.spawnflags, 1);
+        let mi = ent.monsterinfo.as_ref().unwrap();
+        assert_eq!(mi.air_finished, 0.0);
+        assert!(mi.checkattack.is_none());
+    }
+
+    #[test]
+    fn turret_driver_is_removed_in_deathmatch() {
+        let mut world = test_world();
+        world.game.deathmatch = true;
+        let key = world.spawn().unwrap();
+        world.call_spawn(
+            key,
+            "turret_driver",
+            &fields(&[("classname", "turret_driver")]),
+        );
+        assert!(!world.entities.is_live(key));
+        assert_eq!(world.level.total_monsters, 0);
     }
 
     #[test]
