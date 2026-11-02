@@ -554,17 +554,6 @@ impl GameWorld {
             }
         }
 
-        // Add to the damage inflicted on a player this frame; the totals
-        // become screen blends and view kicks at the end of the frame.
-        if let Some(client) = self.client_mut(target) {
-            client.damage_parmor += psave;
-            // C: treat cheat/powerup savings the same as armor.
-            client.damage_armor += asave + save;
-            client.damage_blood += take;
-            client.damage_knockback += knockback as i32;
-            client.damage_from = point;
-        }
-
         // Entity survived — a monster gets angry, then pain. C: not for a
         // ducked monster or a client in god mode.
         if is_monster {
@@ -582,18 +571,29 @@ impl GameWorld {
         } else {
             true
         };
-        if !(feels_pain && take > 0) {
-            return;
-        }
-        if let Some(pain) = ent.pain {
-            pain(self, target, attacker, knockback, take);
-        }
-        // Nightmare mode monsters don't go into pain frames often.
-        if is_monster && self.game.skill == SKILL_HARDPLUS {
-            let time = self.level.time;
-            if let Some(ent) = self.entities.get_mut(target) {
-                ent.game.pain_debounce_time = time + 5.0;
+        if feels_pain && take > 0 {
+            if let Some(pain) = ent.pain {
+                pain(self, target, attacker, knockback, take);
             }
+            // Nightmare mode monsters don't go into pain frames often.
+            if is_monster && self.game.skill == SKILL_HARDPLUS {
+                let time = self.level.time;
+                if let Some(ent) = self.entities.get_mut(target) {
+                    ent.game.pain_debounce_time = time + 5.0;
+                }
+            }
+        }
+
+        // Add to the damage inflicted on a player this frame, after its
+        // pain as in C; the totals become screen blends and view kicks at
+        // the end of the frame.
+        if let Some(client) = self.client_mut(target) {
+            client.damage_parmor += psave;
+            // C: treat cheat/powerup savings the same as armor.
+            client.damage_armor += asave + save;
+            client.damage_blood += take;
+            client.damage_knockback += knockback as i32;
+            client.damage_from = point;
         }
     }
 
@@ -929,6 +929,33 @@ mod tests {
                 .map(|w| w[1]);
             assert_eq!(first, Some(te), "{item}");
         }
+    }
+
+    #[test]
+    fn a_players_pain_runs_before_the_hit_joins_the_damage_totals() {
+        // C T_Damage adds client->damage_* after targ->pain.
+        fn note_blood(world: &mut GameWorld, key: EntityKey, _: EntityKey, _: f32, _: i32) {
+            let blood = world.client(key).map_or(-1, |c| c.damage_blood);
+            world.entities.get_mut(key).unwrap().game.count = blood;
+        }
+        let mut world = crate::world::test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().pain = Some(note_blood);
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        assert_eq!(world.entities.get(key).unwrap().game.count, 0);
+        assert_eq!(world.client(key).unwrap().damage_blood, 10);
     }
 
     #[test]
