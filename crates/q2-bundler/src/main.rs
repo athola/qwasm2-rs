@@ -10,14 +10,18 @@
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     // Resolve from the repo root so the bundler works from any directory.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let pkg_dir = root.join("crates/q2-wasm/pkg");
-    let dist_dir = root.join("dist");
+    bundle(&root.join("crates/q2-wasm/pkg"), &root.join("dist"))?;
+    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
+    Ok(())
+}
 
+/// Read the wasm-pack output in `pkg_dir` and write `dist_dir/qwasm2.html`.
+fn bundle(pkg_dir: &Path, dist_dir: &Path) -> Result<PathBuf> {
     // Find the JS glue file
     let js_path = pkg_dir.join("q2_wasm.js");
     let wasm_path = pkg_dir.join("q2_wasm_bg.wasm");
@@ -61,7 +65,7 @@ fn main() -> Result<()> {
     let html = generate_html(&patched_js);
 
     // Write output
-    fs::create_dir_all(&dist_dir)?;
+    fs::create_dir_all(dist_dir)?;
     let output_path = dist_dir.join("qwasm2.html");
     fs::write(&output_path, &html)?;
 
@@ -71,9 +75,8 @@ fn main() -> Result<()> {
         output_path.display(),
         html_size as f64 / 1024.0
     );
-    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
 
-    Ok(())
+    Ok(output_path)
 }
 
 /// Patch the wasm-pack JS glue to load WASM from an inlined base64 string
@@ -425,6 +428,56 @@ mod tests {
         let glue = format!("import {{ helper }} from './snippets/x.js';\n{GLUE}");
         let err = patch_js_glue(&glue, "").unwrap_err().to_string();
         assert!(err.contains("import"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_wasm_url_appears_twice() {
+        let glue = format!("{GLUE}\nconst again = new URL('q2_wasm_bg.wasm', import.meta.url);\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("found 2"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_import_meta_url_is_left_over() {
+        let glue = format!("{GLUE}\nconst base = import.meta.url;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("import.meta.url"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_on_an_unhandled_export() {
+        let glue = format!("{GLUE}\nexport const extra = 1;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("export const extra"), "{err}");
+    }
+
+    #[test]
+    fn bundle_inlines_the_wasm_bytes_into_dist_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("q2_wasm.js"), GLUE).unwrap();
+        let wasm = b"\0asm\x01\0\0\0";
+        fs::write(pkg.join("q2_wasm_bg.wasm"), wasm).unwrap();
+
+        let out = bundle(&pkg, &dir.path().join("dist")).unwrap();
+
+        assert_eq!(out, dir.path().join("dist/qwasm2.html"));
+        let html = fs::read_to_string(&out).unwrap();
+        let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
+        assert!(html.contains(&inlined));
+        assert!(html.contains("await start_game('canvas', pakUrl);"));
+    }
+
+    #[test]
+    fn bundle_without_wasm_pack_output_says_how_to_build_it() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("q2_wasm.js"), GLUE).unwrap();
+        let err = bundle(dir.path(), &dir.path().join("dist"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("wasm-pack build"), "{err}");
+        assert!(!dir.path().join("dist").exists(), "nothing written");
     }
 
     #[test]
