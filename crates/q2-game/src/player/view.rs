@@ -1273,6 +1273,21 @@ mod tests {
     }
 
     #[test]
+    fn intermission_freezes_the_view_and_stops_lava_burning() {
+        let (mut world, key, _) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_LAVA);
+        world.level.intermission_time = 15.0;
+        let client = world.client_mut(key).unwrap();
+        client.ps.blend = [1.0, 0.0, 0.0, 0.5];
+        client.ps.fov = 110.0;
+        world.client_end_server_frame(key);
+        assert_eq!(health(&world, key), 100);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.blend[3], 0.0);
+        assert_eq!(client.ps.fov, 90.0);
+    }
+
+    #[test]
     fn slime_hurts_one_per_level_unless_the_envirosuit_is_on() {
         let (mut world, key, _) = swimmer();
         wade(&mut world, key, 3, CONTENTS_SLIME);

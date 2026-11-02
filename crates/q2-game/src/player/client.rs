@@ -817,6 +817,16 @@ impl GameWorld {
     /// Build one client's view, effects, sound and status bar for this
     /// frame. C ref: `ClientEndServerFrame` (player/view.c).
     pub fn client_end_server_frame(&mut self, key: EntityKey) {
+        // At the end-of-unit layout the player gets no normal movement
+        // attributes: no blend, the default fov, only the stats.
+        if self.level.intermission_time != 0.0 {
+            if let Some(client) = self.client_mut(key) {
+                client.ps.blend[3] = 0.0;
+                client.ps.fov = 90.0;
+            }
+            self.update_player_stats(key);
+            return;
+        }
         self.world_effects(key);
         // C works out the bob before P_DamageFeedback; the feedback does
         // not touch the bob, so the view offset computes it here.
