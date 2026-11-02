@@ -3,9 +3,9 @@
 //! Port of the fire functions of `g_weapon.c`, with C's damage, speeds,
 //! models and temp entities. The fire sounds are the client's (muzzle
 //! flashes).
-//! The fire functions also make p_weapon.c's PNOISE_WEAPON `PlayerNoise`
-//! at the muzzle when a client fires (a no-op for monsters), so the
-//! player's weapon code does not repeat it.
+//! As in C, the weapon noise (PNOISE_WEAPON `PlayerNoise`) is the player
+//! fire routines' (player/weapon.rs), once per shot; these functions make
+//! only the impact noise.
 //!
 //! # Weapon types
 //! - **Hitscan**: fire_bullet, fire_shotgun, fire_rail, fire_hit — instant trace
@@ -365,6 +365,12 @@ pub fn bfg_touch(
     world
         .gi
         .sound(number, CHAN_VOICE, boom, 1.0, ATTN_NORM, 0.0);
+    // C reads `other->takedamage` again here, after the damage; a freed
+    // edict is zeroed, so one that is gone takes no damage.
+    let other_takes_damage = world
+        .entities
+        .get(other_key)
+        .is_some_and(|e| e.in_use && e.game.takedamage != TakeDamage::No);
     let sprite = world.gi.model_index("sprites/s_bfg3.sp2");
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(self_key) else {
@@ -372,7 +378,10 @@ pub fn bfg_touch(
     };
     ent.solid = Solid::Not;
     ent.touch = None;
-    ent.state.origin -= ent.velocity * FRAMETIME;
+    // Move it back a bit from walls so the effects aren't cut off.
+    if !other_takes_damage {
+        ent.state.origin -= ent.velocity.normalize_or_zero() * 40.0;
+    }
     ent.velocity = Vec3f::ZERO;
     ent.state.modelindex = sprite;
     ent.state.frame = 0;
@@ -418,7 +427,8 @@ pub fn bfg_explode(world: &mut GameWorld, self_key: EntityKey) {
                 continue;
             }
             let dist = (origin - center).length();
-            let points = radius_dmg as f32 * (1.0 - (dist / radius).sqrt());
+            // C: the division is float, the sqrt and product double.
+            let points = (radius_dmg as f64 * (1.0 - ((dist / radius) as f64).sqrt())) as f32;
             temp_entity(
                 world,
                 TE_BFG_EXPLOSION,
@@ -665,10 +675,14 @@ impl GameWorld {
             bolt.game.nextthink = self.level.time + 2.0;
         }
         self.launch_projectile(bolt_key, dir, "models/objects/laser/tris.md2");
+        // C registers the loop sound after the model.
+        let fly = self.gi.sound_index("misc/lasfly.wav");
+        if let Some(bolt) = self.entities.get_mut(bolt_key) {
+            bolt.state.sound = fly;
+        }
         check_dodge(self, owner, start, dir, speed);
 
         self.link_entity(bolt_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
 
         // A muzzle behind a wall or inside a target hits it at once.
         let Some(owner_origin) = self.entities.get(owner).map(|e| e.state.origin) else {
@@ -721,7 +735,6 @@ impl GameWorld {
             vspread,
             means_of_death,
         );
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// One bullet: traced from the muzzle with spread, redirected and
@@ -907,7 +920,6 @@ impl GameWorld {
                 means_of_death,
             );
         }
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Fire a rocket. Creates a projectile entity.
@@ -945,16 +957,19 @@ impl GameWorld {
             rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
+        // C registers the loop sound after the model.
+        let fly = self.gi.sound_index("weapons/rockfly.wav");
+        if let Some(rocket) = self.entities.get_mut(rocket_key) {
+            rocket.state.sound = fly;
+        }
 
         check_dodge(self, owner, start, dir, speed);
         self.link_entity(rocket_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Fire a grenade. Creates a bouncing projectile entity.
-    /// C ref: `fire_grenade` (g_weapon.c:646-684). C adds `crandom() * 10`
-    /// jitter to the upward and sideways push; there is no game RNG, so
-    /// the push is the C mean.
+    /// C ref: `fire_grenade` (g_weapon.c), with its two `crandom() * 10`
+    /// offsets up and to the right.
     #[allow(clippy::too_many_arguments)]
     pub fn fire_grenade(
         &mut self,
@@ -996,7 +1011,6 @@ impl GameWorld {
         self.launch_projectile(gren_key, dir, "models/objects/grenade/tris.md2");
 
         self.link_entity(gren_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// A hand grenade: tossed up and to a random side, set to go off after
@@ -1073,7 +1087,6 @@ impl GameWorld {
         let mut ignore = Some(owner);
         let mut water = false;
         let mut mask = MASK_SHOT | CONTENTS_SLIME | CONTENTS_LAVA;
-        self.player_noise(owner, start, PlayerNoise::Weapon);
         let mut tr = Trace::default();
         while let Some(pass) = ignore {
             tr = self.gi.trace(
@@ -1142,8 +1155,8 @@ impl GameWorld {
         self.player_noise(owner, tr.endpos, PlayerNoise::Impact);
     }
 
-    /// Fire a BFG projectile. C ref: `fire_bfg` (g_weapon.c:1188-1231),
-    /// without the laser think (the blast flies until it hits or times out).
+    /// Fire a BFG projectile. C ref: `fire_bfg` (g_weapon.c); `bfg_think`
+    /// lasers nearby targets each frame until the ball hits something.
     pub fn fire_bfg(
         &mut self,
         owner: EntityKey,
@@ -1186,7 +1199,6 @@ impl GameWorld {
         check_dodge(self, owner, start, dir, speed);
 
         self.link_entity(bfg_key);
-        self.player_noise(owner, start, PlayerNoise::Weapon);
     }
 
     /// Melee attack on `owner`'s enemy. `aim` is (range, right offset, up
@@ -1863,6 +1875,21 @@ mod tests {
         assert_eq!(effects("rocket"), EF_ROCKET);
         assert_eq!(effects("grenade"), EF_GRENADE);
         assert_eq!(effects("bfg blast"), EF_BFG | EF_ANIM_ALLFAST);
+        // C's in-flight loop sounds; the launcher grenade flies silent.
+        let sound = |world: &GameWorld, class: &str| {
+            let key = world.find_by_classname(None, class).unwrap();
+            world.entities.get(key).unwrap().state.sound
+        };
+        for (class, wav) in [
+            ("bolt", "misc/lasfly.wav"),
+            ("rocket", "weapons/rockfly.wav"),
+            ("bfg blast", "weapons/bfg__l1a.wav"),
+        ] {
+            let index = world.gi.sound_index(wav);
+            assert_ne!(index, 0);
+            assert_eq!(sound(&world, class), index, "{class}");
+        }
+        assert_eq!(sound(&world, "grenade"), 0);
     }
 
     #[test]
@@ -2365,6 +2392,41 @@ mod tests {
         assert_eq!(health(target), 800);
         assert_eq!(health(near), 1000 - 175);
         assert_eq!(health(far), 1000);
+    }
+
+    #[test]
+    fn a_bfg_ball_backs_40_off_a_wall_but_stays_where_it_hits_a_target() {
+        // C bfg_touch: only off something that takes no damage, and by
+        // 40 units whatever the speed.
+        let (mut world, owner, _) = shooter();
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 300, 1000.0);
+        let ball = world.find_by_classname(None, "bfg blast").unwrap();
+        world.entities.get_mut(ball).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let wall = world.entities.key_for_number(0).unwrap();
+        bfg_touch(&mut world, ball, wall, None, None);
+        let at = world.entities.get(ball).unwrap().state.origin;
+        assert_eq!(at, Vec3f::new(60.0, 0.0, 0.0));
+
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 200, 400, 1000.0);
+        let ball = world.find_by_classname(Some(ball), "bfg blast").unwrap();
+        world.entities.get_mut(ball).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let target = target_at(&mut world, Vec3f::new(110.0, 0.0, 0.0), 1000);
+        bfg_touch(&mut world, ball, target, None, None);
+        let at = world.entities.get(ball).unwrap().state.origin;
+        assert_eq!(at, Vec3f::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn bfg_explode_falls_off_in_double_like_c() {
+        // C: radius_dmg * (1.0 - sqrt(dist / dmg_radius)) in double gives
+        // 455 at 8.1 units; the same sum in float gives 454.
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 500, 400, 1000.0);
+        let ball = world.find_by_classname(None, "bfg blast").unwrap();
+        let target = target_at(&mut world, Vec3f::new(8.1, 0.0, 0.0), 1000);
+        bfg_explode(&mut world, ball);
+        assert_eq!(world.entities.get(target).unwrap().game.health, 1000 - 455);
     }
 
     #[test]

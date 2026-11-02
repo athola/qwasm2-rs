@@ -521,8 +521,8 @@ pub fn weapon_generic(
 }
 
 /// A blaster or hyperblaster bolt from `g_offset` past the usual muzzle,
-/// with kick and muzzle flash. C ref: `Blaster_Fire` (player/weapon.c);
-/// `fire_blaster` raises the weapon noise.
+/// with kick, muzzle flash and weapon noise. C ref: `Blaster_Fire`
+/// (player/weapon.c).
 pub fn blaster_fire(
     world: &mut GameWorld,
     key: EntityKey,
@@ -547,6 +547,7 @@ pub fn blaster_fire(
     world.fire_blaster(key, start, forward, damage, 1000, effect, hyper);
     let flash = if hyper { MZ_HYPERBLASTER } else { MZ_BLASTER };
     world.player_muzzle_flash(key, flash | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
 }
 
 /// C ref: `Weapon_Blaster_Fire` (player/weapon.c).
@@ -674,6 +675,7 @@ pub fn weapon_shotgun_fire(world: &mut GameWorld, key: EntityKey) {
         MeansOfDeath::Shotgun,
     );
     world.player_muzzle_flash(key, MZ_SHOTGUN | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     step_gunframe(world, key);
     use_ammo(world, key, 1);
 }
@@ -717,6 +719,7 @@ pub fn weapon_supershotgun_fire(world: &mut GameWorld, key: EntityKey) {
         );
     }
     world.player_muzzle_flash(key, MZ_SSHOTGUN | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     step_gunframe(world, key);
     use_ammo(world, key, 2);
 }
@@ -788,6 +791,7 @@ pub fn machinegun_fire(world: &mut GameWorld, key: EntityKey) {
         MeansOfDeath::Machinegun,
     );
     world.player_muzzle_flash(key, MZ_MACHINEGUN | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     use_ammo(world, key, 1);
     let back = (world.random() + 0.25) as i32;
     attack_animation(world, key, back);
@@ -872,10 +876,13 @@ pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
         }
     }
     let viewheight = viewheight(world, key);
+    // C makes the noise at the last bullet's muzzle (`shots` is at least 1).
+    let mut start = Vec3f::ZERO;
     for _ in 0..shots {
         let r = 7.0 + world.crandom() * 4.0;
         let u = world.crandom() * 4.0;
-        let (start, forward, _) = world.shot_source(key, [0.0, r, u + viewheight - 8.0]);
+        let forward;
+        (start, forward, _) = world.shot_source(key, [0.0, r, u + viewheight - 8.0]);
         world.fire_bullet(
             key,
             start,
@@ -888,6 +895,7 @@ pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
         );
     }
     world.player_muzzle_flash(key, (MZ_CHAINGUN1 + shots - 1) | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     use_ammo(world, key, shots);
 }
 
@@ -983,6 +991,7 @@ pub fn weapon_rocketlauncher_fire(world: &mut GameWorld, key: EntityKey) {
     kick(world, key, forward, 2.0, -1.0);
     world.fire_rocket(key, start, forward, damage, 650, 120.0, radius_damage);
     world.player_muzzle_flash(key, MZ_ROCKET | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     step_gunframe(world, key);
     use_ammo(world, key, 1);
 }
@@ -1011,6 +1020,7 @@ pub fn weapon_grenadelauncher_fire(world: &mut GameWorld, key: EntityKey) {
     kick(world, key, forward, 2.0, -1.0);
     world.fire_grenade(key, start, forward, damage, 600, 2.5, radius);
     world.player_muzzle_flash(key, MZ_GRENADE | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     step_gunframe(world, key);
     use_ammo(world, key, 1);
 }
@@ -1046,6 +1056,7 @@ pub fn weapon_railgun_fire(world: &mut GameWorld, key: EntityKey) {
     kick(world, key, forward, 3.0, -3.0);
     world.fire_rail(key, start, forward, damage, kick_power);
     world.player_muzzle_flash(key, MZ_RAILGUN | silenced);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     step_gunframe(world, key);
     use_ammo(world, key, 1);
 }
@@ -1062,6 +1073,12 @@ pub fn weapon_bfg_fire(world: &mut GameWorld, key: EntityKey) {
     if world.client(key).is_some_and(|c| c.ps.gunframe == 9) {
         world.player_muzzle_flash(key, MZ_BFG | silenced);
         step_gunframe(world, key);
+        // C passes `start` here before it is ever set (undefined); the
+        // noise is made at the muzzle the blast will leave from.
+        let start = world
+            .shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0])
+            .0;
+        world.player_noise(key, start, PlayerNoise::Weapon);
         return;
     }
     // Cells can go down during the windup (power armor hits).
@@ -1085,6 +1102,7 @@ pub fn weapon_bfg_fire(world: &mut GameWorld, key: EntityKey) {
     }
     world.fire_bfg(key, start, forward, damage, 400, 1000.0);
     step_gunframe(world, key);
+    world.player_noise(key, start, PlayerNoise::Weapon);
     use_ammo(world, key, 50);
 }
 
@@ -1488,15 +1506,7 @@ mod tests {
         let monster = listening_monster(&mut world);
         assert!(!crate::ai::find_target(&mut world, monster), "unseen");
 
-        world.fire_blaster(
-            who,
-            Vec3f::new(0.0, 0.0, 30.0),
-            Vec3f::Y,
-            15,
-            1000,
-            0,
-            false,
-        );
+        weapon_blaster_fire(&mut world, who);
         let noise = world.level.sound_entity.expect("the shot is heard");
         assert_eq!(world.entities.get(noise).unwrap().owner, Some(who));
 
@@ -2086,6 +2096,96 @@ mod tests {
         think_n(&mut world, key, 8);
         assert!(spawned(&world, "bfg blast").is_empty());
         assert_eq!(inventory(&world, key, "Cells"), 49);
+    }
+
+    fn silence(world: &mut GameWorld, key: EntityKey) {
+        world.client_mut(key).unwrap().silencer_shots = 30;
+    }
+
+    fn silencer_shots(world: &GameWorld, key: EntityKey) -> i32 {
+        world.client(key).unwrap().silencer_shots
+    }
+
+    #[test]
+    fn one_trigger_of_each_gun_uses_one_silencer_charge() {
+        // C: each player fire routine calls PlayerNoise(PNOISE_WEAPON) once.
+        for (weapon, ammo) in [
+            ("Blaster", "Cells"),
+            ("Shotgun", "Shells"),
+            ("Super Shotgun", "Shells"),
+            ("Machinegun", "Bullets"),
+            ("Rocket Launcher", "Rockets"),
+            ("Grenade Launcher", "Grenades"),
+            ("Railgun", "Slugs"),
+        ] {
+            let (mut world, key, _) = ready();
+            equip(&mut world, key, weapon, ammo, 10);
+            silence(&mut world, key);
+            hold(&mut world, key, true); // the machinegun fires while held
+            press(&mut world, key);
+            assert_eq!(silencer_shots(&world, key), 29, "{weapon}");
+        }
+    }
+
+    #[test]
+    fn a_three_shot_chaingun_frame_uses_one_silencer_charge() {
+        let (mut world, key, mock) = ready();
+        equip(&mut world, key, "Chaingun", "Bullets", 200);
+        hold(&mut world, key, true);
+        think_n(&mut world, key, 9); // frames 6..14
+        silence(&mut world, key);
+        world.think_weapon(key); // frame 15: three
+        assert_eq!(last_flash(&mock), Some(MZ_CHAINGUN3 | MZ_SILENCED));
+        assert_eq!(silencer_shots(&world, key), 29);
+    }
+
+    #[test]
+    fn a_hyperblaster_bolt_uses_one_silencer_charge() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "HyperBlaster", "Cells", 50);
+        silence(&mut world, key);
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        assert_eq!(bolts(&world), 1);
+        assert_eq!(silencer_shots(&world, key), 29);
+    }
+
+    #[test]
+    fn the_bfg_windup_and_launch_each_make_a_weapon_noise() {
+        // C weapon_bfg_fire: PlayerNoise on frame 9 and again on frame 17.
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "BFG10K", "Cells", 60);
+        silence(&mut world, key);
+        press(&mut world, key); // 9
+        assert_eq!(silencer_shots(&world, key), 29);
+        think_n(&mut world, key, 8); // 10..17
+        assert_eq!(spawned(&world, "bfg blast").len(), 1);
+        assert_eq!(silencer_shots(&world, key), 28);
+    }
+
+    #[test]
+    fn the_bfg_windup_alone_is_heard() {
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "BFG10K", "Cells", 60);
+        world.level.framenum = 100;
+        press(&mut world, key); // 9
+        let noise = world.level.sound_entity.expect("the windup is heard");
+        assert_eq!(world.entities.get(noise).unwrap().owner, Some(key));
+        assert!(spawned(&world, "bfg blast").is_empty());
+    }
+
+    #[test]
+    fn a_hand_grenade_throw_makes_no_weapon_noise() {
+        // C weapon_grenade_fire never calls PlayerNoise(PNOISE_WEAPON).
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        silence(&mut world, key);
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        hold(&mut world, key, false);
+        think_n(&mut world, key, 20);
+        assert!(!spawned(&world, "hgrenade").is_empty());
+        assert_eq!(silencer_shots(&world, key), 30);
     }
 
     #[test]
