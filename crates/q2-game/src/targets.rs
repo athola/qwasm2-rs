@@ -2,7 +2,7 @@
 //!
 //! Port of `g_target.c`. Each target has a `use` callback that fires when
 //! the entity is triggered. Ported: target_explosion, target_speaker,
-//! target_changelevel (without intermission), target_secret, target_goal,
+//! target_changelevel, target_secret, target_goal,
 //! target_help, target_laser.
 //! The other C target classes (temp_entity, splash, spawner, blaster,
 //! crosslevel_*, lightramp, earthquake) are registered as
