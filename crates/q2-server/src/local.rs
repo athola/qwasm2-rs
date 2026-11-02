@@ -43,6 +43,11 @@ pub struct LocalGame {
     /// The entities sent to the local client in the last frame (C
     /// `SV_BuildClientFrame` into `client->frames`).
     client_frame: Vec<EntityState>,
+    /// The messages and sounds sent with the last server frame and not yet
+    /// taken (C `client->netchan.message` and `client->datagram` as
+    /// `SV_SendClientMessages` sends them).
+    sent_messages: Vec<Vec<u8>>,
+    sent_sounds: Vec<crate::game_iface::SoundEvent>,
 }
 
 impl LocalGame {
@@ -82,6 +87,8 @@ impl LocalGame {
             cmd,
             next_map,
             client_frame: Vec::new(),
+            sent_messages: Vec::new(),
+            sent_sounds: Vec::new(),
         };
         local.send_client_frame();
         Ok(local)
@@ -166,6 +173,13 @@ impl LocalGame {
         );
         if self.sv.framenum != framenum {
             self.send_client_frame();
+            // C SV_SendClientMessages sends what ClientThink and the game
+            // frame queued only now, after the game frame: a muzzle flash
+            // from a command run between frames arrives with the next one.
+            // What the map load's settling frames queued goes out with the
+            // first game frame.
+            self.sent_messages.extend(self.gi.take_messages());
+            self.sent_sounds.extend(self.gi.take_sounds());
         }
         let commands = self.gi.take_commands();
         if !commands.is_empty() {
@@ -181,17 +195,22 @@ impl LocalGame {
         self.next_map.borrow_mut().take()
     }
 
-    /// The sounds the game started since the last call (C `svc_sound`
-    /// messages). The local client hears them all; C's PHS culling and
-    /// reliable routing only decide which network client is sent one.
-    pub fn take_sounds(&self) -> Vec<crate::game_iface::SoundEvent> {
-        self.gi.take_sounds()
+    /// The sounds the game started before the server frames run since the
+    /// last call (C `svc_sound` messages, sent by `SV_SendClientMessages`
+    /// after each game frame). The local client hears them all; C's PHS
+    /// culling and reliable routing only decide which network client is
+    /// sent one.
+    pub fn take_sounds(&mut self) -> Vec<crate::game_iface::SoundEvent> {
+        std::mem::take(&mut self.sent_sounds)
     }
 
-    /// The messages the game multicast since the last call (C
-    /// `svc_muzzleflash`, `svc_temp_entity`, ...), each whole, in order.
-    pub fn take_messages(&self) -> Vec<Vec<u8>> {
-        self.gi.take_messages()
+    /// The messages the game multicast or printed before the server frames
+    /// run since the last call (C `svc_muzzleflash`, `svc_temp_entity`,
+    /// `svc_print`, ...), each whole, in order. C ref: `SV_Frame` returns
+    /// before `SV_SendClientMessages` until a game frame is due, so what
+    /// `think` and `client_command` queue waits for the next game frame.
+    pub fn take_messages(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.sent_messages)
     }
 
     /// Load `level`'s map from `bsp` into the same game and put the local
@@ -317,6 +336,7 @@ fn player_eye(game: &dyn GameExport) -> Option<Vec3f> {
 mod tests {
     use super::*;
     use crate::test_support::NullGame;
+    use q2_game::traits::GameImport;
     use std::cell::Cell;
 
     /// A local game whose client slot is in `client` state, and the counts
@@ -340,19 +360,43 @@ mod tests {
             cmd: CmdSystem::new(),
             next_map: Rc::default(),
             client_frame: Vec::new(),
+            sent_messages: Vec::new(),
+            sent_sounds: Vec::new(),
         };
         (local, thinks, commands)
     }
 
     #[test]
-    fn a_print_to_the_local_player_reaches_the_client() {
+    fn a_print_to_the_local_player_reaches_the_client_with_the_next_server_frame() {
         // C Cmd_Use_f: `gi.cprintf(ent, PRINT_HIGH, "Out of item: %s\n")`.
+        // C SV_Frame sends client messages only after a game frame.
         let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
         local.take_messages();
         local.client_command("use Shotgun");
+        assert!(local.take_messages().is_empty(), "no server frame yet");
+        local.frame(50_000);
+        assert!(
+            local.take_messages().is_empty(),
+            "the game frame is not due"
+        );
+        local.frame(50_000);
         let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
         print.extend_from_slice(b"Out of item: Shotgun\n\0");
         assert_eq!(local.take_messages(), vec![print]);
+    }
+
+    #[test]
+    fn a_sound_started_between_server_frames_waits_for_the_next_one() {
+        // C SV_StartSound writes into the client's datagram, which
+        // SV_SendClientMessages sends after the next game frame.
+        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.take_sounds();
+        local.gi.sound(Some(LOCAL_PLAYER), 0, 1, 1.0, 1.0, 0.0);
+        assert!(local.take_sounds().is_empty(), "no server frame yet");
+        local.frame(100_000);
+        assert_eq!(local.take_sounds().len(), 1);
     }
 
     #[test]
