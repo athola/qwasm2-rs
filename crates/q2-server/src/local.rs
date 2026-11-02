@@ -89,8 +89,13 @@ impl LocalGame {
 
     /// Run a console command as the local player's (C
     /// `SV_ExecuteUserCommand` for a command the server does not handle
-    /// itself): `use Shotgun`, `weapnext`, `invdrop`, ...
+    /// itself): `use Shotgun`, `weapnext`, `invdrop`, ... C passes it to
+    /// the game only in a game map (`sv.state == ss_game`), so a picture
+    /// level ignores it.
     pub fn client_command(&mut self, text: &str) {
+        if self.sv.state != ServerState::Game {
+            return;
+        }
         self.gi.set_client_command(text);
         self.game.client_command(LOCAL_PLAYER);
     }
@@ -314,11 +319,12 @@ mod tests {
     use crate::test_support::NullGame;
     use std::cell::Cell;
 
-    /// A local game whose client slot is in `client` state, and the count
-    /// of `client_think` calls that reach the game.
-    fn local_with_client(client: ClientState) -> (LocalGame, Rc<Cell<u32>>) {
+    /// A local game whose client slot is in `client` state, and the counts
+    /// of `client_think` and `client_command` calls that reach the game.
+    fn local_with_client(client: ClientState) -> (LocalGame, Rc<Cell<u32>>, Rc<Cell<u32>>) {
         let game = NullGame::default();
         let thinks = game.thinks.clone();
+        let commands = game.commands.clone();
         let mut svs = ServerStatic::default();
         svs.init_game(1);
         svs.clients[0].state = client;
@@ -335,7 +341,7 @@ mod tests {
             next_map: Rc::default(),
             client_frame: Vec::new(),
         };
-        (local, thinks)
+        (local, thinks, commands)
     }
 
     #[test]
@@ -350,8 +356,24 @@ mod tests {
     }
 
     #[test]
+    fn a_client_command_reaches_the_game_in_a_game_map() {
+        let (mut local, _, commands) = local_with_client(ClientState::Spawned);
+        local.client_command("use Shotgun");
+        assert_eq!(commands.get(), 1);
+    }
+
+    #[test]
+    fn a_client_command_on_a_picture_level_does_not_reach_the_game() {
+        // C SV_ExecuteUserCommand: `ge->ClientCommand` only in `ss_game`.
+        let (mut local, _, commands) = local_with_client(ClientState::Connected);
+        local.sv.state = ServerState::Pic;
+        local.client_command("use Shotgun");
+        assert_eq!(commands.get(), 0);
+    }
+
+    #[test]
     fn think_runs_client_think_for_a_spawned_client() {
-        let (mut local, thinks) = local_with_client(ClientState::Spawned);
+        let (mut local, thinks, _) = local_with_client(ClientState::Spawned);
         local.think(&UserCmd::default());
         assert_eq!(thinks.get(), 1);
     }
@@ -359,14 +381,14 @@ mod tests {
     #[test]
     fn think_is_ignored_while_the_client_is_only_connected() {
         // A picture level or a failed map load leaves the client Connected.
-        let (mut local, thinks) = local_with_client(ClientState::Connected);
+        let (mut local, thinks, _) = local_with_client(ClientState::Connected);
         local.think(&UserCmd::default());
         assert_eq!(thinks.get(), 0);
     }
 
     #[test]
     fn think_is_ignored_for_a_free_client_slot() {
-        let (mut local, thinks) = local_with_client(ClientState::Free);
+        let (mut local, thinks, _) = local_with_client(ClientState::Free);
         local.think(&UserCmd::default());
         assert_eq!(thinks.get(), 0);
     }
