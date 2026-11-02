@@ -14,6 +14,7 @@
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage};
 use crate::world::GameWorld;
+use q2_shared::constants::CHAN_RELIABLE;
 use q2_shared::types::{Multicast, Solid, Vec3f};
 use std::collections::HashMap;
 
@@ -218,11 +219,11 @@ fn target_speaker_use(
         };
         return;
     }
-    // CHAN_VOICE, plus CHAN_RELIABLE with spawnflag 4.
+    // Spawnflag 4 sends it reliably.
     let chan = if ent.game.spawnflags & 4 != 0 {
-        2 | 16
+        CHAN_VOICE | CHAN_RELIABLE
     } else {
-        2
+        CHAN_VOICE
     };
     let (origin, noise, volume, attenuation) = (
         ent.state.origin,
@@ -331,7 +332,6 @@ fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
         };
         let hurtable = h.game.takedamage != TakeDamage::No
             && !h.game.flags.contains(EntityFlags::IMMUNE_LASER);
-        let body = h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some();
         if hurtable {
             world.t_damage(
                 hit,
@@ -346,6 +346,12 @@ fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
                 MeansOfDeath::TargetLaser,
             );
         }
+        // Tested after the damage, as C does: a monster it gibbed has lost
+        // SVF_MONSTER, and a freed one (C zeroes its svflags) is gone.
+        let body = world
+            .entities
+            .get(hit)
+            .is_some_and(|h| h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some());
         if !body {
             let moved = world
                 .entities
@@ -458,7 +464,11 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
         match target {
             Some((name, found)) => {
                 if found.is_none() {
-                    bad_target = Some((ent.state.origin, name.to_string()));
+                    bad_target = Some(format!(
+                        "{} at {}: {name} is a bad target\n",
+                        ent.game.classname,
+                        crate::ai::vtos(ent.state.origin)
+                    ));
                 }
                 ent.game.enemy = found;
             }
@@ -476,10 +486,8 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
     ent.mins = Vec3f::splat(-8.0);
     ent.maxs = Vec3f::splat(8.0);
     let on = ent.game.spawnflags & LASER_ON != 0;
-    if let Some((origin, name)) = bad_target {
-        world.gi.dprintf(&format!(
-            "target_laser at {origin:?}: {name} is a bad target\n"
-        ));
+    if let Some(message) = bad_target {
+        world.gi.dprintf(&message);
     }
     world.link_entity(self_key);
     if on {
@@ -890,6 +898,34 @@ mod tests {
     }
 
     #[test]
+    fn a_target_laser_that_hits_nothing_ends_on_the_world_with_sparks() {
+        // SV_Trace names the world when nothing is hit, so C's not-a-body
+        // branch runs: sparks (the laser just turned on) at the far end.
+        let (mut world, laser, gi) = laser_world(1);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        start(&mut world, laser);
+        assert_eq!(laser_sparks(&gi), 1);
+        assert_eq!(
+            world.entities.get(laser).unwrap().state.old_origin,
+            Vec3f::new(2048.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_target_laser_with_a_missing_target_warns_in_c_form() {
+        let (mut world, laser, gi) = laser_world(0);
+        let ent = world.entities.get_mut(laser).unwrap();
+        ent.game.target = "nowhere".into();
+        ent.state.origin = Vec3f::new(1.0, 2.0, 3.0);
+        let start = ent.think.unwrap();
+        start(&mut world, laser);
+        assert_eq!(
+            *gi.dprints.borrow(),
+            ["target_laser at (1 2 3): nowhere is a bad target\n"]
+        );
+    }
+
+    #[test]
     fn an_untargeted_target_laser_clears_its_angles_like_g_setmovedir() {
         let (mut world, laser, gi) = laser_world(1);
         world.entities.get_mut(laser).unwrap().state.angles = Vec3f::new(0.0, 90.0, 0.0);
@@ -939,6 +975,60 @@ mod tests {
         assert_eq!(world.entities.get(laser).unwrap().game.nextthink, 2.1);
     }
 
+    /// C ThrowHead: the gibbed monster's edict stays, minus SVF_MONSTER.
+    fn die_into_a_head(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.entities.get_mut(key).unwrap().svflags &= !SvFlags::MONSTER.bits();
+    }
+
+    /// C BecomeExplosion1: the monster's edict is freed.
+    fn die_and_vanish(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.free_entity(key);
+    }
+
+    #[test]
+    fn a_target_laser_stops_at_a_monster_its_damage_gibs_or_frees() {
+        // C target_laser_think tests SVF_MONSTER after T_Damage, so a
+        // monster the beam kills into a head or an explosion ends it.
+        for die in [die_into_a_head as crate::entity::DieFn, die_and_vanish] {
+            let (mut world, laser, gi) = laser_world(1);
+            let start = world.entities.get(laser).unwrap().think.unwrap();
+            let monster = world.spawn().unwrap();
+            let m = world.entities.get_mut(monster).unwrap();
+            m.svflags |= SvFlags::MONSTER.bits();
+            m.game.takedamage = TakeDamage::Yes;
+            m.game.health = 1;
+            m.die = Some(die);
+            let at = Vec3f::new(100.0, 0.0, 0.0);
+            let through = q2_shared::types::Trace {
+                fraction: 0.05,
+                endpos: at,
+                ent_index: world.number_of(monster),
+                ..Default::default()
+            };
+            gi.queued_traces
+                .borrow_mut()
+                .extend([through, wall(Vec3f::new(300.0, 0.0, 0.0))]);
+            start(&mut world, laser);
+            assert_eq!(gi.trace_pass_ents.borrow().len(), 1, "one trace");
+            assert_eq!(world.entities.get(laser).unwrap().state.old_origin, at);
+            assert_eq!(laser_sparks(&gi), 1, "sparks where it stopped");
+        }
+    }
+
     #[test]
     fn a_target_laser_follows_its_target_and_sparks_when_the_aim_changes() {
         let (mut world, laser, gi) = laser_world(1);
@@ -952,13 +1042,13 @@ mod tests {
         start(&mut world, laser);
         assert_eq!(world.entities.get(laser).unwrap().game.enemy, Some(target));
         assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::Y);
-        let before = laser_sparks(&gi);
+        assert_eq!(laser_sparks(&gi), 1, "turned on: sparks at the world");
         world.entities.get_mut(target).unwrap().absmin = Vec3f::new(100.0, 0.0, -10.0);
         gi.queued_traces.borrow_mut().push_back(wall(Vec3f::X));
         let think = world.entities.get(laser).unwrap().think.unwrap();
         think(&mut world, laser);
         assert_eq!(world.entities.get(laser).unwrap().game.movedir, Vec3f::X);
-        assert_eq!(laser_sparks(&gi), before + 1);
+        assert_eq!(laser_sparks(&gi), 2);
     }
 
     #[test]
@@ -1300,7 +1390,15 @@ mod tests {
         }
         target_speaker_use(&mut world, speaker, speaker, speaker);
         let played = gi.positioned_sounds.borrow().clone();
-        assert_eq!(played, vec![(Vec3f::new(1.0, 2.0, 3.0), number, 2 | 16, 9)]);
+        assert_eq!(
+            played,
+            vec![(
+                Vec3f::new(1.0, 2.0, 3.0),
+                number,
+                CHAN_VOICE | CHAN_RELIABLE,
+                9
+            )]
+        );
     }
 
     #[test]

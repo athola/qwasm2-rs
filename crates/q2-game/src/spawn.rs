@@ -161,9 +161,7 @@ pub type FinishFn = fn(&mut GameWorld, EntityKey, &HashMap<String, String>);
 /// `GameWorld` half, both applied by `call_spawn`. The last column is true
 /// when the C spawn function ends in `walkmonster_start`,
 /// `flymonster_start` or `swimmonster_start`, so `call_spawn` runs
-/// `monster_start` for it. `turret_driver` is the one other row set: C
-/// SP_turret_driver inlines only part of `monster_start` (the count,
-/// flags, use and clipmask), and the port runs the whole of it.
+/// `monster_start` for it.
 pub type SpawnEntry = (
     &'static str,
     SpawnFn,
@@ -288,7 +286,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
 
     ("turret_breach", turret::sp_turret_breach, None, Some(turret::turret_breach_finish), false),
     ("turret_base", turret::sp_turret_base, None, None, false),
-    ("turret_driver", turret::sp_turret_driver, Some("models/monsters/infantry/tris.md2"), None, true),
+    ("turret_driver", turret::sp_turret_driver, Some("models/monsters/infantry/tris.md2"), Some(turret::turret_driver_finish), false),
 ];
 
 /// The `SPAWNS` row for `classname`, searched in order as C ED_CallSpawn
@@ -680,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn monster_rows_are_c_monster_start_spawns_plus_turret_driver() {
+    fn monster_rows_are_c_monster_start_spawns() {
         // grep -l "monster_start(self)" ~/Qwasm2/src/game/monster/*/*.c
         const C_MONSTERS: &[&str] = &[
             "misc_insane",
@@ -706,12 +704,6 @@ mod tests {
             "monster_boss2",
             "monster_makron",
             "monster_jorg",
-            // The exception: C SP_turret_driver never calls monster_start;
-            // it inlines part of it (the monster count, SVF_MONSTER,
-            // monster_use, the clipmask, st.item). The port runs the whole
-            // of monster_start on it, which also sets max_health,
-            // air_finished and the default checkattack.
-            "turret_driver",
         ];
         let monsters: Vec<&str> = SPAWNS.iter().filter(|e| e.4).map(|e| e.0).collect();
         assert_eq!(monsters, C_MONSTERS);
