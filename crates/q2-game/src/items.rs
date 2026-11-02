@@ -931,7 +931,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -951,7 +951,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -971,7 +971,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -991,7 +991,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -1011,7 +1011,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -1031,7 +1031,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -1051,7 +1051,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -1071,7 +1071,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -1091,7 +1091,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             armor_info: None,
             pickup: Some(pickup_key),
             use_fn: None,
-            drop_fn: None,
+            drop_fn: Some(drop_general),
             view_model: "",
             weaponthink: None,
             precaches: "",
@@ -3422,6 +3422,29 @@ mod tests {
         drop_fn(&mut world, key, quad);
         assert_eq!(world.client(key).unwrap().pers.inventory[quad], 0);
         assert!(world.find_by_classname(None, "item_quad").is_some());
+    }
+
+    #[test]
+    fn keys_drop_as_items_like_c_drop_general() {
+        // C g_items.c gives every key Drop_General.
+        let (mut world, key, _) = powered();
+        let keys: Vec<usize> = (0..world.items.len())
+            .filter(|&i| world.items[i].flags.contains(ItemFlags::KEY))
+            .collect();
+        assert_eq!(keys.len(), 9);
+        for &index in &keys {
+            let drop_fn = world.items[index].drop_fn;
+            assert!(
+                drop_fn.is_some_and(|f| std::ptr::fn_addr_eq(f, drop_general as DropItemFn)),
+                "{}",
+                world.items[index].classname
+            );
+        }
+        let pass = own(&mut world, key, "Security Pass", 1);
+        let drop_fn = world.items[pass].drop_fn.expect("droppable");
+        drop_fn(&mut world, key, pass);
+        assert_eq!(world.client(key).unwrap().pers.inventory[pass], 0);
+        assert!(world.find_by_classname(None, "key_pass").is_some());
     }
 
     fn powerup_on_floor(world: &mut GameWorld, classname: &str) -> EntityKey {
