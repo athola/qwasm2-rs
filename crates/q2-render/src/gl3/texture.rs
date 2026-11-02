@@ -155,6 +155,18 @@ fn rgba_len(width: usize, height: usize) -> Option<usize> {
     width.checked_mul(height)?.checked_mul(4)
 }
 
+/// GL's size for a `width` x `height` upload of `len` bytes, refused when
+/// either side overflows a GLsizei or `len` is not exactly RGBA8 pixels.
+fn upload_size(width: usize, height: usize, len: usize) -> Result<(i32, i32), String> {
+    let (Ok(gl_width), Ok(gl_height)) = (i32::try_from(width), i32::try_from(height)) else {
+        return Err("texture too large".into());
+    };
+    if rgba_len(width, height) != Some(len) {
+        return Err(format!("{len} bytes for a {width}x{height} texture"));
+    }
+    Ok((gl_width, gl_height))
+}
+
 /// Upload RGBA8 pixels as a new 2D texture, leaving it bound to the active unit.
 pub fn upload_rgba(
     gl: &glow::Context,
@@ -163,15 +175,7 @@ pub fn upload_rgba(
     rgba: &[u8],
     sampling: &Sampling,
 ) -> Result<glow::Texture, String> {
-    let (Ok(gl_width), Ok(gl_height)) = (i32::try_from(width), i32::try_from(height)) else {
-        return Err("texture too large".into());
-    };
-    if rgba_len(width, height) != Some(rgba.len()) {
-        return Err(format!(
-            "{} bytes for a {width}x{height} texture",
-            rgba.len()
-        ));
-    }
+    let (gl_width, gl_height) = upload_size(width, height, rgba.len())?;
     // SAFETY: the texture is created on `gl` and bound before the parameter
     // and upload calls; `rgba` is a live slice of exactly `width * height * 4`
     // bytes (checked above) that outlives the `tex_image_2d` call.
@@ -255,6 +259,22 @@ mod tests {
         assert_eq!(rgba_len(3, 2), Some(24));
         assert_eq!(rgba_len(usize::MAX / 2, 2), None);
         assert_eq!(rgba_len(usize::MAX / 4 + 1, 1), None);
+    }
+
+    #[test]
+    fn an_upload_needs_exactly_four_bytes_per_pixel_and_glsizei_sides() {
+        assert_eq!(upload_size(3, 2, 24), Ok((3, 2)));
+        assert_eq!(
+            upload_size(3, 2, 23),
+            Err("23 bytes for a 3x2 texture".into())
+        );
+        assert!(upload_size(3, 2, 25).is_err());
+        let too_wide = i32::MAX as usize + 1;
+        assert_eq!(
+            upload_size(too_wide, 1, too_wide * 4),
+            Err("texture too large".into())
+        );
+        assert!(upload_size(1, too_wide, too_wide * 4).is_err());
     }
 
     #[test]
