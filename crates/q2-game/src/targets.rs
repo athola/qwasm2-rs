@@ -564,6 +564,19 @@ pub fn sp_target_generic(
     }
 }
 
+/// No `use` until `target_laser_start` sets it a second later, so an early
+/// use does nothing. C ref: `SP_target_laser`; `finish_target_laser`
+/// schedules the start.
+pub fn sp_target_laser(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.game.classname = "target_laser".to_string();
+    }
+}
+
 /// C ref: `SP_target_speaker`; `finish_target_speaker` does the setup.
 pub fn sp_target_speaker(
     _storage: &mut EntityStorage,
@@ -795,6 +808,17 @@ mod tests {
         assert_eq!(laser_sparks(&gi), 1);
         // Facing angles 0: along +x, 2048 units.
         assert_eq!(ent.game.movedir, Vec3f::X);
+    }
+
+    #[test]
+    fn a_target_laser_ignores_uses_until_it_starts() {
+        // C SP_target_laser leaves `use` NULL until target_laser_start.
+        let mut world = test_world();
+        let laser = world.spawn().unwrap();
+        world.entities.get_mut(laser).unwrap().game.target = "aim".into();
+        let fields = HashMap::from([("classname".to_string(), "target_laser".to_string())]);
+        world.call_spawn(laser, "target_laser", &fields);
+        assert!(world.entities.get(laser).unwrap().use_fn.is_none());
     }
 
     #[test]
