@@ -463,4 +463,21 @@ mod tests {
         gi.unicast(1, true);
         gi.add_command_string("test");
     }
+
+    #[test]
+    fn a_map_less_import_joins_every_area_and_puts_entities_in_none() {
+        let gi = NoopImport::default();
+        // C ref: CM_AreasConnected returns true under map_noareas, even
+        // across a portal just closed.
+        gi.set_area_portal_state(1, false);
+        assert!(gi.areas_connected(1, 2));
+        assert!(gi.areas_connected(3, 0));
+        assert_eq!(gi.entity_areas(5), (0, 0));
+    }
+
+    #[test]
+    fn the_game_reports_c_game_api_version_3() {
+        // C ref: game.h GAME_API_VERSION, which SV_InitGameProgs checks.
+        assert_eq!(crate::world::test_world().api_version(), 3);
+    }
 }
