@@ -1630,4 +1630,426 @@ mod tests {
         world.update_player_view(key);
         assert_eq!(world.client(key).unwrap().ps.viewoffset.z, 30.0);
     }
+
+    // ---- C boundaries and signs ----
+
+    #[test]
+    fn a_damage_kick_ending_this_frame_keeps_its_angles() {
+        // C ref: SV_CalcViewOffset clears v_dmg_* only when ratio < 0.
+        let mut world = test_world();
+        let key = player(&mut world);
+        world.level.time = 5.0;
+        let client = world.client_mut(key).unwrap();
+        client.v_dmg_time = 5.0;
+        client.v_dmg_pitch = 3.0;
+        world.update_player_view(key);
+        assert_eq!(world.client(key).unwrap().v_dmg_pitch, 3.0);
+    }
+
+    #[test]
+    fn an_even_bob_cycle_rolls_the_view_right() {
+        // C ref: SV_CalcViewOffset, bobcycle & 1 negates the roll.
+        let (mut world, key) = runner(300.0, 0.25);
+        world.update_player_view(key);
+        assert!(world.client(key).unwrap().ps.kick_angles.z > 0.0);
+    }
+
+    #[test]
+    fn the_view_offset_is_clamped_to_14_on_each_side() {
+        let mut world = test_world();
+        let key = player(&mut world);
+        world.client_mut(key).unwrap().kick_origin = Vec3f::new(0.0, -20.0, 0.0);
+        world.update_player_view(key);
+        assert_eq!(world.client(key).unwrap().ps.viewoffset.y, -14.0);
+    }
+
+    /// A player with `g_footsteps` set, stepping from bob cycle 0 into 1.
+    fn stepper(
+        footsteps: &str,
+        on_ground: bool,
+        health: i32,
+    ) -> (GameWorld, EntityKey, super::Bob) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        gi.cvars
+            .borrow_mut()
+            .insert("g_footsteps".into(), footsteps.into());
+        let ground = world.entities.spawn_numbered(0).unwrap();
+        let key = player_in(&mut world);
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.ground_entity = on_ground.then_some(ground);
+        ent.game.health = health;
+        world.game.bobmove = 0.25;
+        world.client_mut(key).unwrap().bobtime = 0.9;
+        let bob = super::Bob {
+            xyspeed: 300.0,
+            cycle: 0,
+            fracsin: 0.5,
+        };
+        (world, key, bob)
+    }
+
+    fn steps(footsteps: &str, on_ground: bool, health: i32, xyspeed: f32) -> bool {
+        let (mut world, key, mut bob) = stepper(footsteps, on_ground, health);
+        bob.xyspeed = xyspeed;
+        world.set_client_event(key, &bob);
+        event(&world, key) == q2_shared::constants::EV_FOOTSTEP
+    }
+
+    #[test]
+    fn footsteps_follow_g_footsteps_like_g_setclientevent() {
+        assert!(steps("1", true, 100, 226.0));
+        assert!(!steps("1", true, 100, 225.0), "over 225 only");
+        assert!(steps("2", true, 100, 10.0), "2: any speed on the ground");
+        assert!(!steps("2", false, 100, 300.0), "2: not in the air");
+        assert!(steps("3", false, 100, 10.0), "3: always");
+        assert!(!steps("0", true, 100, 300.0), "0: never");
+        assert!(!steps("1", true, 0, 300.0), "not when dead");
+    }
+
+    #[test]
+    fn calc_roll_leans_with_sideways_speed_up_to_2_degrees() {
+        // C ref: SV_CalcRoll with sv_rollangle 2 and sv_rollspeed 200.
+        let right = Vec3f::Y;
+        assert_eq!(super::calc_roll(Vec3f::new(0.0, 100.0, 0.0), right), 1.0);
+        assert_eq!(super::calc_roll(Vec3f::new(0.0, -100.0, 0.0), right), -1.0);
+        assert_eq!(super::calc_roll(Vec3f::new(0.0, -400.0, 0.0), right), -2.0);
+        assert_eq!(super::calc_roll(Vec3f::new(50.0, 0.0, 0.0), right), 0.0);
+    }
+
+    #[test]
+    fn a_powerup_ending_this_frame_tints_nothing() {
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().quad_framenum = 100;
+        world.calc_blend(key);
+        assert_eq!(world.client(key).unwrap().ps.blend, [0.0; 4]);
+    }
+
+    #[test]
+    fn a_fading_powerup_tint_blinks_on_bit_4_of_the_frames_left() {
+        // C ref: SV_CalcBlend, remaining > 30 || (remaining & 4).
+        for (until, tinted) in [(110, false), (132, true), (104, true), (103, false)] {
+            let mut world = test_world();
+            let key = player_in(&mut world);
+            world.client_mut(key).unwrap().quad_framenum = until;
+            world.calc_blend(key);
+            let alpha = world.client(key).unwrap().ps.blend[3];
+            assert_eq!(alpha > 0.0, tinted, "{until}");
+        }
+    }
+
+    #[test]
+    fn a_powerup_ending_this_frame_gives_no_air() {
+        // C ref: P_WorldEffects, breather/enviro_framenum > level.framenum.
+        for enviro in [false, true] {
+            let (mut world, key, _) = swimmer();
+            let client = world.client_mut(key).unwrap();
+            if enviro {
+                client.enviro_framenum = 100;
+            } else {
+                client.breather_framenum = 100;
+            }
+            wade(&mut world, key, 3, CONTENTS_WATER);
+            world.world_effects(key);
+            assert_eq!(world.client(key).unwrap().air_finished, 32.0);
+        }
+    }
+
+    #[test]
+    fn the_rebreather_breathes_on_the_frames_left_not_the_frame_number() {
+        let (mut world, key, gi) = swimmer();
+        world.level.framenum = 110;
+        world.client_mut(key).unwrap().breather_framenum = 135;
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key);
+        assert!(heard(&world, &gi, "player/u_breath1.wav"));
+    }
+
+    #[test]
+    fn wading_deeper_makes_no_new_splash() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 1, CONTENTS_WATER);
+        world.world_effects(key);
+        let index = world.gi.sound_index("player/watr_in.wav");
+        let splashes = |gi: &crate::world::MockGameImport| {
+            gi.sound_calls
+                .borrow()
+                .iter()
+                .filter(|c| c.2 == index)
+                .count()
+        };
+        assert_eq!(splashes(&gi), 1);
+        wade(&mut world, key, 2, CONTENTS_WATER);
+        world.world_effects(key);
+        assert_eq!(splashes(&gi), 1);
+    }
+
+    #[test]
+    fn entering_a_volume_of_no_liquid_makes_no_splash() {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 1, 0);
+        world.world_effects(key);
+        assert!(!heard(&world, &gi, "player/watr_in.wav"));
+    }
+
+    /// Surface after going under at time 20, with `air_finished` left.
+    fn surface(air_finished: f32) -> (GameWorld, std::rc::Rc<crate::world::MockGameImport>) {
+        let (mut world, key, gi) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.world_effects(key);
+        world.client_mut(key).unwrap().air_finished = air_finished;
+        wade(&mut world, key, 2, CONTENTS_WATER);
+        world.world_effects(key);
+        (world, gi)
+    }
+
+    #[test]
+    fn surfacing_gasps_by_strict_air_time_boundaries() {
+        // C ref: P_WorldEffects, air_finished < time, < time + 11.
+        let (world, gi) = surface(20.0);
+        assert!(heard(&world, &gi, "player/gasp2.wav"), "not yet out of air");
+        assert!(!heard(&world, &gi, "player/gasp1.wav"));
+        let (world, gi) = surface(31.0);
+        assert!(
+            !heard(&world, &gi, "player/gasp2.wav"),
+            "under under a second"
+        );
+    }
+
+    #[test]
+    fn drowning_waits_until_the_air_and_the_last_drown_time_have_passed() {
+        let (mut world, key, _) = swimmer();
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.entities.get_mut(key).unwrap().game.dmg = 2;
+        world.client_mut(key).unwrap().air_finished = 20.0;
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 100, "air runs out at 20");
+        world.client_mut(key).unwrap().air_finished = 19.0;
+        world.client_mut(key).unwrap().next_drown_time = 20.0;
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 100, "drowned at 20 already");
+        world.client_mut(key).unwrap().next_drown_time = 19.0;
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 96);
+        assert_eq!(world.client(key).unwrap().next_drown_time, 21.0);
+        world.level.time = 21.5;
+        world.world_effects(key);
+        assert_eq!(health(&world, key), 90, "dmg 4 then 6");
+    }
+
+    #[test]
+    fn the_dead_do_not_drown() {
+        let (mut world, key, _) = swimmer();
+        world.entities.get_mut(key).unwrap().game.health = 0;
+        wade(&mut world, key, 3, CONTENTS_WATER);
+        world.client_mut(key).unwrap().air_finished = 10.0;
+        world.world_effects(key);
+        assert_eq!(world.client(key).unwrap().next_drown_time, 0.0);
+    }
+
+    /// Which of `a` and `b` a world seeded with `seed` picks on rand() & 1.
+    fn rand_pick(seed: u32, a: &'static str, b: &'static str) -> &'static str {
+        let mut world = test_world();
+        world.level.rand_state = seed;
+        if world.random_u32() & 1 != 0 {
+            a
+        } else {
+            b
+        }
+    }
+
+    #[test]
+    fn the_drowning_gurp_is_picked_by_rand_and_1() {
+        for seed in (0..8).map(|n| n * 997) {
+            let (mut world, key, gi) = swimmer();
+            wade(&mut world, key, 3, CONTENTS_WATER);
+            world.client_mut(key).unwrap().air_finished = 10.0;
+            world.level.rand_state = seed;
+            world.world_effects(key);
+            assert!(heard(
+                &world,
+                &gi,
+                rand_pick(seed, "*gurp1.wav", "*gurp2.wav")
+            ));
+        }
+    }
+
+    #[test]
+    fn the_lava_burn_sound_is_picked_by_rand_and_1() {
+        for seed in (0..8).map(|n| n * 997) {
+            let (mut world, key, gi) = swimmer();
+            wade(&mut world, key, 1, CONTENTS_LAVA);
+            // The splash in draws nothing; the burn is the first rand().
+            world.level.rand_state = seed;
+            world.world_effects(key);
+            let sound = rand_pick(seed, "player/burn1.wav", "player/burn2.wav");
+            assert!(heard(&world, &gi, sound), "{seed}");
+        }
+    }
+
+    #[test]
+    fn lava_burns_with_a_sound_only_when_alive_and_past_the_debounce() {
+        // C ref: P_WorldEffects, health > 0 && pain_debounce_time <= time.
+        let burned = |health: i32, debounce: f32| {
+            let (mut world, key, gi) = swimmer();
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.health = health;
+            ent.game.pain_debounce_time = debounce;
+            wade(&mut world, key, 1, CONTENTS_LAVA);
+            world.world_effects(key);
+            heard(&world, &gi, "player/burn1.wav") || heard(&world, &gi, "player/burn2.wav")
+        };
+        assert!(burned(100, 20.0));
+        assert!(!burned(0, 0.0), "dead");
+        assert!(!burned(100, 20.5), "debounced");
+    }
+
+    #[test]
+    fn invulnerability_ending_this_frame_flashes_the_armor_number() {
+        let (mut world, key, _) = hurt_player();
+        world.client_mut(key).unwrap().invincible_framenum = 100;
+        hit(&mut world, key, 0, 10, 0, 0);
+        world.damage_feedback(key);
+        let flashes = world.client(key).unwrap().ps.stats[STAT_FLASHES];
+        assert_eq!(flashes, 2);
+    }
+
+    #[test]
+    fn the_pain_animation_needs_the_player_model_and_a_lower_priority() {
+        use crate::constants::ANIM_PAIN;
+        for (priority, modelindex) in [(ANIM_PAIN, 255), (0, 0)] {
+            let (mut world, key, _) = hurt_player();
+            world.client_mut(key).unwrap().anim_priority = priority;
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.state.modelindex = modelindex;
+            ent.state.frame = 7;
+            hit(&mut world, key, 10, 0, 0, 0);
+            world.damage_feedback(key);
+            assert_eq!(world.entities.get(key).unwrap().state.frame, 7);
+        }
+    }
+
+    #[test]
+    fn no_pain_sound_on_the_debounce_frame_or_when_dead() {
+        let pained = |health: i32, debounce: f32| {
+            let (mut world, key, gi) = hurt_player();
+            let ent = world.entities.get_mut(key).unwrap();
+            ent.game.health = health;
+            ent.game.pain_debounce_time = debounce;
+            hit(&mut world, key, 10, 0, 0, 0);
+            world.damage_feedback(key);
+            let calls = gi.sound_calls.borrow();
+            calls.iter().any(|c| c.1 == crate::constants::CHAN_VOICE)
+        };
+        assert!(pained(100, 9.0));
+        assert!(!pained(100, 10.0), "time > pain_debounce_time");
+        assert!(!pained(0, 9.0), "dead");
+    }
+
+    #[test]
+    fn pain_sounds_are_numbered_1_or_2() {
+        // C ref: P_DamageFeedback, r = 1 + (randk() & 1).
+        let mut seen = Vec::new();
+        for seed in (0..16).map(|n| n * 997) {
+            let (mut world, key, gi) = hurt_player();
+            world.level.rand_state = seed;
+            hit(&mut world, key, 10, 0, 0, 0);
+            world.damage_feedback(key);
+            let r = 1 + (rand_pick(seed, "2", "1") == "2") as i32;
+            assert!(heard(&world, &gi, &format!("*pain100_{r}.wav")), "{seed}");
+            seen.push(r);
+        }
+        assert!(seen.contains(&1) && seen.contains(&2));
+    }
+
+    #[test]
+    fn a_dead_player_gets_no_damage_kick() {
+        let (mut world, key, _) = hurt_player();
+        world.entities.get_mut(key).unwrap().game.health = 0;
+        hit(&mut world, key, 10, 0, 0, 10);
+        world.damage_feedback(key);
+        assert_eq!(world.client(key).unwrap().v_dmg_time, 0.0);
+    }
+
+    #[test]
+    fn a_diagonal_hit_kicks_by_the_cosine_of_its_angle() {
+        let (mut world, key, _) = hurt_player();
+        world.client_mut(key).unwrap().v_angle = Vec3f::ZERO;
+        let origin = world.entities.get(key).unwrap().state.origin;
+        world.client_mut(key).unwrap().damage_from = origin + Vec3f::new(100.0, 100.0, 0.0);
+        hit(&mut world, key, 20, 0, 0, 10);
+        world.damage_feedback(key);
+        // kick 10: pitch = 10 * -cos(45) * 0.3.
+        let pitch = world.client(key).unwrap().v_dmg_pitch;
+        assert!(
+            (pitch + 3.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4,
+            "{pitch}"
+        );
+    }
+
+    #[test]
+    fn the_bob_speed_is_the_horizontal_length() {
+        let (mut world, key) = runner(0.0, 0.0);
+        world.entities.get_mut(key).unwrap().velocity = Vec3f::new(30.0, 40.0, 99.0);
+        assert_eq!(world.calc_bob(key).xyspeed, 50.0);
+    }
+
+    #[test]
+    fn bob_speed_boundaries_match_c() {
+        // C ref: ClientEndServerFrame, < 5 restarts, > 210 and > 100 step up.
+        for (speed, bobmove) in [
+            (5.0, 0.0625),
+            (100.0, 0.0625),
+            (210.0, 0.125),
+            (211.0, 0.25),
+        ] {
+            let (mut world, key) = runner(speed, 0.5);
+            world.calc_bob(key);
+            assert_eq!(world.game.bobmove, bobmove, "{speed}");
+            assert_eq!(world.client(key).unwrap().bobtime, 0.5 + bobmove);
+        }
+    }
+
+    #[test]
+    fn the_gun_lag_wraps_a_turn_of_exactly_180_like_c() {
+        // C ref: SV_CalcGunOffset, delta > 180 and delta < -180 wrap.
+        for (delta, pitch) in [(180.0, 9.0), (-180.0, -9.0), (-200.0, 9.0)] {
+            let (mut world, key) = gun_world();
+            world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
+            let client = world.client_mut(key).unwrap();
+            client.oldviewangles = Vec3f::new(delta, 0.0, 0.0);
+            client.ps.viewangles = Vec3f::ZERO;
+            let (angles, _) = run_gun(&mut world, key);
+            assert!((angles.x - pitch).abs() < 1e-4, "{delta}: {angles:?}");
+        }
+    }
+
+    #[test]
+    fn quad_glows_steadily_with_over_30_frames_left() {
+        // C ref: G_SetClientEffects, remaining > 30 (32 & 4 is 0).
+        let mut world = test_world();
+        let key = player_in(&mut world);
+        world.client_mut(key).unwrap().quad_framenum = 132;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, EF_QUAD);
+    }
+
+    #[test]
+    fn power_armor_stops_glowing_on_its_last_frame() {
+        // C ref: G_SetClientEffects, powerarmor_time > level.time.
+        let mut world = test_world();
+        world.init_items();
+        let key = player_in(&mut world);
+        world.level.time = 5.0;
+        let screen = world.find_item_by_name("Power Screen").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[screen] = 1;
+        world.entities.get_mut(key).unwrap().game.powerarmor_time = 5.0;
+        world.entities.get_mut(key).unwrap().game.flags |=
+            crate::constants::EntityFlags::POWER_ARMOR;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, 0);
+        world.entities.get_mut(key).unwrap().game.powerarmor_time = 5.1;
+        world.set_client_effects(key);
+        assert_eq!(effects(&world, key).0, EF_POWERSCREEN, "still absorbing");
+    }
 }
