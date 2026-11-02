@@ -332,7 +332,6 @@ fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
         };
         let hurtable = h.game.takedamage != TakeDamage::No
             && !h.game.flags.contains(EntityFlags::IMMUNE_LASER);
-        let body = h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some();
         if hurtable {
             world.t_damage(
                 hit,
@@ -347,6 +346,12 @@ fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
                 MeansOfDeath::TargetLaser,
             );
         }
+        // Tested after the damage, as C does: a monster it gibbed has lost
+        // SVF_MONSTER, and a freed one (C zeroes its svflags) is gone.
+        let body = world
+            .entities
+            .get(hit)
+            .is_some_and(|h| h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some());
         if !body {
             let moved = world
                 .entities
@@ -968,6 +973,60 @@ mod tests {
         think(&mut world, laser);
         assert_eq!(laser_sparks(&gi), 1, "same aim: no new sparks");
         assert_eq!(world.entities.get(laser).unwrap().game.nextthink, 2.1);
+    }
+
+    /// C ThrowHead: the gibbed monster's edict stays, minus SVF_MONSTER.
+    fn die_into_a_head(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.entities.get_mut(key).unwrap().svflags &= !SvFlags::MONSTER.bits();
+    }
+
+    /// C BecomeExplosion1: the monster's edict is freed.
+    fn die_and_vanish(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.free_entity(key);
+    }
+
+    #[test]
+    fn a_target_laser_stops_at_a_monster_its_damage_gibs_or_frees() {
+        // C target_laser_think tests SVF_MONSTER after T_Damage, so a
+        // monster the beam kills into a head or an explosion ends it.
+        for die in [die_into_a_head as crate::entity::DieFn, die_and_vanish] {
+            let (mut world, laser, gi) = laser_world(1);
+            let start = world.entities.get(laser).unwrap().think.unwrap();
+            let monster = world.spawn().unwrap();
+            let m = world.entities.get_mut(monster).unwrap();
+            m.svflags |= SvFlags::MONSTER.bits();
+            m.game.takedamage = TakeDamage::Yes;
+            m.game.health = 1;
+            m.die = Some(die);
+            let at = Vec3f::new(100.0, 0.0, 0.0);
+            let through = q2_shared::types::Trace {
+                fraction: 0.05,
+                endpos: at,
+                ent_index: world.number_of(monster),
+                ..Default::default()
+            };
+            gi.queued_traces
+                .borrow_mut()
+                .extend([through, wall(Vec3f::new(300.0, 0.0, 0.0))]);
+            start(&mut world, laser);
+            assert_eq!(gi.trace_pass_ents.borrow().len(), 1, "one trace");
+            assert_eq!(world.entities.get(laser).unwrap().state.old_origin, at);
+            assert_eq!(laser_sparks(&gi), 1, "sparks where it stopped");
+        }
     }
 
     #[test]
