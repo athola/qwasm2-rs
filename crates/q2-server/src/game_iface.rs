@@ -17,8 +17,8 @@ use q2_common::net_msg::NetMsg;
 use q2_game::traits::{EntityLink, GameImport, ModelInfo};
 use q2_shared::{
     constants::{
-        CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MAX_CONFIGSTRINGS, MAX_EDICTS,
-        MAX_IMAGES, MAX_MODELS, MAX_SOUNDS,
+        CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MASK_WATER, MAX_CONFIGSTRINGS,
+        MAX_EDICTS, MAX_IMAGES, MAX_MODELS, MAX_SOUNDS,
     },
     types::*,
 };
@@ -32,8 +32,9 @@ use crate::world::{ServerWorld, AREA_SOLID};
 // ---------------------------------------------------------------------------
 
 struct GiInner {
-    /// Outbound message buffer accumulating write_* calls; discarded (not sent)
-    /// when multicast/unicast is called until proper routing is implemented.
+    /// Outbound message buffer accumulating write_* calls (C
+    /// `sv.multicast`); multicast/unicast copy it to `messages` when the
+    /// local client gets it, and clear it either way.
     /// Uses `NetMsg` so game-written temp entities encode byte-for-byte like
     /// every other server message (MSG_Write* in C).
     msg_buf: NetMsg,
@@ -299,6 +300,34 @@ impl ServerGameImport {
     /// The console text queued by `add_command_string` since the last call.
     pub fn take_commands(&self) -> String {
         std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// C SV_Multicast's mask test for client entity `number`: its origin
+    /// is in the PVS (PHS when `phs`) of `origin` with the areas
+    /// connected, or, when the origin is in water, the point 32 units
+    /// above it is. C reads the live edict's origin; here it is the origin
+    /// of the entity's last link, and an entity never linked gets nothing.
+    fn client_in_mask(&self, number: usize, origin: Vec3f, phs: bool) -> bool {
+        let link = self.inner.borrow().links.get(number).copied().flatten();
+        let Some(mut at) = link.map(|link| link.origin) else {
+            return false;
+        };
+        for _ in 0..2 {
+            let reached = if phs {
+                self.in_phs(origin, at)
+            } else {
+                self.in_pvs(origin, at)
+            };
+            if reached {
+                return true;
+            }
+            let contents = self.inner.borrow().collision.point_contents(at, 0);
+            if contents & MASK_WATER == 0 {
+                return false;
+            }
+            at.z += 32.0;
+        }
+        false
     }
 
     /// Whether entity `number` is a client's (C `1..=maxclients`).
@@ -895,11 +924,33 @@ impl GameImport for ServerGameImport {
 
     // -- multicast / unicast (flush message buffer) -------------------------
 
-    /// C SV_Multicast. The one local client gets every message; the
-    /// PVS/PHS choice and reliable routing only pick network clients.
-    fn multicast(&self, _origin: Vec3f, _to: Multicast) {
+    /// C SV_Multicast: the message is queued when a client gets it. A
+    /// client gets it when its slot is in the game (or connected, for a
+    /// reliable message) and, for PVS or PHS, when its origin's cluster is
+    /// in the row of `origin`'s cluster and their areas are connected,
+    /// trying 32 units higher for an origin in water. The import keeps
+    /// one queue, for the one local client.
+    fn multicast(&self, origin: Vec3f, to: Multicast) {
+        // (reliable, mask), the mask being `Some(true)` for the PHS.
+        let (reliable, phs) = match to {
+            Multicast::All => (false, None),
+            Multicast::AllR => (true, None),
+            Multicast::PVS => (false, Some(false)),
+            Multicast::PVSR => (true, Some(false)),
+            Multicast::PHS => (false, Some(true)),
+            Multicast::PHSR => (true, Some(true)),
+        };
+        let clients = self.inner.borrow().clients.clone();
+        let sent = clients.iter().enumerate().any(|(slot, &state)| {
+            let in_game = match state {
+                ClientState::Free => false,
+                ClientState::Connected => reliable,
+                ClientState::Spawned => true,
+            };
+            in_game && phs.is_none_or(|phs| self.client_in_mask(slot + 1, origin, phs))
+        });
         let mut inner = self.inner.borrow_mut();
-        if !inner.msg_buf.is_empty() {
+        if sent && !inner.msg_buf.is_empty() {
             let message = inner.msg_buf.data().to_vec();
             inner.messages.push(message);
         }
@@ -1051,13 +1102,13 @@ mod tests {
 
     #[test]
     fn a_multicast_message_is_queued_for_the_local_client() {
-        let gi = ServerGameImport::new();
+        let gi = one_client();
         gi.write_byte(1);
         gi.write_short(5);
         gi.write_byte(7);
-        gi.multicast(Vec3f::ZERO, Multicast::PVS);
+        gi.multicast(Vec3f::ZERO, Multicast::All);
         gi.write_byte(3);
-        gi.multicast(Vec3f::ZERO, Multicast::PHS);
+        gi.multicast(Vec3f::ZERO, Multicast::AllR);
         assert_eq!(gi.take_messages(), vec![vec![1, 5, 0, 7], vec![3]]);
         assert!(gi.take_messages().is_empty(), "taken once");
         assert_eq!(gi.inner.borrow().msg_buf.len(), 0, "the buffer starts over");
@@ -1065,9 +1116,18 @@ mod tests {
 
     #[test]
     fn an_empty_multicast_queues_nothing() {
-        let gi = ServerGameImport::new();
+        let gi = one_client();
         gi.multicast(Vec3f::ZERO, Multicast::All);
         assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn a_multicast_no_client_gets_still_clears_the_buffer() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(1);
+        gi.multicast(Vec3f::ZERO, Multicast::AllR);
+        assert!(gi.take_messages().is_empty());
+        assert!(gi.inner.borrow().msg_buf.is_empty());
     }
 
     #[test]
@@ -1361,19 +1421,6 @@ mod tests {
         let inner = gi.inner.borrow();
         let expected = ((90.0f32 * 256.0 / 360.0) as i32 & 255) as u8;
         assert_eq!(inner.msg_buf.data()[0], expected);
-    }
-
-    #[test]
-    fn multicast_clears_buf() {
-        let gi = ServerGameImport::new();
-        gi.write_byte(1);
-        gi.write_byte(2);
-        gi.multicast(
-            q2_shared::types::Vec3f::new(0.0, 0.0, 0.0),
-            q2_shared::types::Multicast::All,
-        );
-        let inner = gi.inner.borrow();
-        assert!(inner.msg_buf.is_empty());
     }
 
     #[test]
