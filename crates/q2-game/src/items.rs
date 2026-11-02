@@ -1080,8 +1080,18 @@ pub fn build_item_list() -> Vec<ItemDef> {
 /// Pickup handler for armor items: a shard adds 2 to the worn armor (or
 /// gives 2 jacket armor), new armor is worn as is, and otherwise the
 /// better type is kept with some of the other salvaged into it.
+/// Deathmatch map armor comes back after 20 seconds.
 /// C ref: `Pickup_Armor` (g_items.c:910-1011)
 fn pickup_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !take_armor(world, item_ent, player) {
+        return false;
+    }
+    respawn_unless_dropped(world, item_ent, 20.0);
+    true
+}
+
+/// The inventory half of C `Pickup_Armor`; false when the armor is refused.
+fn take_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some(item_idx) = world.entities.get(item_ent).and_then(|e| e.game.item) else {
         return false;
     };
@@ -1226,18 +1236,28 @@ fn pickup_ammo_carrier(
 }
 
 /// C ref: `Pickup_Bandolier` (g_items.c).
-fn pickup_bandolier(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
-    pickup_ammo_carrier(world, player, AMMO_MAX_BANDOLIER, &["Bullets", "Shells"])
+fn pickup_bandolier(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !pickup_ammo_carrier(world, player, AMMO_MAX_BANDOLIER, &["Bullets", "Shells"]) {
+        return false;
+    }
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
+    true
 }
 
 /// C ref: `Pickup_Pack` (g_items.c).
-fn pickup_pack(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
-    pickup_ammo_carrier(
+fn pickup_pack(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    if !pickup_ammo_carrier(
         world,
         player,
         AMMO_MAX_PACK,
         &["Bullets", "Shells", "Cells", "Grenades", "Rockets", "Slugs"],
-    )
+    ) {
+        return false;
+    }
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
+    true
 }
 
 /// Pickup handler for weapon items.
@@ -1320,7 +1340,8 @@ fn pickup_weapon(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
 
 /// Pickup handler for health items. Stimpacks and mega health
 /// (`HEALTH_IGNORE_MAX`) go over max health; mega health (`HEALTH_TIMED`)
-/// then rots back down while the item waits, unseen.
+/// then rots back down while the item waits, unseen. Other deathmatch map
+/// health comes back after 30 seconds.
 /// C ref: `Pickup_Health` (g_items.c:831-874)
 fn pickup_health(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some((amount, style)) = world
@@ -1353,6 +1374,8 @@ fn pickup_health(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) 
             item.solid = Solid::Not;
         }
         world.link_entity(item_ent);
+    } else {
+        respawn_unless_dropped(world, item_ent, 30.0);
     }
     true
 }
@@ -1390,8 +1413,8 @@ pub fn drop_ammo(world: &mut GameWorld, key: EntityKey, item: usize) {
     world.validate_selected_item(key);
 }
 
-/// Drain the mega health bonus one point a second, then go away.
-/// C ref: `MegaHealth_think` (single player: no respawn).
+/// Drain the mega health bonus one point a second, then go away, or in
+/// deathmatch come back 20 seconds later. C ref: `MegaHealth_think`.
 pub fn megahealth_think(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let owner = world.entities.get(key).and_then(|e| e.owner);
@@ -1404,26 +1427,35 @@ pub fn megahealth_think(world: &mut GameWorld, key: EntityKey) {
             return;
         }
     }
-    world.free_entity(key);
+    if !respawn_unless_dropped(world, key, 20.0) {
+        world.free_entity(key);
+    }
 }
 
-/// Adrenaline: one more max health, healed to it. C ref:
-/// `Pickup_Adrenaline` (single player).
-fn pickup_adrenaline(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
+/// Adrenaline: one more max health (not in deathmatch), healed to it.
+/// C ref: `Pickup_Adrenaline`.
+fn pickup_adrenaline(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    let deathmatch = world.game.deathmatch;
     let Some(ent) = world.entities.get_mut(player) else {
         return false;
     };
-    ent.game.max_health += 1;
+    if !deathmatch {
+        ent.game.max_health += 1;
+    }
     ent.game.health = ent.game.health.max(ent.game.max_health);
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
     true
 }
 
 /// Ancient Head: two more max health. C ref: `Pickup_AncientHead`.
-fn pickup_ancient_head(world: &mut GameWorld, _item_ent: EntityKey, player: EntityKey) -> bool {
+fn pickup_ancient_head(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
     let Some(ent) = world.entities.get_mut(player) else {
         return false;
     };
     ent.game.max_health += 2;
+    let delay = quantity_delay(world, item_ent);
+    respawn_unless_dropped(world, item_ent, delay);
     true
 }
 
@@ -1450,13 +1482,7 @@ fn pickup_powerup(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey)
     if let Some(client) = world.client_mut(player) {
         client.pers.inventory[item_idx] += 1;
     }
-    let dropped = world
-        .entities
-        .get(item_ent)
-        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
-    if world.game.deathmatch && !dropped {
-        set_respawn(world, item_ent, respawn);
-    }
+    respawn_unless_dropped(world, item_ent, respawn);
     true
 }
 
@@ -1503,6 +1529,32 @@ pub fn set_respawn(world: &mut GameWorld, key: EntityKey, delay: f32) {
     ent.game.nextthink = time + delay;
     ent.think = Some(do_respawn);
     world.link_entity(key);
+}
+
+/// Respawn a picked-up map item after `delay` seconds in deathmatch; a
+/// dropped item is not respawned. C: the `!(ent->spawnflags & DROPPED_ITEM)
+/// && deathmatch->value` guard around `SetRespawn` in `g_items.c`. True
+/// when the item will respawn.
+fn respawn_unless_dropped(world: &mut GameWorld, item_ent: EntityKey, delay: f32) -> bool {
+    let dropped = world
+        .entities
+        .get(item_ent)
+        .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
+    let respawn = world.game.deathmatch && !dropped;
+    if respawn {
+        set_respawn(world, item_ent, delay);
+    }
+    respawn
+}
+
+/// `SetRespawn` delay of items that respawn after their `quantity`.
+fn quantity_delay(world: &GameWorld, item_ent: EntityKey) -> f32 {
+    world
+        .entities
+        .get(item_ent)
+        .and_then(|e| e.game.item)
+        .and_then(|i| world.items.get(i))
+        .map_or(0.0, |it| it.quantity as f32)
 }
 
 /// Take one of `item` from the player's inventory to use it.
@@ -3344,6 +3396,110 @@ mod tests {
         assert!(!pick_up(&mut world, pass, key), "already holds one");
         let index = world.find_item("key_pass").unwrap();
         assert_eq!(world.client(key).unwrap().pers.inventory[index], 1);
+    }
+
+    /// Pick up the map item `classname` in deathmatch at time 10, hurt to
+    /// 50 health, and assert it waits to respawn `delay` seconds later instead of being
+    /// freed.
+    fn assert_deathmatch_respawn(
+        classname: &str,
+        delay: f32,
+        setup: fn(&mut GameWorld, EntityKey),
+    ) {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let ent = powerup_on_floor(&mut world, classname);
+        setup(&mut world, ent);
+        world.entities.get_mut(key).unwrap().game.health = 50;
+        assert!(pick_up(&mut world, ent, key), "{classname} picked up");
+        let e = world.entities.get(ent).expect("not freed");
+        assert!(e.game.flags.contains(EntityFlags::RESPAWN), "{classname}");
+        assert_ne!(e.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert!(e
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, do_respawn as crate::entity::ThinkFn)));
+        assert_eq!(e.game.nextthink, 10.0 + delay, "{classname}");
+    }
+
+    fn no_setup(_: &mut GameWorld, _: EntityKey) {}
+
+    fn medium_health(world: &mut GameWorld, ent: EntityKey) {
+        world.entities.get_mut(ent).unwrap().game.count = 10;
+    }
+
+    #[test]
+    fn deathmatch_health_respawns_after_30_seconds() {
+        assert_deathmatch_respawn("item_health", 30.0, medium_health);
+    }
+
+    #[test]
+    fn deathmatch_armor_respawns_after_20_seconds() {
+        assert_deathmatch_respawn("item_armor_jacket", 20.0, no_setup);
+        assert_deathmatch_respawn("item_armor_shard", 20.0, no_setup);
+    }
+
+    #[test]
+    fn deathmatch_adrenaline_ancient_head_bandolier_and_pack_respawn_after_their_quantity() {
+        for classname in [
+            "item_adrenaline",
+            "item_ancient_head",
+            "item_bandolier",
+            "item_pack",
+        ] {
+            let (world, _, _) = powered();
+            let item = world.find_item(classname).unwrap();
+            let delay = world.items[item].quantity as f32;
+            assert!(delay > 0.0, "{classname}");
+            assert_deathmatch_respawn(classname, delay, no_setup);
+        }
+    }
+
+    #[test]
+    fn a_dropped_deathmatch_bandolier_does_not_respawn() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        let ent = powerup_on_floor(&mut world, "item_bandolier");
+        world.entities.get_mut(ent).unwrap().game.spawnflags = DROPPED_ITEM;
+        assert!(pick_up(&mut world, ent, key));
+        let e = world.entities.get(ent).unwrap();
+        assert!(!e.game.flags.contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn deathmatch_adrenaline_heals_without_raising_max_health() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.entities.get_mut(key).unwrap().game.health = 40;
+        let ent = powerup_on_floor(&mut world, "item_adrenaline");
+        assert!(pick_up(&mut world, ent, key));
+        let player = world.entities.get(key).unwrap();
+        assert_eq!(player.game.max_health, 100);
+        assert_eq!(player.game.health, 100);
+    }
+
+    #[test]
+    fn deathmatch_mega_health_respawns_20_seconds_after_it_wears_off() {
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        world.level.time = 10.0;
+        let ent = powerup_on_floor(&mut world, "item_health");
+        world.entities.get_mut(ent).unwrap().owner = Some(key);
+        megahealth_think(&mut world, ent);
+        let e = world.entities.get(ent).expect("not freed");
+        assert!(e
+            .think
+            .is_some_and(|t| std::ptr::fn_addr_eq(t, do_respawn as crate::entity::ThinkFn)));
+        assert_eq!(e.game.nextthink, 30.0);
+
+        world.game.deathmatch = false;
+        let ent = powerup_on_floor(&mut world, "item_health");
+        world.entities.get_mut(ent).unwrap().owner = Some(key);
+        megahealth_think(&mut world, ent);
+        assert!(
+            !world.entities.get(ent).unwrap().in_use,
+            "single player frees it"
+        );
     }
 
     #[test]
