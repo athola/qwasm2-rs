@@ -787,7 +787,8 @@ fn render_entities(
         .collect()
 }
 
-/// C `S_StartLocalSound("misc/talk.wav")` for a chat line.
+/// C `S_StartLocalSound("misc/talk.wav")` for a chat line: attenuation 1
+/// on the local player, whom the mixer plays at full volume.
 #[cfg(any(target_arch = "wasm32", test))]
 fn talk_sound() -> q2_client::sound::NamedSound {
     q2_client::sound::NamedSound {
@@ -795,7 +796,7 @@ fn talk_sound() -> q2_client::sound::NamedSound {
         entnum: q2_server::local::LOCAL_PLAYER as i32,
         entchannel: 0,
         volume: 1.0,
-        attenuation: 0.0,
+        attenuation: 1.0,
         timeofs: 0.0,
         origin: None,
     }
@@ -2542,11 +2543,14 @@ mod tests {
     }
 
     #[test]
-    fn chat_is_greeted_with_the_talk_sound_heard_everywhere() {
+    fn chat_is_greeted_with_the_talk_sound_on_the_local_player() {
+        // C S_StartLocalSound: `S_StartSound(NULL, cl.playernum + 1, 0, sfx,
+        // 1, 1, 0)`, attenuation 1 on the listener's own entity, which
+        // S_Spatialize plays at full volume.
         let talk = talk_sound();
         assert_eq!(
-            (talk.name.as_str(), talk.attenuation),
-            ("misc/talk.wav", 0.0)
+            (talk.name.as_str(), talk.entnum, talk.attenuation),
+            ("misc/talk.wav", q2_server::local::LOCAL_PLAYER as i32, 1.0)
         );
     }
 
