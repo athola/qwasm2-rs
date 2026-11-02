@@ -11,21 +11,6 @@ use q2_shared::types::{EntityState, Vec3f};
 /// C `MAX_DLIGHTS`.
 pub const MAX_DLIGHTS: usize = 32;
 
-// The xatrix and rogue player flashes, which no ported game sends yet.
-// C ref: `MZ_*` (common/header/shared.h).
-const MZ_IONRIPPER: i32 = 16;
-const MZ_BLUEHYPERBLASTER: i32 = 17;
-const MZ_PHALANX: i32 = 18;
-const MZ_ETF_RIFLE: i32 = 30;
-const MZ_SHOTGUN2: i32 = 32;
-const MZ_HEATBEAM: i32 = 33;
-const MZ_BLASTER2: i32 = 34;
-const MZ_TRACKER: i32 = 35;
-const MZ_NUKE1: i32 = 36;
-const MZ_NUKE2: i32 = 37;
-const MZ_NUKE4: i32 = 38;
-const MZ_NUKE8: i32 = 39;
-
 use crate::sound::NamedSound;
 
 /// A client dynamic light (C `cdlight_t`). `die` is in client

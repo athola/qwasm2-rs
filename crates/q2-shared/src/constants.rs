@@ -241,6 +241,19 @@ pub const MZ_RESPAWN: i32 = 11;
 pub const MZ_BFG: i32 = 12;
 pub const MZ_SSHOTGUN: i32 = 13;
 pub const MZ_HYPERBLASTER: i32 = 14;
+// The xatrix and rogue player flashes, which no ported game sends yet.
+pub const MZ_IONRIPPER: i32 = 16;
+pub const MZ_BLUEHYPERBLASTER: i32 = 17;
+pub const MZ_PHALANX: i32 = 18;
+pub const MZ_ETF_RIFLE: i32 = 30;
+pub const MZ_SHOTGUN2: i32 = 32;
+pub const MZ_HEATBEAM: i32 = 33;
+pub const MZ_BLASTER2: i32 = 34;
+pub const MZ_TRACKER: i32 = 35;
+pub const MZ_NUKE1: i32 = 36;
+pub const MZ_NUKE2: i32 = 37;
+pub const MZ_NUKE4: i32 = 38;
+pub const MZ_NUKE8: i32 = 39;
 /// Bit ORed onto a flash number for a silenced shot.
 pub const MZ_SILENCED: i32 = 128;
 
