@@ -285,7 +285,7 @@ pub fn draw_entities(scene: &EntityScene, entities: &[RenderEntity], translucent
                     super::fx::draw_sprite(
                         gl,
                         fx,
-                        scene.images,
+                        (scene.images, scene.extra.notexture),
                         sprite,
                         entity,
                         scene.view_right_up,

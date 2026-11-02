@@ -134,7 +134,8 @@ pub struct SpriteFrameSize {
 }
 
 /// One sprite frame and its image-store index; `None` when its image did
-/// not load, and the frame is then not drawn.
+/// not load, and the frame then draws as the notexture checker
+/// (C `GL3_DrawSpriteModel`'s `gl3_notexture` fallback).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpriteFrame {
     pub size: SpriteFrameSize,
@@ -416,7 +417,7 @@ pub fn draw_beam(
 pub fn draw_sprite(
     gl: &glow::Context,
     fx: &FxGpu,
-    images: &ImageStore,
+    (images, notexture): (&ImageStore, glow::Texture),
     sprite: &SpriteModel,
     entity: &RenderEntity,
     (right, up): (Vec3f, Vec3f),
@@ -428,13 +429,7 @@ pub fn draw_sprite(
     else {
         return;
     };
-    let Some(texture) = frame
-        .image
-        .and_then(|i| images.get(i))
-        .and_then(|image| image.texture)
-    else {
-        return;
-    };
+    let texture = sprite_texture(frame, images, notexture);
     fx_draw(
         gl,
         fx,
@@ -445,6 +440,20 @@ pub fn draw_sprite(
             style: sprite_style(entity, translucent),
         },
     );
+}
+
+/// The frame's texture, or `notexture` when its image did not load.
+/// C ref: `GL3_DrawSpriteModel` (`if (!skin) skin = gl3_notexture`).
+fn sprite_texture(
+    frame: &SpriteFrame,
+    images: &ImageStore,
+    notexture: glow::Texture,
+) -> glow::Texture {
+    frame
+        .image
+        .and_then(|i| images.get(i))
+        .and_then(|image| image.texture)
+        .unwrap_or(notexture)
 }
 
 /// How a beam is shaded: palette colour, blended, no intensity.
@@ -568,6 +577,22 @@ fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sprite_frame_without_a_loaded_image_draws_as_notexture() {
+        let notexture = glow::NativeTexture(std::num::NonZeroU32::new(7).unwrap());
+        let images = ImageStore::default();
+        let size = SpriteFrameSize {
+            width: 8,
+            height: 8,
+            origin_x: 4,
+            origin_y: 4,
+        };
+        for image in [None, Some(3)] {
+            let frame = SpriteFrame { size, image };
+            assert_eq!(sprite_texture(&frame, &images, notexture), notexture);
+        }
+    }
 
     fn grey_palette() -> Palette {
         Palette(std::array::from_fn(|i| [i as u8, i as u8, 255 - i as u8]))

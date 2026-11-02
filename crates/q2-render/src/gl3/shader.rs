@@ -108,7 +108,11 @@ void main() {
                    + texture(u_lightmap2, v_lightmap_uv).rgb * v_style_scales.z
                    + texture(u_lightmap3, v_lightmap_uv).rgb * v_style_scales.w;
         // gl3_shaders.c fragmentSrc3Dlm. C's lightFlags pass only lights
-        // in front of the surface (R_MarkLights' plane side check).
+        // in front of the surface (R_MarkLights' plane side check). For
+        // brush entities C DrawInlineBModel marks the world-space light
+        // against the bmodel's untransformed planes, so a moved door is
+        // flagged as if at its spawn position; this test uses the
+        // transformed world-space normal on purpose.
         for (int i = 0; i < u_num_dlights; ++i) {
             vec3 to_light = u_dlight_origin[i].xyz - v_world_pos;
             if (dot(v_normal, to_light) < 0.0) {
@@ -357,6 +361,9 @@ void main() {
 }
 "#;
 
+/// C `gl3_intensity_2D` default, the `INTENSITY_2D` of [`UI_FRAGMENT_SRC`].
+pub const INTENSITY_2D: f32 = 1.5;
+
 const UI_FRAGMENT_SRC: &str = r#"#version 300 es
 precision highp float;
 uniform sampler2D u_texture;
@@ -444,6 +451,12 @@ mod tests {
         // C fragmentSrcAliasColor: the vertex colour through gamma.
         assert!(ALIAS_FRAGMENT_SRC.contains("uniform int u_color_only;"));
         assert!(ALIAS_FRAGMENT_SRC.contains("if (u_color_only != 0) {"));
+    }
+
+    #[test]
+    fn the_2d_shader_scales_by_the_rust_intensity_2d() {
+        let line = format!("const float INTENSITY_2D = {INTENSITY_2D:?};");
+        assert!(UI_FRAGMENT_SRC.contains(&line), "{line}");
     }
 
     #[test]
