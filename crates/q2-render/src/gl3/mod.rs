@@ -262,7 +262,11 @@ enum Pass {
 }
 
 /// C `GL3_RenderView`: the world, entities, particles, then the world's
-/// translucent surfaces over them.
+/// translucent surfaces over them. Deviation: C `GL3_DrawWorld` draws the
+/// sky box after the opaque world, clipped to the visible sky polygons
+/// (gl3_surf.c `GL3_DrawSkyBox`); here the whole box is drawn first with
+/// depth testing off and the world over it (see `sky`), which looks the
+/// same because sky faces are the only holes in the world.
 const FRAME_PASSES: [Pass; 6] = [
     Pass::Sky,
     Pass::OpaqueWorld,
@@ -967,9 +971,11 @@ mod tests {
     // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
     // RF_TRANSLUCENT), GL3_DrawParticles, then GL3_DrawAlphaSurfaces for
     // every SURF_TRANS33/66 face, the brush entities' included, so a
-    // monster behind a window is drawn before the glass.
+    // monster behind a window is drawn before the glass. The sky comes
+    // first, a deviation from GL3_DrawWorld (sky after the opaque world)
+    // documented on FRAME_PASSES.
     #[test]
-    fn the_frame_is_drawn_in_c_gl3_renderview_order() {
+    fn the_frame_is_drawn_in_c_gl3_renderview_order_with_the_sky_first() {
         assert_eq!(
             FRAME_PASSES,
             [
