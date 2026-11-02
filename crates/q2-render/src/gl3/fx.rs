@@ -25,6 +25,10 @@ pub const FX_FLOATS: usize = 5;
 const PARTICLE_SIZE: f32 = 40.0;
 /// C `NUM_BEAM_SEGS`: sides of a beam's tube.
 const NUM_BEAM_SEGS: usize = 6;
+/// C `gl3_intensity` default, applied to sprites as fragmentSrc3Dsprite does.
+const SPRITE_INTENSITY: f32 = 1.5;
+/// Beams leave intensity out (C fragmentSrc3Dcolor).
+const BEAM_INTENSITY: f32 = 1.0;
 
 /// Particle vertices for one draw: each at its origin, sized for a view
 /// `height` pixels tall, with its distance from the eye and its palette
@@ -265,6 +269,7 @@ precision highp int;
 uniform sampler2D u_texture;
 uniform vec4 u_color;
 uniform int u_alpha_test;
+uniform float u_intensity;
 uniform float u_gamma;
 in vec2 v_uv;
 out vec4 o_color;
@@ -273,6 +278,7 @@ void main() {
     if (u_alpha_test != 0 && texel.a <= 0.666) {
         discard;
     }
+    texel.rgb *= u_intensity;
     o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a);
 }
 "#;
@@ -286,6 +292,7 @@ pub struct FxGpu {
     fx_view_proj: Option<glow::UniformLocation>,
     fx_color: Option<glow::UniformLocation>,
     fx_alpha_test: Option<glow::UniformLocation>,
+    fx_intensity: Option<glow::UniformLocation>,
     fx_stream: StreamBuffer,
 }
 
@@ -312,12 +319,13 @@ pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
             bind_samplers(gl, fx_program, &["u_texture"]);
             // SAFETY: both programs were linked on `gl` above; the lookups
             // only read them.
-            let (particle_view_proj, fx_view_proj, fx_color, fx_alpha_test) = unsafe {
+            let (particle_view_proj, fx_view_proj, fx_color, fx_alpha_test, fx_intensity) = unsafe {
                 (
                     gl.get_uniform_location(particle_program, "u_view_proj"),
                     gl.get_uniform_location(fx_program, "u_view_proj"),
                     gl.get_uniform_location(fx_program, "u_color"),
                     gl.get_uniform_location(fx_program, "u_alpha_test"),
+                    gl.get_uniform_location(fx_program, "u_intensity"),
                 )
             };
             Ok(FxGpu {
@@ -328,6 +336,7 @@ pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
                 fx_view_proj,
                 fx_color,
                 fx_alpha_test,
+                fx_intensity,
                 fx_stream,
             })
         }
@@ -395,9 +404,7 @@ pub fn draw_beam(
                 vertices: &vertices,
                 mode: glow::TRIANGLE_STRIP,
                 texture: white,
-                color: beam_color(entity, palette),
-                alpha_test: false,
-                blend: true,
+                style: beam_style(entity, palette),
             },
         );
     }
@@ -427,11 +434,6 @@ pub fn draw_sprite(
     else {
         return;
     };
-    let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
-        entity.alpha
-    } else {
-        1.0
-    };
     fx_draw(
         gl,
         fx,
@@ -439,11 +441,37 @@ pub fn draw_sprite(
             vertices: &sprite_vertices(entity.origin, &frame.size, right, up),
             mode: glow::TRIANGLE_FAN,
             texture,
-            color: [1.0, 1.0, 1.0, alpha],
-            alpha_test: alpha == 1.0,
-            blend: alpha != 1.0,
+            style: sprite_style(entity),
         },
     );
+}
+
+/// How a beam is shaded: palette colour, blended, no intensity.
+/// C ref: `GL3_DrawBeam`, `fragmentSrc3Dcolor`.
+fn beam_style(entity: &RenderEntity, palette: &Palette) -> FxStyle {
+    FxStyle {
+        color: beam_color(entity, palette),
+        alpha_test: false,
+        blend: true,
+        intensity: BEAM_INTENSITY,
+    }
+}
+
+/// How a sprite is shaded: alpha tested at full alpha, blended otherwise,
+/// scaled by gl3_intensity. C ref: `GL3_DrawSpriteModel`,
+/// `fragmentSrc3Dsprite`, `fragmentSrc3DspriteAlpha`.
+fn sprite_style(entity: &RenderEntity) -> FxStyle {
+    let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
+        entity.alpha
+    } else {
+        1.0
+    };
+    FxStyle {
+        color: [1.0, 1.0, 1.0, alpha],
+        alpha_test: alpha == 1.0,
+        blend: alpha != 1.0,
+        intensity: SPRITE_INTENSITY,
+    }
 }
 
 /// The view's right and up vectors, which sprites face.
@@ -487,32 +515,40 @@ pub fn draw_particles(
     }
 }
 
-struct FxDraw<'a> {
-    vertices: &'a [f32],
-    mode: u32,
-    texture: glow::Texture,
+struct FxStyle {
     color: [f32; 4],
     alpha_test: bool,
     /// Blend without writing depth.
     blend: bool,
+    /// Colour scale before gamma.
+    intensity: f32,
+}
+
+struct FxDraw<'a> {
+    vertices: &'a [f32],
+    mode: u32,
+    texture: glow::Texture,
+    style: FxStyle,
 }
 
 fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
     fill_stream(gl, &fx.fx_stream, draw.vertices);
     let count = i32::try_from(draw.vertices.len() / FX_FLOATS).unwrap_or(i32::MAX);
+    let style = &draw.style;
     // SAFETY: the texture, stream and uniforms belong to `gl` and the bound
     // fx program; the stream was just filled with `count` vertices.
     unsafe {
-        gl.uniform_4_f32_slice(fx.fx_color.as_ref(), &draw.color);
-        gl.uniform_1_i32(fx.fx_alpha_test.as_ref(), i32::from(draw.alpha_test));
+        gl.uniform_4_f32_slice(fx.fx_color.as_ref(), &style.color);
+        gl.uniform_1_i32(fx.fx_alpha_test.as_ref(), i32::from(style.alpha_test));
+        gl.uniform_1_f32(fx.fx_intensity.as_ref(), style.intensity);
         gl.bind_texture(glow::TEXTURE_2D, Some(draw.texture));
-        if draw.blend {
+        if style.blend {
             gl.enable(glow::BLEND);
             set_alpha_blend(gl);
             gl.depth_mask(false);
         }
         gl.draw_arrays(draw.mode, 0, count);
-        if draw.blend {
+        if style.blend {
             gl.depth_mask(true);
             gl.disable(glow::BLEND);
         }
@@ -605,12 +641,40 @@ mod tests {
         assert_eq!(sprite_frame(0, 0), 0);
     }
 
+    // C fragmentSrc3Dsprite and fragmentSrc3DspriteAlpha do `texel.rgb *=
+    // intensity` (gl3_intensity, 1.5); fragmentSrc3Dcolor, used for beams,
+    // leaves it out.
+    #[test]
+    fn sprites_are_scaled_by_gl3_intensity_and_beams_are_not() {
+        let sprite = RenderEntity::default();
+        assert_eq!(sprite_style(&sprite).intensity, 1.5);
+        let beam = beam(Vec3f::ZERO, Vec3f::Z, 4);
+        assert_eq!(beam_style(&beam, &grey_palette()).intensity, 1.0);
+    }
+
+    #[test]
+    fn an_opaque_sprite_is_alpha_tested_and_a_translucent_one_blends() {
+        let opaque = sprite_style(&RenderEntity::default());
+        assert!(opaque.alpha_test && !opaque.blend);
+        assert_eq!(opaque.color, [1.0, 1.0, 1.0, 1.0]);
+        let translucent = sprite_style(&RenderEntity {
+            flags: RF_TRANSLUCENT,
+            alpha: 0.5,
+            ..Default::default()
+        });
+        assert!(!translucent.alpha_test && translucent.blend);
+        assert_eq!(translucent.color, [1.0, 1.0, 1.0, 0.5]);
+    }
+
     #[test]
     fn the_fx_shaders_follow_gl3s_particle_and_sprite_shaders() {
         assert!(PARTICLE_VERTEX_SRC.contains("gl_PointSize = a_size / (a_dist * 0.1);"));
         assert!(PARTICLE_FRAGMENT_SRC.contains("if (dist_squared > 1.0)"));
         assert!(PARTICLE_FRAGMENT_SRC.contains("min(1.0, 1.2 * (1.0 - dist_squared))"));
         assert!(FX_FRAGMENT_SRC.contains("if (u_alpha_test != 0 && texel.a <= 0.666)"));
+        // C fragmentSrc3Dsprite/SpriteAlpha scale by intensity before gamma.
+        assert!(FX_FRAGMENT_SRC.contains("uniform float u_intensity;"));
+        assert!(FX_FRAGMENT_SRC.contains("texel.rgb *= u_intensity;"));
         for src in [PARTICLE_FRAGMENT_SRC, FX_FRAGMENT_SRC] {
             assert!(src.contains("uniform float u_gamma;"));
         }
