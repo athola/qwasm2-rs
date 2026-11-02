@@ -284,6 +284,11 @@ impl GameWorld {
             .is_some_and(|mi| mi.aiflags.contains(AiFlags::GOOD_GUY));
         if dying_monster && !good_guy {
             self.level.killed_monsters += 1;
+            if self.game.coop {
+                if let Some(client) = self.client_mut(attacker) {
+                    client.resp.score += 1;
+                }
+            }
             // Medics won't heal monsters that they kill themselves.
             let by_medic = self
                 .entities
@@ -532,8 +537,9 @@ impl GameWorld {
             .get(target)
             .is_some_and(|e| e.client.is_some());
 
-        // Apply damage to health; only damage that is taken can kill.
-        if take > 0 {
+        // Apply damage to health. C tests `if (take)`, so negative damage
+        // (a map's trigger_hurt dmg) heals.
+        if take != 0 {
             let te = if is_monster || is_client {
                 q2_shared::constants::TE_BLOOD
             } else {
@@ -571,7 +577,7 @@ impl GameWorld {
         } else {
             true
         };
-        if feels_pain && take > 0 {
+        if feels_pain && take != 0 {
             if let Some(pain) = ent.pain {
                 pain(self, target, attacker, knockback, take);
             }
@@ -2190,6 +2196,34 @@ mod tests {
     }
 
     #[test]
+    fn t_damage_negative_damage_heals_a_player_and_causes_pain() {
+        // C T_Damage applies health and pain on `if (take)`, so a map's
+        // negative trigger_hurt dmg heals.
+        let mut world = test_world();
+        let target = world.spawn_test_client(crate::entity::ClientData::default());
+        make_damageable(&mut world, target, Vec3f::ZERO, 50);
+        let attacker = world.spawn().unwrap();
+
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            -5,
+            0,
+            DamageFlags::NO_ARMOR,
+            MeansOfDeath::TriggerHurt,
+        );
+
+        let ent = world.entities.get(target).unwrap();
+        assert_eq!(ent.game.health, 55);
+        assert_eq!(ent.game.style, 1);
+        assert_eq!(world.client(target).unwrap().damage_blood, -5);
+    }
+
+    #[test]
     fn radius_damage_skips_freed_entities() {
         let mut world = test_world();
         let inflictor = world.spawn().unwrap();
@@ -2423,6 +2457,41 @@ mod tests {
         world.killed(monster, attacker, attacker, 10, Vec3f::ZERO);
 
         assert_eq!(world.level.killed_monsters, 0);
+    }
+
+    /// A player in `coop` kills a live monster (a good guy if `good_guy`);
+    /// returns the player's score.
+    fn score_after_killing_monster(coop: bool, good_guy: bool) -> i32 {
+        let mut world = test_world();
+        world.game.coop = coop;
+        let player = world.spawn_test_client(Default::default());
+        let monster = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(monster).unwrap();
+            ent.svflags |= SvFlags::MONSTER.bits();
+            ent.monsterinfo = Some(Box::new(crate::entity::MonsterInfo {
+                aiflags: if good_guy {
+                    AiFlags::GOOD_GUY
+                } else {
+                    AiFlags::empty()
+                },
+                ..Default::default()
+            }));
+        }
+        world.killed(monster, player, player, 10, Vec3f::ZERO);
+        world.client(player).unwrap().resp.score
+    }
+
+    #[test]
+    fn killed_monster_scores_a_point_for_a_coop_player() {
+        // C Killed: `if (coop->value && attacker->client) resp.score++`.
+        assert_eq!(score_after_killing_monster(true, false), 1);
+    }
+
+    #[test]
+    fn killed_monster_scores_nothing_outside_coop_or_for_a_good_guy() {
+        assert_eq!(score_after_killing_monster(false, false), 0);
+        assert_eq!(score_after_killing_monster(true, true), 0);
     }
 
     // -- M_ReactToDamage and the monster branch of T_Damage --
