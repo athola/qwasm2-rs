@@ -116,21 +116,13 @@ impl ServerText {
     }
 
     /// C `SCR_CenterPrint`: show `text` centred and clear the notify
-    /// lines (C `Con_ClearNotify`).
+    /// lines (C `Con_ClearNotify`). One entry per `'\n'`-separated line,
+    /// so the count is C's `scr_center_lines`; C `SCR_DrawCenterString`
+    /// draws at most 40 characters of each and skips the rest.
     fn center_print(&mut self, text: &str, now: i32) {
         self.center = text
             .split('\n')
-            .flat_map(|line| {
-                let chars: Vec<char> = line.chars().collect();
-                if chars.is_empty() {
-                    vec![String::new()]
-                } else {
-                    chars
-                        .chunks(CENTER_LINE)
-                        .map(|c| c.iter().collect())
-                        .collect()
-                }
-            })
+            .map(|line| line.chars().take(CENTER_LINE).collect())
             .collect();
         self.center_until = now + SCR_CENTERTIME_MS;
         self.lines.clear();
@@ -284,6 +276,19 @@ mod tests {
         assert_eq!(r[1], (176, "Use the key".to_string()));
         assert!(matches!(draws[0], HudDraw::Char { x, .. } if x == (640 - 18 * 8) / 2));
         assert!(text.draws(640, 480, 2600).is_empty());
+    }
+
+    #[test]
+    fn a_centre_print_line_is_cut_at_40_characters() {
+        let mut text = ServerText::default();
+        let long = "x".repeat(60);
+        text.message(&center(&format!("{long}\na\nb\nc")), 0, 80);
+        // C draws the first 40 characters, drops the rest and, counting
+        // four lines, still starts from 35% down.
+        let r = rows(&text.draws(640, 480, 0));
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[0], (168, "x".repeat(40)));
+        assert_eq!(r[1], (176, "a".to_string()));
     }
 
     #[test]
