@@ -132,20 +132,27 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Player trail nodes are data.** C keeps the eight trail nodes as
   `player_trail` edicts; here they are plain data on `GameWorld`, so they
   take no entity numbers. Monsters follow them as C's `ai_run` does.
-- **No cvars.** Skill, deathmatch, coop and dmflags are fields;
-  `g_monsterfootsteps` stays off (its C default), so footsteps are silent.
+- **No cvars for the game rules.** Skill, deathmatch, coop and dmflags
+  are fields with no cvar path; other cvars the game reads, such as
+  `cl_gun` and `g_commanderbody_nogod`, go through `GameImport::cvar`,
+  which `LocalGame::set_cvar` fills. `g_monsterfootsteps` stays off (its
+  C default), so footsteps are silent.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
+- **Client state during connect and begin.** The server import learns
+  the client slots' states after `ClientConnect` and `ClientBegin`, not
+  before `ClientBegin` as C sets `cs_spawned`, so an unreliable
+  multicast from `ClientBegin` is dropped. Only `maxclients > 1` sends
+  one (the login flash), and the browser runs one client.
 - **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
   2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
-  drawn) and heat beams; the game reads cvars such as `cl_gun` through
-  `GameImport::cvar`, which `LocalGame::set_cvar` fills; `aimfix`,
-  `g_swap_speed` and `coop_pickup_weapons` at their yquake2 defaults.
-  `CheckNeedPass` has nothing to do (it publishes password cvars, and
-  there are none); the player model's animation (`G_SetClientFrame`,
-  seen only by other players) is not run, though the weapon code sets
-  its frames (#32). Temp entities, entity events, trails and flash
+  drawn) and heat beams; `aimfix`, `g_swap_speed` and
+  `coop_pickup_weapons` are at their yquake2 defaults. `CheckNeedPass`
+  has nothing to do (it publishes password cvars, and there are none);
+  the player model's animation (`G_SetClientFrame`, seen only by other
+  players) is not run, though the weapon code sets its frames (#32).
+- **Client effects.** Temp entities, entity events, trails and flash
   smoke are drawn by the browser client (`q2_client::fx`, C
   `cl_tempentities.c`, `cl_particles.c`, `cl_effects.c`) through the
   renderer's particles, beams and sprites, mission-pack ones (rogue,
@@ -154,12 +161,12 @@ effects, and the deathmatch rules end matches through C's intermission.
   models; their lights share the client's 32 dlights as in C. The
   rogue shell combinations apply with C's `game` set to `rogue`
   (`?game=rogue`), which only the client reads: no rogue game code or
-  data is loaded. The page starts on `?map=` (else demo1), and
+  data is loaded. Brush models moved by doors take dlights at their
+  rest position.
+- **Page settings.** The page starts on `?map=` (else demo1), and
   `?vid_fullscreen=1` goes fullscreen with the keyboard locked to the
   game where the browser allows it (Chromium), so Ctrl shortcuts do not
-  reach the browser. Brush models
-  moved by doors take dlights at their rest
-  position.
+  reach the browser.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
   `menu_loadgame`, which nothing handles), the random pick in an item

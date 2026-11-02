@@ -68,6 +68,8 @@ All notable changes to qwasm2-rs are documented here.
 - `q2_shared::constants::ERR_QUIT` is now `ERR_DISCONNECT`, C's name for
   code 2; `GameExport` gains `clear_entity_events` (C `SV_PrepWorldFrame`);
   `q2_common::pmove::angle_vectors` and `BspHeader::records` are public
+- `Renderer` gains the required `set_hand`;
+  `ServerStatic::connect_local_client` takes the client's `userinfo`
 
 ### Added
 - The player fires the blaster: `ClientThink` latches the attack button
@@ -317,6 +319,13 @@ All notable changes to qwasm2-rs are documented here.
   wire size from ~46 MB to ~26 MB
 
 ### Fixed
+- Multicasts reach the local client only as C `SV_Multicast` routes
+  them: through the origin's PVS or PHS and connected areas, and
+  unreliable ones only once the client is in the game, so effects in
+  unseen rooms no longer light or sound through walls
+- Centre prints, prints and unicasts go only to client entities
+  (C `1..=maxclients`), so a trigger or monster activator's message no
+  longer shows on the player's screen
 - `BossExplode` ran a ninth explosion before gibbing; the click prompt
   swallowed the click that locks the pointer and starts audio
 - Soldier animations used the wrong model frames for stand, walk, pain
