@@ -1688,14 +1688,8 @@ fn pickup_power_armor(world: &mut GameWorld, item_ent: EntityKey, player: Entity
         client.pers.inventory[item_idx] += 1;
     }
     if world.game.deathmatch {
-        let dropped = world
-            .entities
-            .get(item_ent)
-            .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
-        if !dropped {
-            let delay = world.items[item_idx].quantity as f32;
-            set_respawn(world, item_ent, delay);
-        }
+        let delay = quantity_delay(world, item_ent);
+        respawn_unless_dropped(world, item_ent, delay);
         // Auto-use for deathmatch only if we didn't already have one.
         if quantity == 0 {
             use_power_armor(world, player, item_idx);
@@ -3771,6 +3765,25 @@ mod tests {
             .game
             .flags
             .contains(EntityFlags::RESPAWN));
+    }
+
+    #[test]
+    fn dropped_power_armor_is_not_respawned_in_deathmatch() {
+        // C Pickup_PowerArmor: SetRespawn only without DROPPED_ITEM, but
+        // the auto-use still runs.
+        let (mut world, key, _) = powered();
+        world.game.deathmatch = true;
+        own(&mut world, key, "Cells", 50);
+        let shield = powerup_on_floor(&mut world, "item_power_shield");
+        world.entities.get_mut(shield).unwrap().game.spawnflags = DROPPED_ITEM;
+        let pickup = world.items[world.find_item("item_power_shield").unwrap()]
+            .pickup
+            .unwrap();
+        assert!(pickup(&mut world, shield, key));
+        let player = world.entities.get(key).unwrap();
+        assert!(player.game.flags.contains(EntityFlags::POWER_ARMOR));
+        let shield = world.entities.get(shield).unwrap();
+        assert!(!shield.game.flags.contains(EntityFlags::RESPAWN));
     }
 
     #[test]
