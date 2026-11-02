@@ -2364,8 +2364,8 @@ mod tests {
 
     #[test]
     fn monster_start_keeps_the_movetype_solid_mass_and_pause_its_spawn_chose() {
-        // C monster_start sets none of these: each SP_* does, and
-        // SP_turret_driver's MOVETYPE_PUSH must not become STEP.
+        // C monster_start sets none of these: each SP_* does, so a
+        // spawn's own movetype and solid survive it.
         let mut world = test_world();
         let key = world.spawn().unwrap();
         {
