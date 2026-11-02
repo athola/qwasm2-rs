@@ -108,9 +108,18 @@ impl GameWorld {
     // C ref: g_combat.c:320-383
     // -----------------------------------------------------------------------
 
-    /// Calculate how much damage the worn armor absorbs, and use it up.
-    /// Returns the amount of damage saved by armor.
-    fn check_armor(&mut self, target: EntityKey, damage: i32, dflags: DamageFlags) -> i32 {
+    /// Calculate how much damage the worn armor absorbs, use it up and
+    /// throw `te_sparks` where it was hit. Returns the amount saved.
+    /// C ref: `CheckArmor` (g_combat.c).
+    fn check_armor(
+        &mut self,
+        target: EntityKey,
+        point: Vec3f,
+        normal: Vec3f,
+        damage: i32,
+        te_sparks: i32,
+        dflags: DamageFlags,
+    ) -> i32 {
         if damage == 0 || dflags.contains(DamageFlags::NO_ARMOR) {
             return 0;
         }
@@ -129,7 +138,11 @@ impl GameWorld {
             return 0;
         };
         let save = ((protection * damage as f32).ceil() as i32).min(client.pers.inventory[index]);
+        if save == 0 {
+            return 0;
+        }
         client.pers.inventory[index] -= save;
+        self.spawn_damage(te_sparks, point, normal);
         save
     }
 
@@ -170,12 +183,13 @@ impl GameWorld {
     /// How much of `damage` power armor absorbs, using up cells (a
     /// player's) or `power_armor_power` (a monster's). The screen covers
     /// only hits in front and saves a third at a point per cell; the shield
-    /// saves two thirds at two points per cell; `t_damage` sends its
+    /// saves two thirds at two points per cell, each throwing its own
     /// sparks. C ref: `CheckPowerArmor` (g_combat.c).
     pub(crate) fn check_power_armor(
         &mut self,
         target: EntityKey,
         point: Vec3f,
+        normal: Vec3f,
         damage: i32,
         dflags: DamageFlags,
     ) -> i32 {
@@ -221,6 +235,12 @@ impl GameWorld {
         if save == 0 {
             return 0;
         }
+        let te = if kind == POWER_ARMOR_SCREEN {
+            q2_shared::constants::TE_SCREEN_SPARKS
+        } else {
+            q2_shared::constants::TE_SHIELD_SPARKS
+        };
+        self.spawn_damage(te, point, normal);
 
         let time = self.level.time;
         let power_used = save / damage_per_cell;
@@ -491,32 +511,9 @@ impl GameWorld {
             take = 0;
         }
 
-        let psave = self.check_power_armor(target, point, take, dflags);
-        if psave > 0 {
-            let kind = match self.entities.get(target) {
-                Some(e) if e.client.is_none() => e
-                    .monsterinfo
-                    .as_ref()
-                    .map_or(POWER_ARMOR_NONE, |mi| mi.power_armor_type),
-                _ => self.power_armor_type(target),
-            };
-            let te = if kind == POWER_ARMOR_SCREEN {
-                q2_shared::constants::TE_SCREEN_SPARKS
-            } else {
-                q2_shared::constants::TE_SHIELD_SPARKS
-            };
-            self.spawn_damage(te, point, normal);
-        }
+        let psave = self.check_power_armor(target, point, normal, take, dflags);
         take -= psave;
-        // Apply armor (if not god mode).
-        let asave = if take > 0 {
-            self.check_armor(target, take, dflags)
-        } else {
-            0
-        };
-        if asave > 0 {
-            self.spawn_damage(te_sparks, point, normal);
-        }
+        let asave = self.check_armor(target, point, normal, take, te_sparks, dflags);
         take -= asave;
 
         let is_client = self
@@ -1079,7 +1076,14 @@ mod tests {
         client.pers.inventory[1] = 100;
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 50, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         // Body armor absorbs 80%: ceil(0.8 * 50) = 40
         assert_eq!(saved, 40);
 
@@ -1096,7 +1100,14 @@ mod tests {
         client.pers.inventory[1] = 10; // only 10 armor
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 100, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            100,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         // Would save 80, but only 10 available.
         assert_eq!(saved, 10);
     }
@@ -1109,7 +1120,14 @@ mod tests {
         client.pers.inventory[1] = 100;
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 50, DamageFlags::NO_ARMOR);
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::NO_ARMOR,
+        );
         assert_eq!(saved, 0);
     }
 
@@ -1119,7 +1137,14 @@ mod tests {
         let target = world.spawn().unwrap();
         // No client data.
 
-        let saved = world.check_armor(target, 50, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         assert_eq!(saved, 0);
     }
 
@@ -1151,7 +1176,7 @@ mod tests {
         world.level.time = 3.0;
         let key = armored_monster(&mut world, POWER_ARMOR_SCREEN, 100);
         let front = Vec3f::new(100.0, 10.0, 0.0);
-        let saved = world.check_power_armor(key, front, 30, DamageFlags::empty());
+        let saved = world.check_power_armor(key, front, Vec3f::ZERO, 30, DamageFlags::empty());
         assert_eq!(saved, 10);
         assert_eq!(power(&world, key), 90);
         let ent = world.entities.get(key).unwrap();
@@ -1165,7 +1190,7 @@ mod tests {
         let key = armored_monster(&mut world, POWER_ARMOR_SCREEN, 100);
         for point in [Vec3f::new(-100.0, 0.0, 0.0), Vec3f::new(0.0, 100.0, 0.0)] {
             assert_eq!(
-                world.check_power_armor(key, point, 30, DamageFlags::empty()),
+                world.check_power_armor(key, point, Vec3f::ZERO, 30, DamageFlags::empty()),
                 0
             );
         }
@@ -1179,7 +1204,7 @@ mod tests {
         let key = armored_monster(&mut world, POWER_ARMOR_SHIELD, 100);
         let behind = Vec3f::new(-100.0, 0.0, 0.0);
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             20
         );
         assert_eq!(power(&world, key), 90);
@@ -1193,7 +1218,7 @@ mod tests {
             .unwrap()
             .power_armor_power = 5;
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             10
         );
         assert_eq!(power(&world, key), 0);
@@ -1205,27 +1230,27 @@ mod tests {
         let front = Vec3f::new(100.0, 0.0, 0.0);
         let empty = armored_monster(&mut world, POWER_ARMOR_SHIELD, 0);
         assert_eq!(
-            world.check_power_armor(empty, front, 30, DamageFlags::empty()),
+            world.check_power_armor(empty, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let none = armored_monster(&mut world, POWER_ARMOR_NONE, 100);
         assert_eq!(
-            world.check_power_armor(none, front, 30, DamageFlags::empty()),
+            world.check_power_armor(none, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let shield = armored_monster(&mut world, POWER_ARMOR_SHIELD, 100);
         assert_eq!(
-            world.check_power_armor(shield, front, 0, DamageFlags::empty()),
+            world.check_power_armor(shield, front, Vec3f::ZERO, 0, DamageFlags::empty()),
             0
         );
         assert_eq!(
-            world.check_power_armor(shield, front, 30, DamageFlags::NO_ARMOR),
+            world.check_power_armor(shield, front, Vec3f::ZERO, 30, DamageFlags::NO_ARMOR),
             0
         );
         // Neither a client nor a monster.
         let wall = world.spawn().unwrap();
         assert_eq!(
-            world.check_power_armor(wall, front, 30, DamageFlags::empty()),
+            world.check_power_armor(wall, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
     }
@@ -1260,7 +1285,7 @@ mod tests {
         world.client_mut(key).unwrap().pers.inventory[screen] = 1;
         let behind = Vec3f::new(-100.0, 0.0, 0.0);
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             20
         );
         assert_eq!(cells(&world, key), 40);
@@ -1272,20 +1297,20 @@ mod tests {
         let front = Vec3f::new(100.0, 0.0, 0.0);
         let on = armored_client(&mut world, "Power Screen", true);
         assert_eq!(
-            world.check_power_armor(on, front, 30, DamageFlags::empty()),
+            world.check_power_armor(on, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             10
         );
         assert_eq!(cells(&world, on), 40);
         let mut world = test_world();
         let off = armored_client(&mut world, "Power Screen", false);
         assert_eq!(
-            world.check_power_armor(off, front, 30, DamageFlags::empty()),
+            world.check_power_armor(off, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let mut world = test_world();
         let no_item = armored_client(&mut world, "", true);
         assert_eq!(
-            world.check_power_armor(no_item, front, 30, DamageFlags::empty()),
+            world.check_power_armor(no_item, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         assert_eq!(cells(&world, no_item), 50);
@@ -2098,7 +2123,17 @@ mod tests {
 
         // Jacket armor: ceil(0.3f * 50) = 16, as in C (0.3f is a hair
         // over 0.3).
-        assert_eq!(world.check_armor(target, 50, DamageFlags::empty()), 16);
+        assert_eq!(
+            world.check_armor(
+                target,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::empty()
+            ),
+            16
+        );
         assert_eq!(worn(&world, target, "item_armor_jacket"), 34);
     }
 
@@ -2109,9 +2144,29 @@ mod tests {
         let jacket = wearing(&mut world, "item_armor_jacket", 50);
         let combat = wearing(&mut world, "item_armor_combat", 50);
 
-        assert_eq!(world.check_armor(jacket, 50, DamageFlags::ENERGY), 0);
+        assert_eq!(
+            world.check_armor(
+                jacket,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::ENERGY
+            ),
+            0
+        );
         // Combat armor: ceil(0.3f * 50) = 16.
-        assert_eq!(world.check_armor(combat, 50, DamageFlags::ENERGY), 16);
+        assert_eq!(
+            world.check_armor(
+                combat,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::ENERGY
+            ),
+            16
+        );
     }
 
     #[test]
