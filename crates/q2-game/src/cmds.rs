@@ -1,6 +1,8 @@
 //! Client commands a player types or binds: using, dropping and cycling
-//! items and weapons. C ref: `g_cmds.c`; chat, scores, cheats, `kill` and
-//! the chase camera are not ported.
+//! items and weapons, help and scores. C ref: `g_cmds.c`; chat
+//! (`say`, `say_team`, `players`), the cheat and debug commands, `inven`,
+//! `kill`, `putaway`, `wave`, `playerlist`, `cycleweap`, `prefweap` and the
+//! chase camera are not ported.
 
 use q2_shared::constants::PRINT_HIGH;
 

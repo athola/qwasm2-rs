@@ -1,5 +1,5 @@
-//! Player view — camera offset, view bob, damage kicks, fall effects.
-//! C ref: `player/view.c` (1,426 lines)
+//! Player view: camera offset, view bob and lean, damage kicks, blends,
+//! world effects and footsteps. C ref: `player/view.c`.
 
 use q2_shared::types::*;
 

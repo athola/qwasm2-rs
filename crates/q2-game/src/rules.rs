@@ -2,7 +2,7 @@
 //! picking the next map, and which players are on a team. C ref:
 //! `CheckDMRules`, `EndDMLevel` (g_main.c), `CreateTargetChangeLevel`
 //! (g_utils.c), `ClientTeam`, `OnSameTeam` (g_cmds.c). The scoreboard
-//! layout is not ported.
+//! layout is in `player::hud`.
 
 use q2_shared::constants::PRINT_HIGH;
 

@@ -27,7 +27,8 @@ impl GameWorld {
     }
 
     /// Update player_state_t.stats[] with current HUD values.
-    /// C ref: `G_SetStats` (player/hud.c); the help icon is not ported.
+    /// C ref: `G_SetStats` (player/hud.c); spectators are not ported, so
+    /// `STAT_SPECTATOR` stays 0.
     pub fn update_player_stats(&mut self, key: EntityKey) {
         // Power armor that ran out of cells switches off.
         let mut power_armor = self.power_armor_type(key);
@@ -305,8 +306,7 @@ impl GameWorld {
     /// note the next map, and in single player go straight on; otherwise
     /// move everyone to an intermission spot until a button is pressed
     /// five seconds later. A new coop unit takes everyone's keys. C ref:
-    /// `BeginIntermission` (player/hud.c), without the `fact1` spot fix
-    /// and the scoreboard.
+    /// `BeginIntermission` (player/hud.c), without the `fact1` spot fix.
     pub fn begin_intermission(&mut self, targ: EntityKey) {
         if self.level.intermission_time != 0.0 {
             return; // already activated

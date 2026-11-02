@@ -1188,8 +1188,6 @@ fn take_armor(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> 
     true
 }
 
-/// Pickup handler for ammo items.
-/// C ref: `Pickup_Ammo` (g_items.c:714-764)
 /// C `Add_Ammo`: up to the cap for its kind; false when already full.
 fn add_ammo(world: &mut GameWorld, player: EntityKey, ammo: usize, count: i32) -> bool {
     let tag = world.items[ammo].tag;
@@ -1306,8 +1304,6 @@ fn pickup_pack(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) ->
     true
 }
 
-/// Pickup handler for weapon items.
-/// C ref: `Pickup_Weapon` (player/weapon.c:268-336)
 /// Take a weapon and a load of its ammo (none from a dropped one). With
 /// weapons stay or in coop, a player who has it leaves a map weapon for
 /// the others; deathmatch map weapons respawn after 30 seconds. A new
@@ -2088,8 +2084,9 @@ pub fn use_item(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activ
     world.link_entity(key);
 }
 
-/// C ref: `Touch_Item` (single player: no deathmatch instant use, no coop
-/// stay; pickup sounds and the screen flash are not ported).
+/// A player takes the item: the pickup flash, icon and sound, deathmatch
+/// instant use, the item's targets, then the item goes unless it
+/// respawns or stays in coop. C ref: `Touch_Item`.
 pub fn touch_item(
     world: &mut GameWorld,
     key: EntityKey,

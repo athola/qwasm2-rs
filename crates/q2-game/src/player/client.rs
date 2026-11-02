@@ -74,9 +74,9 @@ impl GameWorld {
 
     /// Place a connected client into the game world at a spawn point.
     /// C ref: `PutClientInServer` (player/client.c). Not ported: the
-    /// help-computer counts coop carries across a respawn, and
-    /// `air_finished` and `pain`, which only player drowning (P_WorldEffects)
-    /// and player_pain read, neither of which is ported.
+    /// help-computer counts (`game_helpchanged`, `helpchanged`) that coop
+    /// carries across a respawn. No `pain` callback is set: C's
+    /// `player_pain` is empty, `P_DamageFeedback` does the work.
     pub fn begin_client(&mut self, key: EntityKey) {
         // Before health is set back up, so farthest ranging does not count
         // this client.
@@ -958,8 +958,8 @@ pub(crate) fn extract_info_value(userinfo: &str, key: &str) -> Option<String> {
 }
 
 /// The player's die callback. C ref: `player_die` (player/client.c),
-/// without the obituary, weapon toss, gibs, death animation and sounds.
-/// Single player has no respawn: C reloads the last save on a button
+/// without `LookAtKiller` (the dead view keeps its yaw) and the death
+/// animation (#32). Single player has no respawn: C reloads the last save on a button
 /// press, and there is no save/load yet (#15).
 pub fn player_die(
     world: &mut GameWorld,
