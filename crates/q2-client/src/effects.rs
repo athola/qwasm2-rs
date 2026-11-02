@@ -3,6 +3,7 @@
 //! (client/cl_effects.c) and the dlight list of client/cl_lights.c.
 //! Their particles are queued for `fx::ClientFx::flash_particles`.
 
+use q2_common::pmove::angle_vectors;
 use q2_shared::constants::*;
 use q2_shared::flash::MONSTER_FLASH_OFFSET;
 use q2_shared::types::{EntityState, Vec3f};
@@ -123,7 +124,7 @@ impl Effects {
         let entnum = player.number;
         let silenced = weapon & MZ_SILENCED != 0;
         let weapon = weapon & !MZ_SILENCED;
-        let (forward, right) = forward_right(player.angles);
+        let (forward, right, _) = angle_vectors(player.angles);
         let radius = if silenced { 100.0 } else { 200.0 } + (randk() & 31) as f32;
         let volume = if silenced { 0.2 } else { 1.0 };
         let light = self.alloc_dlight(entnum, time);
@@ -243,7 +244,7 @@ impl Effects {
         else {
             return Vec::new();
         };
-        let (forward, right) = forward_right(monster.angles);
+        let (forward, right, _) = angle_vectors(monster.angles);
         let mut origin = monster.origin + forward * offset[0] + right * offset[1];
         origin.z += offset[2];
         let entnum = monster.number;
@@ -321,16 +322,6 @@ impl Effects {
             self.muzzle_flash2(&state, flash, time, randk)
         }
     }
-}
-
-/// `AngleVectors` forward and right.
-fn forward_right(angles: Vec3f) -> (Vec3f, Vec3f) {
-    let (sy, cy) = angles.y.to_radians().sin_cos();
-    let (sp, cp) = angles.x.to_radians().sin_cos();
-    let (sr, cr) = angles.z.to_radians().sin_cos();
-    let forward = Vec3f::new(cp * cy, cp * sy, -sp);
-    let right = Vec3f::new(-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp);
-    (forward, right)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -798,6 +789,32 @@ mod tests {
         assert_eq!((light.minlight, light.die, light.key), (32.0, 500.0, 1));
         assert_eq!(names(&sounds), [("weapons/blastf1a.wav", CHAN_WEAPON, 0.0)]);
         assert_eq!((sounds[0].entnum, sounds[0].volume), (1, 1.0));
+    }
+
+    #[test]
+    fn flash_lights_use_c_angle_vectors_double_trigonometry() {
+        let mut fx = Effects::default();
+        let mut mismatched = 0;
+        for step in 0..720 {
+            let angles = Vec3f::new(step as f32 * 0.37 - 89.0, step as f32 * 0.53, 0.0);
+            let (forward, right, _) = q2_common::pmove::angle_vectors(angles);
+            let player = EntityState {
+                angles,
+                ..player_at(1, 0.0)
+            };
+            fx.muzzle_flash(&player, MZ_BLASTER, 0.0, &mut rng(&[0]));
+            let want = player.origin + forward * 18.0 + right * 16.0;
+            mismatched += usize::from(fx.dlights().next().unwrap().origin != want);
+
+            let offset = MONSTER_FLASH_OFFSET[MZ2_SOLDIER_BLASTER_1 as usize];
+            fx.clear();
+            fx.muzzle_flash2(&player, MZ2_SOLDIER_BLASTER_1, 0.0, &mut rng(&[0]));
+            let mut want = player.origin + forward * offset[0] + right * offset[1];
+            want.z += offset[2];
+            mismatched += usize::from(fx.dlights().next().unwrap().origin != want);
+            fx.clear();
+        }
+        assert_eq!(mismatched, 0);
     }
 
     #[test]
