@@ -1057,9 +1057,12 @@ pub fn player_die(
 }
 
 /// What a self-kill message calls the player (C `IsFemale`, `IsNeutral`
-/// on the userinfo `gender`).
+/// on the userinfo `gender`; a gender containing "crakhor" is female).
 fn pronoun(userinfo: &str) -> (&'static str, &'static str) {
     let gender = extract_info_value(userinfo, "gender").unwrap_or_default();
+    if gender.contains("crakhor") {
+        return ("her", "herself");
+    }
     match gender.chars().next() {
         Some('f' | 'F') => ("her", "herself"),
         Some('m' | 'M') => ("his", "himself"),
@@ -1769,6 +1772,14 @@ mod tests {
         world.client_end_server_frame(key);
         assert_eq!(world.client(key).unwrap().pers.helpchanged, 0);
         assert_eq!(gi.unicasts.borrow().as_slice(), &[(1, false)]);
+    }
+
+    #[test]
+    fn a_crakhor_gender_is_female_as_in_c() {
+        assert_eq!(pronoun("\\gender\\crakhor"), ("her", "herself"));
+        assert_eq!(pronoun("\\gender\\mcrakhor"), ("her", "herself"));
+        assert_eq!(pronoun("\\gender\\male"), ("his", "himself"));
+        assert_eq!(pronoun("\\gender\\none"), ("its", "itself"));
     }
 
     #[test]
