@@ -427,7 +427,8 @@ pub fn bfg_explode(world: &mut GameWorld, self_key: EntityKey) {
                 continue;
             }
             let dist = (origin - center).length();
-            let points = radius_dmg as f32 * (1.0 - (dist / radius).sqrt());
+            // C: the division is float, the sqrt and product double.
+            let points = (radius_dmg as f64 * (1.0 - ((dist / radius) as f64).sqrt())) as f32;
             temp_entity(
                 world,
                 TE_BFG_EXPLOSION,
@@ -2414,6 +2415,19 @@ mod tests {
         bfg_touch(&mut world, ball, target, None, None);
         let at = world.entities.get(ball).unwrap().state.origin;
         assert_eq!(at, Vec3f::new(100.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn bfg_explode_falls_off_in_double_like_c() {
+        // C: radius_dmg * (1.0 - sqrt(dist / dmg_radius)) in double gives
+        // 455 at 8.1 units; the same sum in float gives 454.
+        let mut world = test_world();
+        let owner = world.spawn().unwrap();
+        world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 500, 400, 1000.0);
+        let ball = world.find_by_classname(None, "bfg blast").unwrap();
+        let target = target_at(&mut world, Vec3f::new(8.1, 0.0, 0.0), 1000);
+        bfg_explode(&mut world, ball);
+        assert_eq!(world.entities.get(target).unwrap().game.health, 1000 - 455);
     }
 
     #[test]
