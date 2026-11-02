@@ -3219,6 +3219,12 @@ mod tests {
                 String::new()
             }
             fn add_command_string(&self, _: &str) {}
+            fn cvar(&self, name: &str, default: &str) -> String {
+                self.inner.cvar(name, default)
+            }
+            fn local_time(&self) -> Option<(u32, u32, u32)> {
+                self.inner.local_time()
+            }
         }
         let gi = Rc::new(Printer::default());
         let mut world = GameWorld::new(gi.clone(), 64);

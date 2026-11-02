@@ -1685,6 +1685,12 @@ pub(crate) mod wire {
         fn add_command_string(&self, a: &str) {
             self.inner.add_command_string(a)
         }
+        fn cvar(&self, name: &str, default: &str) -> String {
+            self.inner.cvar(name, default)
+        }
+        fn local_time(&self) -> Option<(u32, u32, u32)> {
+            self.inner.local_time()
+        }
     }
 }
 

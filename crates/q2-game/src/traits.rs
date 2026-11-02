@@ -273,16 +273,12 @@ pub trait GameImport {
 
     /// The value of cvar `name`, or `default` when it is unset (C
     /// `gi.cvar(name, default, flags)->string`).
-    fn cvar(&self, _name: &str, default: &str) -> String {
-        default.to_string()
-    }
+    fn cvar(&self, name: &str, default: &str) -> String;
 
     /// The engine's local wall clock as hours, minutes and seconds (what
     /// C's game reads with `time` and `localtime`), or `None` when the
     /// engine has none.
-    fn local_time(&self) -> Option<(u32, u32, u32)> {
-        None
-    }
+    fn local_time(&self) -> Option<(u32, u32, u32)>;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +437,12 @@ mod tests {
             String::new()
         }
         fn add_command_string(&self, _text: &str) {}
+        fn cvar(&self, _name: &str, default: &str) -> String {
+            default.to_string()
+        }
+        fn local_time(&self) -> Option<(u32, u32, u32)> {
+            None
+        }
     }
 
     #[test]
