@@ -13,14 +13,9 @@ use super::lightmap::{
 };
 use super::texture::WorldImages;
 use crate::bsp::{BspData, BspFace, BspTexInfo};
-use q2_shared::constants::CONTENTS_SOLID;
-
-pub const SURF_SKY: i32 = 0x4;
-pub const SURF_WARP: i32 = 0x8;
-pub const SURF_TRANS33: i32 = 0x10;
-pub const SURF_TRANS66: i32 = 0x20;
-pub const SURF_FLOWING: i32 = 0x40;
-pub const SURF_NODRAW: i32 = 0x80;
+use q2_shared::constants::{
+    CONTENTS_SOLID, SURF_FLOWING, SURF_NODRAW, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP,
+};
 
 /// Floats per world vertex.
 pub const VERTEX_FLOATS: usize = 14;
