@@ -177,8 +177,8 @@ effects, and the deathmatch rules end matches through C's intermission.
   (`P_FallingDamage`), the dead view turning to the killer
   (`LookAtKiller`), and coop's per-cube tracking (`pers.power_cubes`), so
   a coop power cube counts like any key.
-- **Effects left out on purpose:** `CL_QuadTrail` and
-  `CL_Tracker_Explode` have no caller in yquake2 or id's 3.21 release,
+- **Effects left out on purpose:** `CL_QuadTrail`,
+  `CL_Tracker_Explode` and `CL_GenericParticleEffect` have no caller in yquake2 or id's 3.21 release,
   so drawing them would change what valid input looks like. id's
   `TE_TRACKER_EXPLOSION` has the `CL_Tracker_Explode` call commented out
   in favour of the colour flash and `CL_ColorExplosionParticles` drawn
