@@ -92,12 +92,7 @@ impl FrameHistory {
     /// the step. Both need the per-command prediction state, which the
     /// networked client (#19) brings.
     pub fn view(&self, origin: Vec3f, live: &PlayerState, lerp: f32) -> (Vec3f, Vec3f) {
-        let ps = &self.ps;
-        // A teleport of more than 256 units on an axis is not lerped.
-        let teleported = (0..3).any(|i| {
-            (i32::from(self.old_ps.pmove.origin[i]) - i32::from(ps.pmove.origin[i])).abs() > 256 * 8
-        });
-        let ops = if teleported { ps } else { &self.old_ps };
+        let (ps, ops) = (&self.ps, self.ops());
         let lerp_angles = |a: Vec3f, b: Vec3f| {
             Vec3f::new(
                 lerp_angle(a.x, b.x, lerp),
@@ -116,6 +111,21 @@ impl FrameHistory {
             angles + lerp_angles(ops.kick_angles, ps.kick_angles),
         )
     }
+
+    /// The player state to lerp from (C `CL_CalcViewValues`' `ops`): the
+    /// previous frame's, or the newest one after a teleport of more than
+    /// 256 units on an axis, which is not lerped.
+    fn ops(&self) -> &PlayerState {
+        let (ps, ops) = (&self.ps, &self.old_ps);
+        let teleported = (0..3).any(|i| {
+            (i32::from(ops.pmove.origin[i]) - i32::from(ps.pmove.origin[i])).abs() > 256 * 8
+        });
+        if teleported {
+            ps
+        } else {
+            ops
+        }
+    }
 }
 
 /// The first-person gun this frame (C `CL_AddViewWeapon`'s `gun`).
@@ -132,7 +142,9 @@ pub struct ViewWeapon {
 
 impl FrameHistory {
     /// The gun at the eye (`vieworg`, `viewangles` of the view), offset
-    /// and turned by the player state's lerped `gunoffset`/`gunangles`.
+    /// and turned by the player state's lerped `gunoffset`/`gunangles`,
+    /// lerped from `ops` like the view (C passes `CL_AddViewWeapon` the
+    /// `ops` a teleport has reset).
     /// None without a gun model, with C cvar `cl_gun` 0, or above 90
     /// degrees fov unless `cl_gun` is 2 (C's default).
     /// C ref: `CL_AddViewWeapon` (client/cl_entities.c).
@@ -143,7 +155,7 @@ impl FrameHistory {
         lerp: f32,
         cl_gun: f32,
     ) -> Option<ViewWeapon> {
-        let (ps, ops) = (&self.ps, &self.old_ps);
+        let (ps, ops) = (&self.ps, self.ops());
         if cl_gun == 0.0 || (ps.fov > 90.0 && cl_gun < 2.0) || ps.gunindex == 0 {
             return None;
         }
@@ -164,7 +176,8 @@ impl FrameHistory {
     }
 
     /// The gun offsets of the previous and newest frames (C `ops` and `ps`
-    /// `gunoffset` in `CL_AddViewWeapon`).
+    /// `gunoffset` in `CL_AddPlayerBeams`, which takes the previous frame's
+    /// state even across a teleport).
     pub fn gun_offsets(&self) -> (Vec3f, Vec3f) {
         (self.old_ps.gunoffset, self.ps.gunoffset)
     }
@@ -348,6 +361,25 @@ mod tests {
         history.receive(2, Vec::new(), &far);
         let (org, _) = history.view(Vec3f::ZERO, &far, 0.0);
         assert_eq!(org.z, -2.0);
+    }
+
+    #[test]
+    fn a_teleported_gun_does_not_lerp_its_offset_angles_or_frame() {
+        let old = gun_ps(5, 6, 0.0, 0.0);
+        let mut far = gun_ps(5, 7, 2.0, 10.0);
+        far.pmove.origin[0] = 257 * 8;
+        let history = two_frames(&old, &far);
+        let gun = history
+            .view_weapon(Vec3f::ZERO, Vec3f::ZERO, 0.25, 2.0)
+            .unwrap();
+        assert_eq!(gun.origin, Vec3f::new(2.0, 0.0, 0.0));
+        assert_eq!(gun.angles, Vec3f::new(0.0, 10.0, 0.0));
+        assert_eq!((gun.frame, gun.oldframe), (7, 7));
+        // C CL_AddPlayerBeams does not apply the teleport rule.
+        assert_eq!(
+            history.gun_offsets(),
+            (Vec3f::ZERO, Vec3f::new(2.0, 0.0, 0.0))
+        );
     }
 
     #[test]
