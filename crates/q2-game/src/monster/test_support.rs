@@ -253,6 +253,12 @@ impl GameImport for FloorImport {
     fn add_command_string(&self, t: &str) {
         self.inner.add_command_string(t)
     }
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.inner.cvar(name, default)
+    }
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.inner.local_time()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +434,12 @@ impl GameImport for ArenaImport {
     }
     fn add_command_string(&self, t: &str) {
         self.floor.add_command_string(t)
+    }
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.floor.cvar(name, default)
+    }
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.floor.local_time()
     }
     fn write_byte(&self, c: i32) {
         self.record(format!("byte {:?}", c));
@@ -881,5 +893,19 @@ pub fn assert_moves_match_c(moves: &[CMoveRow], names: &[(ThinkFn, &str)]) {
             })
             .collect();
         assert_eq!(rust, c, "frames of move {first}");
+    }
+}
+
+#[test]
+fn the_floor_and_arena_imports_forward_cvars_and_the_clock_to_the_mock() {
+    let arena = ArenaImport::default();
+    let mock = &arena.floor.inner;
+    mock.cvars
+        .borrow_mut()
+        .insert("cl_gun".to_string(), "0".to_string());
+    mock.local_time.set(Some((12, 30, 5)));
+    for gi in [&arena as &dyn GameImport, &arena.floor] {
+        assert_eq!(gi.cvar("cl_gun", "1"), "0");
+        assert_eq!(gi.local_time(), Some((12, 30, 5)));
     }
 }
