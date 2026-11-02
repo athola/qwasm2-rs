@@ -456,7 +456,10 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
                 }
                 ent.game.enemy = found;
             }
-            None => ent.game.movedir = GameWorld::set_movedir(ent.state.angles),
+            None => {
+                ent.game.movedir = GameWorld::set_movedir(ent.state.angles);
+                ent.state.angles = Vec3f::ZERO; // C G_SetMovedir: VectorClear
+            }
         }
     }
     ent.use_fn = Some(target_laser_use);
@@ -792,6 +795,23 @@ mod tests {
         assert_eq!(laser_sparks(&gi), 1);
         // Facing angles 0: along +x, 2048 units.
         assert_eq!(ent.game.movedir, Vec3f::X);
+    }
+
+    #[test]
+    fn an_untargeted_target_laser_clears_its_angles_like_g_setmovedir() {
+        let (mut world, laser, gi) = laser_world(1);
+        world.entities.get_mut(laser).unwrap().state.angles = Vec3f::new(0.0, 90.0, 0.0);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        gi.queued_traces
+            .borrow_mut()
+            .push_back(wall(Vec3f::new(0.0, 300.0, 0.0)));
+        start(&mut world, laser);
+        let ent = world.entities.get(laser).unwrap();
+        assert_eq!(
+            ent.game.movedir,
+            GameWorld::set_movedir(Vec3f::new(0.0, 90.0, 0.0))
+        );
+        assert_eq!(ent.state.angles, Vec3f::ZERO, "C G_SetMovedir: VectorClear");
     }
 
     #[test]
