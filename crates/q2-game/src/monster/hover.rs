@@ -906,18 +906,23 @@ mod tests {
         let (mut world, gi) = hit_world(false);
         let key = hover(&mut world);
         let player = hit_player(&mut world, &gi, Vec3f::new(400.0, 0.0, 24.0));
-        // A bolt in flight, or one that already hit the player (a bolt
-        // can spawn and land between two checks).
-        let fired = run_until(&mut world, 60, |w| {
+        let attacking = run_until(&mut world, 60, |w| {
+            let info = w.entities.get(key).unwrap().monsterinfo.as_ref();
+            let current = info.and_then(|info| info.currentmove.as_ref());
+            current.is_some_and(|m| m.firstframe == FRAME_ATTAK101)
+        });
+        assert!(attacking.is_some(), "started an attack");
+        // From here the traces miss the player, so the bolt stays in
+        // flight instead of hitting in the frame it spawns.
+        gi.target.set(None);
+        let fired = run_until(&mut world, 10, |w| {
             w.find_by_classname(None, "bolt").is_some()
-                || w.means_of_death == crate::constants::MeansOfDeath::Blaster
         });
         assert!(fired.is_some(), "attacked");
         assert_eq!(world.entities.get(key).unwrap().game.enemy, Some(player));
         let played = sounds_of(&world, &gi.floor.inner, key);
         assert!(played.iter().any(|s| s.1 == SOUND_SIGHT));
-        if let Some(bolt) = world.find_by_classname(None, "bolt") {
-            assert_eq!(world.entities.get(bolt).unwrap().owner, Some(key));
-        }
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        assert_eq!(world.entities.get(bolt).unwrap().owner, Some(key));
     }
 }
