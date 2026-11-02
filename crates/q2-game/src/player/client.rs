@@ -858,6 +858,7 @@ impl GameWorld {
         // After the view offset, so eye contents are right.
         self.calc_blend(key);
         self.update_player_stats(key);
+        self.set_client_event(key, &bob);
         self.set_client_effects(key);
         self.set_client_sound(key);
         // If the scoreboard is up, update it.

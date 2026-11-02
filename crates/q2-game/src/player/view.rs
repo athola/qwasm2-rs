@@ -63,6 +63,34 @@ impl GameWorld {
     }
 }
 
+impl GameWorld {
+    /// A footstep event when the walk bob is about to start a new cycle,
+    /// as `g_footsteps` (default 1) allows: 1 on the ground above 225
+    /// speed, 2 on the ground, 3 or more always. C ref: `G_SetClientEvent`
+    /// (player/view.c).
+    pub fn set_client_event(&mut self, key: EntityKey, bob: &Bob) {
+        let footsteps = q2_common::cvar::parse_value(&self.gi.cvar("g_footsteps", "1"));
+        let bobmove = self.game.bobmove;
+        let Some((ent, client)) = self.entity_and_client_mut(key) else {
+            return;
+        };
+        if ent.state.event != 0 || ent.game.health <= 0 {
+            return;
+        }
+        let on_ground = ent.game.ground_entity.is_some();
+        let allowed = if footsteps == 1.0 {
+            on_ground && bob.xyspeed > 225.0
+        } else if footsteps == 2.0 {
+            on_ground
+        } else {
+            footsteps >= 3.0
+        };
+        if allowed && (client.bobtime + bobmove) as i32 != bob.cycle {
+            ent.state.event = q2_shared::constants::EV_FOOTSTEP;
+        }
+    }
+}
+
 /// C `sv_rollangle` and `sv_rollspeed` cvar defaults.
 const SV_ROLLANGLE: f32 = 2.0;
 const SV_ROLLSPEED: f32 = 200.0;
@@ -1289,6 +1317,38 @@ mod tests {
         world.world_effects(key);
         assert_eq!(health(&world, key), 98);
         assert_eq!(world.means_of_death, crate::constants::MeansOfDeath::Lava);
+    }
+
+    /// A player running at `speed` on the world, `bobtime` into the bob.
+    fn runner(speed: f32, bobtime: f32) -> (GameWorld, EntityKey) {
+        let mut world = crate::world::test_world();
+        let ground = world.entities.spawn_numbered(0).unwrap();
+        let key = player_in(&mut world);
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.ground_entity = Some(ground);
+        ent.velocity = Vec3f::new(speed, 0.0, 0.0);
+        world.client_mut(key).unwrap().bobtime = bobtime;
+        (world, key)
+    }
+
+    fn event(world: &GameWorld, key: EntityKey) -> i32 {
+        world.entities.get(key).unwrap().state.event
+    }
+
+    #[test]
+    fn running_steps_into_the_next_bob_cycle_make_a_footstep() {
+        // 0.6 + 0.25 = 0.85 this frame; 0.85 + 0.25 crosses into cycle 1.
+        let (mut world, key) = runner(300.0, 0.6);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), q2_shared::constants::EV_FOOTSTEP);
+
+        let (mut world, key) = runner(300.0, 0.0);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), 0, "still in cycle 0");
+
+        let (mut world, key) = runner(220.0, 0.6);
+        world.client_end_server_frame(key);
+        assert_eq!(event(&world, key), 0, "g_footsteps 1 needs over 225");
     }
 
     #[test]
