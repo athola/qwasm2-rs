@@ -9,7 +9,7 @@ use q2_shared::types::Vec3f;
 
 use super::alias::angle_vectors;
 use super::draw::{
-    create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, StreamBuffer,
+    create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, Attribute, StreamBuffer,
 };
 use super::images::{ImageKind, ImageStore};
 use super::shader::{bind_samplers, link_program};
@@ -21,6 +21,8 @@ use crate::files::{palette::Palette, sp2::load_sp2};
 pub const PARTICLE_FLOATS: usize = 9;
 /// Floats per beam or sprite vertex: position(3), uv(2).
 pub const FX_FLOATS: usize = 5;
+const PARTICLE_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 1, 3), (2, 1, 4), (3, 4, 5)];
+const FX_ATTRIBUTES: [Attribute; 2] = [(0, 3, 0), (1, 2, 3)];
 /// C `gl3_particle_size` at a 480 pixel tall view.
 const PARTICLE_SIZE: f32 = 40.0;
 /// C `NUM_BEAM_SEGS`: sides of a beam's tube.
@@ -309,12 +311,8 @@ impl FxGpu {
 pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
     let particle_program = link_program(gl, PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC);
     let fx_program = link_program(gl, FX_VERTEX_SRC, FX_FRAGMENT_SRC);
-    let particle_stream = create_stream_buffer(
-        gl,
-        PARTICLE_FLOATS,
-        &[(0, 3, 0), (1, 1, 3), (2, 1, 4), (3, 4, 5)],
-    );
-    let fx_stream = create_stream_buffer(gl, FX_FLOATS, &[(0, 3, 0), (1, 2, 3)]);
+    let particle_stream = create_stream_buffer(gl, PARTICLE_FLOATS, &PARTICLE_ATTRIBUTES);
+    let fx_stream = create_stream_buffer(gl, FX_FLOATS, &FX_ATTRIBUTES);
     match (particle_program, fx_program, particle_stream, fx_stream) {
         (Ok(particle_program), Ok(fx_program), Ok(particle_stream), Ok(fx_stream)) => {
             bind_samplers(gl, fx_program, &["u_texture"]);
@@ -592,6 +590,18 @@ mod tests {
             let frame = SpriteFrame { size, image };
             assert_eq!(sprite_texture(&frame, &images, notexture), notexture);
         }
+    }
+
+    #[test]
+    fn particle_and_fx_vertices_feed_every_input_of_their_shaders() {
+        use super::super::draw::assert_layout;
+        assert_layout(
+            &PARTICLE_ATTRIBUTES,
+            PARTICLE_FLOATS,
+            PARTICLE_VERTEX_SRC,
+            true,
+        );
+        assert_layout(&FX_ATTRIBUTES, FX_FLOATS, FX_VERTEX_SRC, true);
     }
 
     fn grey_palette() -> Palette {

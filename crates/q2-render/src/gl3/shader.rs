@@ -15,7 +15,7 @@ pub const MODE_PLAIN: i32 = 1;
 pub const MODE_WARP: i32 = 2;
 pub const MODE_SKY: i32 = 3;
 
-const VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
@@ -286,7 +286,7 @@ pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, World
 
 // C `vertexSrcAlias` / `fragmentSrcAlias`: vertex colour carries the shade
 // and alpha, scaled by overbrightbits; the fragment clamps it to 1.5.
-const ALIAS_VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const ALIAS_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
@@ -346,7 +346,7 @@ pub fn compile_alias_program(gl: &glow::Context) -> Result<(glow::Program, Alias
 
 // C `vertexSrc2D` / `fragmentSrc2D` / `fragmentSrc2Dcolor` in one program:
 // fills sample a white texel, so colour is always texel * vertex colour.
-const UI_VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const UI_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec2 a_uv;

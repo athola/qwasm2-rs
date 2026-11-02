@@ -22,8 +22,8 @@ use super::alias::{
     entity_vertices, AliasModel, FrustumPlane, ALIAS_VERTEX_FLOATS, MAX_SKINS,
 };
 use super::draw::{
-    create_stream_buffer, draw_batches, draw_mesh, free_stream_buffer, BatchDraw, BatchFilter,
-    MeshDraw, StreamBuffer,
+    create_stream_buffer, draw_batches, draw_mesh, free_stream_buffer, Attribute, BatchDraw,
+    BatchFilter, MeshDraw, StreamBuffer,
 };
 use super::entity::{alias_matrix, brush_matrix};
 use super::images::{ImageKind, ImageStore};
@@ -51,15 +51,18 @@ pub struct ExtraGpu {
     pub notexture: glow::Texture,
 }
 
+/// MD2 vertices: position(3), uv(2), colour(4).
+const ALIAS_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 4, 5)];
+/// 2D vertices: position(2), uv(2), colour(4).
+const UI_ATTRIBUTES: [Attribute; 3] = [(0, 2, 0), (1, 2, 2), (2, 4, 4)];
+
 /// Every step is attempted; if any fails, the objects the others made are
 /// freed before the first error is returned, so a retried `init` leaks none.
 pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
     let alias = compile_alias_program(gl);
     let ui = compile_ui_program(gl);
-    // Layouts: alias is position(3) uv(2) colour(4); 2D is position(2) uv(2) colour(4).
-    let alias_stream =
-        create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &[(0, 3, 0), (1, 2, 3), (2, 4, 5)]);
-    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &[(0, 2, 0), (1, 2, 2), (2, 4, 4)]);
+    let alias_stream = create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &ALIAS_ATTRIBUTES);
+    let ui_stream = create_stream_buffer(gl, UI_VERTEX_FLOATS, &UI_ATTRIBUTES);
     let white = upload_rgba(gl, 1, 1, &[255; 4], &CLAMPED_SAMPLING);
     let checker = notexture();
     let notexture = upload_rgba(
@@ -440,6 +443,19 @@ mod tests {
     use super::*;
     use q2_render_api::ModelHandle;
     use q2_shared::constants::RF_BEAM;
+
+    #[test]
+    fn md2_and_2d_vertices_feed_every_input_of_their_shaders() {
+        use super::super::draw::assert_layout;
+        use super::super::shader::{ALIAS_VERTEX_SRC, UI_VERTEX_SRC};
+        assert_layout(
+            &ALIAS_ATTRIBUTES,
+            ALIAS_VERTEX_FLOATS,
+            ALIAS_VERTEX_SRC,
+            true,
+        );
+        assert_layout(&UI_ATTRIBUTES, UI_VERTEX_FLOATS, UI_VERTEX_SRC, true);
+    }
 
     fn sprite() -> Model<&'static str> {
         Model::Sprite(super::super::fx::SpriteModel { frames: Vec::new() })

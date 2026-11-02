@@ -550,9 +550,73 @@ pub fn draw_ui(
     }
 }
 
+/// The `(location, components)` of every `layout(location = N) in` of a
+/// vertex shader.
+#[cfg(test)]
+pub(super) fn declared_attributes(vertex_src: &str) -> Vec<(u32, i32)> {
+    vertex_src
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("layout(location = ")?;
+            let (location, rest) = rest.split_once(") in ")?;
+            let components = match rest.split_whitespace().next()? {
+                "float" => 1,
+                "vec2" => 2,
+                "vec3" => 3,
+                "vec4" => 4,
+                other => panic!("attribute type {other}"),
+            };
+            Some((location.parse().ok()?, components))
+        })
+        .collect()
+}
+
+/// `attributes` fill a `stride_floats` vertex end to end, in order, and
+/// each matches a declared input of `vertex_src`; `complete` also requires
+/// every declared input to be fed.
+#[cfg(test)]
+pub(super) fn assert_layout(
+    attributes: &[Attribute],
+    stride_floats: usize,
+    vertex_src: &str,
+    complete: bool,
+) {
+    let declared = declared_attributes(vertex_src);
+    let mut next = 0;
+    for &(location, components, offset) in attributes {
+        assert_eq!(offset, next, "attribute {location} offset");
+        next += usize::try_from(components).unwrap();
+        assert!(
+            declared.contains(&(location, components)),
+            "attribute {location} x{components} not in {declared:?}"
+        );
+    }
+    assert_eq!(next, stride_floats, "attributes end at the stride");
+    let mut fed: Vec<(u32, i32)> = attributes.iter().map(|&(l, c, _)| (l, c)).collect();
+    fed.sort_unstable();
+    fed.dedup_by_key(|&mut (location, _)| location);
+    assert_eq!(fed.len(), attributes.len(), "one attribute per location");
+    if complete {
+        let mut declared = declared;
+        declared.sort_unstable();
+        assert_eq!(fed, declared, "every input is fed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gl3::shader::VERTEX_SRC;
+
+    #[test]
+    fn world_vertices_feed_every_world_shader_input_in_the_mesh_layout() {
+        assert_layout(&WORLD_ATTRIBUTES, VERTEX_FLOATS, VERTEX_SRC, true);
+    }
+
+    #[test]
+    fn sky_vertices_feed_position_and_uvs_of_the_world_shader() {
+        assert_layout(&SKY_ATTRIBUTES, SKY_VERTEX_FLOATS, VERTEX_SRC, false);
+    }
 
     #[test]
     fn float_bytes_are_the_native_bytes_of_each_float_in_order() {
