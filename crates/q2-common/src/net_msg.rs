@@ -21,10 +21,13 @@ use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 // Taken from the Quake 2 source (anorms.h / NUMVERTEXNORMALS).
 // ---------------------------------------------------------------------------
 
-const NUM_VERTEX_NORMALS: usize = 162;
+/// C `NUMVERTEXNORMALS`.
+pub const NUM_VERTEX_NORMALS: usize = 162;
 
+/// C `bytedirs` (anorms.h): the protocol's direction table, also the
+/// normals the client's particle effects index.
 #[rustfmt::skip]
-const BYTEDIRS: [[f32; 3]; NUM_VERTEX_NORMALS] = [
+pub const BYTEDIRS: [[f32; 3]; NUM_VERTEX_NORMALS] = [
     [-0.525731, 0.000000, 0.850651], [-0.442863, 0.238856, 0.864188],
     [-0.295242, 0.000000, 0.955423], [-0.309017, 0.500000, 0.809017],
     [-0.162460, 0.262866, 0.951056], [0.000000, 0.000000, 1.000000],

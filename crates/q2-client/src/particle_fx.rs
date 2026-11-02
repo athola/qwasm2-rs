@@ -2,30 +2,14 @@
 //! and the trails behind moving entities. C ref: client/cl_effects.c.
 
 use std::f64::consts::PI;
-use std::sync::OnceLock;
 
+use q2_common::net_msg::{BYTEDIRS, NUM_VERTEX_NORMALS};
 use q2_shared::constants::{EF_GIB, EF_GREENGIB, EF_ROCKET, MZ_LOGIN, MZ_LOGOUT};
 use q2_shared::types::Vec3f;
 
 use crate::particles::{
     crandk, frandk, vector_normalize, Particles, MAX_PARTICLES, PARTICLE_GRAVITY,
 };
-
-/// C `NUMVERTEXNORMALS`.
-const NUM_VERTEX_NORMALS: usize = 162;
-
-/// C `bytedirs` (anorms.h), read back through q2-common's `read_dir` so
-/// the table is the one the protocol uses.
-fn bytedirs() -> &'static [Vec3f; NUM_VERTEX_NORMALS] {
-    static TABLE: OnceLock<[Vec3f; NUM_VERTEX_NORMALS]> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        std::array::from_fn(|i| {
-            let mut msg = q2_common::net_msg::NetMsg::from_bytes(&[i as u8]);
-            msg.begin_reading();
-            msg.read_dir().unwrap_or_default()
-        })
-    })
-}
 
 /// C `(int)VectorNormalize(vec)`: the unit direction and the truncated
 /// length the trail loops count down.
@@ -415,7 +399,8 @@ impl Particles {
         let (sp, cp) = (f64::from(angle).sin() as f32, f64::from(angle).cos() as f32);
         let forward = Vec3f::new(cp * cy, cp * sy, -sp);
         let dist = f64::from(ltime + i as f32).sin() as f32 * 64.0;
-        bytedirs()[i] * dist + forward * 16.0
+        let [x, y, z] = BYTEDIRS[i];
+        Vec3f::new(x, y, z) * dist + forward * 16.0
     }
 
     /// Up to `count` flies (every other normal) buzzing round `origin`
