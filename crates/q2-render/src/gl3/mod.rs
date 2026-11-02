@@ -1709,7 +1709,7 @@ mod tests {
         );
         let image = sprite.frames[0].image.expect("frame image loaded");
         assert_eq!(r.images.get(image).unwrap().width, 2);
-        // A frame whose image is missing stays empty and is not drawn.
+        // A frame whose image is missing stays empty and draws as notexture.
         assert_eq!(sprite.frames[1].image, None);
         // Registered again this sequence, its images survive the sweep.
         r.models.begin_sequence();
