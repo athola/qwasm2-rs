@@ -1,8 +1,8 @@
 //! GL3/GLES3 renderer backend using the `glow` crate.
 //!
 //! Draws the BSP world textured and lightmapped like the C GL3 renderer,
-//! with a sky box behind it, then entities (inline BSP models and MD2s) and
-//! queued 2D draws. Pure logic lives in submodules so it can be tested
+//! with a sky box behind it, then entities (inline BSP models, MD2s,
+//! `.sp2` sprites and beams), particles and queued 2D draws. Pure logic lives in submodules so it can be tested
 //! without a GL context:
 //! - [`texture`]: `.wal` loading, palette conversion, texture upload
 //! - [`lightmap`]: surface extents and lightmap atlas packing
@@ -25,17 +25,20 @@
 //! knows the areas of the non-solid leafs listing its faces and is drawn
 //! when one of them is visible, so areas behind shut doors are not drawn.
 //!
-//! Deferred relative to C: dynamic lights on world and brush surfaces (MD2
-//! shading does include them), back-to-front sorting of translucent surfaces,
+//! Dynamic lights shade world and brush surfaces as well as MD2s; MD2s
+//! also get `RF_SHELL_*` shells, and the weapon model its own FOV and
+//! `RF_DEPTHHACK` depth range. `RefDef::blend` is drawn as C's screen flash,
+//! mixed as C's post-process pass does when the view is underwater.
+//!
+//! Deferred relative to C: back-to-front sorting of translucent surfaces,
 //! PVS and frustum culling of world surfaces and brush entities (without
-//! area bits the whole world is drawn every frame), subdivision of warp surfaces (the warp is per-fragment, so it is
-//! not needed), `.sp2` sprites, `RF_SHELL_*` shells, `RF_BEAM` beams
-//! (`GL3_DrawBeam`), the placeholder for entities without a model
-//! (`GL3_DrawNullModel`), the weapon model's own FOV and depth hack, entity
-//! shadows, particles and the `flushmap` cvar (the same map is always kept).
-//! Of [`RefDef`], `x`/`y` (the viewport is always at
-//! 0, 0), `blend` (screen flash), `rdflags` (`RDF_UNDERWATER`,
-//! `RDF_NOWORLDMODEL`) and `r_fullbright` are not honoured.
+//! area bits the whole world is drawn every frame), subdivision of warp
+//! surfaces (the warp is per-fragment, so it is not needed), the placeholder
+//! for entities without a model (`GL3_DrawNullModel`), entity shadows and
+//! the `flushmap` cvar (the same map is always kept). Of [`RefDef`], `x`/`y`
+//! (the 3D viewport is always at 0, 0), the `RDF_UNDERWATER` water warp
+//! post-process, `RDF_NOWORLDMODEL` (the world is drawn anyway) and
+//! `r_fullbright` are not honoured.
 
 mod alias;
 mod draw;
