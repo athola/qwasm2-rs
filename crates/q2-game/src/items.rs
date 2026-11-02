@@ -891,7 +891,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -910,7 +910,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -929,7 +929,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -948,7 +948,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -967,7 +967,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -986,7 +986,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1005,7 +1005,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1024,7 +1024,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1043,7 +1043,7 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
             tag: 0,
             armor_info: None,
-            pickup: Some(pickup_powerup),
+            pickup: Some(pickup_key),
             use_fn: None,
             drop_fn: None,
             view_model: "",
@@ -1427,8 +1427,6 @@ fn pickup_ancient_head(world: &mut GameWorld, _item_ent: EntityKey, player: Enti
     true
 }
 
-/// Pickup handler for powerups and keys: one more in the inventory.
-/// C ref: `Pickup_Powerup` and `Pickup_Key` (single player).
 /// Carry a powerup, within the skill limit (medium two, hard one) and
 /// leaving coop's stay-put powerups to players without one; deathmatch
 /// map powerups come back after `quantity` seconds. C ref:
@@ -1458,6 +1456,36 @@ fn pickup_powerup(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey)
         .is_some_and(|e| e.game.spawnflags & DROPPED_ITEM != 0);
     if world.game.deathmatch && !dropped {
         set_respawn(world, item_ent, respawn);
+    }
+    true
+}
+
+/// Carry a key: one more in single player and deathmatch, one of each
+/// kind in coop. C ref: `Pickup_Key`.
+///
+/// C coop tracks power cubes in `pers.power_cubes`, a bit per cube from
+/// `SpawnItem`; that field is not ported, so a coop power cube counts like
+/// any single-player key.
+fn pickup_key(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+    let Some(ent) = world.entities.get(item_ent) else {
+        return false;
+    };
+    let Some(item_idx) = ent.game.item else {
+        return false;
+    };
+    let cube = ent.game.classname == "key_power_cube";
+    let coop = world.game.coop;
+    let Some(client) = world.client_mut(player) else {
+        return false;
+    };
+    let held = &mut client.pers.inventory[item_idx];
+    if coop && !cube {
+        if *held != 0 {
+            return false;
+        }
+        *held = 1;
+    } else {
+        *held += 1;
     }
     true
 }
@@ -3287,6 +3315,47 @@ mod tests {
             .game
             .flags
             .contains(EntityFlags::RESPAWN));
+    }
+
+    fn pick_up(world: &mut GameWorld, item_ent: EntityKey, player: EntityKey) -> bool {
+        let item = world.entities.get(item_ent).unwrap().game.item.unwrap();
+        let pickup = world.items[item].pickup.expect("pickup handler");
+        pickup(world, item_ent, player)
+    }
+
+    #[test]
+    fn keys_have_no_skill_limit_so_hard_skill_collects_every_power_cube() {
+        let (mut world, key, _) = powered();
+        world.game.skill = SKILL_HARD;
+        let cube = world.find_item("key_power_cube").unwrap();
+        for _ in 0..2 {
+            let ent = powerup_on_floor(&mut world, "key_power_cube");
+            assert!(pick_up(&mut world, ent, key));
+        }
+        assert_eq!(world.client(key).unwrap().pers.inventory[cube], 2);
+    }
+
+    #[test]
+    fn coop_gives_each_player_one_of_a_key() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let pass = powerup_on_floor(&mut world, "key_pass");
+        assert!(pick_up(&mut world, pass, key));
+        assert!(!pick_up(&mut world, pass, key), "already holds one");
+        let index = world.find_item("key_pass").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.inventory[index], 1);
+    }
+
+    #[test]
+    fn coop_lets_a_player_carry_several_power_cubes() {
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let cube = world.find_item("key_power_cube").unwrap();
+        for _ in 0..2 {
+            let ent = powerup_on_floor(&mut world, "key_power_cube");
+            assert!(pick_up(&mut world, ent, key));
+        }
+        assert_eq!(world.client(key).unwrap().pers.inventory[cube], 2);
     }
 
     #[test]
