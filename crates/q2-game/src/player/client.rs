@@ -745,8 +745,8 @@ impl GameWorld {
     }
 
     /// The player's looping sound: frying in lava or slime, else the
-    /// weapon's hum. C ref: `G_SetClientSound` (player/view.c), without
-    /// the help-computer beep.
+    /// railgun or BFG hum, else the weapon's own sound; plus the
+    /// help-computer beep. C ref: `G_SetClientSound` (player/view.c).
     fn set_client_sound(&mut self, key: EntityKey) {
         // New help: flag it, and beep (no more than three times).
         let (game_helpchanged, framenum) = (self.game.helpchanged, self.level.framenum);
@@ -773,6 +773,16 @@ impl GameWorld {
             );
         }
         let fry = self.gi.sound_index("player/fry.wav");
+        let weap = self
+            .client(key)
+            .and_then(|c| c.pers.weapon)
+            .and_then(|w| self.items.get(w))
+            .map_or("", |it| it.classname);
+        let hum = match weap {
+            "weapon_railgun" => Some(self.gi.sound_index("weapons/rg_hum.wav")),
+            "weapon_bfg" => Some(self.gi.sound_index("weapons/bfg_hum.wav")),
+            _ => None,
+        };
         let Some((ent, client)) = self.entity_and_client_mut(key) else {
             return;
         };
@@ -780,7 +790,11 @@ impl GameWorld {
             && ent.game.watertype
                 & (q2_shared::constants::CONTENTS_LAVA | q2_shared::constants::CONTENTS_SLIME)
                 != 0;
-        ent.state.sound = if burning { fry } else { client.weapon_sound };
+        ent.state.sound = if burning {
+            fry
+        } else {
+            hum.unwrap_or(client.weapon_sound)
+        };
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
@@ -1659,6 +1673,27 @@ mod tests {
         world.client_mut(key).unwrap().weapon_sound = 0;
         world.client_end_server_frames();
         assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
+    }
+
+    #[test]
+    fn the_railgun_and_bfg_hum_while_held() {
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        for (classname, sound) in [
+            ("weapon_railgun", "weapons/rg_hum.wav"),
+            ("weapon_bfg", "weapons/bfg_hum.wav"),
+        ] {
+            world.client_mut(key).unwrap().pers.weapon = world.find_item(classname);
+            world.client_end_server_frames();
+            let hum = world.gi.sound_index(sound);
+            assert_eq!(
+                world.entities.get(key).unwrap().state.sound,
+                hum,
+                "{classname}"
+            );
+        }
     }
 
     fn dead_player(
