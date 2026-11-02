@@ -89,6 +89,8 @@ pub const RF_SHELL_DOUBLE: i32 = 0x0001_0000;
 pub const RF_SHELL_HALF_DAM: i32 = 0x0002_0000;
 /// `rdflags`: the view is under water, slime or lava.
 pub const RDF_UNDERWATER: i32 = 1;
+/// `rdflags`: the view has no world model (the player setup screen).
+pub const RDF_NOWORLDMODEL: i32 = 2;
 pub const RF_FRAMELERP: i32 = 64;
 pub const RF_BEAM: i32 = 128;
 /// Leave a blood trail.

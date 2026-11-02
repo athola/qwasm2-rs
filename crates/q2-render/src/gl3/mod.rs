@@ -935,7 +935,7 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 /// is not ported. C ref: `GL3_RenderFrame`.
 fn flash_color(fd: &RefDef, vid_gamma: f32) -> [f32; 4] {
     let [r, g, b, a] = fd.blend;
-    if fd.rdflags & (RDF_NOWORLDMODEL | q2_shared::constants::RDF_UNDERWATER)
+    if fd.rdflags & (q2_shared::constants::RDF_NOWORLDMODEL | q2_shared::constants::RDF_UNDERWATER)
         != q2_shared::constants::RDF_UNDERWATER
     {
         return fd.blend;
@@ -1941,7 +1941,7 @@ mod tests {
         }
         // No FBO without a world (C GL3_SetupGL): the dry flash, unscaled.
         let no_world = RefDef {
-            rdflags: q2_shared::constants::RDF_UNDERWATER | RDF_NOWORLDMODEL,
+            rdflags: q2_shared::constants::RDF_UNDERWATER | q2_shared::constants::RDF_NOWORLDMODEL,
             ..water.clone()
         };
         let got = queued_flash_color(&mut r, &no_world);

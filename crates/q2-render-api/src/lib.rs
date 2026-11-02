@@ -15,11 +15,6 @@ use q2_shared::error::Q2Result;
 use q2_shared::types::*;
 use std::fmt;
 
-/// `rdflags`: the view has no world model (the player setup screen).
-/// C ref: `RDF_NOWORLDMODEL` (shared.h); `RDF_UNDERWATER` lives in
-/// `q2_shared::constants`.
-pub const RDF_NOWORLDMODEL: i32 = 2;
-
 // ---------------------------------------------------------------------------
 // Handles — opaque indices into renderer-internal tables
 // ---------------------------------------------------------------------------
