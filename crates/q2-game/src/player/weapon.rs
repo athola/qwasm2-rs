@@ -2328,4 +2328,557 @@ mod tests {
             world.find_item_by_name("Machinegun")
         );
     }
+
+    // ---- C boundaries and offsets ----
+
+    #[test]
+    fn a_player_on_1_health_keeps_the_weapon() {
+        // C ref: Think_Weapon, health < 1 puts it away.
+        let (mut world, key, _) = ready();
+        world.entities.get_mut(key).unwrap().game.health = 1;
+        let weapon = world.client(key).unwrap().pers.weapon;
+        world.think_weapon(key);
+        assert_eq!(world.client(key).unwrap().pers.weapon, weapon);
+    }
+
+    #[test]
+    fn exactly_enough_ammo_for_a_shot_selects_the_weapon() {
+        // C ref: Use_Weapon, inventory < quantity is "Not enough".
+        let (mut world, key, _) = armed();
+        let ssg = world.find_item_by_name("Super Shotgun").unwrap();
+        let shells = world.find_item_by_name("Shells").unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.inventory[ssg] = 1;
+        client.pers.inventory[shells] = 2;
+        use_weapon(&mut world, key, ssg);
+        assert_eq!(world.client(key).unwrap().newweapon, Some(ssg));
+    }
+
+    #[test]
+    fn a_ducked_player_lowers_the_gun_with_the_crouch_pain_frames() {
+        let (mut world, key, _) = armed();
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= PMF_DUCKED;
+        change_weap_animation(&mut world, key);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            FRAME_CRPAIN4 + 1
+        );
+        assert_eq!(world.client(key).unwrap().anim_end, FRAME_CRPAIN1);
+    }
+
+    #[test]
+    fn a_long_lowering_starts_the_reverse_animation_four_frames_from_the_end() {
+        // C ref: Weapon_Generic, the railgun lowers over 57..61.
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Railgun", "Slugs", 10);
+        world.client_mut(key).unwrap().newweapon = world.find_item_by_name("Blaster");
+        let reverse = |world: &GameWorld| world.client(key).unwrap().anim_priority == ANIM_REVERSE;
+        world.think_weapon(key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 57);
+        assert!(!reverse(&world), "not at once");
+        world.think_weapon(key);
+        assert!(reverse(&world), "on leaving frame 57");
+    }
+
+    #[test]
+    fn quad_ending_this_frame_makes_no_quad_sound() {
+        let (mut world, key, mock) = ready();
+        let framenum = world.level.framenum;
+        let client = world.client_mut(key).unwrap();
+        client.latched_buttons = BUTTON_ATTACK;
+        client.quad_framenum = framenum;
+        think_n(&mut world, key, 2);
+        let damage3 = world.gi.sound_index("items/damage3.wav");
+        assert!(!mock.sound_calls.borrow().iter().any(|c| c.2 == damage3));
+    }
+
+    #[test]
+    fn a_bolt_leaves_from_the_blaster_offset_plus_the_barrel_offset() {
+        // C ref: Blaster_Fire, offset (24, 8, viewheight - 8) + g_offset.
+        let (mut world, key, _) = armed();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::ZERO;
+        ent.game.viewheight = 22.0;
+        let client = world.client_mut(key).unwrap();
+        client.v_angle = Vec3f::ZERO;
+        client.pers.hand = RIGHT_HANDED;
+        blaster_fire(&mut world, key, Vec3f::new(1.0, 2.0, 3.0), 10, false, 0);
+        let bolt = spawned(&world, "bolt")[0];
+        // Right-handed at yaw 0: right is -y.
+        assert_eq!(bolt.state.old_origin, Vec3f::new(25.0, -10.0, 17.0));
+        assert_eq!(
+            world.client(key).unwrap().kick_origin,
+            Vec3f::new(-2.0, 0.0, 0.0)
+        );
+    }
+
+    /// A right-handed player at (10, 20, 30), eyes 22 up, facing +x, with
+    /// `ammo` loaded; the trace log starts empty.
+    fn gunner(ammo: &str) -> (GameWorld, EntityKey, Rc<MockGameImport>) {
+        let (mut world, key, gi) = armed();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.state.origin = Vec3f::new(10.0, 20.0, 30.0);
+        ent.game.viewheight = 22.0;
+        let ammo = world.find_item_by_name(ammo).unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.v_angle = Vec3f::ZERO;
+        client.pers.hand = RIGHT_HANDED;
+        client.ammo_index = ammo;
+        client.pers.inventory[ammo] = 50;
+        client.buttons = BUTTON_ATTACK;
+        gi.trace_ends.borrow_mut().clear();
+        (world, key, gi)
+    }
+
+    /// The next `n` crandom() values a world seeded with `seed` draws.
+    fn crandoms(seed: u32, n: usize) -> Vec<f32> {
+        let mut world = test_world();
+        world.level.rand_state = seed;
+        (0..n).map(|_| world.crandom()).collect()
+    }
+
+    /// Far ends of the bullet traces (the first trace of each bullet goes
+    /// to its start), relative to `start`.
+    fn bullet_ends(gi: &MockGameImport, start: Vec3f) -> Vec<Vec3f> {
+        let ends = gi.trace_ends.borrow();
+        ends.iter()
+            .map(|&end| end - start)
+            .filter(|end| end.length() > 1000.0)
+            .collect()
+    }
+
+    #[test]
+    fn shotguns_fire_from_8_right_and_8_below_the_eye_and_kick_back_2() {
+        // C ref: weapon_shotgun_fire / weapon_supershotgun_fire, offset
+        // (0, 8, viewheight - 8), kick_origin = forward * -2.
+        for fire in [
+            weapon_shotgun_fire as WeaponFireFn,
+            weapon_supershotgun_fire,
+        ] {
+            let (mut world, key, gi) = gunner("Shells");
+            fire(&mut world, key);
+            assert_eq!(gi.trace_ends.borrow()[0], Vec3f::new(10.0, 12.0, 44.0));
+            let client = world.client(key).unwrap();
+            assert_eq!(client.kick_origin, Vec3f::new(-2.0, 0.0, 0.0));
+            assert_eq!(client.kick_angles.x, -2.0);
+        }
+    }
+
+    #[test]
+    fn the_super_shotgun_fires_ten_pellets_5_degrees_right_then_ten_left() {
+        // C ref: weapon_supershotgun_fire, yaw - 5 then yaw + 5, count / 2.
+        let (mut world, key, gi) = gunner("Shells");
+        world.level.rand_state = 77;
+        weapon_supershotgun_fire(&mut world, key);
+        let ends = bullet_ends(&gi, Vec3f::new(10.0, 12.0, 44.0));
+        assert_eq!(ends.len(), 20);
+        let mean_y = |ends: &[Vec3f]| ends.iter().map(|e| e.y).sum::<f32>() / 10.0;
+        assert!(mean_y(&ends[..10]) < 0.0, "{}", mean_y(&ends[..10]));
+        assert!(mean_y(&ends[10..]) > 0.0, "{}", mean_y(&ends[10..]));
+    }
+
+    #[test]
+    fn a_machinegun_shot_kicks_by_crandom_in_c_order_and_aims_with_the_kick() {
+        // C ref: Machinegun_Fire, kick_origin[1], kick_angles[1],
+        // kick_origin[2], kick_angles[2], then kick_origin[0].
+        let (mut world, key, gi) = gunner("Bullets");
+        let client = world.client_mut(key).unwrap();
+        client.v_angle = Vec3f::new(10.0, 90.0, 0.0);
+        client.machinegun_shots = 2;
+        client.ps.gunframe = 4;
+        world.level.rand_state = 4321;
+        let j = crandoms(4321, 5);
+        machinegun_fire(&mut world, key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.ps.gunframe, 5);
+        let kick_origin = Vec3f::new(j[4] * 0.35, j[0] * 0.35, j[2] * 0.35);
+        assert_eq!(client.kick_origin, kick_origin);
+        let kick_angles = Vec3f::new(-3.0, j[1] * 0.7, j[3] * 0.7);
+        assert_eq!(client.kick_angles, kick_angles);
+        let (forward, right, _) =
+            crate::physics::angle_vectors(Vec3f::new(10.0, 90.0, 0.0) + kick_angles);
+        let start = world.player_project_source(key, [0.0, 8.0, 14.0], forward, right);
+        assert_eq!(gi.trace_ends.borrow()[0], start);
+    }
+
+    #[test]
+    fn the_machinegun_alternates_frames_4_and_5_and_steps_on_release() {
+        let (mut world, key, _) = gunner("Bullets");
+        world.client_mut(key).unwrap().ps.gunframe = 5;
+        machinegun_fire(&mut world, key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 4);
+        world.client_mut(key).unwrap().buttons = 0;
+        machinegun_fire(&mut world, key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 5);
+    }
+
+    #[test]
+    fn the_machinegun_attack_animation_starts_a_frame_early_a_quarter_of_the_time() {
+        // C ref: Machinegun_Fire, (int)(random() + 0.25) frames back.
+        let mut frames = Vec::new();
+        for seed in (0..16).map(|n| n * 997) {
+            let (mut world, key, _) = gunner("Bullets");
+            world.level.rand_state = seed;
+            machinegun_fire(&mut world, key);
+            frames.push(world.entities.get(key).unwrap().state.frame);
+        }
+        assert!(frames.contains(&FRAME_ATTACK1), "{frames:?}");
+        assert!(frames.contains(&(FRAME_ATTACK1 - 1)), "{frames:?}");
+    }
+
+    #[test]
+    fn a_chaingun_burst_kicks_and_spreads_its_muzzle_by_crandom_in_c_order() {
+        // C ref: Chaingun_Fire, kick_origin[i]/kick_angles[i] for i 0..3,
+        // then per shot r = 7 + crandom() * 4, u = crandom() * 4.
+        let (mut world, key, gi) = gunner("Bullets");
+        world.client_mut(key).unwrap().ps.gunframe = 5;
+        world.level.rand_state = 99;
+        let j = crandoms(99, 8);
+        chaingun_fire(&mut world, key);
+        let client = world.client(key).unwrap();
+        assert_eq!(
+            client.kick_origin,
+            Vec3f::new(j[0] * 0.35, j[2] * 0.35, j[4] * 0.35)
+        );
+        assert_eq!(
+            client.kick_angles,
+            Vec3f::new(j[1] * 0.7, j[3] * 0.7, j[5] * 0.7)
+        );
+        let (start, _, _) = world.shot_source(key, [0.0, 7.0 + j[6] * 4.0, j[7] * 4.0 + 14.0]);
+        assert_eq!(gi.trace_ends.borrow()[0], start);
+    }
+
+    #[test]
+    fn the_chaingun_spins_up_with_a_sound_on_frame_5_only() {
+        let spun = |gunframe: i32| {
+            let (mut world, key, gi) = gunner("Bullets");
+            world.client_mut(key).unwrap().ps.gunframe = gunframe;
+            chaingun_fire(&mut world, key);
+            let spin_up = world.gi.sound_index("weapons/chngnu1a.wav");
+            let calls = gi.sound_calls.borrow();
+            calls.iter().any(|c| c.2 == spin_up)
+        };
+        assert!(spun(5));
+        assert!(!spun(6));
+    }
+
+    #[test]
+    fn an_empty_chaingun_does_not_loop_back_from_frame_21() {
+        // C ref: Chaingun_Fire, frame 21 loops to 15 only with ammo.
+        let (mut world, key, _) = gunner("Bullets");
+        let client = world.client_mut(key).unwrap();
+        client.ps.gunframe = 21;
+        let ammo = client.ammo_index;
+        client.pers.inventory[ammo] = 0;
+        chaingun_fire(&mut world, key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 22);
+    }
+
+    #[test]
+    fn chaingun_frames_10_to_14_fire_two_shots_only_while_held() {
+        for (held, shots) in [(true, 2), (false, 1)] {
+            let (mut world, key, _) = gunner("Bullets");
+            let client = world.client_mut(key).unwrap();
+            client.ps.gunframe = 10;
+            client.buttons = if held { BUTTON_ATTACK } else { 0 };
+            chaingun_fire(&mut world, key);
+            assert_eq!(inventory(&world, key, "Bullets"), 50 - shots, "{held}");
+        }
+    }
+
+    #[test]
+    fn the_chaingun_attack_animation_backs_up_on_odd_frames() {
+        // C ref: Chaingun_Fire, ent->s.frame = FRAME_attack1 - (gunframe & 1).
+        for (gunframe, frame) in [(6, FRAME_ATTACK1 - 1), (7, FRAME_ATTACK1)] {
+            let (mut world, key, _) = gunner("Bullets");
+            world.client_mut(key).unwrap().ps.gunframe = gunframe;
+            chaingun_fire(&mut world, key);
+            assert_eq!(world.entities.get(key).unwrap().state.frame, frame);
+        }
+    }
+
+    #[test]
+    fn the_last_hyperblaster_cell_ends_the_loop() {
+        // C ref: Weapon_HyperBlaster_Fire, frame 12 loops to 6 only with ammo.
+        let (mut world, key, _) = gunner("Cells");
+        let client = world.client_mut(key).unwrap();
+        client.ps.gunframe = 11;
+        let cells = client.ammo_index;
+        client.pers.inventory[cells] = 1;
+        weapon_hyperblaster_fire(&mut world, key);
+        assert_eq!(world.client(key).unwrap().ps.gunframe, 12);
+    }
+
+    fn quad(world: &mut GameWorld, key: EntityKey) {
+        let framenum = world.level.framenum;
+        world.client_mut(key).unwrap().quad_framenum = framenum + 100;
+    }
+
+    fn only(world: &GameWorld, classname: &str) -> crate::entity::Entity {
+        let found = spawned(world, classname);
+        assert_eq!(found.len(), 1, "{classname}");
+        found[0].clone()
+    }
+
+    /// 8 forward, 8 right and 14 up from the gunner's origin.
+    const LAUNCHER_START: Vec3f = Vec3f::new(18.0, 12.0, 44.0);
+
+    #[test]
+    fn a_rocket_does_100_to_119_from_the_launcher_muzzle_with_a_kick() {
+        // C ref: Weapon_RocketLauncher_Fire, 100 + (int)(random() * 20.0).
+        let (mut world, key, _) = gunner("Rockets");
+        world.level.rand_state = 5;
+        let r = {
+            let mut scratch = test_world();
+            scratch.level.rand_state = 5;
+            scratch.random()
+        };
+        weapon_rocketlauncher_fire(&mut world, key);
+        let rocket = only(&world, "rocket");
+        assert_eq!(rocket.game.dmg, 100 + (r * 20.0) as i32);
+        assert!(rocket.game.dmg > 100, "seed 5 draws over 0.05");
+        assert_eq!(rocket.state.origin, LAUNCHER_START);
+        let client = world.client(key).unwrap();
+        assert_eq!(
+            (client.kick_origin, client.kick_angles.x),
+            (Vec3f::new(-2.0, 0.0, 0.0), -1.0)
+        );
+    }
+
+    #[test]
+    fn quad_damage_quadruples_a_rockets_hit_and_splash() {
+        let (mut world, key, _) = gunner("Rockets");
+        quad(&mut world, key);
+        weapon_rocketlauncher_fire(&mut world, key);
+        let rocket = only(&world, "rocket");
+        assert_eq!(rocket.game.dmg % 4, 0);
+        assert!((400..480).contains(&rocket.game.dmg), "{}", rocket.game.dmg);
+        assert_eq!(rocket.game.radius_dmg, 480);
+    }
+
+    #[test]
+    fn a_launcher_grenade_leaves_the_launcher_muzzle_with_a_kick() {
+        let (mut world, key, _) = gunner("Grenades");
+        weapon_grenadelauncher_fire(&mut world, key);
+        assert_eq!(only(&world, "grenade").state.origin, LAUNCHER_START);
+        assert_eq!(world.client(key).unwrap().kick_angles.x, -1.0);
+    }
+
+    #[test]
+    fn a_rail_leaves_7_right_and_quad_quadruples_its_damage_and_knockback() {
+        // C ref: weapon_railgun_fire, offset (0, 7, viewheight - 8),
+        // single player 150 damage and 250 kick, x4 with quad.
+        let (mut world, key, gi) = gunner("Slugs");
+        quad(&mut world, key);
+        let target = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.takedamage = TakeDamage::Yes;
+        t.game.health = 1000;
+        t.game.mass = 200;
+        t.game.movetype = MoveType::Step;
+        t.solid = q2_shared::types::Solid::Bbox;
+        *gi.next_trace.borrow_mut() = Some(q2_shared::types::Trace {
+            fraction: 0.5,
+            ent_index: world.number_of(target),
+            ..q2_shared::types::Trace::default()
+        });
+        weapon_railgun_fire(&mut world, key);
+        assert!(
+            gi.vectors.borrow().contains(&Vec3f::new(10.0, 13.0, 44.0)),
+            "rail trail start"
+        );
+        let t = world.entities.get(target).unwrap();
+        assert_eq!(t.game.health, 400);
+        // Knockback 1000 on mass 200: 500 * 1000 / 200 along +x.
+        assert!((t.velocity.x - 2500.0).abs() < 1e-2, "{}", t.velocity.x);
+    }
+
+    #[test]
+    fn the_bfg_windup_noise_comes_from_its_muzzle() {
+        let (mut world, key, _) = gunner("Cells");
+        world.level.framenum = 10;
+        world.level.sound_entity_framenum = -10;
+        world.client_mut(key).unwrap().ps.gunframe = 9;
+        weapon_bfg_fire(&mut world, key);
+        let noise = world.entities.get(key).unwrap().game.mynoise.unwrap();
+        assert_eq!(
+            world.entities.get(noise).unwrap().state.origin,
+            LAUNCHER_START
+        );
+    }
+
+    #[test]
+    fn the_bfg_fires_on_exactly_50_cells_with_quad_and_a_rolled_view_kick() {
+        // C ref: weapon_bfg_fire, cells < 50 holds fire; v_dmg_roll =
+        // crandom() * 8; v_dmg_time = level.time + DAMAGE_TIME.
+        let (mut world, key, _) = gunner("Cells");
+        quad(&mut world, key);
+        world.level.time = 5.0;
+        world.level.rand_state = 31;
+        let j = crandoms(31, 1);
+        world.client_mut(key).unwrap().ps.gunframe = 17;
+        weapon_bfg_fire(&mut world, key);
+        let bfg = only(&world, "bfg blast");
+        assert_eq!(bfg.state.origin, LAUNCHER_START);
+        assert_eq!(bfg.game.radius_dmg, 2000);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.kick_origin, Vec3f::new(-2.0, 0.0, 0.0));
+        assert_eq!(client.v_dmg_roll, j[0] * 8.0);
+        assert_eq!(client.v_dmg_time, 5.0 + DAMAGE_TIME);
+        assert_eq!(inventory(&world, key, "Cells"), 0);
+    }
+
+    #[test]
+    fn a_thrown_grenade_flies_faster_the_longer_it_was_held() {
+        // C ref: weapon_grenade_fire, speed = 400 + (3 - timer) * 400 / 3,
+        // radius = damage + 40, damage x4 with quad.
+        let (mut world, key, _) = gunner("Grenades");
+        quad(&mut world, key);
+        world.level.time = 10.0;
+        world.client_mut(key).unwrap().grenade_time = 12.0;
+        weapon_grenade_fire(&mut world, key, false);
+        let grenade = only(&world, "hgrenade");
+        assert_eq!(grenade.state.origin, LAUNCHER_START);
+        assert_eq!(grenade.velocity.x, 533.0);
+        assert_eq!((grenade.game.dmg, grenade.game.dmg_radius), (500, 165.0));
+    }
+
+    #[test]
+    fn a_grenade_throw_waves_standing_and_attacks_crouched() {
+        // C ref: weapon_grenade_fire's throw animation.
+        let (mut world, key, _) = gunner("Grenades");
+        world.client_mut(key).unwrap().grenade_time = world.level.time + 2.0;
+        weapon_grenade_fire(&mut world, key, false);
+        assert_eq!(world.entities.get(key).unwrap().state.frame, FRAME_WAVE08);
+        assert_eq!(world.client(key).unwrap().anim_priority, ANIM_REVERSE);
+
+        let (mut world, key, _) = gunner("Grenades");
+        world.client_mut(key).unwrap().ps.pmove.pm_flags |= PMF_DUCKED;
+        weapon_grenade_fire(&mut world, key, false);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            FRAME_CRATTAK1 - 1
+        );
+
+        // Not in a vwep model: no animation.
+        let (mut world, key, _) = gunner("Grenades");
+        world.entities.get_mut(key).unwrap().state.modelindex = 0;
+        world.entities.get_mut(key).unwrap().state.frame = 3;
+        weapon_grenade_fire(&mut world, key, false);
+        assert_eq!(world.entities.get(key).unwrap().state.frame, 3);
+    }
+
+    /// Hand grenades up and ready on `gunframe`, the button up.
+    fn grenadier(gunframe: i32) -> (GameWorld, EntityKey, Rc<MockGameImport>) {
+        let (mut world, key, gi) = gunner("Grenades");
+        let grenades = world.find_item_by_name("Grenades").unwrap();
+        let client = world.client_mut(key).unwrap();
+        client.pers.weapon = Some(grenades);
+        client.weaponstate = WeaponState::Ready;
+        client.ps.gunframe = gunframe;
+        client.buttons = 0;
+        (world, key, gi)
+    }
+
+    #[test]
+    fn ready_hand_grenades_idle_through_48_and_back_to_16() {
+        // C ref: Weapon_Grenade, gunframe++ then > 48 wraps to 16.
+        for (from, to) in [(30, 31), (47, 48)] {
+            let (mut world, key, _) = grenadier(from);
+            weapon_grenade(&mut world, key);
+            assert_eq!(world.client(key).unwrap().ps.gunframe, to, "{from}");
+            assert_eq!(world.client(key).unwrap().weaponstate, WeaponState::Ready);
+        }
+    }
+
+    #[test]
+    fn ready_hand_grenades_pause_on_their_pause_frames_unless_rand_and_15_is_0() {
+        // C ref: Weapon_Grenade, pause_frames && (randk() & 15) holds.
+        let mut moved = (false, false);
+        for seed in 0..64 {
+            let mut scratch = test_world();
+            scratch.level.rand_state = seed;
+            let steps = scratch.random_u32() & 15 == 0;
+            let (mut world, key, _) = grenadier(48);
+            world.level.rand_state = seed;
+            weapon_grenade(&mut world, key);
+            let expected = if steps { 16 } else { 48 };
+            assert_eq!(world.client(key).unwrap().ps.gunframe, expected, "{seed}");
+            if steps {
+                moved.0 = true;
+            } else {
+                moved.1 = true;
+            }
+        }
+        assert_eq!(moved, (true, true));
+    }
+
+    #[test]
+    fn a_grenade_press_pulls_the_pin_and_clears_the_latched_attack() {
+        let (mut world, key, gi) = grenadier(20);
+        world.client_mut(key).unwrap().latched_buttons = BUTTON_ATTACK;
+        weapon_grenade(&mut world, key);
+        let client = world.client(key).unwrap();
+        assert_eq!(client.latched_buttons & BUTTON_ATTACK, 0);
+        assert_eq!(
+            (client.ps.gunframe, client.weaponstate),
+            (1, WeaponState::Firing)
+        );
+        // The pin sound comes on frame 5 only.
+        let pin = world.gi.sound_index("weapons/hgrena1b.wav");
+        let pins = |gi: &MockGameImport| {
+            gi.sound_calls
+                .borrow()
+                .iter()
+                .filter(|c| c.2 == pin)
+                .count()
+        };
+        world.client_mut(key).unwrap().ps.gunframe = 4;
+        weapon_grenade(&mut world, key);
+        assert_eq!(pins(&gi), 0);
+        weapon_grenade(&mut world, key);
+        assert_eq!(pins(&gi), 1);
+    }
+
+    #[test]
+    fn after_blowing_up_in_the_hand_the_throw_ends_once_the_time_is_up() {
+        // C ref: Weapon_Grenade, grenade_blew_up and level.time >= grenade_time.
+        let (mut world, key, _) = grenadier(11);
+        world.level.time = 10.0;
+        let client = world.client_mut(key).unwrap();
+        client.weaponstate = WeaponState::Firing;
+        client.grenade_blew_up = true;
+        client.grenade_time = 10.0;
+        weapon_grenade(&mut world, key);
+        let client = world.client(key).unwrap();
+        assert!(!client.grenade_blew_up);
+        assert_eq!(
+            (client.ps.gunframe, client.weaponstate),
+            (16, WeaponState::Ready)
+        );
+    }
+
+    #[test]
+    fn a_quad_chaingun_bullet_does_four_times_8() {
+        // C ref: Chaingun_Fire, damage *= 4 with quad.
+        let (mut world, key, gi) = gunner("Bullets");
+        quad(&mut world, key);
+        world.client_mut(key).unwrap().ps.gunframe = 5;
+        let target = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.takedamage = TakeDamage::Yes;
+        t.game.health = 1000;
+        t.solid = q2_shared::types::Solid::Bbox;
+        // The muzzle check runs clear; the bullet hits the target.
+        *gi.next_trace.borrow_mut() = Some(q2_shared::types::Trace::default());
+        gi.queued_traces
+            .borrow_mut()
+            .push_back(q2_shared::types::Trace {
+                fraction: 0.5,
+                ent_index: world.number_of(target),
+                ..q2_shared::types::Trace::default()
+            });
+        chaingun_fire(&mut world, key);
+        assert_eq!(world.entities.get(target).unwrap().game.health, 968);
+    }
 }
