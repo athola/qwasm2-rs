@@ -194,3 +194,92 @@ fn root_comes_from_q2_root_when_set() {
     );
     assert!(repo_root(None).join("crates/q2-devserver").is_dir());
 }
+
+#[test]
+fn web_pak_state_reports_what_will_be_served() {
+    assert_eq!(
+        web_pak_state(&fixture_root(Some(10)).path().join("gamedata")),
+        WebPakState::Brotli
+    );
+    assert_eq!(
+        web_pak_state(&fixture_root(Some(-60)).path().join("gamedata")),
+        WebPakState::StaleBrotli
+    );
+    assert_eq!(
+        web_pak_state(&fixture_root(None).path().join("gamedata")),
+        WebPakState::Plain
+    );
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(web_pak_state(empty.path()), WebPakState::Missing);
+}
+
+#[test]
+fn brotli_written_in_the_same_instant_as_the_pak_is_fresh() {
+    let root = fixture_root(Some(0));
+    let baseq2 = root.path().join("gamedata/baseq2");
+    assert!(br_is_fresh(
+        &baseq2.join("pak0-web.pak"),
+        &baseq2.join("pak0-web.pak.br")
+    ));
+}
+
+#[test]
+fn brotli_is_not_fresh_when_either_file_is_missing() {
+    let root = fixture_root(Some(10));
+    let baseq2 = root.path().join("gamedata/baseq2");
+    let missing = baseq2.join("nope");
+    assert!(!br_is_fresh(&missing, &baseq2.join("pak0-web.pak.br")));
+    assert!(!br_is_fresh(&baseq2.join("pak0-web.pak"), &missing));
+}
+
+#[test]
+fn server_listens_on_loopback_only() {
+    let addr = listen_addr(8080);
+    assert!(addr.ip().is_loopback(), "{addr}");
+    assert_eq!(addr.port(), 8080);
+}
+
+#[tokio::test]
+async fn other_gamedata_files_are_served_from_gamedata() {
+    let root = fixture_root(None);
+    std::fs::write(root.path().join("gamedata/baseq2/pak0.pak"), b"SOURCE").unwrap();
+    let resp = get(root.path(), "/gamedata/baseq2/pak0.pak", &[]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(resp).await, b"SOURCE");
+}
+
+#[tokio::test]
+async fn dist_files_carry_their_mime_type() {
+    // Browsers refuse WebAssembly.instantiateStreaming without application/wasm.
+    let root = fixture_root(None);
+    std::fs::write(root.path().join("dist/q2_wasm_bg.wasm"), b"\0asm").unwrap();
+    for (uri, mime) in [
+        ("/qwasm2.html", "text/html"),
+        ("/q2_wasm_bg.wasm", "application/wasm"),
+    ] {
+        let resp = get(root.path(), uri, &[]).await;
+        let content_type = resp.headers()[header::CONTENT_TYPE].to_str().unwrap();
+        assert!(content_type.starts_with(mime), "{uri}: {content_type}");
+    }
+}
+
+#[tokio::test]
+async fn web_pak_revalidation_returns_not_modified_and_still_varies() {
+    let root = fixture_root(Some(10));
+    let first = get(root.path(), WEB_PAK, &[("accept-encoding", "br")]).await;
+    let last_modified = first.headers()[header::LAST_MODIFIED]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let resp = get(
+        root.path(),
+        WEB_PAK,
+        &[
+            ("accept-encoding", "br"),
+            ("if-modified-since", &last_modified),
+        ],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    assert!(resp.headers().get(header::VARY).is_some());
+}
