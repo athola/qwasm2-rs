@@ -665,6 +665,11 @@ impl GameWorld {
             bolt.game.nextthink = self.level.time + 2.0;
         }
         self.launch_projectile(bolt_key, dir, "models/objects/laser/tris.md2");
+        // C registers the loop sound after the model.
+        let fly = self.gi.sound_index("misc/lasfly.wav");
+        if let Some(bolt) = self.entities.get_mut(bolt_key) {
+            bolt.state.sound = fly;
+        }
         check_dodge(self, owner, start, dir, speed);
 
         self.link_entity(bolt_key);
@@ -942,6 +947,11 @@ impl GameWorld {
             rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
+        // C registers the loop sound after the model.
+        let fly = self.gi.sound_index("weapons/rockfly.wav");
+        if let Some(rocket) = self.entities.get_mut(rocket_key) {
+            rocket.state.sound = fly;
+        }
 
         check_dodge(self, owner, start, dir, speed);
         self.link_entity(rocket_key);
@@ -1856,6 +1866,21 @@ mod tests {
         assert_eq!(effects("rocket"), EF_ROCKET);
         assert_eq!(effects("grenade"), EF_GRENADE);
         assert_eq!(effects("bfg blast"), EF_BFG | EF_ANIM_ALLFAST);
+        // C's in-flight loop sounds; the launcher grenade flies silent.
+        let sound = |world: &GameWorld, class: &str| {
+            let key = world.find_by_classname(None, class).unwrap();
+            world.entities.get(key).unwrap().state.sound
+        };
+        for (class, wav) in [
+            ("bolt", "misc/lasfly.wav"),
+            ("rocket", "weapons/rockfly.wav"),
+            ("bfg blast", "weapons/bfg__l1a.wav"),
+        ] {
+            let index = world.gi.sound_index(wav);
+            assert_ne!(index, 0);
+            assert_eq!(sound(&world, class), index, "{class}");
+        }
+        assert_eq!(sound(&world, "grenade"), 0);
     }
 
     #[test]
