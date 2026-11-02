@@ -441,10 +441,11 @@ impl GameWorld {
 
         // Start a pain animation if still in the player model.
         if client.anim_priority < ANIM_PAIN && modelindex == 255 {
-            self.pain_anim_cycle = (self.pain_anim_cycle + 1) % 3;
             let (first, last) = if ducked {
                 (FRAME_CRPAIN1, FRAME_CRPAIN4)
             } else {
+                // C steps its static pain counter for standing pains only.
+                self.pain_anim_cycle = (self.pain_anim_cycle + 1) % 3;
                 [
                     (FRAME_PAIN101, FRAME_PAIN104),
                     (FRAME_PAIN201, FRAME_PAIN204),
@@ -899,6 +900,34 @@ mod tests {
         client.damage_armor = armor;
         client.damage_parmor = parmor;
         client.damage_knockback = knockback;
+    }
+
+    #[test]
+    fn only_standing_pains_advance_the_pain_animation_cycle() {
+        let (mut world, key, _) = hurt_player();
+        world.entities.get_mut(key).unwrap().state.modelindex = 255;
+        world.pain_anim_cycle = 1;
+        let client = world.client_mut(key).unwrap();
+        client.ps.pmove.pm_flags |= q2_common::pmove::PMF_DUCKED;
+        client.anim_priority = 0;
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.pain_anim_cycle, 1, "ducked");
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            super::FRAME_CRPAIN1 - 1
+        );
+
+        let client = world.client_mut(key).unwrap();
+        client.ps.pmove.pm_flags &= !q2_common::pmove::PMF_DUCKED;
+        client.anim_priority = 0;
+        hit(&mut world, key, 5, 0, 0, 0);
+        world.damage_feedback(key);
+        assert_eq!(world.pain_anim_cycle, 2);
+        assert_eq!(
+            world.entities.get(key).unwrap().state.frame,
+            super::FRAME_PAIN301 - 1
+        );
     }
 
     #[test]
