@@ -2,6 +2,7 @@
 //! are small programs over the player's stats. C ref:
 //! `SCR_ExecuteLayoutString` (client/cl_screen.c), at HUD scale 1.
 
+use q2_common::cmd::is_separator;
 use q2_shared::constants::{
     CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
 };
@@ -58,14 +59,14 @@ const SB_NUMS: [[&str; 11]; 2] = [
 const CHAR_WIDTH: i32 = 16;
 const STAT_MINUS: usize = 10;
 
-/// C COM_Parse over a whole program: whitespace-separated tokens, `"`
+/// C COM_Parse over a whole program: tokens split on `is_separator`, `"`
 /// quoted strings, `//` comments. Unlike `cmd::tokenize` (Cmd_TokenizeString)
 /// it has no 80-token limit, as server layouts can be longer.
 fn tokens(program: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut rest = program;
     loop {
-        rest = rest.trim_start_matches(|c: char| c <= ' ');
+        rest = rest.trim_start_matches(is_separator);
         if rest.is_empty() {
             return out;
         }
@@ -79,7 +80,7 @@ fn tokens(program: &str) -> Vec<&str> {
             rest = r;
             continue;
         }
-        let end = rest.find(|c: char| c <= ' ').unwrap_or(rest.len());
+        let end = rest.find(is_separator).unwrap_or(rest.len());
         out.push(&rest[..end]);
         rest = &rest[end..];
     }
@@ -496,10 +497,11 @@ mod tests {
     #[test]
     fn a_high_byte_draws_as_one_glyph_of_its_value() {
         // A layout or configstring as NetMsg::read_string returns it: byte
-        // 0xE1 is the char U+00E1. C draws, and centres, the one byte.
+        // 0xE1 is the char U+00E1. C draws, and centres, the one byte. It
+        // is quoted, as an unquoted high byte is whitespace to COM_Parse.
         let stats = [0; 32];
         assert_eq!(
-            run("string \u{e1}", &stats, &[]),
+            run("string \"\u{e1}\"", &stats, &[]),
             [HudDraw::Char {
                 x: 0,
                 y: 0,
@@ -507,13 +509,22 @@ mod tests {
             }]
         );
         assert_eq!(
-            run("cstring \u{e1}", &stats, &[]),
+            run("cstring \"\u{e1}\"", &stats, &[]),
             [HudDraw::Char {
                 x: (320 - 8) / 2,
                 y: 0,
                 ch: 0xE1
             }]
         );
+    }
+
+    #[test]
+    fn unquoted_high_bytes_separate_tokens_like_com_parse() {
+        // C COM_Parse compares a signed char with ' ', so bytes 0x80-0xFF
+        // (U+0080-U+00FF from read_string) are whitespace outside quotes.
+        assert_eq!(tokens("a\u{a0}b\u{ff}c"), ["a", "b", "c"]);
+        assert_eq!(tokens("\u{80}\"\u{e1}\"\u{80}"), ["\u{e1}"]);
+        assert_eq!(tokens("a\u{2003}b"), ["a\u{2003}b"]);
     }
 
     #[test]

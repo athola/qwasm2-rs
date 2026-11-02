@@ -186,7 +186,7 @@ impl Default for CmdSystem {
 /// negative and count as separators too.
 ///
 /// C ref: COM_Parse `(c = *data) <= ' '` and `while (c > 32)`.
-fn is_separator(c: char) -> bool {
+pub fn is_separator(c: char) -> bool {
     c <= ' ' || ('\u{80}'..='\u{ff}').contains(&c)
 }
 
