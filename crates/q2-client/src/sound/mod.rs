@@ -13,23 +13,13 @@ pub mod wav;
 
 use std::rc::Rc;
 
-use q2_shared::constants::{CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
+use q2_shared::constants::{ATTN_STATIC, CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
 use q2_shared::types::{EntityState, Vec3f};
 
 use wav::Sound;
 
 /// C `MAX_CHANNELS`.
 pub const MAX_CHANNELS: usize = 32;
-/// Sound channels (C `CHAN_*`).
-pub const CHAN_AUTO: i32 = 0;
-pub const CHAN_WEAPON: i32 = 1;
-pub const CHAN_BODY: i32 = 4;
-/// Attenuations (C `ATTN_*`).
-pub const ATTN_NONE: f32 = 0.0;
-pub const ATTN_NORM: f32 = 1.0;
-pub const ATTN_IDLE: f32 = 2.0;
-/// C `ATTN_STATIC`: attenuates twice as fast as the other attenuations.
-pub const ATTN_STATIC: f32 = 3.0;
 /// C `SDL_FULLVOLUME`: closer than this is full volume.
 const FULL_VOLUME_DIST: f32 = 80.0;
 /// C `SDL_LOOPATTENUATE`: the distance multiplier of entity loop sounds.
@@ -129,17 +119,48 @@ pub fn entity_origin(
     Some(before + (now - before) * lerpfrac)
 }
 
-/// A sound the client starts by name.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NamedSound<'a> {
-    pub name: &'a str,
+/// A sound the client starts by name (C `S_RegisterSound` +
+/// `S_StartSound`): a muzzle flash's, a temp entity's, an entity event's
+/// or a chat line's. It plays at a fixed `origin`, or follows `entnum`
+/// when `origin` is `None`. A name starting with `*` is a sexed player
+/// sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedSound {
+    pub name: String,
     pub entnum: i32,
     pub entchannel: i32,
     pub volume: f32,
     pub attenuation: f32,
     pub timeofs: f32,
-    /// A fixed origin, or `None` to follow the entity.
     pub origin: Option<Vec3f>,
+}
+
+impl NamedSound {
+    /// A full-volume sound at `origin` from the world (entity 0).
+    pub(crate) fn at(origin: Vec3f, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum: 0,
+            entchannel: 0,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: Some(origin),
+        }
+    }
+
+    /// A full-volume sound that follows `entnum`.
+    pub(crate) fn on(entnum: i32, entchannel: i32, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum,
+            entchannel,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: None,
+        }
+    }
 }
 
 /// A sound the server started (C `CL_ParseStartSoundPacket`'s fields).
@@ -446,9 +467,9 @@ impl SoundSystem {
         mut load: impl FnMut(&str) -> Option<Vec<u8>>,
     ) {
         let id = if sound.name.starts_with('*') {
-            self.sexed_sound(sound.entnum, sound.name, &configstring, &mut load)
+            self.sexed_sound(sound.entnum, &sound.name, &configstring, &mut load)
         } else {
-            self.find_or_add(sound.name)
+            self.find_or_add(&sound.name)
         };
         if !self.load(id, &mut load) {
             return;

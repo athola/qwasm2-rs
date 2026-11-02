@@ -503,9 +503,9 @@ fn entity_origin_lerps_between_frames_and_is_none_for_absent_entities() {
     assert_eq!(at(4), None);
 }
 
-fn named(entnum: i32, name: &str) -> NamedSound<'_> {
+fn named(entnum: i32, name: &str) -> NamedSound {
     NamedSound {
-        name,
+        name: name.to_string(),
         entnum,
         entchannel: 1,
         volume: 1.0,

@@ -31,9 +31,7 @@ use q2_shared::types::{EntityState, Vec3f};
 
 use crate::entities::{anglemod, breaks_lerp, EntityView};
 use crate::particles::{frandk, vector_normalize, DrawParticle, Particles, Spray};
-use crate::sound::{
-    ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, CHAN_AUTO, CHAN_BODY, CHAN_WEAPON,
-};
+use crate::sound::NamedSound;
 use q2_common::pmove::angle_vectors;
 
 /// C `MAX_EXPLOSIONS`.
@@ -91,46 +89,6 @@ const FOOTSTEPS: [&str; 4] = [
 ];
 /// EF_BFG light by server frame (C `bfg_lightramp`).
 const BFG_LIGHTRAMP: [f32; 6] = [300.0, 400.0, 600.0, 300.0, 150.0, 75.0];
-
-/// A sound an effect starts (C `S_StartSound`): at a fixed `origin` (temp
-/// entities, entity 0), or following `entnum` when `origin` is `None`
-/// (entity events). A name starting with `*` is a sexed player sound.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FxSound {
-    pub name: &'static str,
-    pub origin: Option<Vec3f>,
-    pub entnum: i32,
-    pub channel: i32,
-    pub volume: f32,
-    pub attenuation: f32,
-    pub timeofs: f32,
-}
-
-impl FxSound {
-    fn at(origin: Vec3f, name: &'static str, attenuation: f32) -> Self {
-        Self {
-            name,
-            origin: Some(origin),
-            entnum: 0,
-            channel: 0,
-            volume: 1.0,
-            attenuation,
-            timeofs: 0.0,
-        }
-    }
-
-    fn on(entnum: i32, channel: i32, name: &'static str, attenuation: f32) -> Self {
-        Self {
-            name,
-            origin: None,
-            entnum,
-            channel,
-            volume: 1.0,
-            attenuation,
-            timeofs: 0.0,
-        }
-    }
-}
 
 /// A model to draw (C `entity_t`). A laser has no model: it is an
 /// `RF_BEAM` from `origin` to `oldorigin`, `frame` wide, in palette colour
@@ -523,7 +481,7 @@ impl ClientFx {
         time: i32,
         servertime: i32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Vec<FxSound> {
+    ) -> Vec<NamedSound> {
         if bytes.first() != Some(&(SvcOp::TempEntity as u8)) {
             return Vec::new();
         }
@@ -545,7 +503,7 @@ impl ClientFx {
         time: i32,
         servertime: i32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Q2Result<Vec<FxSound>> {
+    ) -> Q2Result<Vec<NamedSound>> {
         let kind = msg.read_byte();
         let mut sounds = Vec::new();
         let spray = |org, dir, color, count| Spray {
@@ -554,7 +512,7 @@ impl ClientFx {
             color,
             count,
         };
-        let lashit = |pos| FxSound::at(pos, "weapons/lashit.wav", ATTN_NORM);
+        let lashit = |pos| NamedSound::at(pos, "weapons/lashit.wav", ATTN_NORM);
         match kind {
             TE_BLOOD => {
                 let (pos, dir) = (read_pos(msg), msg.read_dir()?);
@@ -578,7 +536,7 @@ impl ClientFx {
                         3 => Some("world/ric3.wav"),
                         _ => None,
                     };
-                    sounds.extend(ricochet.map(|name| FxSound::at(pos, name, ATTN_NORM)));
+                    sounds.extend(ricochet.map(|name| NamedSound::at(pos, name, ATTN_NORM)));
                 }
             }
             TE_SCREEN_SPARKS | TE_SHIELD_SPARKS => {
@@ -613,7 +571,7 @@ impl ClientFx {
                         1 => "world/spark6.wav",
                         _ => "world/spark7.wav",
                     };
-                    sounds.push(FxSound::at(pos, name, ATTN_STATIC));
+                    sounds.push(NamedSound::at(pos, name, ATTN_STATIC));
                 }
             }
             TE_LASER_SPARKS | TE_WELDING_SPARKS => {
@@ -665,7 +623,7 @@ impl ClientFx {
             TE_RAILTRAIL => {
                 let (start, end) = (read_pos(msg), read_pos(msg));
                 self.particles.rail_trail(start, end, time, randk);
-                sounds.push(FxSound::at(end, "weapons/railgf1a.wav", ATTN_NORM));
+                sounds.push(NamedSound::at(end, "weapons/railgf1a.wav", ATTN_NORM));
             }
             TE_EXPLOSION2 | TE_GRENADE_EXPLOSION | TE_GRENADE_EXPLOSION_WATER => {
                 let pos = read_pos(msg);
@@ -682,7 +640,7 @@ impl ClientFx {
                 } else {
                     "weapons/grenlx1a.wav"
                 };
-                sounds.push(FxSound::at(pos, name, ATTN_NORM));
+                sounds.push(NamedSound::at(pos, name, ATTN_NORM));
             }
             TE_EXPLOSION1
             | TE_ROCKET_EXPLOSION
@@ -717,7 +675,7 @@ impl ClientFx {
                 } else {
                     "weapons/rocklx1a.wav"
                 };
-                sounds.push(FxSound::at(pos, name, ATTN_NORM));
+                sounds.push(NamedSound::at(pos, name, ATTN_NORM));
             }
             TE_BFG_EXPLOSION => {
                 let pos = read_pos(msg);
@@ -743,7 +701,7 @@ impl ClientFx {
             TE_BOSSTPORT => {
                 let pos = read_pos(msg);
                 self.particles.big_teleport_particles(pos, time, randk);
-                sounds.push(FxSound::at(pos, "misc/bigtele.wav", ATTN_NONE));
+                sounds.push(NamedSound::at(pos, "misc/bigtele.wav", ATTN_NONE));
             }
             TE_GREENBLOOD => {
                 let (pos, dir) = (read_pos(msg), msg.read_dir()?);
@@ -759,7 +717,7 @@ impl ClientFx {
             }
             TE_LIGHTNING => {
                 let ent = self.parse_lightning(msg, time);
-                sounds.push(FxSound::on(
+                sounds.push(NamedSound::on(
                     ent,
                     CHAN_WEAPON,
                     "weapons/tesla.wav",
@@ -824,7 +782,7 @@ impl ClientFx {
                 self.timed_light(0, pos, 150.0, [-1.0, -1.0, -1.0], time);
                 self.particles
                     .color_explosion_particles(pos, 0, 1, time, randk);
-                sounds.push(FxSound::at(pos, "weapons/disrupthit.wav", ATTN_NORM));
+                sounds.push(NamedSound::at(pos, "weapons/disrupthit.wav", ATTN_NORM));
             }
             TE_TELEPORT_EFFECT | TE_DBALL_GOAL => {
                 let pos = read_pos(msg);
@@ -1063,25 +1021,30 @@ impl ClientFx {
         ent: &EntityState,
         time: i32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Option<FxSound> {
+    ) -> Option<NamedSound> {
         let n = ent.number;
         let sound = match ent.event {
             EV_ITEM_RESPAWN => {
                 self.particles
                     .item_respawn_particles(ent.origin, time, randk);
-                Some(FxSound::on(n, CHAN_WEAPON, "items/respawn1.wav", ATTN_IDLE))
+                Some(NamedSound::on(
+                    n,
+                    CHAN_WEAPON,
+                    "items/respawn1.wav",
+                    ATTN_IDLE,
+                ))
             }
             EV_PLAYER_TELEPORT => {
                 self.particles.teleport_particles(ent.origin, time, randk);
-                Some(FxSound::on(n, CHAN_WEAPON, "misc/tele1.wav", ATTN_IDLE))
+                Some(NamedSound::on(n, CHAN_WEAPON, "misc/tele1.wav", ATTN_IDLE))
             }
             EV_FOOTSTEP if self.footsteps => {
                 let step = FOOTSTEPS[(randk() & 3) as usize];
-                Some(FxSound::on(n, CHAN_BODY, step, ATTN_NORM))
+                Some(NamedSound::on(n, CHAN_BODY, step, ATTN_NORM))
             }
-            EV_FALLSHORT => Some(FxSound::on(n, CHAN_AUTO, "player/land1.wav", ATTN_NORM)),
-            EV_FALL => Some(FxSound::on(n, CHAN_AUTO, "*fall2.wav", ATTN_NORM)),
-            EV_FALLFAR => Some(FxSound::on(n, CHAN_AUTO, "*fall1.wav", ATTN_NORM)),
+            EV_FALLSHORT => Some(NamedSound::on(n, CHAN_AUTO, "player/land1.wav", ATTN_NORM)),
+            EV_FALL => Some(NamedSound::on(n, CHAN_AUTO, "*fall2.wav", ATTN_NORM)),
+            EV_FALLFAR => Some(NamedSound::on(n, CHAN_AUTO, "*fall1.wav", ATTN_NORM)),
             _ => None,
         };
         if ent.effects & EF_TELEPORTER != 0 {
@@ -1720,8 +1683,8 @@ mod tests {
 
     const P: Vec3f = Vec3f::new(64.0, 32.0, 8.0);
 
-    fn names(sounds: &[FxSound]) -> Vec<&str> {
-        sounds.iter().map(|s| s.name).collect()
+    fn names(sounds: &[NamedSound]) -> Vec<&str> {
+        sounds.iter().map(|s| s.name.as_str()).collect()
     }
 
     fn models(frame: &FxFrame) -> Vec<Option<&str>> {
@@ -2065,7 +2028,7 @@ mod tests {
         fx.clear();
         let sounds = fx.temp_entity(&splash(4, SPLASH_SPARKS), 1000, 1000, &mut rng(&[1]));
         assert_eq!(names(&sounds), ["world/spark6.wav"]);
-        assert_eq!(sounds[0].attenuation, crate::sound::ATTN_STATIC);
+        assert_eq!(sounds[0].attenuation, ATTN_STATIC);
         fx.clear();
         fx.temp_entity(&splash(4, 9), 1000, 1000, &mut rng(&[0]));
         assert_eq!(
@@ -2237,7 +2200,7 @@ mod tests {
 
     /// Run `bytes` through `parse_tent`, whose `Err` is what `temp_entity`
     /// logs.
-    fn parse(fx: &mut ClientFx, bytes: &[u8]) -> Q2Result<Vec<FxSound>> {
+    fn parse(fx: &mut ClientFx, bytes: &[u8]) -> Q2Result<Vec<NamedSound>> {
         let mut msg = NetMsg::from_bytes(bytes);
         msg.begin_reading();
         msg.read_byte();
@@ -2295,7 +2258,7 @@ mod tests {
         assert_eq!(names(&sounds), ["items/respawn1.wav"]);
         let s = &sounds[0];
         assert_eq!(
-            (s.origin, s.entnum, s.channel, s.attenuation),
+            (s.origin, s.entnum, s.entchannel, s.attenuation),
             (None, 3, CHAN_WEAPON, ATTN_IDLE)
         );
         assert_eq!(fx.particles.len(), 64);
@@ -2311,7 +2274,7 @@ mod tests {
         let mut fx = ClientFx::default();
         let sounds = Vec::from_iter(fx.entity_event(&event(1, EV_FOOTSTEP), 1000, &mut rng(&[2])));
         assert_eq!(names(&sounds), ["player/step3.wav"]);
-        assert_eq!(sounds[0].channel, CHAN_BODY);
+        assert_eq!(sounds[0].entchannel, CHAN_BODY);
         fx.footsteps = false;
         assert!(fx
             .entity_event(&event(1, EV_FOOTSTEP), 1000, &mut rng(&[2]))
@@ -2323,7 +2286,7 @@ mod tests {
         ] {
             let sounds = Vec::from_iter(fx.entity_event(&event(1, ev), 1000, &mut rng(&[0])));
             assert_eq!(names(&sounds), [name]);
-            assert_eq!(sounds[0].channel, CHAN_AUTO);
+            assert_eq!(sounds[0].entchannel, CHAN_AUTO);
         }
         assert!(fx
             .entity_event(&event(1, EV_OTHER_TELEPORT), 1000, &mut rng(&[0]))
@@ -2845,7 +2808,7 @@ mod tests {
         let sounds = fx.temp_entity(&msg, 1000, 1000, &mut rng(&[0]));
         assert_eq!(names(&sounds), ["weapons/tesla.wav"]);
         let s = &sounds[0];
-        assert_eq!((s.origin, s.entnum, s.channel), (None, 4, CHAN_WEAPON));
+        assert_eq!((s.origin, s.entnum, s.entchannel), (None, 4, CHAN_WEAPON));
         // 100 - 20 units in 35-unit models: three, 22.5 apart.
         let frame = fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
         let xs: Vec<f32> = frame.entities.iter().map(|e| e.origin.x).collect();

@@ -159,8 +159,8 @@ impl Engine {
         dt: f32,
         new_frame: bool,
     ) -> (
-        Vec<q2_client::effects::FlashSound>,
-        Vec<q2_client::fx::FxSound>,
+        Vec<q2_client::sound::NamedSound>,
+        Vec<q2_client::sound::NamedSound>,
     ) {
         let time_ms = self.frames.time();
         let time = time_ms as f32;
@@ -211,8 +211,8 @@ impl Engine {
     fn mix_sounds(
         &mut self,
         sounds: &[q2_server::game_iface::SoundEvent],
-        flash_sounds: &[q2_client::effects::FlashSound],
-        fx_sounds: &[q2_client::fx::FxSound],
+        flash_sounds: &[q2_client::sound::NamedSound],
+        fx_sounds: &[q2_client::sound::NamedSound],
         vieworg: q2_shared::types::Vec3f,
         viewangles: q2_shared::types::Vec3f,
         lerpfrac: f32,
@@ -239,14 +239,9 @@ impl Engine {
                 |path| fs.load_file(path).ok(),
             );
         }
-        let named = flash_sounds.iter().map(flash_named_sound).chain(
-            fx_sounds
-                .iter()
-                .map(|sound| -> q2_client::sound::NamedSound<'_> { fx_named_sound(sound) }),
-        );
-        for sound in named {
+        for sound in flash_sounds.iter().chain(fx_sounds) {
             self.sound.start_named_sound(
-                &sound,
+                sound,
                 |i| local.configstring(i),
                 |path| fs.load_file(path).ok(),
             );
@@ -792,14 +787,15 @@ fn render_entities(
 
 /// C `S_StartLocalSound("misc/talk.wav")` for a chat line.
 #[cfg(any(target_arch = "wasm32", test))]
-fn talk_sound() -> q2_client::effects::FlashSound {
-    q2_client::effects::FlashSound {
-        entnum: q2_server::local::LOCAL_PLAYER as i32,
-        channel: 0,
+fn talk_sound() -> q2_client::sound::NamedSound {
+    q2_client::sound::NamedSound {
         name: "misc/talk.wav".into(),
+        entnum: q2_server::local::LOCAL_PLAYER as i32,
+        entchannel: 0,
         volume: 1.0,
         attenuation: 0.0,
         timeofs: 0.0,
+        origin: None,
     }
 }
 
@@ -892,8 +888,8 @@ fn run_effect_messages(
     servertime: i32,
     randk: &mut impl FnMut() -> u32,
 ) -> (
-    Vec<q2_client::effects::FlashSound>,
-    Vec<q2_client::fx::FxSound>,
+    Vec<q2_client::sound::NamedSound>,
+    Vec<q2_client::sound::NamedSound>,
 ) {
     let time = time_ms as f32;
     let mut sounds = Vec::new();
@@ -939,32 +935,6 @@ fn fx_dlights(lights: &[q2_client::fx::FxLight]) -> Vec<q2_render_api::DLight> {
             intensity: l.intensity,
         })
         .collect()
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn fx_named_sound(sound: &q2_client::fx::FxSound) -> q2_client::sound::NamedSound<'static> {
-    q2_client::sound::NamedSound {
-        name: sound.name,
-        entnum: sound.entnum,
-        entchannel: sound.channel,
-        volume: sound.volume,
-        attenuation: sound.attenuation,
-        timeofs: sound.timeofs,
-        origin: sound.origin,
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn flash_named_sound(sound: &q2_client::effects::FlashSound) -> q2_client::sound::NamedSound<'_> {
-    q2_client::sound::NamedSound {
-        name: &sound.name,
-        entnum: sound.entnum,
-        entchannel: sound.channel,
-        volume: sound.volume,
-        attenuation: sound.attenuation,
-        timeofs: sound.timeofs,
-        origin: None,
-    }
 }
 
 /// A xorshift32 step: the client's `randk`, 31 bits like C's. C's
@@ -2316,7 +2286,7 @@ mod tests {
 
     #[test]
     fn effect_particles_lights_and_sounds_reach_the_renderer_and_mixer() {
-        use q2_client::fx::{FxLight, FxSound};
+        use q2_client::fx::FxLight;
         use q2_client::particles::DrawParticle;
         use q2_shared::types::Vec3f;
         let particles = fx_particles(&[DrawParticle {
@@ -2334,22 +2304,10 @@ mod tests {
         }]);
         assert_eq!(lights[0].intensity, 200.0);
         assert_eq!(lights[0].color, Vec3f::new(1.0, 1.0, 0.0));
-        let sound = FxSound {
-            name: "weapons/rocklx1a.wav",
-            origin: Some(Vec3f::ONE),
-            entnum: 0,
-            channel: 0,
-            volume: 1.0,
-            attenuation: 1.0,
-            timeofs: 0.0,
-        };
-        let named = fx_named_sound(&sound);
-        assert_eq!((named.name, named.origin), (sound.name, sound.origin));
         let talk = talk_sound();
-        let named = flash_named_sound(&talk);
         assert_eq!(
-            (named.name, named.origin, named.entnum),
-            ("misc/talk.wav", None, talk.entnum)
+            (talk.name.as_str(), talk.origin, talk.entnum),
+            ("misc/talk.wav", None, q2_server::local::LOCAL_PLAYER as i32)
         );
     }
 

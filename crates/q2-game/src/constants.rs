@@ -300,17 +300,10 @@ pub const SFL_CROSS_TRIGGER_MASK: i32 = 0x0000_00ff;
 // temp_event_t) that game code writes
 // ---------------------------------------------------------------------------
 
-pub const CHAN_AUTO: i32 = 0;
-pub const CHAN_WEAPON: i32 = 1;
-pub const CHAN_VOICE: i32 = 2;
-pub const CHAN_ITEM: i32 = 3;
-pub const CHAN_BODY: i32 = 4;
-pub const CHAN_NO_PHS_ADD: i32 = 8;
-
-pub const ATTN_NONE: f32 = 0.0;
-pub const ATTN_NORM: f32 = 1.0;
-pub const ATTN_IDLE: f32 = 2.0;
-pub const ATTN_STATIC: f32 = 3.0;
+pub use q2_shared::constants::{
+    ATTN_IDLE, ATTN_NONE, ATTN_NORM, ATTN_STATIC, CHAN_AUTO, CHAN_BODY, CHAN_ITEM, CHAN_NO_PHS_ADD,
+    CHAN_VOICE, CHAN_WEAPON,
+};
 
 pub const SKILL_EASY: i32 = 0;
 /// C `pers.hand` (userinfo `hand`).

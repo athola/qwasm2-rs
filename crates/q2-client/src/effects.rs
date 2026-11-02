@@ -26,7 +26,7 @@ const MZ_NUKE2: i32 = 37;
 const MZ_NUKE4: i32 = 38;
 const MZ_NUKE8: i32 = 39;
 
-use crate::sound::{ATTN_NONE, ATTN_NORM, CHAN_AUTO, CHAN_WEAPON};
+use crate::sound::NamedSound;
 
 /// A client dynamic light (C `cdlight_t`). `die` is in client
 /// milliseconds; a light shows until 32 ms after it (yquake2).
@@ -41,17 +41,6 @@ pub struct ClientDLight {
     /// Radius lost per second.
     pub decay: f32,
     pub minlight: f32,
-}
-
-/// A sound a flash starts, by name (C `S_RegisterSound` + `S_StartSound`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct FlashSound {
-    pub entnum: i32,
-    pub channel: i32,
-    pub name: String,
-    pub volume: f32,
-    pub attenuation: f32,
-    pub timeofs: f32,
 }
 
 /// The client's dynamic lights (C `cl_dlights`).
@@ -137,7 +126,7 @@ impl Effects {
         weapon: i32,
         time: f32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Vec<FlashSound> {
+    ) -> Vec<NamedSound> {
         let entnum = player.number;
         let silenced = weapon & MZ_SILENCED != 0;
         let weapon = weapon & !MZ_SILENCED;
@@ -152,13 +141,14 @@ impl Effects {
 
         let mut sounds = Vec::new();
         let mut sound = |channel, name: String, timeofs| {
-            sounds.push(FlashSound {
-                entnum,
-                channel,
+            sounds.push(NamedSound {
                 name,
+                entnum,
+                entchannel: channel,
                 volume,
                 attenuation: ATTN_NORM,
                 timeofs,
+                origin: None,
             });
         };
         let machinegun =
@@ -292,7 +282,7 @@ impl Effects {
         flash: i32,
         time: f32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Vec<FlashSound> {
+    ) -> Vec<NamedSound> {
         let Some(offset) = usize::try_from(flash)
             .ok()
             .filter(|&f| f <= 210)
@@ -330,14 +320,7 @@ impl Effects {
                 (format!("tank/tnkatk2{letter}.wav"), ATTN_NORM)
             }
         };
-        vec![FlashSound {
-            entnum,
-            channel: CHAN_WEAPON,
-            name,
-            volume: 1.0,
-            attenuation,
-            timeofs: 0.0,
-        }]
+        vec![NamedSound::on(entnum, CHAN_WEAPON, &name, attenuation)]
     }
 }
 
@@ -359,7 +342,7 @@ impl Effects {
         entity: impl Fn(i32) -> Option<EntityState>,
         time: f32,
         randk: &mut impl FnMut() -> u32,
-    ) -> Vec<FlashSound> {
+    ) -> Vec<NamedSound> {
         use q2_shared::protocol::SvcOp;
         let mut msg = q2_common::net_msg::NetMsg::from_bytes(bytes);
         msg.begin_reading();
@@ -826,10 +809,10 @@ mod tests {
         }
     }
 
-    fn names(sounds: &[FlashSound]) -> Vec<(&str, i32, f32)> {
+    fn names(sounds: &[NamedSound]) -> Vec<(&str, i32, f32)> {
         sounds
             .iter()
-            .map(|s| (s.name.as_str(), s.channel, s.timeofs))
+            .map(|s| (s.name.as_str(), s.entchannel, s.timeofs))
             .collect()
     }
 
