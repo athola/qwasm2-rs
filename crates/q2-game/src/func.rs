@@ -1415,15 +1415,10 @@ pub fn func_killbox_use(
         // Hack to make sure that really everything is killed.
         ent.game.count -= 1;
         if ent.game.count == 0 {
-            ent.think = Some(free_think);
+            ent.think = Some(crate::misc::free_think);
             ent.game.nextthink = time + 1.0;
         }
     }
-}
-
-/// C `think = G_FreeEdict`.
-fn free_think(world: &mut GameWorld, key: EntityKey) {
-    world.free_entity(key);
 }
 
 // ---------------------------------------------------------------------------
