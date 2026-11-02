@@ -389,9 +389,11 @@ impl Particles {
             .collect();
     }
 
-    /// Where swarm particle `i` sits at `ltime` seconds, relative to the
-    /// centre: a spinning point 16 out plus a pulse along normal `i`.
-    fn swarm_offset(&self, i: usize, ltime: f32) -> Vec3f {
+    /// Where swarm particle `i` round `origin` sits at `ltime` seconds: a
+    /// spinning point 16 out plus a pulse along normal `i`, summed per
+    /// axis left to right as C does (f32 addition does not associate).
+    /// C ref: `CL_FlyParticles`, `CL_BfgParticles`.
+    fn swarm_org(&self, origin: Vec3f, i: usize, ltime: f32) -> Vec3f {
         let rates = self.avelocities[i];
         let angle = ltime * rates.x;
         let (sy, cy) = (f64::from(angle).sin() as f32, f64::from(angle).cos() as f32);
@@ -400,7 +402,7 @@ impl Particles {
         let forward = Vec3f::new(cp * cy, cp * sy, -sp);
         let dist = f64::from(ltime + i as f32).sin() as f32 * 64.0;
         let [x, y, z] = BYTEDIRS[i];
-        Vec3f::new(x, y, z) * dist + forward * 16.0
+        origin + Vec3f::new(x, y, z) * dist + forward * 16.0
     }
 
     /// Up to `count` flies (every other normal) buzzing round `origin`
@@ -416,10 +418,10 @@ impl Particles {
         self.swarm_rates(randk);
         let ltime = time as f32 / 1000.0;
         for i in (0..count.max(0) as usize).step_by(2) {
-            let offset = self.swarm_offset(i, ltime);
+            let org = self.swarm_org(origin, i, ltime);
             let Some(p) = self.alloc() else { return };
             p.time = time as f32;
-            p.org = origin + offset;
+            p.org = org;
             p.vel = Vec3f::ZERO;
             p.accel = Vec3f::ZERO;
             p.color = 0;
@@ -466,10 +468,10 @@ impl Particles {
         self.swarm_rates(randk);
         let ltime = (f64::from(time as f32) / 1000.0) as f32;
         for i in 0..NUM_VERTEX_NORMALS {
-            let offset = self.swarm_offset(i, ltime);
+            let org = self.swarm_org(origin, i, ltime);
             let Some(p) = self.alloc() else { return };
             p.time = time as f32;
-            p.org = origin + offset;
+            p.org = org;
             p.vel = Vec3f::ZERO;
             p.accel = Vec3f::ZERO;
             let dist = (p.org - origin).length() / 90.0;
@@ -705,6 +707,40 @@ mod tests {
         // At time 0 the swarm sits 16 out along forward (1, 0, 0).
         assert_eq!(ps.active[0].org, Vec3f::new(16.0, 0.0, 0.0));
         assert_eq!(ps.avelocities.len(), 162);
+    }
+
+    /// C's per-axis sum, left to right in float:
+    /// `origin[j] + bytedirs[i][j] * dist + forward[j] * 16`.
+    fn c_swarm_org(ps: &Particles, origin: Vec3f, i: usize, ltime: f32) -> Vec3f {
+        let rates = ps.avelocities[i];
+        let angle = ltime * rates.x;
+        let (sy, cy) = (f64::from(angle).sin() as f32, f64::from(angle).cos() as f32);
+        let angle = ltime * rates.y;
+        let (sp, cp) = (f64::from(angle).sin() as f32, f64::from(angle).cos() as f32);
+        let forward = [cp * cy, cp * sy, -sp];
+        let dist = f64::from(ltime + i as f32).sin() as f32 * 64.0;
+        let mut org = Vec3f::ZERO;
+        for j in 0..3 {
+            org[j] = origin[j] + BYTEDIRS[i][j] * dist + forward[j] * 16.0;
+        }
+        org
+    }
+
+    #[test]
+    fn swarms_add_their_offsets_to_the_origin_in_c_order() {
+        let origin = Vec3f::new(1234.567, -987.6543, 333.3333);
+        let time = 12345;
+        let ltime = time as f32 / 1000.0;
+        let mut ps = Particles::default();
+        ps.fly_particles(origin, 162, time, &mut rng(&[37, 201, 99]));
+        for (n, p) in ps.active.iter().enumerate() {
+            assert_eq!(p.org, c_swarm_org(&ps, origin, n * 2, ltime), "fly {n}");
+        }
+        ps.clear();
+        ps.bfg_particles(origin, time, &mut rng(&[37, 201, 99]));
+        for (i, p) in ps.active.iter().enumerate() {
+            assert_eq!(p.org, c_swarm_org(&ps, origin, i, ltime), "bfg {i}");
+        }
     }
 
     #[test]
