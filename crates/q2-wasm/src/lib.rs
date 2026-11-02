@@ -1095,18 +1095,24 @@ fn query_value<'a>(search: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// The map to start on: `?map=` (`demo3` or `maps/demo3.bsp`) when the pak
-/// has it, else demo1, else the first map.
+/// has it, else demo1, else the first map. The flag is false when a
+/// requested map was not found and the fallback is used.
 #[cfg(any(target_arch = "wasm32", test))]
-fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<&'a str> {
+fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<(&'a str, bool)> {
     let wanted = requested.map(|name| {
         let name = name.strip_prefix("maps/").unwrap_or(name);
         format!("maps/{}.bsp", name.strip_suffix(".bsp").unwrap_or(name))
     });
-    wanted
+    if let Some(found) = wanted
+        .as_ref()
         .and_then(|wanted| maps.iter().find(|&&m| m == wanted))
-        .or_else(|| maps.iter().find(|&&m| m == "maps/demo1.bsp"))
+    {
+        return Some((found, true));
+    }
+    maps.iter()
+        .find(|&&m| m == "maps/demo1.bsp")
         .or_else(|| maps.first())
-        .copied()
+        .map(|&fallback| (fallback, wanted.is_none()))
 }
 
 /// C cvar `hand` (0 right, 1 left, 2 centre) from `?hand=`; 0 when unset
@@ -1580,10 +1586,10 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
         .and_then(|w| w.location().search().ok())
         .unwrap_or_default();
     let requested = query_value(&search, "map");
-    let Some(map_name) = start_map(requested, &map_list) else {
+    let Some((map_name, found)) = start_map(requested, &map_list) else {
         return Err(JsValue::from_str("No maps found in pak0.pak"));
     };
-    if let Some(requested) = requested.filter(|r| !map_name.contains(*r)) {
+    if let (Some(requested), false) = (requested, found) {
         log(&format!("?map={requested} is not in the pak"));
     }
 
@@ -2075,15 +2081,36 @@ mod tests {
     #[test]
     fn the_first_map_is_the_requested_one_else_demo1_else_the_first() {
         let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
-        assert_eq!(start_map(Some("demo3"), &maps), Some("maps/demo3.bsp"));
+        assert_eq!(
+            start_map(Some("demo3"), &maps),
+            Some(("maps/demo3.bsp", true))
+        );
         assert_eq!(
             start_map(Some("maps/demo3.bsp"), &maps),
-            Some("maps/demo3.bsp")
+            Some(("maps/demo3.bsp", true))
         );
-        assert_eq!(start_map(Some("base1"), &maps), Some("maps/demo1.bsp"));
-        assert_eq!(start_map(None, &maps), Some("maps/demo1.bsp"));
-        assert_eq!(start_map(None, &["maps/q2dm1.bsp"]), Some("maps/q2dm1.bsp"));
+        assert_eq!(
+            start_map(Some("base1"), &maps),
+            Some(("maps/demo1.bsp", false))
+        );
+        assert_eq!(start_map(None, &maps), Some(("maps/demo1.bsp", true)));
+        assert_eq!(
+            start_map(None, &["maps/q2dm1.bsp"]),
+            Some(("maps/q2dm1.bsp", true))
+        );
         assert_eq!(start_map(Some("demo3"), &[]), None);
+    }
+
+    #[test]
+    fn a_request_that_is_part_of_the_fallback_name_is_still_a_miss() {
+        let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
+        for requested in ["demo", "1", "dem"] {
+            assert_eq!(
+                start_map(Some(requested), &maps),
+                Some(("maps/demo1.bsp", false)),
+                "{requested}"
+            );
+        }
     }
 
     #[test]
