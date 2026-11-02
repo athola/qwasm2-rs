@@ -8,7 +8,7 @@ use crate::constants::{
 use crate::entity::EntityKey;
 use crate::world::GameWorld;
 use q2_shared::protocol::SvcOp;
-use q2_shared::types::{PmType, Solid};
+use q2_shared::types::{PmType, Solid, Vec3f};
 
 use q2_shared::constants::{
     STAT_AMMO, STAT_AMMO_ICON, STAT_ARMOR, STAT_ARMOR_ICON, STAT_FRAGS, STAT_HEALTH,
@@ -306,7 +306,7 @@ impl GameWorld {
     /// note the next map, and in single player go straight on; otherwise
     /// move everyone to an intermission spot until a button is pressed
     /// five seconds later. A new coop unit takes everyone's keys. C ref:
-    /// `BeginIntermission` (player/hud.c), without the `fact1` spot fix.
+    /// `BeginIntermission` (player/hud.c).
     pub fn begin_intermission(&mut self, targ: EntityKey) {
         if self.level.intermission_time != 0.0 {
             return; // already activated
@@ -365,6 +365,10 @@ impl GameWorld {
         if let Some(spot) = spot.and_then(|k| self.entities.get(k)) {
             self.level.intermission_origin = spot.state.origin;
             self.level.intermission_angle = spot.state.angles;
+        }
+        // fact1's intermission spot collides with an area portal.
+        if self.level.mapname.eq_ignore_ascii_case("fact1") {
+            self.level.intermission_origin = Vec3f::new(1037.0, 1100.0, 222.0);
         }
         for key in clients {
             self.move_client_to_intermission(key);
@@ -656,8 +660,6 @@ mod tests {
 
     // ---- BeginIntermission / MoveClientToIntermission ----
 
-    use q2_shared::types::Vec3f;
-
     fn spot(world: &mut GameWorld, classname: &str, origin: Vec3f, yaw: f32) -> EntityKey {
         let key = world.spawn().unwrap();
         let ent = world.entities.get_mut(key).unwrap();
@@ -730,6 +732,25 @@ mod tests {
         let other = exit_to(&mut world, "q2dm3");
         world.begin_intermission(other);
         assert_eq!(world.level.changemap, "q2dm2");
+    }
+
+    #[test]
+    fn on_fact1_the_intermission_camera_moves_off_the_area_portal() {
+        // C BeginIntermission overrides fact1's spot, matched with Q_stricmp.
+        let (mut world, key, _) = armed_player();
+        world.game.deathmatch = true;
+        world.level.mapname = "FACT1".into();
+        spot(
+            &mut world,
+            "info_player_intermission",
+            Vec3f::new(64.0, 32.0, 16.0),
+            90.0,
+        );
+        let exit = exit_to(&mut world, "q2dm2");
+        world.begin_intermission(exit);
+        let fixed = Vec3f::new(1037.0, 1100.0, 222.0);
+        assert_eq!(world.level.intermission_origin, fixed);
+        assert_eq!(world.entities.get(key).unwrap().state.origin, fixed);
     }
 
     #[test]
