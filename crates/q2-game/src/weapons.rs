@@ -968,6 +968,18 @@ impl GameWorld {
         self.link_entity(rocket_key);
     }
 
+    /// The up and right scales of a grenade throw. C passes `200 +
+    /// crandom() * 10.0` and `crandom() * 10.0` as VectorMA's float scale:
+    /// crandom is `2.0 * (random() - 0.5)`, so each is computed in double
+    /// and rounded to float once.
+    /// C ref: `fire_grenade`, `fire_grenade2` (g_weapon.c), `crandom`
+    /// (header/local.h).
+    fn grenade_throw_offsets(&mut self) -> (f32, f32) {
+        let lift = 200.0 + 2.0 * (self.random() as f64 - 0.5) * 10.0;
+        let side = 2.0 * (self.random() as f64 - 0.5) * 10.0;
+        (lift as f32, side as f32)
+    }
+
     /// Fire a grenade. Creates a bouncing projectile entity.
     /// C ref: `fire_grenade` (g_weapon.c), with its two `crandom() * 10`
     /// offsets up and to the right.
@@ -987,8 +999,7 @@ impl GameWorld {
         };
 
         let (_, right, up) = angle_vectors(vectoangles(dir));
-        let lift = 200.0 + self.crandom() * 10.0;
-        let side = self.crandom() * 10.0;
+        let (lift, side) = self.grenade_throw_offsets();
 
         if let Some(gren) = self.entities.get_mut(gren_key) {
             gren.game.classname = "grenade".into();
@@ -1031,8 +1042,7 @@ impl GameWorld {
         held: bool,
     ) {
         let (_, right, up) = angle_vectors(vectoangles(aimdir));
-        let lift = 200.0 + self.crandom() * 10.0;
-        let side = self.crandom() * 10.0;
+        let (lift, side) = self.grenade_throw_offsets();
         let Some(key) = self.spawn() else {
             return;
         };
@@ -1926,6 +1936,42 @@ mod tests {
         assert!(gren.velocity.z > 0.0);
         // Spin.
         assert_eq!(gren.avelocity, Vec3f::new(300.0, 300.0, 300.0));
+    }
+
+    #[test]
+    fn grenade_throw_offsets_round_once_from_double_like_c() {
+        // C: VectorMA's float `scale` is `200 + crandom() * 10.0`, computed
+        // in double (crandom is `2.0 * (random() - 0.5)`) and rounded once.
+        // Thrown along +x, up is +z and right is -y, so z is the lift and
+        // y the negated side offset.
+        let mut differs_from_f32 = false;
+        for seed in 0..2000u32 {
+            for hand in [false, true] {
+                let mut world = test_world();
+                world.level.rand_state = seed;
+                let mut probe = test_world();
+                probe.level.rand_state = seed;
+                let (lift_random, side_random) = (probe.random(), probe.random());
+                let lift = (200.0 + 2.0 * (lift_random as f64 - 0.5) * 10.0) as f32;
+                let side = (2.0 * (side_random as f64 - 0.5) * 10.0) as f32;
+                let f32_lift = 200.0 + 2.0 * (lift_random - 0.5) * 10.0;
+                differs_from_f32 |= f32_lift.to_bits() != lift.to_bits();
+
+                let owner = world.spawn().unwrap();
+                let classname = if hand {
+                    world.fire_grenade2(owner, Vec3f::ZERO, Vec3f::X, 120, 600, 2.5, 150.0, false);
+                    "hgrenade"
+                } else {
+                    world.fire_grenade(owner, Vec3f::ZERO, Vec3f::X, 120, 600, 2.5, 150.0);
+                    "grenade"
+                };
+                let key = world.find_by_classname(None, classname).unwrap();
+                let v = world.entities.get(key).unwrap().velocity;
+                assert_eq!(v.z.to_bits(), lift.to_bits(), "seed {seed}");
+                assert_eq!(v.y, -side, "seed {seed}");
+            }
+        }
+        assert!(differs_from_f32, "no seed separates f32 from C's double");
     }
 
     #[test]
