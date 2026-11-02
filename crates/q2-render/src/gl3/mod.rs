@@ -411,9 +411,7 @@ impl Renderer for Gl3Renderer {
         let loader = &self.file_loader;
         let handle = self.models.register(name, || {
             let lower = name.to_ascii_lowercase();
-            if name.len() <= 4 {
-                None
-            } else if lower.ends_with(".md2") {
+            if lower.ends_with(".md2") {
                 entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
             } else if lower.ends_with(".sp2") {
                 fx::load_sprite_model(gl, loader, palette, images, name).map(Model::Sprite)
@@ -1674,11 +1672,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_extension_is_no_model_name_even_when_the_file_exists() {
+    fn a_short_name_loads_like_any_other_when_the_file_exists() {
+        // C Mod_ForName has no length rule: the file load decides.
         let mut r = Gl3Renderer::headless(Box::new(|path| {
             (path == ".md2").then(|| synthetic_md2("skin.pcx"))
         }));
-        assert_eq!(r.register_model(".md2"), ModelHandle::NONE);
+        let handle = r.register_model(".md2");
+        assert!(matches!(r.models.get(handle), Some(Model::Alias(_))));
     }
 
     #[test]
