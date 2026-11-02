@@ -135,8 +135,9 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **No cvars for the game rules.** Skill, deathmatch, coop and dmflags
   are fields with no cvar path; other cvars the game reads, such as
   `cl_gun` and `g_commanderbody_nogod`, go through `GameImport::cvar`,
-  which `LocalGame::set_cvar` fills. `g_monsterfootsteps` stays off (its
-  C default), so footsteps are silent.
+  which `LocalGame::set_cvar` fills. Player footsteps play
+  (`g_footsteps` 1); `g_monsterfootsteps` stays off (its C default), so
+  monster footsteps are silent.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
@@ -170,8 +171,12 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
   `menu_loadgame`, which nothing handles), the random pick in an item
-  team's respawn, the inventory layout, the `fov`/`spectator` userinfo,
-  and `SP_FixCoopSpots`.
+  team's respawn, the inventory layout and its refresh
+  (`InventoryMessage`), the `fov`/`spectator` userinfo, the spectator and
+  chase-camera stats, `SP_FixCoopSpots`, falling damage
+  (`P_FallingDamage`), the dead view turning to the killer
+  (`LookAtKiller`), and coop's per-cube tracking (`pers.power_cubes`), so
+  a coop power cube counts like any key.
 - **Effects left out on purpose:** `CL_QuadTrail` and
   `CL_Tracker_Explode` have no caller in yquake2 or id's 3.21 release,
   so drawing them would change what valid input looks like. id's
