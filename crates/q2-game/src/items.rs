@@ -2473,6 +2473,102 @@ mod tests {
     }
 
     #[test]
+    fn only_items_with_spawnflags_are_reported_and_power_cubes_keep_them() {
+        let (world, gi) = spawned(concat!(
+            "{ \"classname\" \"ammo_shells\" }\n",
+            "{ \"classname\" \"key_power_cube\" \"spawnflags\" \"4\" }",
+        ));
+        let dprints = gi.dprints.borrow();
+        assert!(
+            !dprints.iter().any(|m| m.contains("spawnflags")),
+            "{dprints:?}"
+        );
+        let cube = world.find_by_classname(None, "key_power_cube").unwrap();
+        assert_eq!(world.entities.get(cube).unwrap().game.spawnflags, 4);
+    }
+
+    /// Shells at (8, 16, 32), spinning, glowing and gibbed, after their
+    /// droptofloor at time 10.
+    fn dropped_to_floor(
+        spawnflags: i32,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        use q2_shared::constants::{EF_GIB, RF_GLOW, RF_IR_VISIBLE};
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        world.level.time = 10.0;
+        let key = world.spawn().unwrap();
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.classname = "ammo_shells".into();
+        e.state.origin = Vec3f::new(8.0, 16.0, 32.0);
+        let shells = world.find_item("ammo_shells").unwrap();
+        world.spawn_item(key, shells);
+        let e = world.entities.get_mut(key).unwrap();
+        e.game.spawnflags = spawnflags;
+        e.state.effects |= EF_ROTATE | EF_GIB;
+        e.state.renderfx |= RF_GLOW | RF_IR_VISIBLE;
+        droptofloor(&mut world, key);
+        (world, key, gi)
+    }
+
+    #[test]
+    fn droptofloor_traces_128_straight_down() {
+        let (_world, _, gi) = dropped_to_floor(0);
+        assert_eq!(
+            gi.trace_ends.borrow().last(),
+            Some(&Vec3f::new(8.0, 16.0, -96.0))
+        );
+    }
+
+    #[test]
+    fn a_no_touch_item_is_solid_and_stops_spinning_and_glowing() {
+        // C ref: droptofloor, ITEM_NO_TOUCH clears only EF_ROTATE and RF_GLOW.
+        use q2_shared::constants::{EF_GIB, RF_IR_VISIBLE};
+        let (world, key, _) = dropped_to_floor(ITEM_NO_TOUCH);
+        let e = world.entities.get(key).unwrap();
+        assert_eq!(e.solid, Solid::Bbox);
+        assert!(e.touch.is_none());
+        assert_eq!(e.state.effects & (EF_ROTATE | EF_GIB), EF_GIB);
+        assert_eq!(e.state.renderfx, RF_IR_VISIBLE);
+    }
+
+    #[test]
+    fn a_trigger_spawned_item_waits_hidden_for_its_use() {
+        let (world, key, _) = dropped_to_floor(ITEM_TRIGGER_SPAWN);
+        let e = world.entities.get(key).unwrap();
+        assert_ne!(e.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
+        assert_eq!(e.solid, Solid::Not);
+        assert!(e.use_fn.is_some());
+    }
+
+    #[test]
+    fn only_the_team_master_schedules_the_first_respawn() {
+        // C ref: droptofloor, teammaster == ent sets DoRespawn next frame.
+        let (mut world, _gi) = spawned(
+            r#"{ "classname" "weapon_shotgun" "team" "t" "origin" "0 0 0" }
+               { "classname" "weapon_supershotgun" "team" "t" "origin" "64 0 0" }"#,
+        );
+        let master = world.find_by_classname(None, "weapon_shotgun").unwrap();
+        let slave = world
+            .find_by_classname(None, "weapon_supershotgun")
+            .unwrap();
+        world.level.time = 10.0;
+        droptofloor(&mut world, master);
+        droptofloor(&mut world, slave);
+        let respawns = |key| {
+            let think = world.entities.get(key).unwrap().think;
+            think.is_some_and(|t| std::ptr::fn_addr_eq(t, do_respawn as crate::entity::ThinkFn))
+        };
+        assert!(respawns(master));
+        assert!(!respawns(slave));
+        let next = world.entities.get(master).unwrap().game.nextthink;
+        assert!((next - 10.1).abs() < 1e-4, "{next}");
+    }
+
+    #[test]
     fn health_items_spawn_with_their_model_and_amount() {
         let (mut world, gi) = spawned("{ \"classname\" \"item_health_large\" }");
         let key = world.find_by_classname(None, "item_health_large").unwrap();
@@ -3183,6 +3279,13 @@ mod tests {
             let key = item_entity(&mut world, kept, 0);
             assert!(world.entities.get(key).unwrap().in_use, "{kept}");
         }
+        // No dmflags: nothing is removed.
+        let mut world = armor_world();
+        world.game.deathmatch = true;
+        for classname in ["item_health", "ammo_shells", "weapon_bfg", "item_quad"] {
+            let key = item_entity(&mut world, classname, 0);
+            assert!(world.entities.get(key).unwrap().in_use, "{classname}");
+        }
         let mut world = armor_world();
         world.game.dmflags = DF_NO_ARMOR;
         let key = item_entity(&mut world, "item_armor_jacket", 0);
@@ -3272,6 +3375,8 @@ mod tests {
         assert_eq!(ent.game.nextthink, 15.0);
         assert_eq!(ent.solid, Solid::Not);
         assert!(ent.game.flags.contains(EntityFlags::RESPAWN));
+        // C ref: Pickup_Health hides it with SVF_NOCLIENT while it rots.
+        assert_ne!(ent.svflags & q2_shared::constants::SVF_NOCLIENT, 0);
 
         let think = ent.think.unwrap();
         think(&mut world, mega);
@@ -3753,6 +3858,38 @@ mod tests {
     }
 
     #[test]
+    fn dropping_power_armor_switches_it_only_when_on_and_the_last() {
+        // C ref: Drop_PowerArmor, FL_POWER_ARMOR && inventory == 1.
+        let (mut world, key, _) = powered();
+        let screen = own(&mut world, key, "Power Screen", 2);
+        own(&mut world, key, "Cells", 50);
+        use_named(&mut world, key, "Power Screen");
+        let drop_fn = world.items[screen].drop_fn.unwrap();
+        let on = |world: &GameWorld| {
+            let flags = world.entities.get(key).unwrap().game.flags;
+            flags.contains(EntityFlags::POWER_ARMOR)
+        };
+        drop_fn(&mut world, key, screen);
+        assert!(on(&world), "one left");
+        use_named(&mut world, key, "Power Screen");
+        drop_fn(&mut world, key, screen);
+        assert!(!on(&world), "off stays off");
+    }
+
+    #[test]
+    fn picking_up_a_powerup_or_power_armor_carries_one_more() {
+        let (mut world, key, _) = powered();
+        for classname in ["item_quad", "item_power_screen"] {
+            let index = world.find_item(classname).unwrap();
+            for count in 1..=2 {
+                let ent = on_floor(&mut world, classname, 0, 0);
+                assert!(pick(&mut world, ent, key));
+                assert_eq!(world.client(key).unwrap().pers.inventory[index], count);
+            }
+        }
+    }
+
+    #[test]
     fn picking_up_power_armor_auto_uses_the_first_in_deathmatch() {
         let (mut world, key, _) = powered();
         own(&mut world, key, "Cells", 50);
@@ -3867,6 +4004,86 @@ mod tests {
         assert_eq!(world.client(key).unwrap().quad_framenum, 150);
     }
 
+    #[test]
+    fn instant_use_needs_deathmatch_and_the_instant_items_dmflag() {
+        // C ref: Touch_Item, deathmatch && (DF_INSTANT_ITEMS && IT_INSTANT_USE
+        // || a player-dropped quad).
+        for (deathmatch, dmflags) in [(true, 0), (false, DF_INSTANT_ITEMS)] {
+            let (mut world, key, _) = powered();
+            world.game.deathmatch = deathmatch;
+            world.game.dmflags = dmflags;
+            world.level.time = 10.0;
+            let quad = powerup_on_floor(&mut world, "item_quad");
+            touch_item(&mut world, quad, key, None, None);
+            let client = world.client(key).unwrap();
+            assert_eq!(client.quad_framenum, 0, "dm {deathmatch}");
+            assert_eq!(client.pickup_msg_time, 13.0);
+        }
+    }
+
+    #[test]
+    fn an_items_targets_fire_on_its_first_touch_only() {
+        // C ref: Touch_Item, ITEM_TARGETS_USED, even when not taken.
+        fn count_use(world: &mut GameWorld, key: EntityKey, _: EntityKey, _: EntityKey) {
+            world.entities.get_mut(key).unwrap().game.count += 1;
+        }
+        let (mut world, key, _) = powered();
+        own(&mut world, key, "Shells", 100);
+        let shells = powerup_on_floor(&mut world, "ammo_shells");
+        world.entities.get_mut(shells).unwrap().game.target = "t".into();
+        let relay = world.spawn().unwrap();
+        let e = world.entities.get_mut(relay).unwrap();
+        e.game.targetname = "t".into();
+        e.use_fn = Some(count_use);
+        touch_item(&mut world, shells, key, None, None);
+        touch_item(&mut world, shells, key, None, None);
+        assert_eq!(world.entities.get(relay).unwrap().game.count, 1);
+        let flags = world.entities.get(shells).unwrap().game.spawnflags;
+        assert_ne!(flags & ITEM_TARGETS_USED, 0);
+    }
+
+    #[test]
+    fn coop_leaves_a_map_key_but_takes_a_dropped_one() {
+        // C ref: Touch_Item, IT_STAY_COOP stays unless DROPPED_*.
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let pass = powerup_on_floor(&mut world, "key_pass");
+        touch_item(&mut world, pass, key, None, None);
+        assert!(world.entities.get(pass).unwrap().in_use);
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let pass = powerup_on_floor(&mut world, "key_pass");
+        world.entities.get_mut(pass).unwrap().game.spawnflags = DROPPED_ITEM;
+        touch_item(&mut world, pass, key, None, None);
+        assert!(!world.entities.get(pass).is_some_and(|e| e.in_use));
+    }
+
+    #[test]
+    fn a_drop_turns_up_to_45_degrees_left_or_right_like_c() {
+        // C ref: Drop_Item, frandk() > 0.5 picks the side, then
+        // frandk() * 45 the size of the turn.
+        let mut sides = (false, false);
+        for seed in 0..8 {
+            let mut world = test_world();
+            world.init_items();
+            let monster = world.spawn().unwrap();
+            let shells = world.find_item("ammo_shells").unwrap();
+            world.level.rand_state = seed;
+            let left = world.random() > 0.5;
+            let turn = world.random() * 45.0;
+            world.level.rand_state = seed;
+            let dropped = world.drop_item(monster, shells).unwrap();
+            let yaw = world.entities.get(dropped).unwrap().state.angles.y;
+            assert_eq!(yaw, if left { turn } else { -turn }, "seed {seed}");
+            if left {
+                sides.0 = true;
+            } else {
+                sides.1 = true;
+            }
+        }
+        assert_eq!(sides, (true, true), "both sides seen");
+    }
+
     // ---- #16 close-out: Pickup_Ammo / Pickup_Weapon / Drop_Item ----
 
     fn on_floor(world: &mut GameWorld, classname: &str, spawnflags: i32, count: i32) -> EntityKey {
@@ -3917,6 +4134,17 @@ mod tests {
         let shells = on_floor(&mut world, "ammo_shells", 0, 0);
         assert!(pick(&mut world, shells, key));
         assert_eq!(world.client(key).unwrap().newweapon, None, "not a weapon");
+    }
+
+    #[test]
+    fn single_player_switches_to_the_first_grenades_from_any_weapon() {
+        // C ref: Pickup_Ammo, !deathmatch || weapon == blaster.
+        let (mut world, key, _) = powered();
+        world.client_mut(key).unwrap().pers.weapon = world.find_item_by_name("Shotgun");
+        let ent = on_floor(&mut world, "ammo_grenades", 0, 0);
+        assert!(pick(&mut world, ent, key));
+        let grenades = world.find_item("ammo_grenades").unwrap();
+        assert_eq!(world.client(key).unwrap().newweapon, Some(grenades));
     }
 
     #[test]
@@ -4023,6 +4251,29 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_coop_weapon_is_still_there_for_a_player_without_one() {
+        // C ref: Pickup_Weapon leaves it only if inventory[index] is set.
+        let (mut world, key, _) = powered();
+        world.game.coop = true;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        world.entities.get_mut(gun).unwrap().game.flags |= EntityFlags::COOP_TAKEN;
+        assert!(pick(&mut world, gun, key));
+    }
+
+    #[test]
+    fn only_weapons_stay_or_coop_leave_an_owned_weapon_behind() {
+        // C ref: Pickup_Weapon, (DF_WEAPONS_STAY || coop) && owned.
+        let (mut world, key, _) = powered();
+        let shotgun = world.find_item("weapon_shotgun").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[shotgun] = 1;
+        let gun = on_floor(&mut world, "weapon_shotgun", 0, 0);
+        world.entities.get_mut(gun).unwrap().game.flags |= EntityFlags::COOP_TAKEN;
+        assert!(pick(&mut world, gun, key), "single player");
+        world.game.dmflags = DF_WEAPONS_STAY;
+        assert!(!pick(&mut world, gun, key), "weapons stay");
+    }
+
+    #[test]
     fn a_player_drop_is_thrown_along_the_aim_not_the_tilted_view() {
         let mut world = test_world();
         world.init_items();
@@ -4082,6 +4333,29 @@ mod tests {
         assert!(sounds.iter().any(|s| s == "weapons/chngnd1a.wav"));
         // C's table has a stray backtick: `.wav`` ends in "av`", no type.
         assert!(!sounds.iter().any(|s| s.ends_with('`')));
+    }
+
+    #[test]
+    fn precache_registers_pcx_images_and_skips_names_under_5_chars() {
+        // C ref: PrecacheItem, len < 5 is a bad precache string.
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let quad = world.find_item("item_quad").unwrap();
+        world.items[quad].precaches = ".wav a.wav pics/x.pcx";
+        world.precache_item(quad);
+        let sounds = gi.sounds.borrow();
+        assert!(sounds.iter().any(|s| s == "a.wav"));
+        assert!(!sounds.iter().any(|s| s == ".wav"));
+        assert!(gi.images.borrow().iter().any(|i| i == "pics/x.pcx"));
+    }
+
+    #[test]
+    fn single_player_keeps_the_drop_of_a_stay_coop_item() {
+        // C ref: SpawnItem clears item->drop only in coop.
+        let mut world = armor_world();
+        let key = item_entity(&mut world, "key_data_cd", 0);
+        let index = world.entities.get(key).unwrap().game.item.unwrap();
+        assert!(world.items[index].drop_fn.is_some());
     }
 
     #[test]
