@@ -6,10 +6,13 @@
 //! `CL_AddPacketEntities` (client/cl_entities.c), for the base game and
 //! the mission packs (rogue, xatrix, CTF).
 //!
-//! Per frame the browser calls, in C's order: `temp_entity` for each
-//! svc_temp_entity, `entity_event` once per entity of each new server
-//! frame, `EntityTrails::run` for the drawn entities' trails, then
-//! `frame_view`.
+//! Per frame the browser calls, in C's order: `entity_event` once per
+//! entity of each new server frame, then `temp_entity` for each
+//! svc_temp_entity, `EntityTrails::run` for the drawn entities' trails,
+//! then `frame_view`. Both effect kinds draw from the same randk stream, so
+//! the order matters: C's `SV_SendClientDatagram` (server/sv_send.c) writes
+//! the frame before the multicast datagram, so `CL_FireEntityEvents` runs
+//! before `CL_ParseTEnt` for the same packet.
 //!
 //! Not ported: C's `ex_explosion`, `ex_mflash` and `ex_poly2` explosion
 //! kinds, which nothing in C creates. The lights of TE_FLASHLIGHT and
@@ -19,7 +22,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use q2_common::error::Q2Result;
+use q2_common::error::{Q2Error, Q2Result};
 use q2_common::net_msg::NetMsg;
 pub use q2_shared::constants::EF_FLIES;
 use q2_shared::constants::*;
@@ -508,10 +511,12 @@ impl ClientFx {
     /// Run one svc_temp_entity message (`bytes` starts with the svc op) at
     /// client time `time` and server frame time `servertime` (C
     /// `cl.frame.servertime`; explosions start 100 ms before it). Returns
-    /// the sounds to start. Other messages, types C does not handle
-    /// (TE_RAILTRAIL2, TE_FLAME) and malformed bodies do nothing; C drops
-    /// the connection on a malformed one (`ERR_DROP`), so it is logged.
-    /// C ref: `CL_ParseTEnt`.
+    /// the sounds to start. Other messages do nothing. C drops the
+    /// connection (`ERR_DROP`) on a type it does not handle (TE_RAILTRAIL2,
+    /// TE_FLAME, unknown numbers), a bad direction byte or a body that ends
+    /// early; here each is logged and the message dropped, with no sounds.
+    /// As in C, an effect read before a short body ran out is still drawn.
+    /// C ref: `CL_ParseTEnt`, `CL_ParseServerMessage`.
     pub fn temp_entity(
         &mut self,
         bytes: &[u8],
@@ -838,7 +843,14 @@ impl ClientFx {
                 let pos = read_pos(msg);
                 self.particles.widow_splash(pos, time, randk);
             }
-            _ => {}
+            _ => return Err(Q2Error::Drop(format!("CL_ParseTEnt: bad type {kind}"))),
+        }
+        // C finds a short body only at the next svc op, after the effect is
+        // drawn (`CL_ParseServerMessage`: "Bad server message").
+        if msg.is_overflowed() {
+            return Err(Q2Error::Drop(format!(
+                "CL_ParseTEnt: type {kind} ends early"
+            )));
         }
         Ok(sounds)
     }
@@ -2178,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_truncated_and_other_messages_do_nothing() {
+    fn unknown_truncated_and_other_messages_play_no_sound() {
         let mut fx = ClientFx::default();
         let mut r = rng(&[0]);
         assert!(fx
@@ -2221,6 +2233,49 @@ mod tests {
             fx.particles.active[0].color, 0,
             "a missing splash type reads -1"
         );
+    }
+
+    /// Run `bytes` through `parse_tent`, whose `Err` is what `temp_entity`
+    /// logs.
+    fn parse(fx: &mut ClientFx, bytes: &[u8]) -> Q2Result<Vec<FxSound>> {
+        let mut msg = NetMsg::from_bytes(bytes);
+        msg.begin_reading();
+        msg.read_byte();
+        fx.parse_tent(&mut msg, 1000, 1000, &mut rng(&[0]))
+    }
+
+    #[test]
+    fn an_unknown_temp_entity_type_is_a_drop_error() {
+        let mut fx = ClientFx::default();
+        for bytes in [pos_only(TE_FLAME, P), pos_only(200, P)] {
+            let error = parse(&mut fx, &bytes).unwrap_err();
+            assert!(
+                matches!(error, Q2Error::Drop(ref text) if text.starts_with("CL_ParseTEnt: bad type")),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_truncated_temp_entity_still_draws_then_is_a_drop_error() {
+        let mut fx = ClientFx::default();
+        let truncated_splash = tent(TE_SPLASH, |m| {
+            m.write_byte(2);
+            m.write_position(P);
+            m.write_dir(Vec3f::Z);
+        });
+        let error = parse(&mut fx, &truncated_splash).unwrap_err();
+        assert!(matches!(error, Q2Error::Drop(_)), "{error:?}");
+        assert_eq!(fx.particles.len(), 2, "C draws before it drops");
+        let truncated_explosion = tent(TE_EXPLOSION1, |m| m.write_byte(0));
+        assert!(parse(&mut fx, &truncated_explosion).is_err());
+        let whole_splash = tent(TE_SPLASH, |m| {
+            m.write_byte(2);
+            m.write_position(P);
+            m.write_dir(Vec3f::Z);
+            m.write_byte(SPLASH_SPARKS);
+        });
+        assert!(parse(&mut fx, &whole_splash).is_ok());
     }
 
     fn event(number: i32, event: i32) -> EntityState {
@@ -2962,6 +3017,29 @@ mod tests {
         fx.clear();
         fx.temp_entity(&steam(-1, 3, 60, 0), 2000, 2000, &mut r);
         assert_eq!((fx.particles.len(), live_sustains(&fx)), (3, 0));
+    }
+
+    #[test]
+    fn a_steam_puff_cut_short_by_a_full_pool_keeps_its_think_time() {
+        let mut fx = ClientFx::default();
+        let mut r = rng(&[0]);
+        let filler = Spray {
+            org: P,
+            dir: Vec3f::Z,
+            color: 0,
+            count: crate::particles::MAX_PARTICLES as i32 - 1,
+        };
+        fx.particles.particle_effect(filler, 1000, &mut r);
+        fx.temp_entity(&steam(5, 2, 60, 1000), 1000, 1000, &mut r);
+        let nextthink = |fx: &ClientFx| fx.sustains.iter().find(|s| s.id == 5).unwrap().nextthink;
+        fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut r);
+        assert_eq!(nextthink(&fx), 1000, "C returns before nextthink +=");
+        // With randk 0 every particle fades in 500 ms.
+        fx.particles.add_particles(1600);
+        assert_eq!(fx.particles.len(), 0);
+        fx.frame(1600, 1.0, 1, Vec3f::ZERO, &mut r);
+        assert_eq!(fx.particles.len(), 2);
+        assert_eq!(nextthink(&fx), 1100);
     }
 
     #[test]
