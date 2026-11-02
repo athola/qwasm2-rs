@@ -979,6 +979,9 @@ pub fn player_die(
     ent.state.angles.x = 0.0;
     ent.state.angles.z = 0.0;
     ent.state.sound = 0;
+    if let Some(client) = ent.client.and_then(|slot| world.clients.get_mut(slot)) {
+        client.weapon_sound = 0;
+    }
     ent.maxs.z = -8.0;
     ent.svflags |= SvFlags::DEADMONSTER.bits();
     let first_death = ent.game.deadflag == DeadFlag::No;
@@ -1766,6 +1769,19 @@ mod tests {
         world.client_end_server_frame(key);
         assert_eq!(world.client(key).unwrap().pers.helpchanged, 0);
         assert_eq!(gi.unicasts.borrow().as_slice(), &[(1, false)]);
+    }
+
+    #[test]
+    fn dying_silences_the_weapon_hum() {
+        let mut world = test_world();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.begin_client(key);
+        world.client_mut(key).unwrap().weapon_sound = world.gi.sound_index("weapons/hyprbl1a.wav");
+        world.entities.get_mut(key).unwrap().game.health = -10;
+        player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
+        world.client_end_server_frame(key);
+        assert_eq!(world.entities.get(key).unwrap().state.sound, 0);
     }
 
     #[test]
