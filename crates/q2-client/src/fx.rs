@@ -3017,6 +3017,29 @@ mod tests {
     }
 
     #[test]
+    fn a_steam_puff_cut_short_by_a_full_pool_keeps_its_think_time() {
+        let mut fx = ClientFx::default();
+        let mut r = rng(&[0]);
+        let filler = Spray {
+            org: P,
+            dir: Vec3f::Z,
+            color: 0,
+            count: crate::particles::MAX_PARTICLES as i32 - 1,
+        };
+        fx.particles.particle_effect(filler, 1000, &mut r);
+        fx.temp_entity(&steam(5, 2, 60, 1000), 1000, 1000, &mut r);
+        let nextthink = |fx: &ClientFx| fx.sustains.iter().find(|s| s.id == 5).unwrap().nextthink;
+        fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut r);
+        assert_eq!(nextthink(&fx), 1000, "C returns before nextthink +=");
+        // With randk 0 every particle fades in 500 ms.
+        fx.particles.add_particles(1600);
+        assert_eq!(fx.particles.len(), 0);
+        fx.frame(1600, 1.0, 1, Vec3f::ZERO, &mut r);
+        assert_eq!(fx.particles.len(), 2);
+        assert_eq!(nextthink(&fx), 1100);
+    }
+
+    #[test]
     fn a_steam_time_past_the_clock_wraps_like_cs_int_add() {
         let mut fx = ClientFx::default();
         let mut r = rng(&[0]);
