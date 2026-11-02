@@ -2,9 +2,9 @@
 //!
 //! The browser build uses `entities`, `frame`, `input::InputState::build_cmd`,
 //! `layout`, `lightstyles` and `view::calc_fov` around the in-process server.
-//! `parse` (the protocol parser) and `state` (`ClientState`, `ClientStatic`,
-//! `CEntity`) are groundwork for the networked client (#19, #22): tested,
-//! but not wired to anything yet.
+//! `parse` (the protocol parser) and `state` (`ClientState`, `CEntity`) are
+//! groundwork for the networked client (#19, #22): tested, but not wired to
+//! anything yet.
 //!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0
