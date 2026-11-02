@@ -154,14 +154,20 @@ pub fn finish_target_help(
     key: EntityKey,
     _fields: &HashMap<String, String>,
 ) {
-    let has_message = world
-        .entities
-        .get(key)
-        .is_some_and(|e| !e.game.message.is_empty());
-    if world.game.deathmatch || !has_message {
-        if !has_message {
-            world.gi.dprintf("target_help with no message\n");
-        }
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    if ent.game.message.is_empty() {
+        let warning = format!(
+            "{} with no message at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        world.gi.dprintf(&warning);
         world.free_entity(key);
         return;
     }
@@ -808,6 +814,68 @@ mod tests {
         assert_eq!(laser_sparks(&gi), 1);
         // Facing angles 0: along +x, 2048 units.
         assert_eq!(ent.game.movedir, Vec3f::X);
+    }
+
+    fn help_world(
+        deathmatch: bool,
+        message: &str,
+        spawnflags: i32,
+    ) -> (
+        GameWorld,
+        EntityKey,
+        std::rc::Rc<crate::world::MockGameImport>,
+    ) {
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.game.deathmatch = deathmatch;
+        let help = world.spawn().unwrap();
+        let ent = world.entities.get_mut(help).unwrap();
+        ent.game.classname = "target_help".into();
+        ent.game.message = message.into();
+        ent.game.spawnflags = spawnflags;
+        ent.state.origin = Vec3f::new(1.0, 2.0, 3.0);
+        finish_target_help(&mut world, help, &HashMap::new());
+        (world, help, gi)
+    }
+
+    #[test]
+    fn target_help_with_spawnflag_1_sets_the_first_help_message() {
+        let (mut world, help, _) = help_world(false, "find the key", 1);
+        let use_fn = world.entities.get(help).unwrap().use_fn.unwrap();
+        use_fn(&mut world, help, help, help);
+        assert_eq!(world.game.helpmessage1, "find the key");
+        assert_eq!(world.game.helpmessage2, "");
+        assert_eq!(world.game.helpchanged, 1);
+    }
+
+    #[test]
+    fn target_help_without_spawnflag_1_sets_the_second_help_message() {
+        let (mut world, help, _) = help_world(false, "open the door", 0);
+        let use_fn = world.entities.get(help).unwrap().use_fn.unwrap();
+        use_fn(&mut world, help, help, help);
+        use_fn(&mut world, help, help, help);
+        assert_eq!(world.game.helpmessage1, "");
+        assert_eq!(world.game.helpmessage2, "open the door");
+        assert_eq!(world.game.helpchanged, 2);
+    }
+
+    #[test]
+    fn target_help_without_a_message_is_freed_with_a_warning() {
+        let (world, help, gi) = help_world(false, "", 0);
+        assert!(!world.entities.is_live(help));
+        assert_eq!(
+            *gi.dprints.borrow(),
+            ["target_help with no message at (1 2 3)\n"]
+        );
+    }
+
+    #[test]
+    fn target_help_is_freed_silently_in_deathmatch() {
+        // C checks deathmatch before the message, so no warning either way.
+        for message in ["objective", ""] {
+            let (world, help, gi) = help_world(true, message, 0);
+            assert!(!world.entities.is_live(help), "{message:?}");
+            assert!(gi.dprints.borrow().is_empty(), "{message:?}");
+        }
     }
 
     #[test]
