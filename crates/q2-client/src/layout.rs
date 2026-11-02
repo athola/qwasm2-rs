@@ -4,7 +4,8 @@
 
 use q2_common::cmd::com_parse;
 use q2_shared::constants::{
-    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
+    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, MAX_QPATH, STAT_AMMO, STAT_ARMOR, STAT_FLASHES,
+    STAT_HEALTH,
 };
 
 /// One 2D draw the renderer performs, in screen pixels.
@@ -145,12 +146,24 @@ fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, tex
     }
 }
 
-/// A player's name and icon from its `name\\model/skin` configstring,
-/// the base `male/grunt` icon without a skin. C ref: `CL_LoadClientinfo`
-/// (cl_parse.c), without its check that the icon file exists.
+/// A player's name and icon from its `name\model/skin` configstring (the
+/// model and skin split on `/`, else `\`), cut first at `MAX_QPATH - 1`
+/// chars, with the base `male/grunt` icon when the model or skin is
+/// empty.
+///
+/// C ref: `CL_LoadClientinfo` (client/cl_parse.c). Not ported, as each
+/// needs to know which files exist: a model that does not load becomes
+/// `male`; a skin missing for a model other than `male` switches to
+/// `male`; and when the icon, skin, model or weapon model is missing,
+/// `SCR_ExecuteLayoutString` draws `cl.baseclientinfo`'s grunt icon.
 fn client_info(s: &str) -> (String, String) {
+    let end = s
+        .char_indices()
+        .nth(MAX_QPATH - 1)
+        .map_or(s.len(), |(i, _)| i);
+    let s = &s[..end];
     let (name, skin) = s.split_once('\\').unwrap_or((s, ""));
-    let icon = match skin.split_once('/') {
+    let icon = match skin.split_once('/').or_else(|| skin.split_once('\\')) {
         Some((model, skin)) if !model.is_empty() && !skin.is_empty() => {
             format!("/players/{model}/{skin}_i.pcx")
         }
@@ -383,6 +396,23 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn a_backslash_also_separates_the_model_from_the_skin() {
+        // C CL_LoadClientinfo tries "/" and then "\\".
+        let (name, icon) = client_info("Bob\\female\\athena");
+        assert_eq!(name, "Bob");
+        assert_eq!(icon, "/players/female/athena_i.pcx");
+    }
+
+    #[test]
+    fn a_player_configstring_is_cut_at_max_qpath_minus_one_chars() {
+        // C copies it into `ci->cinfo[MAX_QPATH]` before splitting it, so
+        // a long name loses its own tail and the model and skin.
+        let (name, icon) = client_info(&format!("{}\\female/athena", "\u{e1}".repeat(70)));
+        assert_eq!(name, "\u{e1}".repeat(63));
+        assert_eq!(icon, "/players/male/grunt_i.pcx");
     }
 
     #[test]
