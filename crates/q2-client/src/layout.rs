@@ -2,9 +2,10 @@
 //! are small programs over the player's stats. C ref:
 //! `SCR_ExecuteLayoutString` (client/cl_screen.c), at HUD scale 1.
 
-use q2_common::cmd::is_separator;
+use q2_common::cmd::com_parse;
 use q2_shared::constants::{
-    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, STAT_AMMO, STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
+    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, MAX_QPATH, STAT_AMMO, STAT_ARMOR, STAT_FLASHES,
+    STAT_HEALTH,
 };
 
 /// One 2D draw the renderer performs, in screen pixels.
@@ -59,31 +60,17 @@ const SB_NUMS: [[&str; 11]; 2] = [
 const CHAR_WIDTH: i32 = 16;
 const STAT_MINUS: usize = 10;
 
-/// C COM_Parse over a whole program: tokens split on `is_separator`, `"`
-/// quoted strings, `//` comments. Unlike `cmd::tokenize` (Cmd_TokenizeString)
-/// it has no 80-token limit, as server layouts can be longer.
+/// C COM_Parse over a whole program. Unlike `cmd::tokenize`
+/// (Cmd_TokenizeString) it crosses newlines and has no 80-token limit, as
+/// server layouts can be longer.
 fn tokens(program: &str) -> Vec<&str> {
-    let mut out = Vec::new();
     let mut rest = program;
-    loop {
-        rest = rest.trim_start_matches(is_separator);
-        if rest.is_empty() {
-            return out;
-        }
-        if let Some(comment) = rest.strip_prefix("//") {
-            rest = comment.split_once('\n').map_or("", |(_, r)| r);
-            continue;
-        }
-        if let Some(quoted) = rest.strip_prefix('"') {
-            let (token, r) = quoted.split_once('"').unwrap_or((quoted, ""));
-            out.push(token);
-            rest = r;
-            continue;
-        }
-        let end = rest.find(is_separator).unwrap_or(rest.len());
-        out.push(&rest[..end]);
-        rest = &rest[end..];
-    }
+    std::iter::from_fn(|| {
+        let (token, after) = com_parse(rest)?;
+        rest = after;
+        Some(token)
+    })
+    .collect()
 }
 
 /// C strtol(token, NULL, 10): leading sign and digits, 0 when none.
@@ -159,12 +146,24 @@ fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, tex
     }
 }
 
-/// A player's name and icon from its `name\\model/skin` configstring,
-/// the base `male/grunt` icon without a skin. C ref: `CL_LoadClientinfo`
-/// (cl_parse.c), without its check that the icon file exists.
+/// A player's name and icon from its `name\model/skin` configstring (the
+/// model and skin split on `/`, else `\`), cut first at `MAX_QPATH - 1`
+/// chars, with the base `male/grunt` icon when the model or skin is
+/// empty.
+///
+/// C ref: `CL_LoadClientinfo` (client/cl_parse.c). Not ported, as each
+/// needs to know which files exist: a model that does not load becomes
+/// `male`; a skin missing for a model other than `male` switches to
+/// `male`; and when the icon, skin, model or weapon model is missing,
+/// `SCR_ExecuteLayoutString` draws `cl.baseclientinfo`'s grunt icon.
 fn client_info(s: &str) -> (String, String) {
+    let end = s
+        .char_indices()
+        .nth(MAX_QPATH - 1)
+        .map_or(s.len(), |(i, _)| i);
+    let s = &s[..end];
     let (name, skin) = s.split_once('\\').unwrap_or((s, ""));
-    let icon = match skin.split_once('/') {
+    let icon = match skin.split_once('/').or_else(|| skin.split_once('\\')) {
         Some((model, skin)) if !model.is_empty() && !skin.is_empty() => {
             format!("/players/{model}/{skin}_i.pcx")
         }
@@ -284,8 +283,8 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             }
             // A deathmatch scoreboard entry; "ctf" is not ported.
             "client" => {
-                let bx = input.width / 2 - 160 + strtol(arg(&mut toks));
-                let by = input.height / 2 - 120 + strtol(arg(&mut toks));
+                x = input.width / 2 - 160 + strtol(arg(&mut toks));
+                y = input.height / 2 - 120 + strtol(arg(&mut toks));
                 let value = strtol(arg(&mut toks));
                 let (score, ping, time) = (
                     strtol(arg(&mut toks)),
@@ -297,16 +296,12 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                     continue;
                 };
                 let (name, icon) = client_info((input.configstrings)(CS_PLAYERSKINS + index));
-                draw_string(&mut out, bx + 32, by, &name, 0x80);
-                draw_string(&mut out, bx + 32, by + 8, "Score: ", 0x80);
-                draw_string(&mut out, bx + 32 + 7 * 8, by + 8, &score.to_string(), 0x80);
-                draw_string(&mut out, bx + 32, by + 16, &format!("Ping:  {ping}"), 0);
-                draw_string(&mut out, bx + 32, by + 24, &format!("Time:  {time}"), 0);
-                out.push(HudDraw::Pic {
-                    x: bx,
-                    y: by,
-                    name: icon,
-                });
+                draw_string(&mut out, x + 32, y, &name, 0x80);
+                draw_string(&mut out, x + 32, y + 8, "Score: ", 0x80);
+                draw_string(&mut out, x + 32 + 7 * 8, y + 8, &score.to_string(), 0x80);
+                draw_string(&mut out, x + 32, y + 16, &format!("Ping:  {ping}"), 0);
+                draw_string(&mut out, x + 32, y + 24, &format!("Time:  {time}"), 0);
+                out.push(HudDraw::Pic { x, y, name: icon });
             }
             _ => {}
         }
@@ -383,6 +378,41 @@ mod tests {
         assert!(alt(y + 8).iter().all(|&a| a), "Score: row");
         assert!(alt(y + 16).iter().all(|&a| !a));
         assert!(alt(y + 24).iter().all(|&a| !a));
+    }
+
+    #[test]
+    fn a_client_block_moves_the_origin_for_the_draws_after_it() {
+        // C SCR_ExecuteLayoutString assigns the running x and y.
+        let draws = run("client 10 32 1 7 50 3 string hi", &[0; 32], &[]);
+        let (x, y) = (W / 2 - 160 + 10, H / 2 - 120 + 32);
+        assert_eq!(
+            draws[draws.len() - 2..],
+            [
+                HudDraw::Char { x, y, ch: b'h' },
+                HudDraw::Char {
+                    x: x + 8,
+                    y,
+                    ch: b'i'
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_backslash_also_separates_the_model_from_the_skin() {
+        // C CL_LoadClientinfo tries "/" and then "\\".
+        let (name, icon) = client_info("Bob\\female\\athena");
+        assert_eq!(name, "Bob");
+        assert_eq!(icon, "/players/female/athena_i.pcx");
+    }
+
+    #[test]
+    fn a_player_configstring_is_cut_at_max_qpath_minus_one_chars() {
+        // C copies it into `ci->cinfo[MAX_QPATH]` before splitting it, so
+        // a long name loses its own tail and the model and skin.
+        let (name, icon) = client_info(&format!("{}\\female/athena", "\u{e1}".repeat(70)));
+        assert_eq!(name, "\u{e1}".repeat(63));
+        assert_eq!(icon, "/players/male/grunt_i.pcx");
     }
 
     #[test]
@@ -525,6 +555,17 @@ mod tests {
         assert_eq!(tokens("a\u{a0}b\u{ff}c"), ["a", "b", "c"]);
         assert_eq!(tokens("\u{80}\"\u{e1}\"\u{80}"), ["\u{e1}"]);
         assert_eq!(tokens("a\u{2003}b"), ["a\u{2003}b"]);
+    }
+
+    #[test]
+    fn a_token_reaching_max_token_chars_is_blanked_like_com_parse() {
+        // C COM_Parse: `if (len == MAX_TOKEN_CHARS) len = 0;`.
+        let long = "a".repeat(1024);
+        assert!(run(&format!("string {long}"), &[0; 32], &[]).is_empty());
+        assert_eq!(
+            run(&format!("string {}", &long[1..]), &[0; 32], &[]).len(),
+            1023
+        );
     }
 
     #[test]

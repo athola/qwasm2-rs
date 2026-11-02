@@ -242,7 +242,7 @@ fn shell_effects(effects: u32, renderfx: i32) -> (bool, i32) {
 /// directory (C cvar `game`) is `rogue`: half damage gives
 /// way to any other shell, and double damage turns red purple and blue
 /// cyan, or green if green is on too.
-pub fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
+fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
     let mut renderfx = renderfx;
     if !rogue {
         return renderfx;
