@@ -140,6 +140,11 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
+- **Client state during connect and begin.** The server import learns
+  the client slots' states after `ClientConnect` and `ClientBegin`, not
+  before `ClientBegin` as C sets `cs_spawned`, so an unreliable
+  multicast from `ClientBegin` is dropped. Only `maxclients > 1` sends
+  one (the login flash), and the browser runs one client.
 - **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
   2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
   drawn) and heat beams; `aimfix`, `g_swap_speed` and
