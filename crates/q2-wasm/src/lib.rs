@@ -457,12 +457,14 @@ impl Engine {
         // the movement command is capped.
         self.local.frame(elapsed_us);
         let mut sounds = self.local.take_sounds();
-        let messages = self.local.take_messages();
         if let Some(level) = self.local.take_map_change() {
             if let Err(e) = self.change_map(&level, &mut sounds) {
                 console::error_1(&q2err_to_js(e));
             }
         }
+        // Taken after the map change, which drops the old level's messages
+        // (C CL_ClearState): none run against the new level's frame.
+        let messages = self.local.take_messages();
         self.frames.advance(elapsed_us);
         let new_frame = self.sync_frame();
         let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
@@ -785,7 +787,8 @@ fn render_entities(
         .collect()
 }
 
-/// C `S_StartLocalSound("misc/talk.wav")` for a chat line.
+/// C `S_StartLocalSound("misc/talk.wav")` for a chat line: attenuation 1
+/// on the local player, whom the mixer plays at full volume.
 #[cfg(any(target_arch = "wasm32", test))]
 fn talk_sound() -> q2_client::sound::NamedSound {
     q2_client::sound::NamedSound {
@@ -793,7 +796,7 @@ fn talk_sound() -> q2_client::sound::NamedSound {
         entnum: q2_server::local::LOCAL_PLAYER as i32,
         entchannel: 0,
         volume: 1.0,
-        attenuation: 0.0,
+        attenuation: 1.0,
         timeofs: 0.0,
         origin: None,
     }
@@ -1093,18 +1096,24 @@ fn query_value<'a>(search: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// The map to start on: `?map=` (`demo3` or `maps/demo3.bsp`) when the pak
-/// has it, else demo1, else the first map.
+/// has it, else demo1, else the first map. The flag is false when a
+/// requested map was not found and the fallback is used.
 #[cfg(any(target_arch = "wasm32", test))]
-fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<&'a str> {
+fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<(&'a str, bool)> {
     let wanted = requested.map(|name| {
         let name = name.strip_prefix("maps/").unwrap_or(name);
         format!("maps/{}.bsp", name.strip_suffix(".bsp").unwrap_or(name))
     });
-    wanted
+    if let Some(found) = wanted
+        .as_ref()
         .and_then(|wanted| maps.iter().find(|&&m| m == wanted))
-        .or_else(|| maps.iter().find(|&&m| m == "maps/demo1.bsp"))
+    {
+        return Some((found, true));
+    }
+    maps.iter()
+        .find(|&&m| m == "maps/demo1.bsp")
         .or_else(|| maps.first())
-        .copied()
+        .map(|&fallback| (fallback, wanted.is_none()))
 }
 
 /// C cvar `hand` (0 right, 1 left, 2 centre) from `?hand=`; 0 when unset
@@ -1173,7 +1182,11 @@ fn legend_key_pressed(last_keys: &[bool; 256], keys: &[bool; 256]) -> bool {
     keys[K_F4 as usize] && !last_keys[K_F4 as usize]
 }
 
-/// A key's name as C's `Key_KeynumToString` gives it.
+/// A key's name for the legend. Named keys are spelled as C's
+/// `Key_KeynumToString` spells them; a printable key is shown as its
+/// character upper-cased (`W`, `'`), where C gives the character as is
+/// (`w`) and names `'`, `;` and `"` (`QUOTE`, `SEMICOLON`,
+/// `DOUBLEQUOTE`).
 #[cfg(any(target_arch = "wasm32", test))]
 fn key_name(key: u8) -> String {
     use q2_platform::keymap::*;
@@ -1578,10 +1591,10 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
         .and_then(|w| w.location().search().ok())
         .unwrap_or_default();
     let requested = query_value(&search, "map");
-    let Some(map_name) = start_map(requested, &map_list) else {
+    let Some((map_name, found)) = start_map(requested, &map_list) else {
         return Err(JsValue::from_str("No maps found in pak0.pak"));
     };
-    if let Some(requested) = requested.filter(|r| !map_name.contains(*r)) {
+    if let (Some(requested), false) = (requested, found) {
         log(&format!("?map={requested} is not in the pak"));
     }
 
@@ -2073,15 +2086,36 @@ mod tests {
     #[test]
     fn the_first_map_is_the_requested_one_else_demo1_else_the_first() {
         let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
-        assert_eq!(start_map(Some("demo3"), &maps), Some("maps/demo3.bsp"));
+        assert_eq!(
+            start_map(Some("demo3"), &maps),
+            Some(("maps/demo3.bsp", true))
+        );
         assert_eq!(
             start_map(Some("maps/demo3.bsp"), &maps),
-            Some("maps/demo3.bsp")
+            Some(("maps/demo3.bsp", true))
         );
-        assert_eq!(start_map(Some("base1"), &maps), Some("maps/demo1.bsp"));
-        assert_eq!(start_map(None, &maps), Some("maps/demo1.bsp"));
-        assert_eq!(start_map(None, &["maps/q2dm1.bsp"]), Some("maps/q2dm1.bsp"));
+        assert_eq!(
+            start_map(Some("base1"), &maps),
+            Some(("maps/demo1.bsp", false))
+        );
+        assert_eq!(start_map(None, &maps), Some(("maps/demo1.bsp", true)));
+        assert_eq!(
+            start_map(None, &["maps/q2dm1.bsp"]),
+            Some(("maps/q2dm1.bsp", true))
+        );
         assert_eq!(start_map(Some("demo3"), &[]), None);
+    }
+
+    #[test]
+    fn a_request_that_is_part_of_the_fallback_name_is_still_a_miss() {
+        let maps = ["maps/demo1.bsp", "maps/demo3.bsp"];
+        for requested in ["demo", "1", "dem"] {
+            assert_eq!(
+                start_map(Some(requested), &maps),
+                Some(("maps/demo1.bsp", false)),
+                "{requested}"
+            );
+        }
     }
 
     #[test]
@@ -2406,7 +2440,7 @@ mod tests {
     }
 
     #[test]
-    fn the_key_legend_lists_every_bound_key_with_c_menu_names() {
+    fn the_key_legend_lists_every_bound_key_under_its_c_menu_label() {
         let legend = key_legend();
         let row = |label: &str| {
             legend
@@ -2415,7 +2449,8 @@ mod tests {
                 .map(|(_, keys)| keys.clone())
                 .unwrap_or_else(|| panic!("no {label} row"))
         };
-        // C menu.c bindnames, with this port's keys.
+        // The labels are C menu.c bindnames; the key names are key_name's,
+        // which upper-cases printable keys.
         assert_eq!(row("attack"), "CTRL, MOUSE1");
         assert_eq!(row("walk forward"), "W, UPARROW");
         assert_eq!(row("up / jump"), "SPACE");
@@ -2508,11 +2543,14 @@ mod tests {
     }
 
     #[test]
-    fn chat_is_greeted_with_the_talk_sound_heard_everywhere() {
+    fn chat_is_greeted_with_the_talk_sound_on_the_local_player() {
+        // C S_StartLocalSound: `S_StartSound(NULL, cl.playernum + 1, 0, sfx,
+        // 1, 1, 0)`, attenuation 1 on the listener's own entity, which
+        // S_Spatialize plays at full volume.
         let talk = talk_sound();
         assert_eq!(
-            (talk.name.as_str(), talk.attenuation),
-            ("misc/talk.wav", 0.0)
+            (talk.name.as_str(), talk.entnum, talk.attenuation),
+            ("misc/talk.wav", q2_server::local::LOCAL_PLAYER as i32, 1.0)
         );
     }
 

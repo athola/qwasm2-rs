@@ -39,6 +39,8 @@ pub(crate) mod test_support {
         /// `client_think` calls, shared so a test can read it after
         /// boxing the game.
         pub(crate) thinks: std::rc::Rc<std::cell::Cell<u32>>,
+        /// `client_command` calls, shared like `thinks`.
+        pub(crate) commands: std::rc::Rc<std::cell::Cell<u32>>,
     }
 
     impl GameExport for NullGame {
@@ -56,7 +58,9 @@ pub(crate) mod test_support {
             self.begun.push(number);
         }
         fn client_disconnect(&mut self, _: usize) {}
-        fn client_command(&mut self, _: usize) {}
+        fn client_command(&mut self, _: usize) {
+            self.commands.set(self.commands.get() + 1);
+        }
         fn client_think(&mut self, _: usize, _: &UserCmd) {
             self.thinks.set(self.thinks.get() + 1);
         }

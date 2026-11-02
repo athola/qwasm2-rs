@@ -516,10 +516,14 @@ impl Default for ServerGameImport {
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
-    /// C SV_BroadcastPrintf: every client gets an `svc_print`.
+    /// C SV_BroadcastPrintf: every `cs_spawned` client gets an
+    /// `svc_print`; a connecting client (or a free slot) gets nothing.
     fn bprintf(&self, printlevel: i32, msg: &str) {
         tracing::info!("[bprintf] {}", msg.trim_end());
-        self.queue_print(printlevel, msg);
+        let spawned = self.inner.borrow().clients.contains(&ClientState::Spawned);
+        if spawned {
+            self.queue_print(printlevel, msg);
+        }
     }
 
     fn dprintf(&self, msg: &str) {
@@ -1072,6 +1076,17 @@ mod tests {
         gi.write_byte(5);
         gi.unicast(2, false);
         assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn bprintf_reaches_no_client_that_is_not_spawned() {
+        // C SV_BroadcastPrintf skips every client not `cs_spawned`.
+        for state in [ClientState::Free, ClientState::Connected] {
+            let gi = ServerGameImport::new();
+            gi.set_client_states([state]);
+            gi.bprintf(2, "Ann died.\n");
+            assert!(gi.take_messages().is_empty(), "{state:?}");
+        }
     }
 
     #[test]

@@ -305,17 +305,17 @@ mod tests {
 
     #[test]
     fn map_gives_the_import_the_client_slots_before_the_game_runs() {
-        use q2_game::traits::GameImport;
-        let gi = ServerGameImport::new();
+        // C PF_centerprintf: entities 1..=maxclients are clients. The game
+        // prints while it spawns, so the slots must be set by then.
+        let gi = std::rc::Rc::new(ServerGameImport::new());
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
         svs.init_game(2);
-        sv.map(&mut svs, "base1", &[], "", &gi, &mut NullGame::default())
-            .unwrap();
-        gi.take_messages();
-        // C PF_centerprintf: entities 1..=maxclients are clients.
-        gi.centerprintf(Some(2), "slot 2");
-        gi.centerprintf(Some(3), "not a client");
+        let mut game = SpawnHookGame(gi.clone(), |gi| {
+            gi.centerprintf(Some(2), "slot 2");
+            gi.centerprintf(Some(3), "not a client");
+        });
+        sv.map(&mut svs, "base1", &[], "", &gi, &mut game).unwrap();
         assert_eq!(gi.take_messages().len(), 1);
     }
 
@@ -357,14 +357,14 @@ mod tests {
         assert_eq!(sv.configstrings[CS_AIRACCEL], "0");
     }
 
-    /// A game that overwrites the map checksum while it spawns entities.
-    struct ClobberGame(std::rc::Rc<ServerGameImport>);
+    /// A game that runs its hook on the import while it spawns entities.
+    struct SpawnHookGame(std::rc::Rc<ServerGameImport>, fn(&ServerGameImport));
 
-    impl GameExport for ClobberGame {
+    impl GameExport for SpawnHookGame {
         fn init(&mut self) {}
         fn shutdown(&mut self) {}
         fn spawn_entities(&mut self, _: &str, _: &str, _: &str) {
-            self.0.configstring(CS_MAPCHECKSUM as i32, "12345");
+            (self.1)(&self.0);
         }
         fn client_connect(&mut self, _: usize, _: &str) -> bool {
             true
@@ -393,7 +393,10 @@ mod tests {
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
         svs.init_game(1);
-        let result = sv.map(&mut svs, "a", &[], "", &gi, &mut ClobberGame(gi.clone()));
+        let mut game = SpawnHookGame(gi.clone(), |gi| {
+            gi.configstring(CS_MAPCHECKSUM as i32, "12345");
+        });
+        let result = sv.map(&mut svs, "a", &[], "", &gi, &mut game);
         assert!(
             matches!(result, Err(q2_common::error::Q2Error::Drop(ref m)) if m.contains("corrupted")),
             "{result:?}"
