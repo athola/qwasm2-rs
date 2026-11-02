@@ -177,8 +177,11 @@ pub fn entity_views(
                 alpha,
             };
             // C skips the viewer before adding its entities; its own model is
-            // kept here, flagged, for the renderer to leave out.
+            // kept here, flagged, for the renderer to leave out. Like the
+            // linked models, the shell carries no effects: C adds the
+            // entity's power screen and trails once.
             let shell = (shelled && !viewer).then(|| EntityView {
+                effects: 0,
                 flags: shell_combinations(renderfx, game == "rogue") | RF_TRANSLUCENT,
                 alpha: 0.30,
                 ..view.clone()
@@ -448,6 +451,19 @@ mod tests {
             (views[1].modelindex, views[1].frame),
             (views[0].modelindex, views[0].frame)
         );
+    }
+
+    #[test]
+    fn a_shelled_power_screen_entity_has_one_power_screen() {
+        let mut s = state(4, Vec3f::ZERO, 0);
+        s.effects = EF_QUAD | EF_POWERSCREEN;
+        let views = entity_views("baseq2", &[s], &[], 1.0, 0, 0);
+        assert_eq!(views.len(), 2);
+        let screens = views
+            .iter()
+            .filter(|v| v.effects & EF_POWERSCREEN != 0)
+            .count();
+        assert_eq!(screens, 1);
     }
 
     #[test]
