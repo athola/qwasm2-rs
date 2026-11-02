@@ -1877,6 +1877,10 @@ pub const DROPPED_ITEM: i32 = 0x0001_0000;
 /// Set on an item a player dropped (C `DROPPED_PLAYER_ITEM`).
 pub const DROPPED_PLAYER_ITEM: i32 = 0x0002_0000;
 const ITEM_TARGETS_USED: i32 = 0x0004_0000;
+/// dmflags that keep items out of a deathmatch map (C shared.h).
+const DF_NO_HEALTH: i32 = 0x0000_0001;
+const DF_NO_ITEMS: i32 = 0x0000_0002;
+const DF_NO_ARMOR: i32 = 0x0000_0800;
 /// C `EV_ITEM_RESPAWN` (shared.h `entity_event_t`).
 const EV_ITEM_RESPAWN: i32 = 1;
 
@@ -1894,7 +1898,9 @@ pub fn health_spawn(classname: &str) -> Option<(&'static str, i32)> {
 
 impl GameWorld {
     /// Make `key` a world item that drops to the floor once the other
-    /// solids are in. C ref: `SpawnItem`.
+    /// solids are in, unless deathmatch dmflags rule it out. C ref:
+    /// `SpawnItem`; the coop power cube numbering (`level.power_cubes`)
+    /// is not ported.
     pub fn spawn_item(&mut self, key: EntityKey, item: usize) {
         self.precache_item(item);
         let flags = self.items.get(item).map_or(0, |it| it.world_model_flags);
@@ -1912,11 +1918,50 @@ impl GameWorld {
             tracing::debug!(classname = %ent.game.classname, "item has invalid spawnflags set");
             ent.game.spawnflags = 0;
         }
+        if self.game.deathmatch && self.dmflags_remove(key, item) {
+            self.free_entity(key);
+            return;
+        }
+        // Don't let them drop items that stay in a coop game. C clears
+        // the shared `item->drop`; `self.items` is this game's copy.
+        let coop = self.game.coop;
+        if let Some(def) = self.items.get_mut(item) {
+            if coop && def.flags.contains(ItemFlags::STAY_COOP) {
+                def.drop_fn = None;
+            }
+        }
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
         ent.game.item = Some(item);
         ent.game.nextthink = time + 2.0 * FRAMETIME; // items start after other solids
         ent.think = Some(droptofloor);
         ent.state.effects = flags;
         ent.state.renderfx = q2_shared::constants::RF_GLOW;
+    }
+}
+
+impl GameWorld {
+    /// Whether dmflags keep this item out of a deathmatch map: armor
+    /// (`DF_NO_ARMOR`), powerups (`DF_NO_ITEMS`), health (`DF_NO_HEALTH`),
+    /// and plain ammo and the BFG (`DF_INFINITE_AMMO`). C ref: `SpawnItem`.
+    fn dmflags_remove(&self, key: EntityKey, item: usize) -> bool {
+        let dmflags = self.game.dmflags;
+        let Some(def) = self.items.get(item) else {
+            return false;
+        };
+        let handler = |f: PickupFn| def.pickup.is_some_and(|p| std::ptr::fn_addr_eq(p, f));
+        let bfg = self
+            .entities
+            .get(key)
+            .is_some_and(|e| e.game.classname == "weapon_bfg");
+        (dmflags & DF_NO_ARMOR != 0 && (handler(pickup_armor) || handler(pickup_power_armor)))
+            || (dmflags & DF_NO_ITEMS != 0 && handler(pickup_powerup))
+            || (dmflags & DF_NO_HEALTH != 0
+                && (handler(pickup_health)
+                    || handler(pickup_adrenaline)
+                    || handler(pickup_ancient_head)))
+            || (dmflags & DF_INFINITE_AMMO != 0 && (def.flags == ItemFlags::AMMO || bfg))
     }
 }
 
@@ -3093,6 +3138,53 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         world
+    }
+
+    #[test]
+    fn deathmatch_dmflags_remove_their_items_at_spawn() {
+        for (dmflags, removed, kept) in [
+            (
+                DF_NO_ARMOR,
+                &["item_armor_jacket", "item_power_screen"][..],
+                "item_quad",
+            ),
+            (DF_NO_ITEMS, &["item_quad"][..], "item_armor_jacket"),
+            (
+                DF_NO_HEALTH,
+                &["item_health", "item_adrenaline", "item_ancient_head"][..],
+                "item_quad",
+            ),
+            // C compares flags == IT_AMMO, so hand grenades stay.
+            (
+                DF_INFINITE_AMMO,
+                &["ammo_shells", "weapon_bfg"][..],
+                "ammo_grenades",
+            ),
+        ] {
+            let mut world = armor_world();
+            world.game.deathmatch = true;
+            world.game.dmflags = dmflags;
+            for &classname in removed {
+                let key = item_entity(&mut world, classname, 0);
+                assert!(!world.entities.get(key).unwrap().in_use, "{classname}");
+            }
+            let key = item_entity(&mut world, kept, 0);
+            assert!(world.entities.get(key).unwrap().in_use, "{kept}");
+        }
+        let mut world = armor_world();
+        world.game.dmflags = DF_NO_ARMOR;
+        let key = item_entity(&mut world, "item_armor_jacket", 0);
+        assert!(world.entities.get(key).unwrap().in_use, "single player");
+    }
+
+    #[test]
+    fn coop_stay_items_cannot_be_dropped_once_one_spawns() {
+        let mut world = armor_world();
+        world.game.coop = true;
+        let shotgun = world.find_item("weapon_shotgun").unwrap();
+        assert!(world.items[shotgun].drop_fn.is_some());
+        item_entity(&mut world, "weapon_shotgun", 0);
+        assert!(world.items[shotgun].drop_fn.is_none());
     }
 
     #[test]
