@@ -1,0 +1,803 @@
+//! Particles, beams and sprites (C `GL3_DrawParticles`, `GL3_DrawBeam`,
+//! `GL3_DrawSpriteModel` in gl3_main.c). Vertex building is GL-free so it
+//! can be unit tested; the draws upload it to small stream buffers.
+
+use glow::HasContext;
+use q2_render_api::{Particle, RefDef, RenderEntity};
+use q2_shared::constants::RF_TRANSLUCENT;
+use q2_shared::types::Vec3f;
+
+use super::alias::angle_vectors;
+use super::draw::{
+    create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, Attribute, StreamBuffer,
+};
+use super::images::{ImageKind, ImageStore};
+use super::shader::{bind_samplers, link_program};
+use super::texture::FileLoader;
+use crate::files::{palette::Palette, sp2::load_sp2};
+
+/// Floats per particle vertex: position(3), point size, distance to the
+/// eye, colour(4) (C `part_vtx`).
+pub const PARTICLE_FLOATS: usize = 9;
+/// Floats per beam or sprite vertex: position(3), uv(2).
+pub const FX_FLOATS: usize = 5;
+const PARTICLE_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 1, 3), (2, 1, 4), (3, 4, 5)];
+const FX_ATTRIBUTES: [Attribute; 2] = [(0, 3, 0), (1, 2, 3)];
+/// C `gl3_particle_size` at a 480 pixel tall view.
+const PARTICLE_SIZE: f32 = 40.0;
+/// C `NUM_BEAM_SEGS`: sides of a beam's tube.
+const NUM_BEAM_SEGS: usize = 6;
+/// C `gl3_intensity` default, applied to sprites as fragmentSrc3Dsprite does.
+const SPRITE_INTENSITY: f32 = 1.5;
+/// Beams leave intensity out (C fragmentSrc3Dcolor).
+const BEAM_INTENSITY: f32 = 1.0;
+
+/// Particle vertices for one draw: each at its origin, sized for a view
+/// `height` pixels tall, with its distance from the eye and its palette
+/// colour. C ref: `GL3_DrawParticles`.
+pub fn particle_vertices(
+    particles: &[Particle],
+    vieworg: Vec3f,
+    height: i32,
+    palette: &Palette,
+) -> Vec<f32> {
+    let size = PARTICLE_SIZE * height as f32 / 480.0;
+    let mut out = Vec::with_capacity(particles.len() * PARTICLE_FLOATS);
+    for p in particles {
+        let [r, g, b] = palette.0[(p.color & 0xff) as usize];
+        out.extend_from_slice(&p.origin.to_array());
+        out.push(size);
+        out.push((vieworg - p.origin).length());
+        out.extend_from_slice(&[
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
+            p.alpha,
+        ]);
+    }
+    out
+}
+
+/// A unit vector at right angles to `src` (C `PerpendicularVector`).
+fn perpendicular(src: Vec3f) -> Vec3f {
+    let arr = src.to_array();
+    let mut pos = 0;
+    let mut min = 1.0;
+    for (i, &c) in arr.iter().enumerate() {
+        if c.abs() < min {
+            pos = i;
+            min = c.abs();
+        }
+    }
+    let mut axis = [0.0; 3];
+    axis[pos] = 1.0;
+    let axis = Vec3f::from_array(axis);
+    // Project the axis onto the plane through the origin normal to `src`.
+    let inv = 1.0 / src.dot(src);
+    (axis - src * (src.dot(axis) * inv)).normalize_or_zero()
+}
+
+/// `point` turned `degrees` about the unit `dir` (C
+/// `RotatePointAroundVector`).
+fn rotate_around(dir: Vec3f, point: Vec3f, degrees: f32) -> Vec3f {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    point * cos + dir.cross(point) * sin + dir * dir.dot(point) * (1.0 - cos)
+}
+
+/// A beam's tube: `NUM_BEAM_SEGS` sides of width `frame` from `origin` to
+/// `oldorigin`, as one triangle strip; none for a beam of no length. C
+/// ref: `GL3_DrawBeam`.
+pub fn beam_vertices(e: &RenderEntity) -> Option<Vec<f32>> {
+    let direction = e.oldorigin - e.origin;
+    if direction.length() == 0.0 {
+        return None;
+    }
+    let normalized = direction.normalize();
+    let perp = perpendicular(normalized) * (e.frame / 2) as f32;
+    let starts: Vec<Vec3f> = (0..NUM_BEAM_SEGS)
+        .map(|i| {
+            rotate_around(normalized, perp, (360.0 / NUM_BEAM_SEGS as f32) * i as f32) + e.origin
+        })
+        .collect();
+    let mut out = Vec::with_capacity(NUM_BEAM_SEGS * 4 * FX_FLOATS);
+    for i in 0..NUM_BEAM_SEGS {
+        let next = (i + 1) % NUM_BEAM_SEGS;
+        for p in [
+            starts[i],
+            starts[i] + direction,
+            starts[next],
+            starts[next] + direction,
+        ] {
+            out.extend_from_slice(&p.to_array());
+            out.extend_from_slice(&[0.0, 0.0]);
+        }
+    }
+    Some(out)
+}
+
+/// A beam's colour: its `skinnum` palette entry at its alpha.
+pub fn beam_color(e: &RenderEntity, palette: &Palette) -> [f32; 4] {
+    let [r, g, b] = palette.0[(e.skinnum & 0xff) as usize];
+    [
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+        e.alpha,
+    ]
+}
+
+/// One sprite frame's size and the point it hangs from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteFrameSize {
+    pub width: i32,
+    pub height: i32,
+    pub origin_x: i32,
+    pub origin_y: i32,
+}
+
+/// One sprite frame and its image-store index; `None` when its image did
+/// not load, and the frame then draws as the notexture checker
+/// (C `GL3_DrawSpriteModel`'s `gl3_notexture` fallback).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpriteFrame {
+    pub size: SpriteFrameSize,
+    pub image: Option<usize>,
+}
+
+/// A registered `.sp2` (C `dsprite_t` with its `GL3_FindImage` frames).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpriteModel {
+    pub frames: Vec<SpriteFrame>,
+}
+
+/// Parse an `.sp2` and register its frame images (C `Mod_LoadSP2`); a bad
+/// file returns `None`.
+pub fn load_sprite_model(
+    gl: Option<&glow::Context>,
+    loader: &FileLoader,
+    palette: Option<&Palette>,
+    images: &mut ImageStore,
+    name: &str,
+) -> Option<SpriteModel> {
+    let bytes = loader(name)?;
+    let sprite = match load_sp2(&bytes) {
+        Ok(sprite) => sprite,
+        Err(error) => {
+            tracing::warn!("GL3: bad sprite {name}: {error:?}");
+            return None;
+        }
+    };
+    let frames = sprite
+        .frames
+        .iter()
+        .map(|frame| SpriteFrame {
+            size: SpriteFrameSize {
+                width: frame.width,
+                height: frame.height,
+                origin_x: frame.origin_x,
+                origin_y: frame.origin_y,
+            },
+            image: images.find(gl, loader, palette, &frame.name, ImageKind::Sprite),
+        })
+        .collect();
+    Some(SpriteModel { frames })
+}
+
+/// The sprite's quad facing the view (`right`, `up` are the view's), as a
+/// fan: bottom-left, top-left, top-right, bottom-right. C ref:
+/// `GL3_DrawSpriteModel`.
+pub fn sprite_vertices(
+    origin: Vec3f,
+    frame: &SpriteFrameSize,
+    right: Vec3f,
+    up: Vec3f,
+) -> [f32; 4 * FX_FLOATS] {
+    let (w, h, ox, oy) = (
+        frame.width as f32,
+        frame.height as f32,
+        frame.origin_x as f32,
+        frame.origin_y as f32,
+    );
+    let corners = [
+        (origin - up * oy - right * ox, [0.0, 1.0]),
+        (origin + up * (h - oy) - right * ox, [0.0, 0.0]),
+        (origin + up * (h - oy) + right * (w - ox), [1.0, 0.0]),
+        (origin - up * oy + right * (w - ox), [1.0, 1.0]),
+    ];
+    let mut out = [0.0; 4 * FX_FLOATS];
+    for (slot, (p, uv)) in out.chunks_exact_mut(FX_FLOATS).zip(corners) {
+        slot[..3].copy_from_slice(&p.to_array());
+        slot[3..].copy_from_slice(&uv);
+    }
+    out
+}
+
+/// C `e->frame %= psprite->numframes`, kept in range for negatives.
+pub fn sprite_frame(frame: i32, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    frame.rem_euclid(count as i32) as usize
+}
+
+// C `vertexSrcParticles` / `fragmentSrcParticles` (round, edge-faded
+// points; `gl3_particle_fade_factor` 1.2).
+pub const PARTICLE_VERTEX_SRC: &str = r#"#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in float a_size;
+layout(location = 2) in float a_dist;
+layout(location = 3) in vec4 a_color;
+uniform mat4 u_view_proj;
+out vec4 v_color;
+void main() {
+    v_color = a_color;
+    gl_Position = u_view_proj * vec4(a_position, 1.0);
+    gl_PointSize = a_size / (a_dist * 0.1);
+}
+"#;
+
+pub const PARTICLE_FRAGMENT_SRC: &str = r#"#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 o_color;
+uniform float u_gamma;
+void main() {
+    vec2 offset = 2.0 * (gl_PointCoord - vec2(0.5, 0.5));
+    float dist_squared = dot(offset, offset);
+    if (dist_squared > 1.0) {
+        discard;
+    }
+    o_color = vec4(pow(v_color.rgb, vec3(u_gamma)), v_color.a * min(1.0, 1.2 * (1.0 - dist_squared)));
+}
+"#;
+
+// Sprites (C `fragmentSrc3Dsprite`/`SpriteAlpha`, alpha-tested when
+// opaque) and beams (C `fragmentSrc3DcolorOnly`, over a white texel).
+pub const FX_VERTEX_SRC: &str = r#"#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec2 a_uv;
+uniform mat4 u_view_proj;
+out vec2 v_uv;
+void main() {
+    v_uv = a_uv;
+    gl_Position = u_view_proj * vec4(a_position, 1.0);
+}
+"#;
+
+pub const FX_FRAGMENT_SRC: &str = r#"#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D u_texture;
+uniform vec4 u_color;
+uniform int u_alpha_test;
+uniform float u_intensity;
+uniform float u_gamma;
+in vec2 v_uv;
+out vec4 o_color;
+void main() {
+    vec4 texel = texture(u_texture, v_uv) * u_color;
+    if (u_alpha_test != 0 && texel.a <= 0.666) {
+        discard;
+    }
+    texel.rgb *= u_intensity;
+    o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a);
+}
+"#;
+
+/// Programs and stream buffers for particles, beams and sprites.
+pub struct FxGpu {
+    particle_program: glow::Program,
+    particle_view_proj: Option<glow::UniformLocation>,
+    particle_stream: StreamBuffer,
+    fx_program: glow::Program,
+    fx_view_proj: Option<glow::UniformLocation>,
+    fx_color: Option<glow::UniformLocation>,
+    fx_alpha_test: Option<glow::UniformLocation>,
+    fx_intensity: Option<glow::UniformLocation>,
+    fx_stream: StreamBuffer,
+}
+
+impl FxGpu {
+    /// Every program, for `u_gamma`.
+    pub fn programs(&self) -> [glow::Program; 2] {
+        [self.particle_program, self.fx_program]
+    }
+}
+
+/// Every step is attempted; on failure the objects already made are freed
+/// and the first error is returned.
+pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
+    let particle_program = link_program(gl, PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC);
+    let fx_program = link_program(gl, FX_VERTEX_SRC, FX_FRAGMENT_SRC);
+    let particle_stream = create_stream_buffer(gl, PARTICLE_FLOATS, &PARTICLE_ATTRIBUTES);
+    let fx_stream = create_stream_buffer(gl, FX_FLOATS, &FX_ATTRIBUTES);
+    match (particle_program, fx_program, particle_stream, fx_stream) {
+        (Ok(particle_program), Ok(fx_program), Ok(particle_stream), Ok(fx_stream)) => {
+            bind_samplers(gl, fx_program, &["u_texture"]);
+            // SAFETY: both programs were linked on `gl` above; the lookups
+            // only read them.
+            let (particle_view_proj, fx_view_proj, fx_color, fx_alpha_test, fx_intensity) = unsafe {
+                (
+                    gl.get_uniform_location(particle_program, "u_view_proj"),
+                    gl.get_uniform_location(fx_program, "u_view_proj"),
+                    gl.get_uniform_location(fx_program, "u_color"),
+                    gl.get_uniform_location(fx_program, "u_alpha_test"),
+                    gl.get_uniform_location(fx_program, "u_intensity"),
+                )
+            };
+            Ok(FxGpu {
+                particle_program,
+                particle_view_proj,
+                particle_stream,
+                fx_program,
+                fx_view_proj,
+                fx_color,
+                fx_alpha_test,
+                fx_intensity,
+                fx_stream,
+            })
+        }
+        (particle_program, fx_program, particle_stream, fx_stream) => {
+            let mut first_error = None;
+            for program in [particle_program, fx_program] {
+                match program {
+                    // SAFETY: the program was linked on this `gl` above and
+                    // is dropped here, never stored.
+                    Ok(program) => unsafe { gl.delete_program(program) },
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            for stream in [particle_stream, fx_stream] {
+                match stream {
+                    Ok(stream) => free_stream_buffer(gl, stream),
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            Err(first_error.unwrap_or_default())
+        }
+    }
+}
+
+pub fn free_fx(gl: &glow::Context, fx: FxGpu) {
+    // SAFETY: both programs were created on this `gl` by `create_fx` and
+    // `fx` is consumed, so neither is used again.
+    unsafe {
+        gl.delete_program(fx.particle_program);
+        gl.delete_program(fx.fx_program);
+    }
+    free_stream_buffer(gl, fx.particle_stream);
+    free_stream_buffer(gl, fx.fx_stream);
+}
+
+/// Bind the beam and sprite program for `view_proj`, as the entity passes
+/// do before a beam or sprite.
+pub fn bind(gl: &glow::Context, fx: &FxGpu, view_proj: &[f32; 16]) {
+    // SAFETY: the program and its uniform were made on `gl` by `create_fx`.
+    unsafe {
+        gl.use_program(Some(fx.fx_program));
+        gl.uniform_matrix_4_f32_slice(fx.fx_view_proj.as_ref(), false, view_proj);
+        gl.active_texture(glow::TEXTURE0);
+    }
+}
+
+/// One `RF_BEAM` entity with the fx program bound, blended without
+/// writing depth. C ref: `GL3_DrawBeam`.
+pub fn draw_beam(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    white: glow::Texture,
+    palette: &Palette,
+    entity: &RenderEntity,
+) {
+    if let Some(vertices) = beam_vertices(entity) {
+        fx_draw(
+            gl,
+            fx,
+            &FxDraw {
+                vertices: &vertices,
+                mode: glow::TRIANGLE_STRIP,
+                texture: white,
+                style: beam_style(entity, palette),
+            },
+        );
+    }
+}
+
+/// One sprite facing the view (`right`, `up`) with the fx program bound,
+/// in the `translucent` entity pass or the opaque one (see
+/// `sprite_style`). C ref: `GL3_DrawSpriteModel`.
+pub fn draw_sprite(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    (images, notexture): (&ImageStore, glow::Texture),
+    sprite: &SpriteModel,
+    entity: &RenderEntity,
+    (right, up): (Vec3f, Vec3f),
+    translucent: bool,
+) {
+    let Some(frame) = sprite
+        .frames
+        .get(sprite_frame(entity.frame, sprite.frames.len()))
+    else {
+        return;
+    };
+    let texture = sprite_texture(frame, images, notexture);
+    fx_draw(
+        gl,
+        fx,
+        &FxDraw {
+            vertices: &sprite_vertices(entity.origin, &frame.size, right, up),
+            mode: glow::TRIANGLE_FAN,
+            texture,
+            style: sprite_style(entity, translucent),
+        },
+    );
+}
+
+/// The frame's texture, or `notexture` when its image did not load.
+/// C ref: `GL3_DrawSpriteModel` (`if (!skin) skin = gl3_notexture`).
+fn sprite_texture(
+    frame: &SpriteFrame,
+    images: &ImageStore,
+    notexture: glow::Texture,
+) -> glow::Texture {
+    frame
+        .image
+        .and_then(|i| images.get(i))
+        .and_then(|image| image.texture)
+        .unwrap_or(notexture)
+}
+
+/// How a beam is shaded: palette colour, blended, no intensity.
+/// C ref: `GL3_DrawBeam`, `fragmentSrc3Dcolor`.
+fn beam_style(entity: &RenderEntity, palette: &Palette) -> FxStyle {
+    FxStyle {
+        color: beam_color(entity, palette),
+        alpha_test: false,
+        blend: true,
+        depth_write: false,
+        intensity: BEAM_INTENSITY,
+    }
+}
+
+/// How a sprite is shaded: alpha tested at full alpha, blended otherwise,
+/// scaled by gl3_intensity. No sprite in the `translucent` pass writes
+/// depth, as C `GL3_DrawEntitiesOnList` masks depth for that whole pass.
+/// C ref: `GL3_DrawSpriteModel`, `fragmentSrc3Dsprite`,
+/// `fragmentSrc3DspriteAlpha`.
+fn sprite_style(entity: &RenderEntity, translucent: bool) -> FxStyle {
+    let alpha = if entity.flags & RF_TRANSLUCENT != 0 {
+        entity.alpha
+    } else {
+        1.0
+    };
+    FxStyle {
+        color: [1.0, 1.0, 1.0, alpha],
+        alpha_test: alpha == 1.0,
+        blend: alpha != 1.0,
+        depth_write: !translucent && alpha == 1.0,
+        intensity: SPRITE_INTENSITY,
+    }
+}
+
+/// The view's right and up vectors, which sprites face.
+pub fn view_right_up(refdef: &RefDef) -> (Vec3f, Vec3f) {
+    let (_, right, up) = angle_vectors(refdef.viewangles.to_array());
+    (Vec3f::from_array(right), Vec3f::from_array(up))
+}
+
+/// Every particle, blended without writing depth; leaves no program
+/// bound. C ref: `GL3_DrawParticles`.
+pub fn draw_particles(
+    gl: &glow::Context,
+    fx: &FxGpu,
+    palette: &Palette,
+    refdef: &RefDef,
+    view_proj: &[f32; 16],
+    particles: &[Particle],
+) {
+    if particles.is_empty() {
+        return;
+    }
+    let vertices = particle_vertices(particles, refdef.vieworg, refdef.height, palette);
+    fill_stream(gl, &fx.particle_stream, &vertices);
+    // SAFETY: the program, uniform and stream belong to `gl`; the stream
+    // was just filled with one vertex per particle.
+    unsafe {
+        gl.use_program(Some(fx.particle_program));
+        gl.uniform_matrix_4_f32_slice(fx.particle_view_proj.as_ref(), false, view_proj);
+        gl.enable(glow::BLEND);
+        set_alpha_blend(gl);
+        gl.depth_mask(false);
+        gl.draw_arrays(
+            glow::POINTS,
+            0,
+            i32::try_from(particles.len()).unwrap_or(i32::MAX),
+        );
+        gl.depth_mask(true);
+        gl.disable(glow::BLEND);
+        gl.bind_vertex_array(None);
+        gl.use_program(None);
+    }
+}
+
+struct FxStyle {
+    color: [f32; 4],
+    alpha_test: bool,
+    blend: bool,
+    depth_write: bool,
+    /// Colour scale before gamma.
+    intensity: f32,
+}
+
+struct FxDraw<'a> {
+    vertices: &'a [f32],
+    mode: u32,
+    texture: glow::Texture,
+    style: FxStyle,
+}
+
+fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
+    fill_stream(gl, &fx.fx_stream, draw.vertices);
+    let count = i32::try_from(draw.vertices.len() / FX_FLOATS).unwrap_or(i32::MAX);
+    let style = &draw.style;
+    // SAFETY: the texture, stream and uniforms belong to `gl` and the bound
+    // fx program; the stream was just filled with `count` vertices.
+    unsafe {
+        gl.uniform_4_f32_slice(fx.fx_color.as_ref(), &style.color);
+        gl.uniform_1_i32(fx.fx_alpha_test.as_ref(), i32::from(style.alpha_test));
+        gl.uniform_1_f32(fx.fx_intensity.as_ref(), style.intensity);
+        gl.bind_texture(glow::TEXTURE_2D, Some(draw.texture));
+        if style.blend {
+            gl.enable(glow::BLEND);
+            set_alpha_blend(gl);
+        }
+        if !style.depth_write {
+            gl.depth_mask(false);
+        }
+        gl.draw_arrays(draw.mode, 0, count);
+        if !style.depth_write {
+            gl.depth_mask(true);
+        }
+        if style.blend {
+            gl.disable(glow::BLEND);
+        }
+        gl.bind_vertex_array(None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sprite_frame_without_a_loaded_image_draws_as_notexture() {
+        let notexture = glow::NativeTexture(std::num::NonZeroU32::new(7).unwrap());
+        let images = ImageStore::default();
+        let size = SpriteFrameSize {
+            width: 8,
+            height: 8,
+            origin_x: 4,
+            origin_y: 4,
+        };
+        for image in [None, Some(3)] {
+            let frame = SpriteFrame { size, image };
+            assert_eq!(sprite_texture(&frame, &images, notexture), notexture);
+        }
+    }
+
+    #[test]
+    fn particle_and_fx_vertices_feed_every_input_of_their_shaders() {
+        use super::super::draw::assert_layout;
+        assert_layout(
+            &PARTICLE_ATTRIBUTES,
+            PARTICLE_FLOATS,
+            PARTICLE_VERTEX_SRC,
+            true,
+        );
+        assert_layout(&FX_ATTRIBUTES, FX_FLOATS, FX_VERTEX_SRC, true);
+    }
+
+    fn grey_palette() -> Palette {
+        Palette(std::array::from_fn(|i| [i as u8, i as u8, 255 - i as u8]))
+    }
+
+    #[test]
+    fn particles_grow_with_the_view_height_and_carry_their_distance_and_colour() {
+        let particles = [Particle {
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            color: 0xe8,
+            alpha: 0.5,
+        }];
+        let v = particle_vertices(&particles, Vec3f::ZERO, 960, &grey_palette());
+        assert_eq!(v.len(), PARTICLE_FLOATS);
+        assert_eq!(&v[..3], &[100.0, 0.0, 0.0]);
+        assert_eq!(v[3], 80.0, "40 at 480 tall, scaled");
+        assert_eq!(v[4], 100.0);
+        assert_eq!(&v[5..], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0, 0.5]);
+    }
+
+    #[test]
+    fn a_particle_colour_is_the_palette_entry_of_its_low_byte() {
+        let particles = [Particle {
+            origin: Vec3f::ZERO,
+            color: 0x1e8,
+            alpha: 1.0,
+        }];
+        let v = particle_vertices(&particles, Vec3f::X, 480, &grey_palette());
+        assert_eq!(&v[5..8], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0]);
+    }
+
+    // C PerpendicularVector projects the axis of src's smallest component,
+    // the first one on a tie, onto the plane normal to src.
+    #[test]
+    fn the_perpendicular_follows_the_smallest_axis_of_the_direction() {
+        assert_eq!(perpendicular(Vec3f::Z), Vec3f::X);
+        assert_eq!(perpendicular(Vec3f::X), Vec3f::Y);
+        let src = Vec3f::new(0.6, 0.0, 0.8);
+        assert_eq!(perpendicular(src), Vec3f::Y);
+        let src = Vec3f::new(0.2, 0.9, 0.3).normalize();
+        let p = perpendicular(src);
+        assert!(p.dot(src).abs() < 1e-6 && (p.length() - 1.0).abs() < 1e-6);
+        // The x axis less its part along src.
+        assert!(p.x > 0.0 && p.y < 0.0);
+    }
+
+    #[test]
+    fn rotating_around_a_direction_turns_counterclockwise_seen_from_its_tip() {
+        // C RotatePointAroundVector.
+        let turned = rotate_around(Vec3f::Z, Vec3f::X, 90.0);
+        assert!((turned - Vec3f::Y).length() < 1e-6, "{turned:?}");
+        let turned = rotate_around(Vec3f::Z, Vec3f::new(1.0, 0.0, 5.0), 180.0);
+        assert!(
+            (turned - Vec3f::new(-1.0, 0.0, 5.0)).length() < 1e-5,
+            "{turned:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_sp2_registers_no_sprite() {
+        let loader: FileLoader = Box::new(|name| match name {
+            "bad.sp2" => Some(b"IDS2 not a sprite".to_vec()),
+            _ => None,
+        });
+        let mut images = ImageStore::default();
+        for name in ["bad.sp2", "gone.sp2"] {
+            assert!(load_sprite_model(None, &loader, None, &mut images, name).is_none());
+        }
+    }
+
+    fn beam(origin: Vec3f, oldorigin: Vec3f, width: i32) -> RenderEntity {
+        RenderEntity {
+            origin,
+            oldorigin,
+            frame: width,
+            skinnum: 0xd0,
+            alpha: 0.3,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_beam_is_a_six_sided_tube_of_its_width_between_its_two_origins() {
+        let v = beam_vertices(&beam(Vec3f::ZERO, Vec3f::new(0.0, 0.0, 100.0), 8)).unwrap();
+        assert_eq!(v.len(), NUM_BEAM_SEGS * 4 * FX_FLOATS);
+        for corner in v.chunks(FX_FLOATS) {
+            let radius = (corner[0] * corner[0] + corner[1] * corner[1]).sqrt();
+            assert!((radius - 4.0).abs() < 1e-4, "half the width: {radius}");
+            assert!(corner[2] == 0.0 || corner[2] == 100.0);
+        }
+        // Each side: start, end, next start, next end.
+        assert_eq!((v[2], v[FX_FLOATS + 2]), (0.0, 100.0));
+    }
+
+    #[test]
+    fn a_beam_with_no_length_draws_nothing() {
+        assert!(beam_vertices(&beam(Vec3f::ONE, Vec3f::ONE, 8)).is_none());
+    }
+
+    #[test]
+    fn a_beam_takes_its_colour_from_the_palette_and_its_alpha() {
+        assert_eq!(
+            beam_color(&beam(Vec3f::ZERO, Vec3f::Z, 4), &grey_palette()),
+            [208.0 / 255.0, 208.0 / 255.0, 47.0 / 255.0, 0.3]
+        );
+    }
+
+    #[test]
+    fn a_sprite_faces_the_view_around_its_frame_origin() {
+        let right = Vec3f::new(0.0, -1.0, 0.0);
+        let up = Vec3f::Z;
+        let frame = SpriteFrameSize {
+            width: 32,
+            height: 16,
+            origin_x: 16,
+            origin_y: 8,
+        };
+        let v = sprite_vertices(Vec3f::new(10.0, 0.0, 0.0), &frame, right, up);
+        // C: bottom-left, top-left, top-right, bottom-right, as a fan.
+        assert_eq!(&v[0..5], &[10.0, 16.0, -8.0, 0.0, 1.0]);
+        assert_eq!(&v[5..10], &[10.0, 16.0, 8.0, 0.0, 0.0]);
+        assert_eq!(&v[10..15], &[10.0, -16.0, 8.0, 1.0, 0.0]);
+        assert_eq!(&v[15..20], &[10.0, -16.0, -8.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_sprite_frame_wraps_round_its_frame_count() {
+        assert_eq!(sprite_frame(7, 3), 1);
+        assert_eq!(sprite_frame(-1, 3), 2);
+        assert_eq!(sprite_frame(0, 0), 0);
+    }
+
+    // C fragmentSrc3Dsprite and fragmentSrc3DspriteAlpha do `texel.rgb *=
+    // intensity` (gl3_intensity, 1.5); fragmentSrc3Dcolor, used for beams,
+    // leaves it out.
+    #[test]
+    fn sprites_are_scaled_by_gl3_intensity_and_beams_are_not() {
+        let sprite = RenderEntity::default();
+        assert_eq!(sprite_style(&sprite, false).intensity, 1.5);
+        let beam = beam(Vec3f::ZERO, Vec3f::Z, 4);
+        assert_eq!(beam_style(&beam, &grey_palette()).intensity, 1.0);
+    }
+
+    #[test]
+    fn an_opaque_sprite_is_alpha_tested_and_a_translucent_one_blends() {
+        let opaque = sprite_style(&RenderEntity::default(), false);
+        assert!(opaque.alpha_test && !opaque.blend && opaque.depth_write);
+        assert_eq!(opaque.color, [1.0, 1.0, 1.0, 1.0]);
+        let translucent = sprite_style(
+            &RenderEntity {
+                flags: RF_TRANSLUCENT,
+                alpha: 0.5,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(!translucent.alpha_test && translucent.blend && !translucent.depth_write);
+        assert_eq!(translucent.color, [1.0, 1.0, 1.0, 0.5]);
+    }
+
+    // C GL3_DrawEntitiesOnList turns depth writes off for the whole
+    // translucent pass (gl3_main.c glDepthMask(0)), so an RF_TRANSLUCENT
+    // sprite at alpha 1.0, alpha tested rather than blended, writes no
+    // depth either.
+    #[test]
+    fn a_full_alpha_sprite_in_the_translucent_pass_writes_no_depth() {
+        let style = sprite_style(
+            &RenderEntity {
+                flags: RF_TRANSLUCENT,
+                alpha: 1.0,
+                ..Default::default()
+            },
+            true,
+        );
+        assert!(style.alpha_test && !style.blend);
+        assert!(!style.depth_write);
+    }
+
+    #[test]
+    fn a_beam_blends_without_writing_depth() {
+        let style = beam_style(&beam(Vec3f::ZERO, Vec3f::Z, 4), &grey_palette());
+        assert!(style.blend && !style.depth_write);
+    }
+
+    #[test]
+    fn the_fx_shaders_follow_gl3s_particle_and_sprite_shaders() {
+        assert!(PARTICLE_VERTEX_SRC.contains("gl_PointSize = a_size / (a_dist * 0.1);"));
+        assert!(PARTICLE_FRAGMENT_SRC.contains("if (dist_squared > 1.0)"));
+        assert!(PARTICLE_FRAGMENT_SRC.contains("min(1.0, 1.2 * (1.0 - dist_squared))"));
+        assert!(FX_FRAGMENT_SRC.contains("if (u_alpha_test != 0 && texel.a <= 0.666)"));
+        // C fragmentSrc3Dsprite/SpriteAlpha scale by intensity before gamma.
+        assert!(FX_FRAGMENT_SRC.contains("uniform float u_intensity;"));
+        assert!(FX_FRAGMENT_SRC.contains("texel.rgb *= u_intensity;"));
+        for src in [PARTICLE_FRAGMENT_SRC, FX_FRAGMENT_SRC] {
+            assert!(src.contains("uniform float u_gamma;"));
+        }
+    }
+}

@@ -253,6 +253,12 @@ impl GameImport for FloorImport {
     fn add_command_string(&self, t: &str) {
         self.inner.add_command_string(t)
     }
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.inner.cvar(name, default)
+    }
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.inner.local_time()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +435,12 @@ impl GameImport for ArenaImport {
     fn add_command_string(&self, t: &str) {
         self.floor.add_command_string(t)
     }
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.floor.cvar(name, default)
+    }
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.floor.local_time()
+    }
     fn write_byte(&self, c: i32) {
         self.record(format!("byte {:?}", c));
         self.floor.write_byte(c)
@@ -555,22 +567,15 @@ pub fn monster_arena(
     (world, gi, key, player)
 }
 
-/// Run a monster's `spawn::SPAWNS` row as `call_spawn` does: spawn
-/// function, finish function, model, `monster_start`, link.
+/// Spawn a monster at `origin` through `call_spawn`, as a map would.
 pub fn spawn_monster(world: &mut GameWorld, classname: &str, origin: Vec3f) -> EntityKey {
-    let &(_, sfn, model, finish) = crate::spawn::find_spawn(classname).unwrap();
+    let row = crate::spawn::find_spawn(classname).unwrap();
+    assert!(row.4, "{classname} is not a monster_start row");
     let key = world.spawn().unwrap();
     world.entities.get_mut(key).unwrap().state.origin = origin;
     let fields = HashMap::from([("classname".to_string(), classname.to_string())]);
-    sfn(&mut world.entities, key, &fields);
-    if let Some(finish) = finish {
-        finish(world, key, &fields);
-    }
-    if let Some(model) = model {
-        world.set_model(key, model);
-    }
-    assert!(ai::monster_start(world, key));
-    world.link_entity(key);
+    world.call_spawn(key, classname, &fields);
+    assert!(world.entities.is_live(key), "{classname} was removed");
     key
 }
 
@@ -881,5 +886,19 @@ pub fn assert_moves_match_c(moves: &[CMoveRow], names: &[(ThinkFn, &str)]) {
             })
             .collect();
         assert_eq!(rust, c, "frames of move {first}");
+    }
+}
+
+#[test]
+fn the_floor_and_arena_imports_forward_cvars_and_the_clock_to_the_mock() {
+    let arena = ArenaImport::default();
+    let mock = &arena.floor.inner;
+    mock.cvars
+        .borrow_mut()
+        .insert("cl_gun".to_string(), "0".to_string());
+    mock.local_time.set(Some((12, 30, 5)));
+    for gi in [&arena as &dyn GameImport, &arena.floor] {
+        assert_eq!(gi.cvar("cl_gun", "1"), "0");
+        assert_eq!(gi.local_time(), Some((12, 30, 5)));
     }
 }

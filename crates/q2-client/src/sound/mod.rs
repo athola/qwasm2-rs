@@ -13,15 +13,13 @@ pub mod wav;
 
 use std::rc::Rc;
 
-use q2_shared::constants::{CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
+use q2_shared::constants::{ATTN_STATIC, CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
 use q2_shared::types::{EntityState, Vec3f};
 
 use wav::Sound;
 
 /// C `MAX_CHANNELS`.
 pub const MAX_CHANNELS: usize = 32;
-/// C `ATTN_STATIC`: attenuates twice as fast as the other attenuations.
-pub const ATTN_STATIC: f32 = 3.0;
 /// C `SDL_FULLVOLUME`: closer than this is full volume.
 const FULL_VOLUME_DIST: f32 = 80.0;
 /// C `SDL_LOOPATTENUATE`: the distance multiplier of entity loop sounds.
@@ -119,6 +117,50 @@ pub fn entity_origin(
     let now = find(current)?;
     let before = find(previous).unwrap_or(now);
     Some(before + (now - before) * lerpfrac)
+}
+
+/// A sound the client starts by name (C `S_RegisterSound` +
+/// `S_StartSound`): a muzzle flash's, a temp entity's, an entity event's
+/// or a chat line's. It plays at a fixed `origin`, or follows `entnum`
+/// when `origin` is `None`. A name starting with `*` is a sexed player
+/// sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedSound {
+    pub name: String,
+    pub entnum: i32,
+    pub entchannel: i32,
+    pub volume: f32,
+    pub attenuation: f32,
+    pub timeofs: f32,
+    pub origin: Option<Vec3f>,
+}
+
+impl NamedSound {
+    /// A full-volume sound at `origin` from the world (entity 0).
+    pub(crate) fn at(origin: Vec3f, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum: 0,
+            entchannel: 0,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: Some(origin),
+        }
+    }
+
+    /// A full-volume sound that follows `entnum`.
+    pub(crate) fn on(entnum: i32, entchannel: i32, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum,
+            entchannel,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: None,
+        }
+    }
 }
 
 /// A sound the server started (C `CL_ParseStartSoundPacket`'s fields).
@@ -412,6 +454,34 @@ impl SoundSystem {
             volume: start.volume,
             attenuation: start.attenuation,
             timeofs: start.timeofs,
+        });
+    }
+
+    /// C `S_RegisterSound(name)` (or `S_RegisterSexedSound` for a `*`
+    /// name) then `S_StartSound`: a sound the client starts itself, such
+    /// as a muzzle flash or a temp entity's.
+    pub fn start_named_sound<'a>(
+        &mut self,
+        sound: &NamedSound,
+        configstring: impl Fn(usize) -> &'a str,
+        mut load: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) {
+        let id = if sound.name.starts_with('*') {
+            self.sexed_sound(sound.entnum, &sound.name, &configstring, &mut load)
+        } else {
+            self.find_or_add(&sound.name)
+        };
+        if !self.load(id, &mut load) {
+            return;
+        }
+        self.pending.push(PlaySound {
+            sfx: id,
+            entnum: sound.entnum,
+            entchannel: sound.entchannel,
+            origin: sound.origin,
+            volume: sound.volume,
+            attenuation: sound.attenuation,
+            timeofs: sound.timeofs,
         });
     }
 

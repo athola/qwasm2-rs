@@ -296,6 +296,10 @@ pub trait Renderer {
     /// 1.0 is unchanged, higher is brighter).
     fn set_gamma(&mut self, vid_gamma: f32);
 
+    /// Which hand the gun is held in (C cvar `hand`: 0 right, 1 left,
+    /// mirrored, 2 centre, not drawn).
+    fn set_hand(&mut self, hand: i32);
+
     /// How lit the last rendered view origin was, for the server's monster
     /// sight check (C `r_lightlevel`, set by `GL3_SetLightLevel`: 150 times
     /// the brightest channel of `GL3_LightPoint` at the view origin). C

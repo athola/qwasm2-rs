@@ -43,6 +43,11 @@ every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
 missing).
 
+Additions C does not have, on valid input, are allowed only behind an
+opt-in setting that defaults to C's behaviour, so the default build stays
+comparable to C and tests pin both. Each one is listed in ADR-003. The
+first is `?cl_fxextra=1` (explosion smoke).
+
 ### Untrusted input never panics
 
 Network messages, pak files and BSP files are untrusted. Their parsers check

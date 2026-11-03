@@ -72,10 +72,10 @@ dependencies yet.
 |-------|-------|
 | 0 Scaffolding | Done |
 | 1 Common layer | Done: types, cvars, commands, net_msg, filesystem, collision, pmove, netchan |
-| 2 Game logic | Core done, see ADR-003; gaps #14-#17 |
+| 2 Game logic | Core done, see ADR-003; gaps #15 and #17 |
 | 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
-| 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles and texture animation run; dynamic lights and sprites wait on weapons (#16, #20) |
+| 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles and texture animation run; the first-person gun, muzzle-flash dynamic lights and the view blend draw; particles, beams and sprites draw the client's temp entities and effects |
 | 6 WASM platform | Game loop, pointer lock, input, resize and WebAudio sound done; saves open (#21) |
 | 7 P2P networking | Not started (#22) |
 | 8 Integration | Server and game run in-process in the browser (`LocalGame`); networking open (#23) |
@@ -83,8 +83,10 @@ dependencies yet.
 The browser build runs the server and the full game in one process and
 moves the player with the pmove port through the server's traces. Brush
 entities collide, doors, platforms and buttons work, triggers and items
-react to the player, and entities and the status bar are drawn. Still
-missing in play: weapons and the rest of the player state machine (#16).
+react to the player, and entities and the status bar are drawn. The
+player fires every weapon and uses powerups, and the client draws
+explosions, impacts, trails and the other temp entities. Still missing
+in play: restarting after death (savegames, #15).
 
 ## Consequences
 

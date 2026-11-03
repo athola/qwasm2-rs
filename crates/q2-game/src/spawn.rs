@@ -12,7 +12,7 @@ use crate::monster::{
     infantry, insane, medic, mutant, parasite, soldier, supertank, tank, turret,
 };
 use crate::world::GameWorld;
-use crate::{func, misc, targets, triggers};
+use crate::{func, misc, misc_func, misc_models, targets, triggers};
 
 // ---------------------------------------------------------------------------
 // Entity-string parser
@@ -158,12 +158,16 @@ pub type FinishFn = fn(&mut GameWorld, EntityKey, &HashMap<String, String>);
 
 /// A C `spawns[]` row: classname and spawn function, plus the model the C
 /// spawn function sets (`gi.modelindex` or `self->model`) and its
-/// `GameWorld` half, both applied by `call_spawn`.
+/// `GameWorld` half, both applied by `call_spawn`. The last column is true
+/// when the C spawn function ends in `walkmonster_start`,
+/// `flymonster_start` or `swimmonster_start`, so `call_spawn` runs
+/// `monster_start` for it.
 pub type SpawnEntry = (
     &'static str,
     SpawnFn,
     Option<&'static str>,
     Option<FinishFn>,
+    bool,
 );
 
 /// Every classname with a spawn function, in C order. Items are not here:
@@ -171,118 +175,118 @@ pub type SpawnEntry = (
 /// (g_spawn.c).
 #[rustfmt::skip]
 pub static SPAWNS: &[SpawnEntry] = &[
-    ("info_player_start", sp_info_player_start, None, None),
-    ("info_player_deathmatch", sp_info_player_deathmatch, None, None),
-    ("info_player_coop", sp_info_player_coop, None, Some(info_player_coop_finish)),
-    ("info_player_intermission", sp_info_player_intermission, None, None),
+    ("info_player_start", sp_info_player_start, None, None, false),
+    ("info_player_deathmatch", sp_info_player_deathmatch, None, None, false),
+    ("info_player_coop", sp_info_player_coop, None, Some(info_player_coop_finish), false),
+    ("info_player_intermission", sp_info_player_intermission, None, None, false),
 
-    ("func_plat", func::sp_func_plat, None, Some(func::finish_plat)),
-    ("func_button", func::sp_func_button, None, Some(func::finish_button)),
-    ("func_door", func::sp_func_door, None, Some(func::finish_door)),
-    ("func_door_secret", func::sp_func_door_secret, None, Some(func::finish_door_secret)),
-    ("func_door_rotating", func::sp_func_door_rotating, None, Some(func::finish_door)),
-    ("func_rotating", func::sp_func_rotating, None, None),
-    ("func_train", func::sp_func_train, None, Some(func::finish_train)),
-    ("func_water", func::sp_func_water, None, Some(func::finish_water)),
-    ("func_conveyor", func::sp_func_conveyor, None, None),
-    ("func_areaportal", func::sp_func_areaportal, None, None),
-    ("func_clock", func::sp_func_nonsolid, None, None),
-    ("func_wall", func::sp_func_generic, None, None),
-    ("func_object", func::sp_func_generic, None, None),
-    ("func_timer", func::sp_func_timer, None, Some(func::start_func_timer)),
-    ("func_explosive", func::sp_func_explosive, None, None),
-    ("func_killbox", func::sp_func_killbox, None, None),
+    ("func_plat", func::sp_func_plat, None, Some(func::finish_plat), false),
+    ("func_button", func::sp_func_button, None, Some(func::finish_button), false),
+    ("func_door", func::sp_func_door, None, Some(func::finish_door), false),
+    ("func_door_secret", func::sp_func_door_secret, None, Some(func::finish_door_secret), false),
+    ("func_door_rotating", func::sp_func_door_rotating, None, Some(func::finish_door), false),
+    ("func_rotating", func::sp_func_rotating, None, None, false),
+    ("func_train", func::sp_func_train, None, Some(func::finish_train), false),
+    ("func_water", func::sp_func_water, None, Some(func::finish_water), false),
+    ("func_conveyor", func::sp_func_conveyor, None, None, false),
+    ("func_areaportal", func::sp_func_areaportal, None, None, false),
+    ("func_clock", misc_func::sp_func_clock, None, Some(misc_func::finish_func_clock), false),
+    ("func_wall", misc_func::sp_func_wall, None, None, false),
+    ("func_object", misc_func::sp_func_object, None, Some(misc_func::finish_func_object), false),
+    ("func_timer", func::sp_func_timer, None, Some(func::start_func_timer), false),
+    ("func_explosive", func::sp_func_explosive, None, None, false),
+    ("func_killbox", func::sp_func_killbox, None, None, false),
 
-    ("trigger_always", triggers::sp_trigger_always, None, Some(finish_trigger)),
-    ("trigger_once", triggers::sp_trigger_once, None, Some(finish_trigger)),
-    ("trigger_multiple", triggers::sp_trigger_multiple, None, Some(finish_trigger)),
-    ("trigger_relay", triggers::sp_trigger_relay, None, None),
-    ("trigger_push", triggers::sp_trigger_push, None, None),
-    ("trigger_hurt", triggers::sp_trigger_hurt, None, None),
-    ("trigger_key", triggers::sp_trigger_key, None, Some(finish_trigger)),
-    ("trigger_counter", triggers::sp_trigger_counter, None, None),
-    ("trigger_elevator", func::sp_trigger_elevator, None, None),
-    ("trigger_gravity", triggers::sp_trigger_gravity, None, None),
-    ("trigger_monsterjump", triggers::sp_trigger_monsterjump, None, None),
+    ("trigger_always", triggers::sp_trigger_always, None, Some(finish_trigger), false),
+    ("trigger_once", triggers::sp_trigger_once, None, Some(finish_trigger), false),
+    ("trigger_multiple", triggers::sp_trigger_multiple, None, Some(finish_trigger), false),
+    ("trigger_relay", triggers::sp_trigger_relay, None, None, false),
+    ("trigger_push", triggers::sp_trigger_push, None, None, false),
+    ("trigger_hurt", triggers::sp_trigger_hurt, None, None, false),
+    ("trigger_key", triggers::sp_trigger_key, None, Some(finish_trigger), false),
+    ("trigger_counter", triggers::sp_trigger_counter, None, None, false),
+    ("trigger_elevator", func::sp_trigger_elevator, None, None, false),
+    ("trigger_gravity", triggers::sp_trigger_gravity, None, None, false),
+    ("trigger_monsterjump", triggers::sp_trigger_monsterjump, None, None, false),
 
-    ("target_temp_entity", targets::sp_target_generic, None, None),
-    ("target_speaker", targets::sp_target_speaker, None, Some(GameWorld::finish_target_speaker)),
-    ("target_explosion", targets::sp_target_explosion, None, None),
-    ("target_changelevel", targets::sp_target_changelevel, None, Some(targets::finish_target_changelevel)),
-    ("target_secret", targets::sp_target_secret, None, Some(targets::finish_found_target)),
-    ("target_goal", targets::sp_target_goal, None, Some(targets::finish_found_target)),
-    ("target_splash", targets::sp_target_generic, None, None),
-    ("target_spawner", targets::sp_target_generic, None, None),
-    ("target_blaster", targets::sp_target_generic, None, None),
-    ("target_crosslevel_trigger", targets::sp_target_generic, None, None),
-    ("target_crosslevel_target", targets::sp_target_generic, None, None),
-    ("target_laser", targets::sp_target_generic, None, None),
-    ("target_help", targets::sp_target_generic, None, None),
-    ("target_lightramp", targets::sp_target_generic, None, None),
-    ("target_earthquake", targets::sp_target_generic, None, None),
-    ("target_character", misc::sp_misc_generic, None, None),
-    ("target_string", misc::sp_misc_generic, None, None),
+    ("target_temp_entity", targets::sp_target_generic, None, None, false),
+    ("target_speaker", targets::sp_target_speaker, None, Some(GameWorld::finish_target_speaker), false),
+    ("target_explosion", targets::sp_target_explosion, None, None, false),
+    ("target_changelevel", targets::sp_target_changelevel, None, Some(targets::finish_target_changelevel), false),
+    ("target_secret", targets::sp_target_secret, None, Some(targets::finish_found_target), false),
+    ("target_goal", targets::sp_target_goal, None, Some(targets::finish_found_target), false),
+    ("target_splash", targets::sp_target_generic, None, None, false),
+    ("target_spawner", targets::sp_target_generic, None, None, false),
+    ("target_blaster", targets::sp_target_generic, None, None, false),
+    ("target_crosslevel_trigger", targets::sp_target_generic, None, None, false),
+    ("target_crosslevel_target", targets::sp_target_generic, None, None, false),
+    ("target_laser", targets::sp_target_laser, None, Some(targets::finish_target_laser), false),
+    ("target_help", targets::sp_target_generic, None, Some(targets::finish_target_help), false),
+    ("target_lightramp", targets::sp_target_generic, None, None, false),
+    ("target_earthquake", targets::sp_target_generic, None, None, false),
+    ("target_character", misc_func::sp_target_character, None, None, false),
+    ("target_string", misc_func::sp_target_string, None, None, false),
 
-    ("worldspawn", sp_worldspawn, None, Some(GameWorld::worldspawn_configstrings)),
-    ("viewthing", misc::sp_misc_generic, None, None),
+    ("worldspawn", sp_worldspawn, None, Some(GameWorld::worldspawn_configstrings), false),
+    ("viewthing", misc_models::sp_viewthing, Some("models/objects/banner/tris.md2"), Some(misc_models::finish_viewthing), false),
 
-    ("light", sp_light, None, Some(GameWorld::spawn_light)),
-    ("light_mine1", misc::sp_light_mine, Some("models/objects/minelite/light1/tris.md2"), None),
-    ("light_mine2", misc::sp_light_mine, Some("models/objects/minelite/light2/tris.md2"), None),
-    ("info_null", misc::sp_info_null, None, None),
-    ("func_group", misc::sp_info_null, None, None),
-    ("info_notnull", misc::sp_info_notnull, None, None),
-    ("path_corner", misc::sp_path_corner, None, None),
-    ("point_combat", misc::sp_point_combat, None, Some(misc::finish_point_combat)),
+    ("light", sp_light, None, Some(GameWorld::spawn_light), false),
+    ("light_mine1", misc::sp_light_mine, Some("models/objects/minelite/light1/tris.md2"), None, false),
+    ("light_mine2", misc::sp_light_mine, Some("models/objects/minelite/light2/tris.md2"), None, false),
+    ("info_null", misc::sp_info_null, None, None, false),
+    ("func_group", misc::sp_info_null, None, None, false),
+    ("info_notnull", misc::sp_info_notnull, None, None, false),
+    ("path_corner", misc::sp_path_corner, None, None, false),
+    ("point_combat", misc::sp_point_combat, None, Some(misc::finish_point_combat), false),
 
-    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), None),
-    ("misc_banner", misc::sp_misc_generic, Some("models/objects/banner/tris.md2"), None),
-    ("misc_satellite_dish", misc::sp_misc_generic, Some("models/objects/satellite/tris.md2"), None),
-    ("misc_gib_arm", misc::sp_misc_gib, Some("models/objects/gibs/arm/tris.md2"), None),
-    ("misc_gib_leg", misc::sp_misc_gib, Some("models/objects/gibs/leg/tris.md2"), None),
-    ("misc_gib_head", misc::sp_misc_gib, Some("models/objects/gibs/head/tris.md2"), None),
-    ("misc_insane", insane::sp_monster_insane, Some("models/monsters/insane/tris.md2"), Some(insane::insane_finish)),
-    ("misc_deadsoldier", misc::sp_misc_generic, Some("models/deadbods/dude/tris.md2"), None),
-    ("misc_viper", misc::sp_misc_generic, Some("models/ships/viper/tris.md2"), None),
-    ("misc_viper_bomb", misc::sp_misc_generic, Some("models/objects/bomb/tris.md2"), None),
-    ("misc_bigviper", misc::sp_misc_generic, Some("models/ships/bigviper/tris.md2"), None),
-    ("misc_strogg_ship", misc::sp_misc_generic, Some("models/ships/strogg1/tris.md2"), None),
-    ("misc_teleporter", misc::sp_misc_teleporter, Some("models/objects/dmspot/tris.md2"), None),
-    ("misc_teleporter_dest", misc::sp_misc_teleporter_dest, Some("models/objects/dmspot/tris.md2"), None),
-    ("misc_blackhole", misc::sp_misc_generic, Some("models/objects/black/tris.md2"), None),
-    ("misc_eastertank", misc::sp_misc_generic, Some("models/monsters/tank/tris.md2"), None),
-    ("misc_easterchick", misc::sp_misc_generic, Some("models/monsters/bitch/tris.md2"), None),
-    ("misc_easterchick2", misc::sp_misc_generic, Some("models/monsters/bitch/tris.md2"), None),
+    ("misc_explobox", misc::sp_misc_explobox, Some("models/objects/barrels/tris.md2"), Some(misc::finish_misc_explobox), false),
+    ("misc_banner", misc_models::sp_misc_banner, Some("models/objects/banner/tris.md2"), Some(misc_models::finish_misc_banner), false),
+    ("misc_satellite_dish", misc_models::sp_misc_satellite_dish, Some("models/objects/satellite/tris.md2"), None, false),
+    ("misc_gib_arm", misc::sp_misc_gib, Some("models/objects/gibs/arm/tris.md2"), None, false),
+    ("misc_gib_leg", misc::sp_misc_gib, Some("models/objects/gibs/leg/tris.md2"), None, false),
+    ("misc_gib_head", misc::sp_misc_gib, Some("models/objects/gibs/head/tris.md2"), None, false),
+    ("misc_insane", insane::sp_monster_insane, Some("models/monsters/insane/tris.md2"), Some(insane::insane_finish), true),
+    ("misc_deadsoldier", misc_models::sp_misc_deadsoldier, Some("models/deadbods/dude/tris.md2"), Some(misc_models::finish_misc_deadsoldier), false),
+    ("misc_viper", misc_models::sp_misc_viper, Some("models/ships/viper/tris.md2"), Some(misc_models::finish_think_next_frame), false),
+    ("misc_viper_bomb", misc_models::sp_misc_viper_bomb, Some("models/objects/bomb/tris.md2"), None, false),
+    ("misc_bigviper", misc_models::sp_misc_bigviper, Some("models/ships/bigviper/tris.md2"), None, false),
+    ("misc_strogg_ship", misc_models::sp_misc_strogg_ship, Some("models/ships/strogg1/tris.md2"), Some(misc_models::finish_think_next_frame), false),
+    ("misc_teleporter", misc::sp_misc_teleporter, Some("models/objects/dmspot/tris.md2"), None, false),
+    ("misc_teleporter_dest", misc::sp_misc_teleporter_dest, Some("models/objects/dmspot/tris.md2"), None, false),
+    ("misc_blackhole", misc_models::sp_misc_blackhole, Some("models/objects/black/tris.md2"), Some(misc_models::finish_think_in_two_frames), false),
+    ("misc_eastertank", misc_models::sp_misc_eastertank, Some("models/monsters/tank/tris.md2"), Some(misc_models::finish_think_in_two_frames), false),
+    ("misc_easterchick", misc_models::sp_misc_easterchick, Some("models/monsters/bitch/tris.md2"), Some(misc_models::finish_think_in_two_frames), false),
+    ("misc_easterchick2", misc_models::sp_misc_easterchick2, Some("models/monsters/bitch/tris.md2"), Some(misc_models::finish_think_in_two_frames), false),
 
-    ("monster_berserk", berserker::sp_monster_berserker, Some("models/monsters/berserk/tris.md2"), Some(berserker::sp_monster_berserker_finish)),
-    ("monster_gladiator", gladiator::sp_monster_gladiator, Some("models/monsters/gladiatr/tris.md2"), Some(gladiator::sp_monster_gladiator_finish)),
-    ("monster_gunner", gunner::sp_monster_gunner, Some("models/monsters/gunner/tris.md2"), Some(gunner::finish_gunner)),
-    ("monster_infantry", infantry::sp_monster_infantry, Some("models/monsters/infantry/tris.md2"), Some(infantry::finish_infantry)),
-    ("monster_soldier_light", soldier::sp_monster_soldier_light, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier_light)),
-    ("monster_soldier", soldier::sp_monster_soldier, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier)),
-    ("monster_soldier_ss", soldier::sp_monster_soldier_ss, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier_ss)),
-    ("monster_tank", tank::sp_monster_tank, Some("models/monsters/tank/tris.md2"), Some(tank::tank_precache)),
-    ("monster_tank_commander", tank::sp_monster_tank_commander, Some("models/monsters/tank/tris.md2"), Some(tank::tank_precache)),
-    ("monster_medic", medic::sp_monster_medic, Some("models/monsters/medic/tris.md2"), Some(medic::medic_precache)),
-    ("monster_flipper", flipper::sp_monster_flipper, Some("models/monsters/flipper/tris.md2"), Some(flipper::finish_flipper)),
-    ("monster_chick", chick::sp_monster_chick, Some("models/monsters/bitch/tris.md2"), Some(chick::sp_monster_chick_finish)),
-    ("monster_parasite", parasite::sp_monster_parasite, Some("models/monsters/parasite/tris.md2"), Some(parasite::finish_parasite)),
-    ("monster_flyer", flyer::sp_monster_flyer, Some("models/monsters/flyer/tris.md2"), Some(flyer::finish_flyer)),
-    ("monster_brain", brain::sp_monster_brain, Some("models/monsters/brain/tris.md2"), Some(brain::sp_monster_brain_finish)),
-    ("monster_floater", floater::sp_monster_floater, Some("models/monsters/float/tris.md2"), Some(floater::finish_floater)),
-    ("monster_hover", hover::sp_monster_hover, Some("models/monsters/hover/tris.md2"), Some(hover::finish_hover)),
-    ("monster_mutant", mutant::sp_monster_mutant, Some("models/monsters/mutant/tris.md2"), Some(mutant::sp_monster_mutant_finish)),
-    ("monster_supertank", supertank::sp_monster_supertank, Some("models/monsters/boss1/tris.md2"), Some(supertank::supertank_precache)),
-    ("monster_boss2", boss2::sp_monster_boss2, Some("models/monsters/boss2/tris.md2"), Some(boss2::boss2_precache)),
-    ("monster_boss3_stand", boss3::sp_monster_boss3_stand, Some("models/monsters/boss3/rider/tris.md2"), Some(boss3::boss3_stand_finish)),
-    ("monster_makron", boss3::sp_monster_makron, Some("models/monsters/boss3/rider/tris.md2"), Some(boss3::makron_finish)),
-    ("monster_jorg", boss3::sp_monster_jorg, Some("models/monsters/boss3/jorg/tris.md2"), Some(boss3::jorg_finish)),
+    ("monster_berserk", berserker::sp_monster_berserker, Some("models/monsters/berserk/tris.md2"), Some(berserker::sp_monster_berserker_finish), true),
+    ("monster_gladiator", gladiator::sp_monster_gladiator, Some("models/monsters/gladiatr/tris.md2"), Some(gladiator::sp_monster_gladiator_finish), true),
+    ("monster_gunner", gunner::sp_monster_gunner, Some("models/monsters/gunner/tris.md2"), Some(gunner::finish_gunner), true),
+    ("monster_infantry", infantry::sp_monster_infantry, Some("models/monsters/infantry/tris.md2"), Some(infantry::finish_infantry), true),
+    ("monster_soldier_light", soldier::sp_monster_soldier_light, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier_light), true),
+    ("monster_soldier", soldier::sp_monster_soldier, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier), true),
+    ("monster_soldier_ss", soldier::sp_monster_soldier_ss, Some("models/monsters/soldier/tris.md2"), Some(soldier::finish_soldier_ss), true),
+    ("monster_tank", tank::sp_monster_tank, Some("models/monsters/tank/tris.md2"), Some(tank::tank_precache), true),
+    ("monster_tank_commander", tank::sp_monster_tank_commander, Some("models/monsters/tank/tris.md2"), Some(tank::tank_precache), true),
+    ("monster_medic", medic::sp_monster_medic, Some("models/monsters/medic/tris.md2"), Some(medic::medic_precache), true),
+    ("monster_flipper", flipper::sp_monster_flipper, Some("models/monsters/flipper/tris.md2"), Some(flipper::finish_flipper), true),
+    ("monster_chick", chick::sp_monster_chick, Some("models/monsters/bitch/tris.md2"), Some(chick::sp_monster_chick_finish), true),
+    ("monster_parasite", parasite::sp_monster_parasite, Some("models/monsters/parasite/tris.md2"), Some(parasite::finish_parasite), true),
+    ("monster_flyer", flyer::sp_monster_flyer, Some("models/monsters/flyer/tris.md2"), Some(flyer::finish_flyer), true),
+    ("monster_brain", brain::sp_monster_brain, Some("models/monsters/brain/tris.md2"), Some(brain::sp_monster_brain_finish), true),
+    ("monster_floater", floater::sp_monster_floater, Some("models/monsters/float/tris.md2"), Some(floater::finish_floater), true),
+    ("monster_hover", hover::sp_monster_hover, Some("models/monsters/hover/tris.md2"), Some(hover::finish_hover), true),
+    ("monster_mutant", mutant::sp_monster_mutant, Some("models/monsters/mutant/tris.md2"), Some(mutant::sp_monster_mutant_finish), true),
+    ("monster_supertank", supertank::sp_monster_supertank, Some("models/monsters/boss1/tris.md2"), Some(supertank::supertank_precache), true),
+    ("monster_boss2", boss2::sp_monster_boss2, Some("models/monsters/boss2/tris.md2"), Some(boss2::boss2_precache), true),
+    ("monster_boss3_stand", boss3::sp_monster_boss3_stand, Some("models/monsters/boss3/rider/tris.md2"), Some(boss3::boss3_stand_finish), false),
+    ("monster_makron", boss3::sp_monster_makron, Some("models/monsters/boss3/rider/tris.md2"), Some(boss3::makron_finish), true),
+    ("monster_jorg", boss3::sp_monster_jorg, Some("models/monsters/boss3/jorg/tris.md2"), Some(boss3::jorg_finish), true),
 
-    ("monster_commander_body", misc::sp_misc_generic, Some("models/monsters/commandr/tris.md2"), None),
+    ("monster_commander_body", misc_models::sp_monster_commander_body, Some("models/monsters/commandr/tris.md2"), Some(misc_models::finish_commander_body), false),
 
-    ("turret_breach", turret::sp_turret_breach, None, Some(turret::turret_breach_finish)),
-    ("turret_base", turret::sp_turret_base, None, None),
-    ("turret_driver", turret::sp_turret_driver, Some("models/monsters/infantry/tris.md2"), None),
+    ("turret_breach", turret::sp_turret_breach, None, Some(turret::turret_breach_finish), false),
+    ("turret_base", turret::sp_turret_base, None, None, false),
+    ("turret_driver", turret::sp_turret_driver, Some("models/monsters/infantry/tris.md2"), Some(turret::turret_driver_finish), false),
 ];
 
 /// The `SPAWNS` row for `classname`, searched in order as C ED_CallSpawn
@@ -673,6 +677,38 @@ mod tests {
         assert!(find_spawn("monster_insane").is_none());
     }
 
+    #[test]
+    fn monster_rows_are_c_monster_start_spawns() {
+        // grep -l "monster_start(self)" ~/Qwasm2/src/game/monster/*/*.c
+        const C_MONSTERS: &[&str] = &[
+            "misc_insane",
+            "monster_berserk",
+            "monster_gladiator",
+            "monster_gunner",
+            "monster_infantry",
+            "monster_soldier_light",
+            "monster_soldier",
+            "monster_soldier_ss",
+            "monster_tank",
+            "monster_tank_commander",
+            "monster_medic",
+            "monster_flipper",
+            "monster_chick",
+            "monster_parasite",
+            "monster_flyer",
+            "monster_brain",
+            "monster_floater",
+            "monster_hover",
+            "monster_mutant",
+            "monster_supertank",
+            "monster_boss2",
+            "monster_makron",
+            "monster_jorg",
+        ];
+        let monsters: Vec<&str> = SPAWNS.iter().filter(|e| e.4).map(|e| e.0).collect();
+        assert_eq!(monsters, C_MONSTERS);
+    }
+
     /// C `spawns[]` (g_spawn.c), in order.
     const C_SPAWNS: &[&str] = &[
         "item_health",
@@ -806,7 +842,7 @@ mod tests {
 
     #[test]
     fn every_spawn_entry_spawns_on_a_synthetic_world_with_its_model() {
-        for &(classname, _, model, _) in SPAWNS {
+        for &(classname, _, model, _, _) in SPAWNS {
             let (mut world, gi) = crate::world::test_world_recording();
             world.init_game();
             let ents = match classname {

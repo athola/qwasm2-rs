@@ -2,8 +2,7 @@
 //!
 //! Port of `g_combat.c`: damage application, armor absorption, knockback,
 //! kill tracking, radius (splash) damage, power armor and
-//! `M_ReactToDamage`. Not ported: the per-frame client damage blends, the skill
-//! and deathmatch rules for players, and temp-entity effects.
+//! `M_ReactToDamage`.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_combat.c`
@@ -108,9 +107,18 @@ impl GameWorld {
     // C ref: g_combat.c:320-383
     // -----------------------------------------------------------------------
 
-    /// Calculate how much damage the worn armor absorbs, and use it up.
-    /// Returns the amount of damage saved by armor.
-    fn check_armor(&mut self, target: EntityKey, damage: i32, dflags: DamageFlags) -> i32 {
+    /// Calculate how much damage the worn armor absorbs, use it up and
+    /// throw `te_sparks` where it was hit. Returns the amount saved.
+    /// C ref: `CheckArmor` (g_combat.c).
+    fn check_armor(
+        &mut self,
+        target: EntityKey,
+        point: Vec3f,
+        normal: Vec3f,
+        damage: i32,
+        te_sparks: i32,
+        dflags: DamageFlags,
+    ) -> i32 {
         if damage == 0 || dflags.contains(DamageFlags::NO_ARMOR) {
             return 0;
         }
@@ -129,13 +137,28 @@ impl GameWorld {
             return 0;
         };
         let save = ((protection * damage as f32).ceil() as i32).min(client.pers.inventory[index]);
+        if save == 0 {
+            return 0;
+        }
         client.pers.inventory[index] -= save;
+        self.spawn_damage(te_sparks, point, normal);
         save
+    }
+
+    /// Blood or sparks where a hit landed. C ref: `SpawnDamage`
+    /// (g_combat.c).
+    pub(crate) fn spawn_damage(&self, te: i32, origin: Vec3f, normal: Vec3f) {
+        self.gi
+            .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+        self.gi.write_byte(te);
+        self.gi.write_position(origin);
+        self.gi.write_dir(normal);
+        self.gi.multicast(origin, q2_shared::types::Multicast::PVS);
     }
 
     /// The power armor a player has switched on: the shield if carried,
     /// else the screen. C ref: `PowerArmorType` (g_items.c).
-    fn power_armor_type(&self, key: EntityKey) -> i32 {
+    pub(crate) fn power_armor_type(&self, key: EntityKey) -> i32 {
         let switched_on = self
             .entities
             .get(key)
@@ -159,13 +182,13 @@ impl GameWorld {
     /// How much of `damage` power armor absorbs, using up cells (a
     /// player's) or `power_armor_power` (a monster's). The screen covers
     /// only hits in front and saves a third at a point per cell; the shield
-    /// saves two thirds at two points per cell. The C `SpawnDamage` sparks
-    /// are not sent (temp entities are not ported here). C ref:
-    /// `CheckPowerArmor` (g_combat.c).
+    /// saves two thirds at two points per cell, each throwing its own
+    /// sparks. C ref: `CheckPowerArmor` (g_combat.c).
     pub(crate) fn check_power_armor(
         &mut self,
         target: EntityKey,
         point: Vec3f,
+        normal: Vec3f,
         damage: i32,
         dflags: DamageFlags,
     ) -> i32 {
@@ -211,6 +234,12 @@ impl GameWorld {
         if save == 0 {
             return 0;
         }
+        let te = if kind == POWER_ARMOR_SCREEN {
+            q2_shared::constants::TE_SCREEN_SPARKS
+        } else {
+            q2_shared::constants::TE_SHIELD_SPARKS
+        };
+        self.spawn_damage(te, point, normal);
 
         let time = self.level.time;
         let power_used = save / damage_per_cell;
@@ -255,6 +284,11 @@ impl GameWorld {
             .is_some_and(|mi| mi.aiflags.contains(AiFlags::GOOD_GUY));
         if dying_monster && !good_guy {
             self.level.killed_monsters += 1;
+            if self.game.coop {
+                if let Some(client) = self.client_mut(attacker) {
+                    client.resp.score += 1;
+                }
+            }
             // Medics won't heal monsters that they kill themselves.
             let by_medic = self
                 .entities
@@ -342,11 +376,11 @@ impl GameWorld {
         attacker: EntityKey,
         dir: Vec3f,
         point: Vec3f,
-        _normal: Vec3f,
+        normal: Vec3f,
         damage: i32,
         knockback: i32,
         dflags: DamageFlags,
-        _means_of_death: MeansOfDeath,
+        means_of_death: MeansOfDeath,
     ) {
         // Check if target can take damage.
         let takes_damage = self
@@ -357,9 +391,29 @@ impl GameWorld {
         if !takes_damage {
             return;
         }
+        // Friendly fire avoidance: teammates can't hurt each other (but
+        // can hurt themselves), or the hit is marked friendly fire for
+        // the obituary; knockback still occurs.
+        let teams = self.game.dmflags & (DF_MODELTEAMS | DF_SKINTEAMS) != 0;
+        let teammates = target != attacker
+            && ((self.game.deathmatch && teams) || self.game.coop)
+            && self.on_same_team(target, attacker);
+        let spared = teammates && self.game.dmflags & DF_NO_FRIENDLY_FIRE != 0;
+        let damage = if spared { 0 } else { damage };
+        self.means_of_death = means_of_death;
+        self.friendly_fire = teammates && !spared;
 
         let mut damage = damage;
         let mut knockback = knockback as f32;
+
+        // Easy mode takes half damage (C `damage *= 0.5` on an int).
+        let target_is_client = self.client(target).is_some();
+        if self.game.skill == SKILL_EASY && !self.game.deathmatch && target_is_client {
+            damage = (damage as f64 * 0.5) as i32;
+            if damage == 0 {
+                damage = 1;
+            }
+        }
 
         // Surprise bonus: 2x damage if monster hasn't seen the attacker.
         let is_monster = self
@@ -426,6 +480,7 @@ impl GameWorld {
         }
 
         let mut take = damage;
+        let mut save = 0;
 
         // Check god mode.
         let godmode = self
@@ -433,23 +488,64 @@ impl GameWorld {
             .get(target)
             .map(|e| e.game.flags.contains(EntityFlags::GODMODE))
             .unwrap_or(false);
+        let te_sparks = if dflags.contains(DamageFlags::BULLET) {
+            q2_shared::constants::TE_BULLET_SPARKS
+        } else {
+            q2_shared::constants::TE_SPARKS
+        };
         if godmode && !dflags.contains(DamageFlags::NO_PROTECTION) {
             take = 0;
+            save = damage;
+            self.spawn_damage(te_sparks, point, normal);
         }
 
-        take -= self.check_power_armor(target, point, take, dflags);
-        // Apply armor (if not god mode).
-        if take > 0 {
-            take -= self.check_armor(target, take, dflags);
+        // Check for invulnerability.
+        let framenum = self.level.framenum;
+        let invincible = self
+            .client(target)
+            .is_some_and(|c| c.invincible_framenum > framenum);
+        if invincible && !dflags.contains(DamageFlags::NO_PROTECTION) {
+            let time = self.level.time;
+            let due = self
+                .entities
+                .get_mut(target)
+                .filter(|e| e.game.pain_debounce_time < time)
+                .map(|e| e.game.pain_debounce_time = time + 2.0)
+                .is_some();
+            if due {
+                let protect4 = self.gi.sound_index("items/protect4.wav");
+                self.gi.sound(
+                    self.number_of(target),
+                    CHAN_ITEM,
+                    protect4,
+                    1.0,
+                    ATTN_NORM,
+                    0.0,
+                );
+            }
+            take = 0;
+            save = damage;
         }
+
+        let psave = self.check_power_armor(target, point, normal, take, dflags);
+        take -= psave;
+        let asave = self.check_armor(target, point, normal, take, te_sparks, dflags);
+        take -= asave;
 
         let is_client = self
             .entities
             .get(target)
             .is_some_and(|e| e.client.is_some());
 
-        // Apply damage to health; only damage that is taken can kill.
-        if take > 0 {
+        // Apply damage to health. C tests `if (take)`, so negative damage
+        // (a map's trigger_hurt dmg) heals.
+        if take != 0 {
+            let te = if is_monster || is_client {
+                q2_shared::constants::TE_BLOOD
+            } else {
+                te_sparks
+            };
+            self.spawn_damage(te, point, normal);
             let Some(ent) = self.entities.get_mut(target) else {
                 return;
             };
@@ -481,18 +577,29 @@ impl GameWorld {
         } else {
             true
         };
-        if !(feels_pain && take > 0) {
-            return;
-        }
-        if let Some(pain) = ent.pain {
-            pain(self, target, attacker, knockback, take);
-        }
-        // Nightmare mode monsters don't go into pain frames often.
-        if is_monster && self.game.skill == SKILL_HARDPLUS {
-            let time = self.level.time;
-            if let Some(ent) = self.entities.get_mut(target) {
-                ent.game.pain_debounce_time = time + 5.0;
+        if feels_pain && take != 0 {
+            if let Some(pain) = ent.pain {
+                pain(self, target, attacker, knockback, take);
             }
+            // Nightmare mode monsters don't go into pain frames often.
+            if is_monster && self.game.skill == SKILL_HARDPLUS {
+                let time = self.level.time;
+                if let Some(ent) = self.entities.get_mut(target) {
+                    ent.game.pain_debounce_time = time + 5.0;
+                }
+            }
+        }
+
+        // Add to the damage inflicted on a player this frame, after its
+        // pain as in C; the totals become screen blends and view kicks at
+        // the end of the frame.
+        if let Some(client) = self.client_mut(target) {
+            client.damage_parmor += psave;
+            // C: treat cheat/powerup savings the same as armor.
+            client.damage_armor += asave + save;
+            client.damage_blood += take;
+            client.damage_knockback += knockback as i32;
+            client.damage_from = point;
         }
     }
 
@@ -682,6 +789,332 @@ mod tests {
 
     // -- can_damage tests --
 
+    fn struck(target_is_monster: bool, dflags: DamageFlags) -> Vec<i32> {
+        use q2_shared::protocol::SvcOp;
+        let (mut world, gi) = crate::world::test_world_recording();
+        let target = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.takedamage = TakeDamage::Yes;
+        t.game.health = 100;
+        if target_is_monster {
+            t.svflags |= SvFlags::MONSTER.bits();
+        }
+        world.t_damage(
+            target,
+            target,
+            target,
+            Vec3f::X,
+            Vec3f::new(1.0, 2.0, 3.0),
+            Vec3f::Z,
+            10,
+            0,
+            dflags,
+            MeansOfDeath::Unknown,
+        );
+        let writes = gi.writes.borrow();
+        writes
+            .windows(2)
+            .filter(|w| w[0] == SvcOp::TempEntity as i32)
+            .map(|w| w[1])
+            .collect()
+    }
+
+    #[test]
+    fn damage_sprays_blood_from_the_living_and_sparks_from_things() {
+        use q2_shared::constants::{TE_BLOOD, TE_BULLET_SPARKS, TE_SPARKS};
+        assert_eq!(struck(true, DamageFlags::empty()), [TE_BLOOD]);
+        assert_eq!(struck(false, DamageFlags::empty()), [TE_SPARKS]);
+        assert_eq!(struck(false, DamageFlags::BULLET), [TE_BULLET_SPARKS]);
+    }
+
+    #[test]
+    fn god_mode_and_absorbing_armor_throw_sparks() {
+        use q2_shared::constants::TE_SPARKS;
+        use q2_shared::protocol::SvcOp;
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_items();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::GODMODE;
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::Z,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        let te: Vec<i32> = gi
+            .writes
+            .borrow()
+            .windows(2)
+            .filter(|w| w[0] == SvcOp::TempEntity as i32)
+            .map(|w| w[1])
+            .collect();
+        assert_eq!(te, [TE_SPARKS]);
+        // C: "treat cheat/powerup savings the same as armor".
+        assert_eq!(world.client(key).unwrap().damage_armor, 10);
+
+        gi.writes.borrow_mut().clear();
+        world
+            .entities
+            .get_mut(key)
+            .unwrap()
+            .game
+            .flags
+            .remove(EntityFlags::GODMODE);
+        let jacket = world.find_item_by_name("Jacket Armor").unwrap();
+        world.client_mut(key).unwrap().pers.inventory[jacket] = 50;
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::Z,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        let te: Vec<i32> = gi
+            .writes
+            .borrow()
+            .windows(2)
+            .filter(|w| w[0] == SvcOp::TempEntity as i32)
+            .map(|w| w[1])
+            .collect();
+        assert_eq!(
+            te,
+            [TE_SPARKS, q2_shared::constants::TE_BLOOD],
+            "armor sparks, then blood"
+        );
+    }
+
+    #[test]
+    fn power_armor_throws_screen_or_shield_sparks() {
+        use q2_shared::constants::{TE_SCREEN_SPARKS, TE_SHIELD_SPARKS};
+        use q2_shared::protocol::SvcOp;
+        for (item, te) in [
+            ("Power Screen", TE_SCREEN_SPARKS),
+            ("Power Shield", TE_SHIELD_SPARKS),
+        ] {
+            let (mut world, gi) = crate::world::test_world_recording();
+            world.init_items();
+            let key = world.connect_client(1, "\\name\\P").unwrap();
+            world.begin_client(key);
+            let cells = world.find_item_by_name("Cells").unwrap();
+            let armor = world.find_item_by_name(item).unwrap();
+            let client = world.client_mut(key).unwrap();
+            client.pers.inventory[cells] = 100;
+            client.pers.inventory[armor] = 1;
+            world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::POWER_ARMOR;
+            // Hit from the front (the player faces +x).
+            let origin = world.entities.get(key).unwrap().state.origin;
+            world.t_damage(
+                key,
+                key,
+                key,
+                -Vec3f::X,
+                origin + Vec3f::new(20.0, 0.0, 0.0),
+                Vec3f::X,
+                10,
+                0,
+                DamageFlags::empty(),
+                MeansOfDeath::Unknown,
+            );
+            let first = gi
+                .writes
+                .borrow()
+                .windows(2)
+                .find(|w| w[0] == SvcOp::TempEntity as i32)
+                .map(|w| w[1]);
+            assert_eq!(first, Some(te), "{item}");
+        }
+    }
+
+    #[test]
+    fn a_players_pain_runs_before_the_hit_joins_the_damage_totals() {
+        // C T_Damage adds client->damage_* after targ->pain.
+        fn note_blood(world: &mut GameWorld, key: EntityKey, _: EntityKey, _: f32, _: i32) {
+            let blood = world.client(key).map_or(-1, |c| c.damage_blood);
+            world.entities.get_mut(key).unwrap().game.count = blood;
+        }
+        let mut world = crate::world::test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.entities.get_mut(key).unwrap().pain = Some(note_blood);
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            10,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        assert_eq!(world.entities.get(key).unwrap().game.count, 0);
+        assert_eq!(world.client(key).unwrap().damage_blood, 10);
+    }
+
+    #[test]
+    fn damage_to_a_player_adds_up_for_the_end_of_frame_feedback() {
+        let mut world = crate::world::test_world();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        let point = Vec3f::new(3.0, 4.0, 5.0);
+        for _ in 0..2 {
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                point,
+                Vec3f::ZERO,
+                10,
+                7,
+                DamageFlags::empty(),
+                MeansOfDeath::Unknown,
+            );
+        }
+        let client = world.client(key).unwrap();
+        assert_eq!((client.damage_blood, client.damage_knockback), (20, 14));
+        assert_eq!((client.damage_armor, client.damage_parmor), (0, 0));
+        assert_eq!(client.damage_from, point);
+    }
+
+    #[test]
+    fn easy_skill_halves_damage_to_players_outside_deathmatch_but_never_to_0() {
+        let (mut world, _) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.game.skill = SKILL_EASY;
+        let health = |world: &mut GameWorld, damage| {
+            world.entities.get_mut(key).unwrap().game.health = 100;
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                damage,
+                0,
+                DamageFlags::empty(),
+                MeansOfDeath::Unknown,
+            );
+            world.entities.get(key).unwrap().game.health
+        };
+        // C: damage *= 0.5 truncates, and a 0 result becomes 1.
+        assert_eq!(health(&mut world, 31), 100 - 15);
+        assert_eq!(health(&mut world, 1), 99);
+        assert_eq!(health(&mut world, 0), 99);
+        world.game.deathmatch = true;
+        assert_eq!(health(&mut world, 31), 100 - 31);
+        world.game.deathmatch = false;
+        world.game.skill = 1;
+        assert_eq!(health(&mut world, 31), 100 - 31);
+
+        // Monsters take full damage at easy skill.
+        world.game.skill = SKILL_EASY;
+        let monster = world.spawn().unwrap();
+        let m = world.entities.get_mut(monster).unwrap();
+        m.svflags = q2_shared::constants::SVF_MONSTER;
+        m.game.takedamage = TakeDamage::Yes;
+        m.game.health = 100;
+        m.game.enemy = Some(key);
+        world.t_damage(
+            monster,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            31,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        assert_eq!(world.entities.get(monster).unwrap().game.health, 100 - 31);
+    }
+
+    #[test]
+    fn an_invulnerable_player_takes_nothing_and_hears_protect4_every_2_seconds() {
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        world.level.time = 10.0;
+        world.client_mut(key).unwrap().invincible_framenum = 200;
+        let hit = |world: &mut GameWorld, flags| {
+            world.t_damage(
+                key,
+                key,
+                key,
+                Vec3f::X,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                30,
+                0,
+                flags,
+                MeansOfDeath::Unknown,
+            )
+        };
+        hit(&mut world, DamageFlags::empty());
+        hit(&mut world, DamageFlags::empty());
+        assert_eq!(world.entities.get(key).unwrap().game.health, 100);
+        // C counts the blocked damage as armor savings for the feedback.
+        assert_eq!(world.client(key).unwrap().damage_armor, 60);
+        let protect4 = world.gi.sound_index("items/protect4.wav");
+        let heard = gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .filter(|c| c.2 == protect4)
+            .count();
+        assert_eq!(heard, 1, "debounced");
+        assert_eq!(
+            world.entities.get(key).unwrap().game.pain_debounce_time,
+            12.0
+        );
+
+        hit(&mut world, DamageFlags::NO_PROTECTION);
+        assert_eq!(world.entities.get(key).unwrap().game.health, 70);
+    }
+
+    #[test]
+    fn invulnerability_sounds_only_once_the_debounce_time_has_passed() {
+        // C ref: T_Damage, pain_debounce_time < level.time.
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.begin_client(key);
+        world.level.framenum = 100;
+        world.level.time = 10.0;
+        world.client_mut(key).unwrap().invincible_framenum = 200;
+        world.entities.get_mut(key).unwrap().game.pain_debounce_time = 10.0;
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            30,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        let protect4 = world.gi.sound_index("items/protect4.wav");
+        assert!(!gi.sound_calls.borrow().iter().any(|c| c.2 == protect4));
+    }
+
     #[test]
     fn can_damage_with_a_clear_line_of_sight() {
         // MockGameImport traces return fraction=1.0 (no collision).
@@ -748,6 +1181,18 @@ mod tests {
     }
 
     #[test]
+    fn knockback_without_a_direction_does_not_move_the_target() {
+        // C ref: VectorNormalize2 leaves a zero vector zero, not NaN.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        world.entities.get_mut(target).unwrap().velocity = Vec3f::ZERO;
+
+        world.apply_knockback(target, Vec3f::ZERO, 100.0, 500.0);
+
+        assert_eq!(world.entities.get(target).unwrap().velocity, Vec3f::ZERO);
+    }
+
+    #[test]
     fn knockback_self_damage_uses_higher_scale() {
         let mut world = test_world();
         let target = world.spawn().unwrap();
@@ -773,7 +1218,14 @@ mod tests {
         client.pers.inventory[1] = 100;
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 50, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         // Body armor absorbs 80%: ceil(0.8 * 50) = 40
         assert_eq!(saved, 40);
 
@@ -790,7 +1242,14 @@ mod tests {
         client.pers.inventory[1] = 10; // only 10 armor
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 100, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            100,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         // Would save 80, but only 10 available.
         assert_eq!(saved, 10);
     }
@@ -803,7 +1262,14 @@ mod tests {
         client.pers.inventory[1] = 100;
         let target = world.spawn_test_client(client);
 
-        let saved = world.check_armor(target, 50, DamageFlags::NO_ARMOR);
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::NO_ARMOR,
+        );
         assert_eq!(saved, 0);
     }
 
@@ -813,7 +1279,14 @@ mod tests {
         let target = world.spawn().unwrap();
         // No client data.
 
-        let saved = world.check_armor(target, 50, DamageFlags::empty());
+        let saved = world.check_armor(
+            target,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            50,
+            q2_shared::constants::TE_SPARKS,
+            DamageFlags::empty(),
+        );
         assert_eq!(saved, 0);
     }
 
@@ -845,7 +1318,7 @@ mod tests {
         world.level.time = 3.0;
         let key = armored_monster(&mut world, POWER_ARMOR_SCREEN, 100);
         let front = Vec3f::new(100.0, 10.0, 0.0);
-        let saved = world.check_power_armor(key, front, 30, DamageFlags::empty());
+        let saved = world.check_power_armor(key, front, Vec3f::ZERO, 30, DamageFlags::empty());
         assert_eq!(saved, 10);
         assert_eq!(power(&world, key), 90);
         let ent = world.entities.get(key).unwrap();
@@ -859,7 +1332,7 @@ mod tests {
         let key = armored_monster(&mut world, POWER_ARMOR_SCREEN, 100);
         for point in [Vec3f::new(-100.0, 0.0, 0.0), Vec3f::new(0.0, 100.0, 0.0)] {
             assert_eq!(
-                world.check_power_armor(key, point, 30, DamageFlags::empty()),
+                world.check_power_armor(key, point, Vec3f::ZERO, 30, DamageFlags::empty()),
                 0
             );
         }
@@ -868,12 +1341,38 @@ mod tests {
     }
 
     #[test]
+    fn power_screen_measures_the_hit_from_the_wearers_origin() {
+        // C ref: CheckPowerArmor, vec = point - origin.
+        let mut world = test_world();
+        let key = armored_monster(&mut world, POWER_ARMOR_SCREEN, 100);
+        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let behind = Vec3f::new(50.0, 0.0, 0.0);
+        assert_eq!(
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
+            0
+        );
+    }
+
+    #[test]
+    fn power_armor_needs_a_client_or_a_monster() {
+        // C ref: CheckPowerArmor returns 0 unless client or SVF_MONSTER.
+        let mut world = test_world();
+        let key = armored_monster(&mut world, POWER_ARMOR_SHIELD, 100);
+        world.entities.get_mut(key).unwrap().svflags = SvFlags::NOCLIENT.bits();
+        let front = Vec3f::new(100.0, 0.0, 0.0);
+        assert_eq!(
+            world.check_power_armor(key, front, Vec3f::ZERO, 30, DamageFlags::empty()),
+            0
+        );
+    }
+
+    #[test]
     fn power_shield_saves_two_thirds_at_two_points_a_cell_up_to_its_power() {
         let mut world = test_world();
         let key = armored_monster(&mut world, POWER_ARMOR_SHIELD, 100);
         let behind = Vec3f::new(-100.0, 0.0, 0.0);
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             20
         );
         assert_eq!(power(&world, key), 90);
@@ -887,7 +1386,7 @@ mod tests {
             .unwrap()
             .power_armor_power = 5;
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             10
         );
         assert_eq!(power(&world, key), 0);
@@ -899,27 +1398,27 @@ mod tests {
         let front = Vec3f::new(100.0, 0.0, 0.0);
         let empty = armored_monster(&mut world, POWER_ARMOR_SHIELD, 0);
         assert_eq!(
-            world.check_power_armor(empty, front, 30, DamageFlags::empty()),
+            world.check_power_armor(empty, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let none = armored_monster(&mut world, POWER_ARMOR_NONE, 100);
         assert_eq!(
-            world.check_power_armor(none, front, 30, DamageFlags::empty()),
+            world.check_power_armor(none, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let shield = armored_monster(&mut world, POWER_ARMOR_SHIELD, 100);
         assert_eq!(
-            world.check_power_armor(shield, front, 0, DamageFlags::empty()),
+            world.check_power_armor(shield, front, Vec3f::ZERO, 0, DamageFlags::empty()),
             0
         );
         assert_eq!(
-            world.check_power_armor(shield, front, 30, DamageFlags::NO_ARMOR),
+            world.check_power_armor(shield, front, Vec3f::ZERO, 30, DamageFlags::NO_ARMOR),
             0
         );
         // Neither a client nor a monster.
         let wall = world.spawn().unwrap();
         assert_eq!(
-            world.check_power_armor(wall, front, 30, DamageFlags::empty()),
+            world.check_power_armor(wall, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
     }
@@ -954,7 +1453,7 @@ mod tests {
         world.client_mut(key).unwrap().pers.inventory[screen] = 1;
         let behind = Vec3f::new(-100.0, 0.0, 0.0);
         assert_eq!(
-            world.check_power_armor(key, behind, 30, DamageFlags::empty()),
+            world.check_power_armor(key, behind, Vec3f::ZERO, 30, DamageFlags::empty()),
             20
         );
         assert_eq!(cells(&world, key), 40);
@@ -966,20 +1465,20 @@ mod tests {
         let front = Vec3f::new(100.0, 0.0, 0.0);
         let on = armored_client(&mut world, "Power Screen", true);
         assert_eq!(
-            world.check_power_armor(on, front, 30, DamageFlags::empty()),
+            world.check_power_armor(on, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             10
         );
         assert_eq!(cells(&world, on), 40);
         let mut world = test_world();
         let off = armored_client(&mut world, "Power Screen", false);
         assert_eq!(
-            world.check_power_armor(off, front, 30, DamageFlags::empty()),
+            world.check_power_armor(off, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         let mut world = test_world();
         let no_item = armored_client(&mut world, "", true);
         assert_eq!(
-            world.check_power_armor(no_item, front, 30, DamageFlags::empty()),
+            world.check_power_armor(no_item, front, Vec3f::ZERO, 30, DamageFlags::empty()),
             0
         );
         assert_eq!(cells(&world, no_item), 50);
@@ -1004,6 +1503,28 @@ mod tests {
         );
         assert_eq!(world.entities.get(key).unwrap().game.health, 80);
         assert_eq!(power(&world, key), 90);
+    }
+
+    #[test]
+    fn a_players_power_armor_savings_join_the_frame_feedback() {
+        // C ref: T_Damage, client->damage_parmor += psave.
+        let mut world = test_world();
+        let key = armored_client(&mut world, "Power Shield", true);
+        world.entities.get_mut(key).unwrap().game.takedamage = TakeDamage::Yes;
+        world.entities.get_mut(key).unwrap().game.health = 100;
+        world.t_damage(
+            key,
+            key,
+            key,
+            Vec3f::X,
+            Vec3f::new(-100.0, 0.0, 0.0),
+            Vec3f::ZERO,
+            30,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Blaster,
+        );
+        assert_eq!(world.client(key).unwrap().damage_parmor, 20);
     }
 
     // -- t_damage tests --
@@ -1248,6 +1769,36 @@ mod tests {
         assert!(v.x > 0.0);
     }
 
+    #[test]
+    fn t_damage_does_not_knock_back_pushers_bouncers_or_fixed_things() {
+        // C ref: T_Damage skips knockback for NONE, BOUNCE, PUSH and STOP.
+        for movetype in [
+            MoveType::None,
+            MoveType::Bounce,
+            MoveType::Push,
+            MoveType::Stop,
+        ] {
+            let mut world = test_world();
+            let target = damageable(&mut world, Vec3f::ZERO, 100);
+            world.entities.get_mut(target).unwrap().game.movetype = movetype;
+            let attacker = world.spawn().unwrap();
+            world.t_damage(
+                target,
+                attacker,
+                attacker,
+                Vec3f::X,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                10,
+                50,
+                DamageFlags::empty(),
+                MeansOfDeath::Shotgun,
+            );
+            let v = world.entities.get(target).unwrap().velocity;
+            assert_eq!(v, Vec3f::ZERO, "{movetype:?}");
+        }
+    }
+
     /// A mass-100 step entity with 100 health, hit along +x for 50 knockback
     /// by `attacker`; returns its velocity.
     fn knockback_velocity(
@@ -1406,6 +1957,51 @@ mod tests {
         assert_eq!(world.entities.get(target).unwrap().game.health, 140);
     }
 
+    #[test]
+    fn a_monster_killed_by_damage_takes_no_more_knockback() {
+        // C ref: T_Damage sets FL_NO_KNOCKBACK on a dying monster or client.
+        let mut world = test_world();
+        let monster = damageable(&mut world, Vec3f::ZERO, 10);
+        world.entities.get_mut(monster).unwrap().svflags = SvFlags::MONSTER.bits();
+        let attacker = world.spawn().unwrap();
+        world.t_damage(
+            monster,
+            attacker,
+            attacker,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            20,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Unknown,
+        );
+        let flags = world.entities.get(monster).unwrap().game.flags;
+        assert!(flags.contains(EntityFlags::NO_KNOCKBACK));
+    }
+
+    #[test]
+    fn t_damage_gives_no_surprise_bonus_against_a_corpse() {
+        // C ref: T_Damage doubles only while targ->health > 0.
+        let mut world = test_world();
+        let target = damageable(&mut world, Vec3f::ZERO, 0);
+        world.entities.get_mut(target).unwrap().svflags = SvFlags::MONSTER.bits();
+        let attacker = world.spawn_test_client(crate::entity::ClientData::default());
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            30,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Railgun,
+        );
+        assert_eq!(world.entities.get(target).unwrap().game.health, -30);
+    }
+
     // -- t_radius_damage tests --
 
     #[test]
@@ -1467,6 +2063,54 @@ mod tests {
         // points = 120 - 0.5 * 50 = 95
         // health = 200 - 95 = 105
         assert_eq!(health, 105);
+    }
+
+    #[test]
+    fn radius_damage_falls_off_with_the_distance_to_the_box_centre() {
+        // C ref: T_RadiusDamage, v = inflictor - (origin + (mins+maxs)/2).
+        let mut world = test_world();
+        let inflictor = world.spawn().unwrap();
+        world.entities.get_mut(inflictor).unwrap().state.origin = Vec3f::new(10.0, 0.0, 0.0);
+        let target = damageable(&mut world, Vec3f::new(40.0, 0.0, 0.0), 1000);
+        let ent = world.entities.get_mut(target).unwrap();
+        ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
+        ent.maxs = Vec3f::new(32.0, 16.0, 40.0);
+
+        world.t_radius_damage(
+            inflictor,
+            inflictor,
+            100.0,
+            None,
+            200.0,
+            MeansOfDeath::RocketSplash,
+        );
+
+        // Centre (48, 0, 8) is 38.8 away: 100 - 19.4 = 80 points.
+        assert_eq!(world.entities.get(target).unwrap().game.health, 920);
+    }
+
+    #[test]
+    fn radius_damage_pushes_away_from_the_blast() {
+        // C ref: T_RadiusDamage, dir = ent->s.origin - inflictor->s.origin.
+        let mut world = test_world();
+        let inflictor = world.spawn().unwrap();
+        world.entities.get_mut(inflictor).unwrap().state.origin = Vec3f::new(100.0, 0.0, 0.0);
+        let target = damageable(&mut world, Vec3f::new(40.0, 0.0, 0.0), 1000);
+        let ent = world.entities.get_mut(target).unwrap();
+        ent.game.movetype = MoveType::Step;
+        ent.game.mass = 100;
+
+        world.t_radius_damage(
+            inflictor,
+            inflictor,
+            100.0,
+            None,
+            200.0,
+            MeansOfDeath::RocketSplash,
+        );
+
+        let v = world.entities.get(target).unwrap().velocity;
+        assert!(v.x < 0.0 && v.y == 0.0 && v.z == 0.0, "{v:?}");
     }
 
     #[test]
@@ -1597,6 +2241,19 @@ mod tests {
     }
 
     #[test]
+    fn killed_non_monster_is_not_counted() {
+        // C ref: Killed counts only SVF_MONSTER targets.
+        let mut world = test_world();
+        let target = world.spawn().unwrap();
+        let attacker = world.spawn().unwrap();
+        world.entities.get_mut(target).unwrap().svflags = SvFlags::NOCLIENT.bits();
+
+        world.killed(target, attacker, attacker, 100, Vec3f::ZERO);
+
+        assert_eq!(world.level.killed_monsters, 0);
+    }
+
+    #[test]
     fn killed_sets_enemy_to_attacker() {
         let mut world = test_world();
         let target = world.spawn().unwrap();
@@ -1713,6 +2370,55 @@ mod tests {
     }
 
     #[test]
+    fn can_damage_probes_the_centre_then_four_corners_in_c_order() {
+        // C ref: CanDamage tries origin, then +x+y, +x-y, -x+y, -x-y by 15.
+        let (mut world, gi) = crate::world::test_world_recording();
+        let target = world.spawn().unwrap();
+        let inflictor = world.spawn().unwrap();
+        let origin = Vec3f::new(100.0, 200.0, 30.0);
+        world.entities.get_mut(target).unwrap().state.origin = origin;
+        let blocked = Trace {
+            fraction: 0.5,
+            ..Trace::default()
+        };
+        *gi.next_trace.borrow_mut() = Some(blocked.clone());
+        gi.queued_traces.borrow_mut().extend([
+            blocked.clone(),
+            blocked.clone(),
+            blocked.clone(),
+            blocked,
+        ]);
+
+        assert!(!world.can_damage(target, inflictor));
+        assert_eq!(
+            *gi.trace_ends.borrow(),
+            [
+                origin,
+                origin + Vec3f::new(15.0, 15.0, 0.0),
+                origin + Vec3f::new(15.0, -15.0, 0.0),
+                origin + Vec3f::new(-15.0, 15.0, 0.0),
+                origin + Vec3f::new(-15.0, -15.0, 0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn can_damage_aims_at_the_centre_of_a_bmodels_box() {
+        // C ref: CanDamage, MOVETYPE_PUSH traces to (absmin + absmax) / 2.
+        let (mut world, gi) = crate::world::test_world_recording();
+        let target = world.spawn().unwrap();
+        let inflictor = world.spawn().unwrap();
+        let t = world.entities.get_mut(target).unwrap();
+        t.game.movetype = MoveType::Push;
+        t.absmin = Vec3f::new(10.0, 20.0, 30.0);
+        t.absmax = Vec3f::new(50.0, 80.0, 40.0);
+
+        world.can_damage(target, inflictor);
+
+        assert_eq!(gi.trace_ends.borrow()[0], Vec3f::new(30.0, 50.0, 35.0));
+    }
+
+    #[test]
     fn t_damage_that_takes_no_health_does_not_kill_again() {
         let mut world = test_world();
         let target = damageable(&mut world, Vec3f::ZERO, 0);
@@ -1761,6 +2467,34 @@ mod tests {
     }
 
     #[test]
+    fn t_damage_negative_damage_heals_a_player_and_causes_pain() {
+        // C T_Damage applies health and pain on `if (take)`, so a map's
+        // negative trigger_hurt dmg heals.
+        let mut world = test_world();
+        let target = world.spawn_test_client(crate::entity::ClientData::default());
+        make_damageable(&mut world, target, Vec3f::ZERO, 50);
+        let attacker = world.spawn().unwrap();
+
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            -5,
+            0,
+            DamageFlags::NO_ARMOR,
+            MeansOfDeath::TriggerHurt,
+        );
+
+        let ent = world.entities.get(target).unwrap();
+        assert_eq!(ent.game.health, 55);
+        assert_eq!(ent.game.style, 1);
+        assert_eq!(world.client(target).unwrap().damage_blood, -5);
+    }
+
+    #[test]
     fn radius_damage_skips_freed_entities() {
         let mut world = test_world();
         let inflictor = world.spawn().unwrap();
@@ -1792,7 +2526,17 @@ mod tests {
 
         // Jacket armor: ceil(0.3f * 50) = 16, as in C (0.3f is a hair
         // over 0.3).
-        assert_eq!(world.check_armor(target, 50, DamageFlags::empty()), 16);
+        assert_eq!(
+            world.check_armor(
+                target,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::empty()
+            ),
+            16
+        );
         assert_eq!(worn(&world, target, "item_armor_jacket"), 34);
     }
 
@@ -1803,9 +2547,29 @@ mod tests {
         let jacket = wearing(&mut world, "item_armor_jacket", 50);
         let combat = wearing(&mut world, "item_armor_combat", 50);
 
-        assert_eq!(world.check_armor(jacket, 50, DamageFlags::ENERGY), 0);
+        assert_eq!(
+            world.check_armor(
+                jacket,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::ENERGY
+            ),
+            0
+        );
         // Combat armor: ceil(0.3f * 50) = 16.
-        assert_eq!(world.check_armor(combat, 50, DamageFlags::ENERGY), 16);
+        assert_eq!(
+            world.check_armor(
+                combat,
+                Vec3f::ZERO,
+                Vec3f::ZERO,
+                50,
+                q2_shared::constants::TE_SPARKS,
+                DamageFlags::ENERGY
+            ),
+            16
+        );
     }
 
     #[test]
@@ -1948,6 +2712,42 @@ mod tests {
     }
 
     #[test]
+    fn killed_monster_keeps_only_its_good_guy_ai_flag() {
+        // C ref: monster_death_use, aiflags &= AI_GOOD_GUY.
+        let mut world = test_world();
+        let monster = dying_monster(&mut world, None);
+        let attacker = world.spawn().unwrap();
+        *aiflags_of(&mut world, monster) = AiFlags::GOOD_GUY | AiFlags::DUCKED;
+
+        world.killed(monster, attacker, attacker, 10, Vec3f::ZERO);
+
+        assert_eq!(*aiflags_of(&mut world, monster), AiFlags::GOOD_GUY);
+    }
+
+    #[test]
+    fn killed_thing_that_is_no_monster_keeps_its_touch() {
+        // C ref: Killed clears touch only for an SVF_MONSTER target.
+        fn touch(
+            _: &mut GameWorld,
+            _: EntityKey,
+            _: EntityKey,
+            _: Option<&Plane>,
+            _: Option<&Surface>,
+        ) {
+        }
+        let mut world = test_world();
+        let barrel = damageable(&mut world, Vec3f::ZERO, 0);
+        let attacker = world.spawn().unwrap();
+        let ent = world.entities.get_mut(barrel).unwrap();
+        ent.game.movetype = MoveType::Step;
+        ent.touch = Some(touch);
+
+        world.killed(barrel, attacker, attacker, 10, Vec3f::ZERO);
+
+        assert!(world.entities.get(barrel).unwrap().touch.is_some());
+    }
+
+    #[test]
     fn killed_good_guy_monster_is_not_counted() {
         let mut world = test_world();
         let monster = damageable(&mut world, Vec3f::ZERO, 0);
@@ -1964,6 +2764,41 @@ mod tests {
         world.killed(monster, attacker, attacker, 10, Vec3f::ZERO);
 
         assert_eq!(world.level.killed_monsters, 0);
+    }
+
+    /// A player in `coop` kills a live monster (a good guy if `good_guy`);
+    /// returns the player's score.
+    fn score_after_killing_monster(coop: bool, good_guy: bool) -> i32 {
+        let mut world = test_world();
+        world.game.coop = coop;
+        let player = world.spawn_test_client(Default::default());
+        let monster = world.spawn().unwrap();
+        {
+            let ent = world.entities.get_mut(monster).unwrap();
+            ent.svflags |= SvFlags::MONSTER.bits();
+            ent.monsterinfo = Some(Box::new(crate::entity::MonsterInfo {
+                aiflags: if good_guy {
+                    AiFlags::GOOD_GUY
+                } else {
+                    AiFlags::empty()
+                },
+                ..Default::default()
+            }));
+        }
+        world.killed(monster, player, player, 10, Vec3f::ZERO);
+        world.client(player).unwrap().resp.score
+    }
+
+    #[test]
+    fn killed_monster_scores_a_point_for_a_coop_player() {
+        // C Killed: `if (coop->value && attacker->client) resp.score++`.
+        assert_eq!(score_after_killing_monster(true, false), 1);
+    }
+
+    #[test]
+    fn killed_monster_scores_nothing_outside_coop_or_for_a_good_guy() {
+        assert_eq!(score_after_killing_monster(false, false), 0);
+        assert_eq!(score_after_killing_monster(true, true), 0);
     }
 
     // -- M_ReactToDamage and the monster branch of T_Damage --
@@ -2070,6 +2905,19 @@ mod tests {
         world.entities.get_mut(monster).unwrap().game.health = 0;
         world.m_react_to_damage(monster, player);
         assert_eq!(enemy(&world, monster), None);
+    }
+
+    #[test]
+    fn m_react_to_damage_from_its_current_enemy_changes_nothing() {
+        // C ref: M_ReactToDamage returns when attacker == targ->enemy.
+        let mut world = test_world();
+        let monster = live_monster(&mut world, "monster_soldier");
+        let tank = live_monster(&mut world, "monster_tank");
+        let player = live_player(&mut world, 100.0);
+        world.entities.get_mut(monster).unwrap().game.enemy = Some(tank);
+        world.entities.get_mut(tank).unwrap().game.enemy = Some(player);
+        world.m_react_to_damage(monster, tank);
+        assert_eq!(enemy(&world, monster), Some(tank));
     }
 
     #[test]
@@ -2237,5 +3085,63 @@ mod tests {
         let ent = world.entities.get(monster).unwrap();
         assert_eq!(ent.game.enemy, Some(player));
         assert_eq!(ent.game.style, 0, "no pain without damage");
+    }
+
+    /// Two connected players wearing the same skin, under `dmflags`.
+    fn teammates(deathmatch: bool, dmflags: i32) -> (GameWorld, EntityKey, EntityKey) {
+        let mut world = test_world();
+        world.init_items();
+        world.set_max_clients(2);
+        world.game.deathmatch = deathmatch;
+        world.game.dmflags = dmflags;
+        let start = world.spawn().unwrap();
+        world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
+        let mut join = |n| {
+            let key = world
+                .connect_client(n, "\\name\\P\\skin\\male/grunt")
+                .unwrap();
+            world.begin_client(key);
+            key
+        };
+        let (me, other) = (join(1), join(2));
+        (world, me, other)
+    }
+
+    fn shoot(world: &mut GameWorld, target: EntityKey, attacker: EntityKey) {
+        world.t_damage(
+            target,
+            attacker,
+            attacker,
+            Vec3f::X,
+            Vec3f::ZERO,
+            Vec3f::ZERO,
+            5,
+            0,
+            DamageFlags::empty(),
+            MeansOfDeath::Shotgun,
+        );
+    }
+
+    #[test]
+    fn hitting_a_teammate_in_deathmatch_is_friendly_fire() {
+        // C ref: T_Damage, deathmatch with DF_MODELTEAMS | DF_SKINTEAMS.
+        let (mut world, me, other) = teammates(true, DF_MODELTEAMS | DF_SKINTEAMS);
+        shoot(&mut world, other, me);
+        assert!(world.friendly_fire);
+    }
+
+    #[test]
+    fn team_flags_outside_deathmatch_and_coop_make_no_teammates() {
+        // C ref: T_Damage, (deathmatch && teams) || coop.
+        let (mut world, me, other) = teammates(false, DF_MODELTEAMS);
+        shoot(&mut world, other, me);
+        assert!(!world.friendly_fire);
+    }
+
+    #[test]
+    fn hitting_someone_off_your_team_is_not_friendly_fire() {
+        let (mut world, me, other) = teammates(true, 0);
+        shoot(&mut world, other, me);
+        assert!(!world.friendly_fire);
     }
 }

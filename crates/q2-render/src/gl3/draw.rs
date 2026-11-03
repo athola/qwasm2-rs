@@ -4,7 +4,7 @@
 
 use glow::HasContext;
 
-use super::lightmap::{BLOCK_HEIGHT, BLOCK_WIDTH, MAX_LIGHTMAPS_PER_SURFACE};
+use super::lightmap::{LightmapPage, BLOCK_HEIGHT, BLOCK_WIDTH, MAX_LIGHTMAPS_PER_SURFACE};
 use super::pics::{batch_runs, Quad, QuadImage, QUAD_VERTICES};
 use super::shader::{
     AliasUniforms, UiUniforms, WorldUniforms, MODE_LIT, MODE_PLAIN, MODE_SKY, MODE_WARP,
@@ -12,6 +12,7 @@ use super::shader::{
 use super::sky::{sky_box_vertices, SKY_TEX_ORDER, VERTEX_FLOATS as SKY_VERTEX_FLOATS};
 use super::texture::{upload_rgba, Image, Sampling, WorldImages, CLAMPED_SAMPLING, WORLD_SAMPLING};
 use super::world::{Batch, Shading, Translucency, WorldMesh, VERTEX_FLOATS};
+use super::IDENTITY_MAT4;
 
 /// Uploaded world model: vertex buffer, textures and the draw list.
 pub struct WorldGpu {
@@ -34,8 +35,9 @@ pub struct SkyGpu {
     faces: Vec<glow::Texture>,
 }
 
-/// World vertex attributes: position, texture uv, lightmap uv, styles.
-const WORLD_ATTRIBUTES: [Attribute; 4] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7)];
+/// World vertex attributes: position, texture uv, lightmap uv, styles,
+/// normal.
+const WORLD_ATTRIBUTES: [Attribute; 5] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7), (4, 3, 11)];
 /// Sky vertices stop after the lightmap uv the sky never reads.
 const SKY_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 2, 5)];
 
@@ -49,7 +51,7 @@ fn float_bytes(floats: &[f32]) -> &[u8] {
 /// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
 /// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
 /// WebGL canvas (alpha, premultiplied) would show the page through it.
-fn set_alpha_blend(gl: &glow::Context) {
+pub(super) fn set_alpha_blend(gl: &glow::Context) {
     // SAFETY: state-only call on the live context `gl`.
     unsafe {
         gl.blend_func_separate(
@@ -130,6 +132,21 @@ fn delete_textures(gl: &glow::Context, textures: &[glow::Texture]) {
     }
 }
 
+/// Every layer of every page as one image, layer `n` of page `p` at
+/// `p * MAX_LIGHTMAPS_PER_SURFACE + n` (see `lightmap_layers`).
+fn lightmap_images(pages: &[LightmapPage]) -> Vec<Image> {
+    pages
+        .iter()
+        .flat_map(|page| &page.layers)
+        .map(|layer| Image {
+            width: BLOCK_WIDTH,
+            height: BLOCK_HEIGHT,
+            rgba: layer.clone(),
+            is_lava: false,
+        })
+        .collect()
+}
+
 pub fn upload_world(
     gl: &glow::Context,
     images: &WorldImages,
@@ -141,18 +158,7 @@ pub fn upload_world(
         gl,
         images.images.iter().map(|image| (image, &WORLD_SAMPLING)),
     )?;
-    let page_images: Vec<Image> = mesh
-        .lightmaps
-        .pages
-        .iter()
-        .flat_map(|page| &page.layers)
-        .map(|layer| Image {
-            width: BLOCK_WIDTH,
-            height: BLOCK_HEIGHT,
-            rgba: layer.clone(),
-            is_lava: false,
-        })
-        .collect();
+    let page_images = lightmap_images(&mesh.lightmaps.pages);
     let lightmaps = match upload_all(gl, page_images.iter().map(|page| (page, &CLAMPED_SAMPLING))) {
         Ok(pages) => pages,
         Err(error) => {
@@ -241,6 +247,7 @@ pub fn draw_sky(gl: &glow::Context, uniforms: &WorldUniforms, sky: &SkyGpu, view
         gl.disable(glow::DEPTH_TEST);
         gl.disable(glow::CULL_FACE);
         gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, &IDENTITY_MAT4);
         gl.uniform_1_i32(uniforms.mode.as_ref(), MODE_SKY);
         gl.uniform_1_f32(uniforms.scroll.as_ref(), 0.0);
         gl.active_texture(glow::TEXTURE0);
@@ -274,6 +281,8 @@ impl BatchFilter {
 /// One world or brush-entity draw.
 pub struct BatchDraw<'a> {
     pub view_proj: &'a [f32; 16],
+    /// Model to world (C `transModel`): identity for the world.
+    pub model: &'a [f32; 16],
     pub time: f32,
     /// Texture animation frame (C `R_TextureAnimation`).
     pub frame: i32,
@@ -303,6 +312,33 @@ fn batch_blends(translucency: Translucency, translucent_entity: bool) -> bool {
     translucent_entity || translucency != Translucency::Opaque
 }
 
+/// The world shader's `u_mode` for a batch.
+fn shading_mode(shading: Shading) -> i32 {
+    match shading {
+        Shading::Lit => MODE_LIT,
+        Shading::Plain => MODE_PLAIN,
+        Shading::Warp => MODE_WARP,
+    }
+}
+
+/// Warp brightness on top of intensity: lava full, water and slime half.
+/// C ref: gl3_warp.c `GL3_EmitWaterPolys` (`lightScale`).
+fn turb_light(lava: bool) -> f32 {
+    if lava {
+        1.0
+    } else {
+        0.5
+    }
+}
+
+/// Indices into `WorldGpu::lightmaps` of a page's layers, bound to units
+/// 1.. in layer order (`upload_world` stores layer `n` of page `p` at
+/// `p * MAX_LIGHTMAPS_PER_SURFACE + n`).
+fn lightmap_layers(page: usize) -> std::ops::Range<usize> {
+    let first = page * MAX_LIGHTMAPS_PER_SURFACE;
+    first..first + MAX_LIGHTMAPS_PER_SURFACE
+}
+
 /// Draw the selected batches of one model. Translucent batches blend and
 /// write no depth. `batches` must come from `world`.
 pub fn draw_batches(
@@ -318,6 +354,7 @@ pub fn draw_batches(
     // currently bound program.
     unsafe {
         gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, draw.view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, draw.model);
         gl.uniform_1_f32(uniforms.time.as_ref(), draw.time);
         gl.bind_vertex_array(Some(world.vao));
         let (mut blending, mut writing_depth) = (false, true);
@@ -339,12 +376,7 @@ pub fn draw_batches(
                 gl.depth_mask(!blend);
                 writing_depth = !blend;
             }
-            let mode = match batch.shading {
-                Shading::Lit => MODE_LIT,
-                Shading::Plain => MODE_PLAIN,
-                Shading::Warp => MODE_WARP,
-            };
-            gl.uniform_1_i32(uniforms.mode.as_ref(), mode);
+            gl.uniform_1_i32(uniforms.mode.as_ref(), shading_mode(batch.shading));
             gl.uniform_1_f32(uniforms.alpha.as_ref(), batch.translucency.alpha());
             gl.uniform_1_f32(
                 uniforms.scroll.as_ref(),
@@ -352,15 +384,12 @@ pub fn draw_batches(
             );
             let image = batch.image(draw.frame);
             let lava = world.is_lava.get(image).copied().unwrap_or(false);
-            gl.uniform_1_f32(uniforms.turb_light.as_ref(), if lava { 1.0 } else { 0.5 });
+            gl.uniform_1_f32(uniforms.turb_light.as_ref(), turb_light(lava));
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, world.textures.get(image).copied());
             if batch.shading == Shading::Lit {
-                let first = batch.lightmap_page * MAX_LIGHTMAPS_PER_SURFACE;
-                for (unit, layer) in
-                    (glow::TEXTURE1..).zip(first..first + MAX_LIGHTMAPS_PER_SURFACE)
-                {
+                for (unit, layer) in (glow::TEXTURE1..).zip(lightmap_layers(batch.lightmap_page)) {
                     gl.active_texture(unit);
                     gl.bind_texture(glow::TEXTURE_2D, world.lightmaps.get(layer).copied());
                 }
@@ -434,7 +463,7 @@ pub fn free_stream_buffer(gl: &glow::Context, stream: StreamBuffer) {
 }
 
 /// Replace the stream's contents and leave its VAO bound.
-fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
+pub(super) fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
     let bytes = float_bytes(floats);
     // SAFETY: `stream` objects belong to `gl`; `bytes` borrows `floats` and
     // `buffer_data_u8_slice` copies it before returning.
@@ -453,6 +482,8 @@ pub struct MeshDraw<'a> {
     pub texture: Option<glow::Texture>,
     pub mvp: &'a [f32; 16],
     pub blend: bool,
+    /// Draw the vertex colour alone (colour shells).
+    pub color_only: bool,
 }
 
 /// Draw one MD2 mesh under the world's cull state: MD2 triangles wind like
@@ -469,6 +500,7 @@ pub fn draw_mesh(
     // location belongs to the currently bound MD2 program.
     unsafe {
         gl.uniform_matrix_4_f32_slice(uniforms.mvp.as_ref(), false, draw.mvp);
+        gl.uniform_1_i32(uniforms.color_only.as_ref(), i32::from(draw.color_only));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, draw.texture);
         if draw.blend {
@@ -541,9 +573,150 @@ pub fn draw_ui(
     }
 }
 
+/// The `(location, components)` of every `layout(location = N) in` of a
+/// vertex shader.
+#[cfg(test)]
+pub(super) fn declared_attributes(vertex_src: &str) -> Vec<(u32, i32)> {
+    vertex_src
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("layout(location = ")?;
+            let (location, rest) = rest.split_once(") in ")?;
+            let components = match rest.split_whitespace().next()? {
+                "float" => 1,
+                "vec2" => 2,
+                "vec3" => 3,
+                "vec4" => 4,
+                other => panic!("attribute type {other}"),
+            };
+            Some((location.parse().ok()?, components))
+        })
+        .collect()
+}
+
+/// `attributes` fill a `stride_floats` vertex end to end, in order, and
+/// each matches a declared input of `vertex_src`; `complete` also requires
+/// every declared input to be fed.
+#[cfg(test)]
+pub(super) fn assert_layout(
+    attributes: &[Attribute],
+    stride_floats: usize,
+    vertex_src: &str,
+    complete: bool,
+) {
+    let declared = declared_attributes(vertex_src);
+    let mut next = 0;
+    for &(location, components, offset) in attributes {
+        assert_eq!(offset, next, "attribute {location} offset");
+        next += usize::try_from(components).unwrap();
+        assert!(
+            declared.contains(&(location, components)),
+            "attribute {location} x{components} not in {declared:?}"
+        );
+    }
+    assert_eq!(next, stride_floats, "attributes end at the stride");
+    let mut fed: Vec<(u32, i32)> = attributes.iter().map(|&(l, c, _)| (l, c)).collect();
+    fed.sort_unstable();
+    fed.dedup_by_key(|&mut (location, _)| location);
+    assert_eq!(fed.len(), attributes.len(), "one attribute per location");
+    if complete {
+        let mut declared = declared;
+        declared.sort_unstable();
+        assert_eq!(fed, declared, "every input is fed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gl3::shader::VERTEX_SRC;
+
+    #[test]
+    fn world_vertices_feed_every_world_shader_input_in_the_mesh_layout() {
+        assert_layout(&WORLD_ATTRIBUTES, VERTEX_FLOATS, VERTEX_SRC, true);
+    }
+
+    #[test]
+    fn sky_vertices_feed_position_and_uvs_of_the_world_shader() {
+        assert_layout(&SKY_ATTRIBUTES, SKY_VERTEX_FLOATS, VERTEX_SRC, false);
+    }
+
+    fn batch(first_vertex: i32) -> Batch {
+        Batch {
+            shading: Shading::Lit,
+            translucency: Translucency::Opaque,
+            frames: vec![0],
+            lightmap_page: 0,
+            flowing: false,
+            first_vertex,
+            vertex_count: 3,
+            areas: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn model_0_is_the_world_and_n_is_inline_model_star_n() {
+        let handle = |n| std::num::NonZeroU32::new(n).unwrap();
+        let world = WorldGpu {
+            vao: glow::NativeVertexArray(handle(1)),
+            vbo: glow::NativeBuffer(handle(2)),
+            batches: vec![batch(0)],
+            submodels: vec![vec![batch(10)], vec![batch(20), batch(23)]],
+            textures: Vec::new(),
+            is_lava: Vec::new(),
+            lightmaps: Vec::new(),
+        };
+        let firsts = |model| {
+            world
+                .model_batches(model)
+                .map(|batches| batches.iter().map(|b| b.first_vertex).collect::<Vec<_>>())
+        };
+        assert_eq!(firsts(0), Some(vec![0]));
+        assert_eq!(firsts(1), Some(vec![10]));
+        assert_eq!(firsts(2), Some(vec![20, 23]));
+        assert_eq!(firsts(3), None);
+    }
+
+    // C draws SURF_TRANS33/66 faces only from the alpha chain, never in
+    // the opaque pass, and the alpha pass draws nothing else.
+    #[test]
+    fn the_opaque_pass_takes_only_opaque_batches_and_the_translucent_pass_the_rest() {
+        assert!(BatchFilter::Opaque.includes(Translucency::Opaque));
+        assert!(!BatchFilter::Translucent.includes(Translucency::Opaque));
+        for translucent in [Translucency::Third, Translucency::TwoThirds] {
+            assert!(!BatchFilter::Opaque.includes(translucent));
+            assert!(BatchFilter::Translucent.includes(translucent));
+        }
+    }
+
+    #[test]
+    fn each_shading_selects_its_world_shader_mode() {
+        assert_eq!(shading_mode(Shading::Lit), MODE_LIT);
+        assert_eq!(shading_mode(Shading::Plain), MODE_PLAIN);
+        assert_eq!(shading_mode(Shading::Warp), MODE_WARP);
+        assert!(VERTEX_SRC.contains(&format!("if (u_mode != {MODE_WARP})")));
+    }
+
+    #[test]
+    fn lava_warps_at_full_brightness_and_other_warps_at_half_like_c() {
+        // C ref: gl3_warp.c `lightScale = is_lava ? 1.0f : 0.5f`.
+        assert_eq!(turb_light(true), 1.0);
+        assert_eq!(turb_light(false), 0.5);
+    }
+
+    #[test]
+    fn a_lit_batch_binds_the_four_layers_of_its_own_page_in_order() {
+        let pages: Vec<LightmapPage> = (0..3u8)
+            .map(|page| LightmapPage {
+                layers: std::array::from_fn(|layer| vec![page * 10 + layer as u8]),
+            })
+            .collect();
+        let images = lightmap_images(&pages);
+        assert_eq!(images.len(), 3 * MAX_LIGHTMAPS_PER_SURFACE);
+        let bound: Vec<u8> = lightmap_layers(2).map(|i| images[i].rgba[0]).collect();
+        assert_eq!(bound, [20, 21, 22, 23]);
+        assert!(images.iter().all(|image| !image.is_lava));
+    }
 
     #[test]
     fn float_bytes_are_the_native_bytes_of_each_float_in_order() {

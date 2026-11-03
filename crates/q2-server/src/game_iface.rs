@@ -17,12 +17,13 @@ use q2_common::net_msg::NetMsg;
 use q2_game::traits::{EntityLink, GameImport, ModelInfo};
 use q2_shared::{
     constants::{
-        CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MAX_CONFIGSTRINGS, MAX_EDICTS,
-        MAX_IMAGES, MAX_MODELS, MAX_SOUNDS,
+        CONTENTS_DEADMONSTER, CS_IMAGES, CS_MODELS, CS_SOUNDS, MASK_WATER, MAX_CONFIGSTRINGS,
+        MAX_EDICTS, MAX_IMAGES, MAX_MODELS, MAX_SOUNDS,
     },
     types::*,
 };
 
+use crate::state::ClientState;
 use crate::vis::{entity_clusters, fat_pvs, in_pvs, EntityClusters, MAX_TOTAL_ENT_LEAFS};
 use crate::world::{ServerWorld, AREA_SOLID};
 
@@ -31,8 +32,9 @@ use crate::world::{ServerWorld, AREA_SOLID};
 // ---------------------------------------------------------------------------
 
 struct GiInner {
-    /// Outbound message buffer accumulating write_* calls; discarded (not sent)
-    /// when multicast/unicast is called until proper routing is implemented.
+    /// Outbound message buffer accumulating write_* calls (C
+    /// `sv.multicast`); multicast/unicast copy it to `messages` when the
+    /// local client gets it, and clear it either way.
     /// Uses `NetMsg` so game-written temp entities encode byte-for-byte like
     /// every other server message (MSG_Write* in C).
     msg_buf: NetMsg,
@@ -61,8 +63,23 @@ struct GiInner {
     /// Console text the game queued (C `gi.AddCommandString` ->
     /// `Cbuf_AddText`), for the server loop to run.
     commands: String,
+    /// Cvars set for the game to read (C's shared cvar table).
+    cvars: std::collections::HashMap<String, String>,
+    /// The local wall clock the engine last gave (hours, minutes, seconds).
+    local_time: Option<(u32, u32, u32)>,
     /// Sounds the game started since the last `take_sounds`.
     sounds: Vec<SoundEvent>,
+    /// The client command being run (C `Cmd_TokenizeString`'s `cmd_argv`
+    /// and `cmd_args`), for the game's `argv`/`args`.
+    command_argv: Vec<String>,
+    command_args: String,
+    /// Messages the game multicast since the last `take_messages`
+    /// (muzzle flashes, temp entities), whole.
+    messages: Vec<Vec<u8>>,
+    /// The client slots' states (C `svs.clients[i].state`, slot `i` for
+    /// entity `i + 1`); the slot count is C `maxclients`. No slots until
+    /// the server sets them.
+    clients: Vec<ClientState>,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -106,7 +123,13 @@ impl GiInner {
             clusters: vec![EntityClusters::List(Vec::new()); MAX_EDICTS],
             areas: vec![(0, 0); MAX_EDICTS],
             commands: String::new(),
+            cvars: std::collections::HashMap::new(),
+            local_time: None,
             sounds: Vec::new(),
+            command_argv: Vec::new(),
+            command_args: String::new(),
+            messages: Vec::new(),
+            clients: Vec::new(),
         }
     }
 
@@ -233,9 +256,100 @@ impl ServerGameImport {
         }
     }
 
+    /// Tokenize a client's command for the game to read (C
+    /// `SV_ExecuteUserCommand` -> `Cmd_TokenizeString`): `args` is the
+    /// raw rest of the line after the first token, trailing whitespace
+    /// cut.
+    pub fn set_client_command(&self, text: &str) {
+        let line = text.split('\n').next().unwrap_or_default();
+        let rest = line.trim_start_matches(|c: char| c <= ' ');
+        let rest = rest.trim_start_matches(|c: char| c > ' ');
+        let args = rest
+            .trim_start_matches(|c: char| c <= ' ')
+            .trim_end_matches(|c: char| c <= ' ');
+        let mut inner = self.inner.borrow_mut();
+        inner.command_argv = q2_common::cmd::tokenize(text);
+        inner.command_args = args.to_string();
+    }
+
+    /// The engine's local wall clock for the game (C's game calls
+    /// `localtime` itself; here the engine supplies it).
+    pub fn set_local_time(&self, hms: Option<(u32, u32, u32)>) {
+        self.inner.borrow_mut().local_time = hms;
+    }
+
+    /// Set cvar `name` for the game (C `Cvar_Set` on the shared table).
+    pub fn set_cvar(&self, name: &str, value: &str) {
+        self.inner
+            .borrow_mut()
+            .cvars
+            .insert(name.to_string(), value.to_string());
+    }
+
+    /// Mirror the client slots' states, one per slot in slot order, for
+    /// the prints and messages the game routes to clients (C reads
+    /// `svs.clients` and `maxclients` there). `Server::map` sets them before
+    /// the settling frames and `LocalGame` after the client connects and
+    /// begins; `ServerStatic`'s connect and begin take no import, so the
+    /// game's `ClientConnect`/`ClientBegin` run against the states from
+    /// before them.
+    pub fn set_client_states(&self, states: impl IntoIterator<Item = ClientState>) {
+        self.inner.borrow_mut().clients = states.into_iter().collect();
+    }
+
     /// The console text queued by `add_command_string` since the last call.
     pub fn take_commands(&self) -> String {
         std::mem::take(&mut self.inner.borrow_mut().commands)
+    }
+
+    /// C SV_Multicast's mask test for client entity `number`: its origin
+    /// is in the PVS (PHS when `phs`) of `origin` with the areas
+    /// connected, or, when the origin is in water, the point 32 units
+    /// above it is. C reads the live edict's origin; here it is the origin
+    /// of the entity's last link, and an entity never linked gets nothing.
+    fn client_in_mask(&self, number: usize, origin: Vec3f, phs: bool) -> bool {
+        let link = self.inner.borrow().links.get(number).copied().flatten();
+        let Some(mut at) = link.map(|link| link.origin) else {
+            return false;
+        };
+        for _ in 0..2 {
+            let reached = if phs {
+                self.in_phs(origin, at)
+            } else {
+                self.in_pvs(origin, at)
+            };
+            if reached {
+                return true;
+            }
+            let contents = self.inner.borrow().collision.point_contents(at, 0);
+            if contents & MASK_WATER == 0 {
+                return false;
+            }
+            at.z += 32.0;
+        }
+        false
+    }
+
+    /// Whether entity `number` is a client's (C `1..=maxclients`).
+    fn is_client(&self, number: usize) -> bool {
+        (1..=self.inner.borrow().clients.len()).contains(&number)
+    }
+
+    /// Queue an `svc_print` of `msg` at `level` for the local client.
+    fn queue_print(&self, level: i32, msg: &str) {
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::Print as i32);
+        message.write_byte(level);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
+    }
+
+    /// The messages the game multicast since the last call, in order.
+    pub fn take_messages(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.inner.borrow_mut().messages)
     }
 
     /// The sounds the game started since the last call, in order.
@@ -402,20 +516,50 @@ impl Default for ServerGameImport {
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
-    fn bprintf(&self, _printlevel: i32, msg: &str) {
+    /// C SV_BroadcastPrintf: every `cs_spawned` client gets an
+    /// `svc_print`; a connecting client (or a free slot) gets nothing.
+    fn bprintf(&self, printlevel: i32, msg: &str) {
         tracing::info!("[bprintf] {}", msg.trim_end());
+        let spawned = self.inner.borrow().clients.contains(&ClientState::Spawned);
+        if spawned {
+            self.queue_print(printlevel, msg);
+        }
     }
 
     fn dprintf(&self, msg: &str) {
         tracing::debug!("[dprintf] {}", msg.trim_end());
     }
 
-    fn cprintf(&self, ent_idx: Option<usize>, _printlevel: i32, msg: &str) {
+    /// C PF_cprintf: to a client as `svc_print`, or the console for none.
+    /// C raises ERR_DROP "cprintf to a non-client" for an entity outside
+    /// `1..=maxclients`; the trait cannot fail, so the print is logged as
+    /// an error and dropped.
+    fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
+        let Some(ent) = ent_idx else {
+            return;
+        };
+        if self.is_client(ent) {
+            self.queue_print(printlevel, msg);
+        } else {
+            tracing::error!(ent, "cprintf to a non-client");
+        }
     }
 
+    /// C PF_centerprintf: an `svc_centerprint` to the client; nothing for
+    /// an entity outside `1..=maxclients` (a monster or trigger activator).
     fn centerprintf(&self, ent_idx: Option<usize>, msg: &str) {
         tracing::debug!(ent = ?ent_idx, "[centerprintf] {}", msg.trim_end());
+        if !ent_idx.is_some_and(|ent| self.is_client(ent)) {
+            return;
+        }
+        let mut message = NetMsg::new();
+        message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
+        message.write_string(msg);
+        self.inner
+            .borrow_mut()
+            .messages
+            .push(message.data().to_vec());
     }
 
     // -- sound ---------------------------------------------------------------
@@ -784,30 +928,86 @@ impl GameImport for ServerGameImport {
 
     // -- multicast / unicast (flush message buffer) -------------------------
 
-    fn multicast(&self, _origin: Vec3f, _to: Multicast) {
-        self.inner.borrow_mut().msg_buf.clear();
+    /// C SV_Multicast: the message is queued when a client gets it. A
+    /// client gets it when its slot is in the game (or connected, for a
+    /// reliable message) and, for PVS or PHS, when its origin's cluster is
+    /// in the row of `origin`'s cluster and their areas are connected,
+    /// trying 32 units higher for an origin in water. The import keeps
+    /// one queue, for the one local client.
+    fn multicast(&self, origin: Vec3f, to: Multicast) {
+        // (reliable, mask), the mask being `Some(true)` for the PHS.
+        let (reliable, phs) = match to {
+            Multicast::All => (false, None),
+            Multicast::AllR => (true, None),
+            Multicast::PVS => (false, Some(false)),
+            Multicast::PVSR => (true, Some(false)),
+            Multicast::PHS => (false, Some(true)),
+            Multicast::PHSR => (true, Some(true)),
+        };
+        let clients = self.inner.borrow().clients.clone();
+        let sent = clients.iter().enumerate().any(|(slot, &state)| {
+            let in_game = match state {
+                ClientState::Free => false,
+                ClientState::Connected => reliable,
+                ClientState::Spawned => true,
+            };
+            in_game && phs.is_none_or(|phs| self.client_in_mask(slot + 1, origin, phs))
+        });
+        let mut inner = self.inner.borrow_mut();
+        if sent && !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
-    fn unicast(&self, _ent_idx: usize, _reliable: bool) {
-        self.inner.borrow_mut().msg_buf.clear();
+    /// C PF_Unicast: the message goes to client `ent_idx`, and nowhere for
+    /// an entity outside `1..=maxclients`. C returns there without
+    /// clearing `sv.multicast`, so the bytes would lead the next message;
+    /// here the buffer is cleared either way.
+    fn unicast(&self, ent_idx: usize, _reliable: bool) {
+        let is_client = self.is_client(ent_idx);
+        let mut inner = self.inner.borrow_mut();
+        if is_client && !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     // -- command args --------------------------------------------------------
 
     fn argc(&self) -> i32 {
-        0
+        self.inner.borrow().command_argv.len() as i32
     }
 
-    fn argv(&self, _n: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let inner = self.inner.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| inner.command_argv.get(n).cloned())
+            .unwrap_or_default()
     }
 
     fn args(&self) -> String {
-        String::new()
+        self.inner.borrow().command_args.clone()
     }
 
     fn add_command_string(&self, text: &str) {
         self.inner.borrow_mut().commands.push_str(text);
+    }
+
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.inner.borrow().local_time
+    }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.inner
+            .borrow()
+            .cvars
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -842,6 +1042,130 @@ mod tests {
             time_ofs: 100.0 / 1000.0,
             origin,
         }
+    }
+
+    /// An import with one client slot in the game (C maxclients 1).
+    fn one_client() -> ServerGameImport {
+        let gi = ServerGameImport::new();
+        gi.set_client_states([ClientState::Spawned]);
+        gi
+    }
+
+    #[test]
+    fn centerprintf_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.centerprintf(Some(0), "the world");
+        gi.centerprintf(Some(2), "a monster");
+        gi.centerprintf(None, "no entity");
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn cprintf_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.cprintf(Some(0), 1, "the world\n");
+        gi.cprintf(Some(2), 1, "a monster\n");
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn unicast_to_a_non_client_entity_queues_nothing() {
+        let gi = one_client();
+        gi.write_byte(4);
+        gi.unicast(0, true);
+        gi.write_byte(5);
+        gi.unicast(2, false);
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn bprintf_reaches_no_client_that_is_not_spawned() {
+        // C SV_BroadcastPrintf skips every client not `cs_spawned`.
+        for state in [ClientState::Free, ClientState::Connected] {
+            let gi = ServerGameImport::new();
+            gi.set_client_states([state]);
+            gi.bprintf(2, "Ann died.\n");
+            assert!(gi.take_messages().is_empty(), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn prints_reach_the_local_client_as_svc_print_and_centerprint() {
+        use q2_shared::protocol::SvcOp;
+        let gi = one_client();
+        gi.bprintf(2, "Ann died.\n");
+        gi.cprintf(Some(1), 1, "No cells.\n");
+        gi.cprintf(None, 1, "console only\n");
+        gi.centerprintf(Some(1), "The door is locked");
+        let mut print = vec![SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"Ann died.\n\0");
+        let mut cprint = vec![SvcOp::Print as u8, 1];
+        cprint.extend_from_slice(b"No cells.\n\0");
+        let mut center = vec![SvcOp::CenterPrint as u8];
+        center.extend_from_slice(b"The door is locked\0");
+        assert_eq!(gi.take_messages(), vec![print, cprint, center]);
+    }
+
+    #[test]
+    fn a_unicast_message_is_queued_for_the_local_client() {
+        let gi = one_client();
+        gi.write_byte(4);
+        gi.write_string("xv 0");
+        gi.unicast(1, true);
+        assert_eq!(gi.take_messages(), vec![vec![4, b'x', b'v', b' ', b'0', 0]]);
+    }
+
+    #[test]
+    fn a_multicast_message_is_queued_for_the_local_client() {
+        let gi = one_client();
+        gi.write_byte(1);
+        gi.write_short(5);
+        gi.write_byte(7);
+        gi.multicast(Vec3f::ZERO, Multicast::All);
+        gi.write_byte(3);
+        gi.multicast(Vec3f::ZERO, Multicast::AllR);
+        assert_eq!(gi.take_messages(), vec![vec![1, 5, 0, 7], vec![3]]);
+        assert!(gi.take_messages().is_empty(), "taken once");
+        assert_eq!(gi.inner.borrow().msg_buf.len(), 0, "the buffer starts over");
+    }
+
+    #[test]
+    fn an_empty_multicast_queues_nothing() {
+        let gi = one_client();
+        gi.multicast(Vec3f::ZERO, Multicast::All);
+        assert!(gi.take_messages().is_empty());
+    }
+
+    #[test]
+    fn a_multicast_no_client_gets_still_clears_the_buffer() {
+        let gi = ServerGameImport::new();
+        gi.write_byte(1);
+        gi.multicast(Vec3f::ZERO, Multicast::AllR);
+        assert!(gi.take_messages().is_empty());
+        assert!(gi.inner.borrow().msg_buf.is_empty());
+    }
+
+    #[test]
+    fn a_client_command_is_tokenized_for_argv_and_args_like_c() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("use  Super Shotgun \n");
+        assert_eq!(gi.argc(), 3);
+        assert_eq!(gi.argv(0), "use");
+        assert_eq!(gi.argv(2), "Shotgun");
+        assert_eq!(gi.argv(3), "");
+        assert_eq!(gi.argv(-1), "");
+        // C Cmd_Args: the raw rest of the line, trailing whitespace cut.
+        assert_eq!(gi.args(), "Super Shotgun");
+    }
+
+    #[test]
+    fn args_keeps_quotes_as_typed() {
+        let gi = ServerGameImport::new();
+        gi.set_client_command("say \"hi there\"");
+        assert_eq!(gi.argv(1), "hi there");
+        assert_eq!(gi.args(), "\"hi there\"");
+        gi.set_client_command("weapnext");
+        assert_eq!((gi.argc(), gi.args()), (1, String::new()));
     }
 
     #[test]
@@ -936,6 +1260,22 @@ mod tests {
         // The limits themselves are allowed.
         gi.sound(Some(3), 0, 5, 1.0, 4.0, 0.255);
         assert_eq!(gi.take_sounds().len(), 1);
+    }
+
+    #[test]
+    fn the_game_reads_the_local_time_the_engine_set() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.local_time(), None);
+        gi.set_local_time(Some((23, 59, 1)));
+        assert_eq!(gi.local_time(), Some((23, 59, 1)));
+    }
+
+    #[test]
+    fn the_game_reads_a_set_cvar_and_otherwise_its_default() {
+        let gi = ServerGameImport::new();
+        assert_eq!(gi.cvar("cl_gun", "2"), "2");
+        gi.set_cvar("cl_gun", "0");
+        assert_eq!(gi.cvar("cl_gun", "2"), "0");
     }
 
     #[test]
@@ -1096,19 +1436,6 @@ mod tests {
         let inner = gi.inner.borrow();
         let expected = ((90.0f32 * 256.0 / 360.0) as i32 & 255) as u8;
         assert_eq!(inner.msg_buf.data()[0], expected);
-    }
-
-    #[test]
-    fn multicast_clears_buf() {
-        let gi = ServerGameImport::new();
-        gi.write_byte(1);
-        gi.write_byte(2);
-        gi.multicast(
-            q2_shared::types::Vec3f::new(0.0, 0.0, 0.0),
-            q2_shared::types::Multicast::All,
-        );
-        let inner = gi.inner.borrow();
-        assert!(inner.msg_buf.is_empty());
     }
 
     #[test]

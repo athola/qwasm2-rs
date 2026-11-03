@@ -1,3 +1,4 @@
+use q2_shared::constants::{BUTTON_ANY, BUTTON_ATTACK, BUTTON_USE};
 use q2_shared::types::*;
 
 /// Default `cl_forwardspeed`, `cl_sidespeed` and `cl_upspeed` (cl_main.c),
@@ -5,12 +6,6 @@ use q2_shared::types::*;
 const CL_FORWARDSPEED: f32 = 200.0;
 const CL_SIDESPEED: f32 = 200.0;
 const CL_UPSPEED: f32 = 200.0;
-
-/// `usercmd_t.buttons` bits (shared.h).
-pub const BUTTON_ATTACK: u8 = 1;
-pub const BUTTON_USE: u8 = 2;
-/// Any key whatsoever.
-pub const BUTTON_ANY: u8 = 128;
 
 /// Input state
 #[derive(Debug)]
@@ -76,8 +71,9 @@ impl InputState {
             forwardmove: (self.forward_move.clamp(-1.0, 1.0) * CL_FORWARDSPEED * speed) as i16,
             sidemove: (self.side_move.clamp(-1.0, 1.0) * CL_SIDESPEED * speed) as i16,
             upmove: (up.clamp(-1.0, 1.0) * CL_UPSPEED * speed) as i16,
-            // No weapon-select or inventory input yet (#16): C `in_impulse`
-            // is not produced, and nothing sets `use_btn`.
+            // Weapon and inventory selection go through client commands
+            // (`LocalGame::client_command`); C `in_impulse` is not
+            // produced, and nothing sets `use_btn`.
             impulse: 0,
             lightlevel: 0,
         }

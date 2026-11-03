@@ -10,14 +10,18 @@
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
     // Resolve from the repo root so the bundler works from any directory.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let pkg_dir = root.join("crates/q2-wasm/pkg");
-    let dist_dir = root.join("dist");
+    bundle(&root.join("crates/q2-wasm/pkg"), &root.join("dist"))?;
+    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
+    Ok(())
+}
 
+/// Read the wasm-pack output in `pkg_dir` and write `dist_dir/qwasm2.html`.
+fn bundle(pkg_dir: &Path, dist_dir: &Path) -> Result<PathBuf> {
     // Find the JS glue file
     let js_path = pkg_dir.join("q2_wasm.js");
     let wasm_path = pkg_dir.join("q2_wasm_bg.wasm");
@@ -61,7 +65,7 @@ fn main() -> Result<()> {
     let html = generate_html(&patched_js);
 
     // Write output
-    fs::create_dir_all(&dist_dir)?;
+    fs::create_dir_all(dist_dir)?;
     let output_path = dist_dir.join("qwasm2.html");
     fs::write(&output_path, &html)?;
 
@@ -71,9 +75,8 @@ fn main() -> Result<()> {
         output_path.display(),
         html_size as f64 / 1024.0
     );
-    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
 
-    Ok(())
+    Ok(output_path)
 }
 
 /// Patch the wasm-pack JS glue to load WASM from an inlined base64 string
@@ -238,6 +241,12 @@ fn generate_html(inlined_js: &str) -> String {
     pointer-events: none;
   }}
   #click-prompt.hidden {{ display: none; }}
+  #legend-button {{
+    position: absolute; top: 8px; right: 12px; z-index: 20;
+    background: rgba(0, 0, 0, 0.6); color: #aaa; border: 1px solid #444;
+    padding: 2px 8px; font-size: 11px; font-family: inherit; cursor: pointer;
+  }}
+  #legend-button:hover {{ background: #444; color: #fff; }}
 </style>
 </head>
 <body>
@@ -245,8 +254,9 @@ fn generate_html(inlined_js: &str) -> String {
   <canvas id="canvas"></canvas>
   <div id="crosshair"></div>
   <div id="hud"></div>
-  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
-  <div id="status-container">
+  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console &middot; F4 keys</span></div>
+  <button id="legend-button" onclick="document.dispatchEvent(new Event('qwasm2-legend')); this.blur()">Keys (F4)</button>
+  <div id="status-container" class="hidden">
     <div id="status-toolbar">
       <button onclick="copyLog()">Copy to clipboard</button>
       <button onclick="saveLog()">Save to file</button>
@@ -334,6 +344,8 @@ try {{
   const line = document.createElement('span');
   line.className = 'fail';
   line.textContent = 'ERROR: ' + e;
+  // The console starts hidden; show it so the error is seen.
+  document.getElementById('status-container').classList.remove('hidden');
   const statusEl = document.getElementById('status');
   statusEl.appendChild(line);
   statusEl.appendChild(document.createTextNode('\n'));
@@ -419,6 +431,56 @@ mod tests {
     }
 
     #[test]
+    fn patch_fails_when_wasm_url_appears_twice() {
+        let glue = format!("{GLUE}\nconst again = new URL('q2_wasm_bg.wasm', import.meta.url);\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("found 2"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_import_meta_url_is_left_over() {
+        let glue = format!("{GLUE}\nconst base = import.meta.url;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("import.meta.url"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_on_an_unhandled_export() {
+        let glue = format!("{GLUE}\nexport const extra = 1;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("export const extra"), "{err}");
+    }
+
+    #[test]
+    fn bundle_inlines_the_wasm_bytes_into_dist_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("q2_wasm.js"), GLUE).unwrap();
+        let wasm = b"\0asm\x01\0\0\0";
+        fs::write(pkg.join("q2_wasm_bg.wasm"), wasm).unwrap();
+
+        let out = bundle(&pkg, &dir.path().join("dist")).unwrap();
+
+        assert_eq!(out, dir.path().join("dist/qwasm2.html"));
+        let html = fs::read_to_string(&out).unwrap();
+        let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
+        assert!(html.contains(&inlined));
+        assert!(html.contains("await start_game('canvas', pakUrl);"));
+    }
+
+    #[test]
+    fn bundle_without_wasm_pack_output_says_how_to_build_it() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("q2_wasm.js"), GLUE).unwrap();
+        let err = bundle(dir.path(), &dir.path().join("dist"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("wasm-pack build"), "{err}");
+        assert!(!dir.path().join("dist").exists(), "nothing written");
+    }
+
+    #[test]
     fn click_prompt_lets_clicks_through_to_the_canvas() {
         // The prompt sits over the canvas centre; clicks on its text must
         // still reach the canvas to lock the pointer and start audio.
@@ -429,6 +491,38 @@ mod tests {
             .and_then(|r| r.split('}').next())
             .expect("click-prompt rule");
         assert!(rule.contains("pointer-events: none"), "{rule}");
+    }
+
+    #[test]
+    fn the_console_starts_hidden_and_backquote_toggles_it() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<div id="status-container" class="hidden">"#));
+        assert!(html.contains("if (e.code === 'Backquote')"));
+    }
+
+    #[test]
+    fn the_keys_button_asks_the_game_for_its_legend() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<button id="legend-button""#));
+        assert!(html.contains("new Event('qwasm2-legend')"));
+        assert!(html.contains("F4 keys"), "the click prompt names the key");
+    }
+
+    #[test]
+    fn a_startup_error_opens_the_console() {
+        // Hidden by default, the log would otherwise swallow the error.
+        let html = generate_html("");
+        let catch = html
+            .split("}} catch (e) {{")
+            .nth(1)
+            .or_else(|| html.split("} catch (e) {").nth(1));
+        let catch = catch.expect("startup catch block");
+        assert!(
+            catch.contains(
+                "document.getElementById('status-container').classList.remove('hidden');"
+            ),
+            "{catch}"
+        );
     }
 
     #[test]

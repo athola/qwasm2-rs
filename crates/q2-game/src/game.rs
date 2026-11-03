@@ -84,9 +84,10 @@ impl GameExport for GameWorld {
             self.clients[slot] = client;
         }
         self.begin_client(key);
-        // MoveClientToIntermission is not ported: a client joining during
-        // an intermission only misses the effect.
         let intermission = self.level.intermission_time != 0.0;
+        if intermission {
+            self.move_client_to_intermission(key);
+        }
         if self.game.deathmatch {
             if !intermission {
                 self.send_login_effect(key);
@@ -109,7 +110,14 @@ impl GameExport for GameWorld {
         }
     }
 
-    fn client_command(&mut self, _number: usize) {}
+    fn client_command(&mut self, number: usize) {
+        if !self.is_client_number(number) {
+            return;
+        }
+        if let Some(key) = self.entities.key_for_number(number) {
+            GameWorld::client_command(self, key);
+        }
+    }
 
     fn client_think(&mut self, number: usize, cmd: &UserCmd) {
         if !self.is_client_number(number) {
@@ -242,6 +250,29 @@ mod tests {
         let ent = world.entities.get(key).unwrap();
         assert!(!ent.in_use);
         assert_eq!(ent.game.classname, "disconnected");
+    }
+
+    #[test]
+    fn a_client_beginning_during_an_intermission_is_moved_to_it() {
+        // C ClientBegin and ClientBeginDeathmatch call
+        // MoveClientToIntermission when level.intermissiontime is set.
+        for deathmatch in [false, true] {
+            let (mut world, _gi) = test_world_recording();
+            world.set_max_clients(1);
+            world.game.deathmatch = deathmatch;
+            world.init();
+            world.spawn_entities("base1", TWO_STARTS, "");
+            world.level.intermission_time = 3.0;
+            world.level.intermission_origin = q2_shared::Vec3f::new(100.0, 200.0, 40.0);
+            assert!(world.client_connect(1, r"\name\Tester"));
+            world.client_begin(1);
+            let ent = player(&world);
+            assert_eq!(ent.state.origin, q2_shared::Vec3f::new(100.0, 200.0, 40.0));
+            assert_eq!(ent.state.modelindex, 0);
+            let ps = &client(&world).ps;
+            assert_eq!(ps.gunindex, 0, "deathmatch {deathmatch}");
+            assert_eq!(ps.pmove.pm_type, q2_shared::types::PmType::Freeze);
+        }
     }
 
     #[test]

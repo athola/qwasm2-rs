@@ -903,6 +903,12 @@ mod tests {
                 format!("position {start:?}"),
                 format!("position {:?}", Vec3f::new(100.0, 0.0, 24.0)),
                 format!("multicast {:?} PVS", Vec3f::new(0.0, 0.0, 24.0)),
+                // T_Damage's blood on the enemy (C SpawnDamage).
+                format!("byte {}", q2_shared::protocol::SvcOp::TempEntity as i32),
+                format!("byte {}", q2_shared::constants::TE_BLOOD),
+                format!("position {:?}", Vec3f::new(100.0, 0.0, 24.0)),
+                format!("dir {:?}", Vec3f::ZERO),
+                format!("multicast {:?} PVS", Vec3f::new(100.0, 0.0, 24.0)),
             ]
         );
     }

@@ -47,11 +47,6 @@ fn multi_wait(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// Remove the entity on its next think (C `think = G_FreeEdict`).
-fn free_think(world: &mut GameWorld, key: EntityKey) {
-    world.free_entity(key);
-}
-
 /// Fire the targets unless still waiting; then wait, or remove the trigger
 /// next frame when `wait` is not positive (trigger_once).
 /// C ref: `multi_trigger`.
@@ -77,7 +72,7 @@ fn multi_trigger(world: &mut GameWorld, key: EntityKey) {
         // looping through area links.
         ent.touch = None;
         ent.game.nextthink = time + FRAMETIME;
-        ent.think = Some(free_think);
+        ent.think = Some(crate::misc::free_think);
     }
 }
 

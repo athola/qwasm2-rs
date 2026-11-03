@@ -32,11 +32,15 @@ pub(crate) mod test_support {
         /// Spawnpoint of the last `spawn_entities`.
         pub(crate) spawnpoint: String,
         pub(crate) connects: u32,
+        /// The userinfo of the last `client_connect`.
+        pub(crate) userinfo: String,
         /// Entity numbers `client_begin` was called with, in order.
         pub(crate) begun: Vec<usize>,
         /// `client_think` calls, shared so a test can read it after
         /// boxing the game.
         pub(crate) thinks: std::rc::Rc<std::cell::Cell<u32>>,
+        /// `client_command` calls, shared like `thinks`.
+        pub(crate) commands: std::rc::Rc<std::cell::Cell<u32>>,
     }
 
     impl GameExport for NullGame {
@@ -45,15 +49,18 @@ pub(crate) mod test_support {
         fn spawn_entities(&mut self, _: &str, _: &str, spawnpoint: &str) {
             self.spawnpoint = spawnpoint.to_string();
         }
-        fn client_connect(&mut self, _: usize, _: &str) -> bool {
+        fn client_connect(&mut self, _: usize, userinfo: &str) -> bool {
             self.connects += 1;
+            self.userinfo = userinfo.to_string();
             !self.refuse_connect
         }
         fn client_begin(&mut self, number: usize) {
             self.begun.push(number);
         }
         fn client_disconnect(&mut self, _: usize) {}
-        fn client_command(&mut self, _: usize) {}
+        fn client_command(&mut self, _: usize) {
+            self.commands.set(self.commands.get() + 1);
+        }
         fn client_think(&mut self, _: usize, _: &UserCmd) {
             self.thinks.set(self.thinks.get() + 1);
         }

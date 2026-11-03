@@ -142,14 +142,95 @@ test.describe('Qwasm2 with the demo pak', () => {
     await expect(page.locator('#status span').last()).toHaveText(/Gamma: 1\.5/);
   });
 
+  /** The page with the promise the fullscreen test waits on, and its
+   *  count of fullscreen requests. */
+  type LockWindow = Window & { lockSettled?: Promise<Event>; fullscreenRequests?: number };
+
+  test('CP-5: ?vid_fullscreen=1 takes the game fullscreen on the click to play', async ({ page }) => {
+    test.setTimeout(90000);
+    await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
+    const fullscreenId = () => page.evaluate(() => document.fullscreenElement?.id ?? null);
+    const fullscreenRequests = () => page.evaluate(() => (window as LockWindow).fullscreenRequests);
+    const clickToPlay = async (query: string) => {
+      // `serve` redirects qwasm2.html to /qwasm2 without the query string.
+      await page.goto('qwasm2' + query);
+      await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
+      // The click asks for pointer lock; it settles as pointerlockchange
+      // (granted, as on CI's Linux Chromium) or pointerlockerror (refused,
+      // as on macOS headless), which shows the click handler has run. The
+      // handler asks for fullscreen first, so the count of requests is
+      // final then, while fullscreenElement settles on its own later task.
+      await page.evaluate(() => {
+        const w = window as LockWindow;
+        w.fullscreenRequests = 0;
+        const request = Element.prototype.requestFullscreen;
+        Element.prototype.requestFullscreen = function (this: Element, options?: FullscreenOptions) {
+          w.fullscreenRequests! += 1;
+          return request.call(this, options);
+        };
+        w.lockSettled = new Promise<Event>(resolve => {
+          document.addEventListener('pointerlockchange', resolve, { once: true });
+          document.addEventListener('pointerlockerror', resolve, { once: true });
+        });
+      });
+      await page.locator('#canvas').click();
+      await page.evaluate(() => (window as LockWindow).lockSettled);
+    };
+    // Off by default (C vid_fullscreen 0).
+    await clickToPlay('');
+    expect(await fullscreenRequests()).toBe(0);
+    expect(await fullscreenId()).toBeNull();
+    // On, the container with the HUD and console goes fullscreen.
+    await clickToPlay('?vid_fullscreen=1');
+    expect(await fullscreenRequests()).toBe(1);
+    await expect.poll(fullscreenId).toBe('game-container');
+  });
+
+  test('CP-5: A refused fullscreen request is logged and skips the keyboard lock', async ({ page }) => {
+    test.setTimeout(90000);
+    const pageErrors: string[] = [];
+    const warnings: string[] = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+    page.on('console', msg => {
+      if (msg.type() === 'warning') {
+        warnings.push(msg.text());
+      }
+    });
+    await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
+    // `serve` redirects qwasm2.html to /qwasm2 without the query string.
+    await page.goto('qwasm2?vid_fullscreen=1');
+    await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
+    // Refuse as a browser does without user activation or allowfullscreen,
+    // and count keyboard lock requests.
+    await page.evaluate(() => {
+      const w = window as Window & { keyboardLocks?: number };
+      w.keyboardLocks = 0;
+      Element.prototype.requestFullscreen = () =>
+        Promise.reject(new TypeError('Permissions check failed'));
+      const keyboard = (navigator as Navigator & { keyboard?: { lock: () => Promise<void> } }).keyboard;
+      if (keyboard) {
+        keyboard.lock = () => {
+          w.keyboardLocks! += 1;
+          return Promise.resolve();
+        };
+      }
+    });
+    await page.locator('#canvas').click();
+    await expect.poll(() => warnings.some(w => w.includes('[qwasm2] fullscreen refused'))).toBe(true);
+    expect(pageErrors).toEqual([]);
+    expect(await page.evaluate(() => (window as Window & { keyboardLocks?: number }).keyboardLocks)).toBe(0);
+  });
+
   test('CP-5: Audio context runs after a click on the canvas, without errors', async ({ page }) => {
     test.setTimeout(90000);
     const errors: { text: string; url: string }[] = [];
     page.on('console', msg => {
       // The WebAudio backend reports failed voices as warnings; only the
       // pointer-lock refusal and the autoplay notice are expected.
+      // Chrome's own "GL Driver Message" notes (GPU stalls under load) are
+      // diagnostics from the browser, not from the page.
       const warned = msg.type() === 'warning' &&
-        !/pointer lock|AudioContext was not allowed to start/i.test(msg.text());
+        !/pointer lock|AudioContext was not allowed to start|GL Driver Message/i.test(msg.text());
       if (msg.type() === 'error' || warned) {
         errors.push({ text: msg.text(), url: msg.location().url });
       }

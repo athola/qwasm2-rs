@@ -270,6 +270,15 @@ pub trait GameImport {
 
     /// Insert a command string into the server's command buffer.
     fn add_command_string(&self, text: &str);
+
+    /// The value of cvar `name`, or `default` when it is unset (C
+    /// `gi.cvar(name, default, flags)->string`).
+    fn cvar(&self, name: &str, default: &str) -> String;
+
+    /// The engine's local wall clock as hours, minutes and seconds (what
+    /// C's game reads with `time` and `localtime`), or `None` when the
+    /// engine has none.
+    fn local_time(&self) -> Option<(u32, u32, u32)>;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +437,12 @@ mod tests {
             String::new()
         }
         fn add_command_string(&self, _text: &str) {}
+        fn cvar(&self, _name: &str, default: &str) -> String {
+            default.to_string()
+        }
+        fn local_time(&self) -> Option<(u32, u32, u32)> {
+            None
+        }
     }
 
     #[test]
@@ -447,5 +462,22 @@ mod tests {
         gi.multicast(Vec3f::ZERO, Multicast::All);
         gi.unicast(1, true);
         gi.add_command_string("test");
+    }
+
+    #[test]
+    fn a_map_less_import_joins_every_area_and_puts_entities_in_none() {
+        let gi = NoopImport::default();
+        // C ref: CM_AreasConnected returns true under map_noareas, even
+        // across a portal just closed.
+        gi.set_area_portal_state(1, false);
+        assert!(gi.areas_connected(1, 2));
+        assert!(gi.areas_connected(3, 0));
+        assert_eq!(gi.entity_areas(5), (0, 0));
+    }
+
+    #[test]
+    fn the_game_reports_c_game_api_version_3() {
+        // C ref: game.h GAME_API_VERSION, which SV_InitGameProgs checks.
+        assert_eq!(crate::world::test_world().api_version(), 3);
     }
 }

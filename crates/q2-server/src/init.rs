@@ -91,6 +91,7 @@ impl Server {
             }
             client.last_frame = -1;
         }
+        gi.set_client_states(svs.clients.iter().map(|client| client.state));
 
         let checksum = match gi.load_map(bsp) {
             Ok(checksum) => checksum,
@@ -208,9 +209,14 @@ impl ServerStatic {
     /// Put an in-process client in the first free slot and into the game:
     /// C `SV_DirectConnect` (slot `Connected` once `ClientConnect`
     /// accepts) then `SV_Begin_f` (`ClientBegin`, slot `Spawned`).
-    /// Returns the client's entity number. A refused connection is an
-    /// error and leaves the slot free.
-    pub fn connect_local_client(&mut self, game: &mut dyn GameExport) -> Q2Result<usize> {
+    /// `userinfo` is what C's connect packet carries (the client's
+    /// `CVAR_USERINFO` cvars). Returns the client's entity number. A
+    /// refused connection is an error and leaves the slot free.
+    pub fn connect_local_client(
+        &mut self,
+        game: &mut dyn GameExport,
+        userinfo: &str,
+    ) -> Q2Result<usize> {
         let Some(client) = self
             .clients
             .iter_mut()
@@ -218,6 +224,7 @@ impl ServerStatic {
         else {
             return Err(Q2Error::Drop("Server is full.".into()));
         };
+        client.userinfo = userinfo.to_string();
         if !game.client_connect(client.edict_num, &client.userinfo) {
             return Err(Q2Error::Drop("Connection refused by the game.".into()));
         }
@@ -297,6 +304,22 @@ mod tests {
     }
 
     #[test]
+    fn map_gives_the_import_the_client_slots_before_the_game_runs() {
+        // C PF_centerprintf: entities 1..=maxclients are clients. The game
+        // prints while it spawns, so the slots must be set by then.
+        let gi = std::rc::Rc::new(ServerGameImport::new());
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(2);
+        let mut game = SpawnHookGame(gi.clone(), |gi| {
+            gi.centerprintf(Some(2), "slot 2");
+            gi.centerprintf(Some(3), "not a client");
+        });
+        sv.map(&mut svs, "base1", &[], "", &gi, &mut game).unwrap();
+        assert_eq!(gi.take_messages().len(), 1);
+    }
+
+    #[test]
     fn a_picture_server_loads_no_map_spawns_the_game_and_ends_in_the_pic_state() {
         let gi = ServerGameImport::new();
         let mut sv = Server::default();
@@ -304,7 +327,8 @@ mod tests {
         svs.init_game(1);
         sv.map(&mut svs, "base1", &[], "", &gi, &mut NullGame::default())
             .unwrap();
-        svs.connect_local_client(&mut NullGame::default()).unwrap();
+        svs.connect_local_client(&mut NullGame::default(), "")
+            .unwrap();
         sv.pic(&mut svs, "victory.pcx", "", &gi, &mut NullGame::default())
             .expect("C SV_SpawnServer(ss_pic) loads the empty map");
         assert_eq!(sv.state, ServerState::Pic);
@@ -333,14 +357,14 @@ mod tests {
         assert_eq!(sv.configstrings[CS_AIRACCEL], "0");
     }
 
-    /// A game that overwrites the map checksum while it spawns entities.
-    struct ClobberGame(std::rc::Rc<ServerGameImport>);
+    /// A game that runs its hook on the import while it spawns entities.
+    struct SpawnHookGame(std::rc::Rc<ServerGameImport>, fn(&ServerGameImport));
 
-    impl GameExport for ClobberGame {
+    impl GameExport for SpawnHookGame {
         fn init(&mut self) {}
         fn shutdown(&mut self) {}
         fn spawn_entities(&mut self, _: &str, _: &str, _: &str) {
-            self.0.configstring(CS_MAPCHECKSUM as i32, "12345");
+            (self.1)(&self.0);
         }
         fn client_connect(&mut self, _: usize, _: &str) -> bool {
             true
@@ -369,7 +393,10 @@ mod tests {
         let mut sv = Server::default();
         let mut svs = ServerStatic::default();
         svs.init_game(1);
-        let result = sv.map(&mut svs, "a", &[], "", &gi, &mut ClobberGame(gi.clone()));
+        let mut game = SpawnHookGame(gi.clone(), |gi| {
+            gi.configstring(CS_MAPCHECKSUM as i32, "12345");
+        });
+        let result = sv.map(&mut svs, "a", &[], "", &gi, &mut game);
         assert!(
             matches!(result, Err(q2_common::error::Q2Error::Drop(ref m)) if m.contains("corrupted")),
             "{result:?}"
@@ -382,11 +409,21 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(2);
         let number = svs
-            .connect_local_client(&mut NullGame::default())
+            .connect_local_client(&mut NullGame::default(), "")
             .expect("accepted");
         assert_eq!(number, 1);
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Spawned);
         assert_eq!(svs.clients[1].state, crate::state::ClientState::Free);
+    }
+
+    #[test]
+    fn the_local_clients_userinfo_reaches_clientconnect_and_stays_on_the_slot() {
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        let mut game = NullGame::default();
+        svs.connect_local_client(&mut game, "\\hand\\1").unwrap();
+        assert_eq!(game.userinfo, "\\hand\\1");
+        assert_eq!(svs.clients[0].userinfo, "\\hand\\1");
     }
 
     #[test]
@@ -397,7 +434,7 @@ mod tests {
             refuse_connect: true,
             ..NullGame::default()
         };
-        assert!(svs.connect_local_client(&mut game).is_err());
+        assert!(svs.connect_local_client(&mut game, "").is_err());
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Free);
     }
 
@@ -406,7 +443,9 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(1);
         svs.clients[0].state = crate::state::ClientState::Spawned;
-        assert!(svs.connect_local_client(&mut NullGame::default()).is_err());
+        assert!(svs
+            .connect_local_client(&mut NullGame::default(), "")
+            .is_err());
     }
 
     #[test]
@@ -479,7 +518,7 @@ mod tests {
         let mut svs = ServerStatic::default();
         svs.init_game(3);
         let mut game = NullGame::default();
-        svs.connect_local_client(&mut game).unwrap();
+        svs.connect_local_client(&mut game, "").unwrap();
         svs.clients[1].state = crate::state::ClientState::Connected;
         let connects = game.connects;
         let mut sv = Server::default();

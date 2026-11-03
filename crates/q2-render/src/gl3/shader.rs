@@ -15,13 +15,17 @@ pub const MODE_PLAIN: i32 = 1;
 pub const MODE_WARP: i32 = 2;
 pub const MODE_SKY: i32 = 3;
 
-const VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
 layout(location = 2) in vec2 a_lightmap_uv;
 layout(location = 3) in vec4 a_styles;
+layout(location = 4) in vec3 a_normal;
 uniform mat4 u_view_proj;
+// Model to world (C transModel): identity for the world, the entity's
+// matrix for a brush entity.
+uniform mat4 u_model;
 uniform int u_mode;
 uniform float u_scroll;
 // Light style brightness, four styles per vector (C lightstyles[].rgb).
@@ -29,6 +33,8 @@ uniform vec4 u_styles[64];
 out vec2 v_uv;
 out vec2 v_lightmap_uv;
 out vec4 v_style_scales;
+out vec3 v_world_pos;
+out vec3 v_normal;
 float style_scale(float style) {
     // -1 marks an unused layer; its texels are zero, so any scale works.
     if (style < 0.0) {
@@ -46,7 +52,11 @@ void main() {
         v_uv.x += u_scroll;
     }
     v_lightmap_uv = a_lightmap_uv;
-    gl_Position = u_view_proj * vec4(a_position, 1.0);
+    // C vertexSrc3Dlm: dynamic lights are tested in world space.
+    vec4 world_pos = u_model * vec4(a_position, 1.0);
+    v_world_pos = world_pos.xyz;
+    v_normal = normalize((u_model * vec4(a_normal, 0.0)).xyz);
+    gl_Position = u_view_proj * world_pos;
 }
 "#;
 
@@ -67,7 +77,13 @@ uniform float u_turb_light;
 in vec2 v_uv;
 in vec2 v_lightmap_uv;
 in vec4 v_style_scales;
+in vec3 v_world_pos;
+in vec3 v_normal;
 out vec4 o_color;
+// Dynamic lights (C uniLights): xyz origin; rgb colour, a intensity.
+uniform vec4 u_dlight_origin[32];
+uniform vec4 u_dlight_color[32];
+uniform int u_num_dlights;
 
 uniform float u_gamma;
 const float INTENSITY = 1.5;
@@ -91,6 +107,22 @@ void main() {
                    + texture(u_lightmap1, v_lightmap_uv).rgb * v_style_scales.y
                    + texture(u_lightmap2, v_lightmap_uv).rgb * v_style_scales.z
                    + texture(u_lightmap3, v_lightmap_uv).rgb * v_style_scales.w;
+        // gl3_shaders.c fragmentSrc3Dlm. C's lightFlags pass only lights
+        // in front of the surface (R_MarkLights' plane side check). For
+        // brush entities C DrawInlineBModel marks the world-space light
+        // against the bmodel's untransformed planes, so a moved door is
+        // flagged as if at its spawn position; this test uses the
+        // transformed world-space normal on purpose.
+        for (int i = 0; i < u_num_dlights; ++i) {
+            vec3 to_light = u_dlight_origin[i].xyz - v_world_pos;
+            if (dot(v_normal, to_light) < 0.0) {
+                continue;
+            }
+            float fact = max(0.0, u_dlight_color[i].a - length(to_light) - 52.0);
+            to_light += v_normal * 32.0;
+            fact *= max(0.0, dot(v_normal, normalize(to_light)));
+            light += u_dlight_color[i].rgb * fact * (1.0 / 256.0);
+        }
         light *= OVERBRIGHT;
         o_color = vec4(pow(light * texel.rgb, vec3(u_gamma)), 1.0);
     } else if (u_mode == 3) {
@@ -107,17 +139,21 @@ void main() {
 /// Uniform locations of the world program.
 pub struct WorldUniforms {
     pub view_proj: Option<glow::UniformLocation>,
+    pub model: Option<glow::UniformLocation>,
     pub mode: Option<glow::UniformLocation>,
     pub alpha: Option<glow::UniformLocation>,
     pub time: Option<glow::UniformLocation>,
     pub scroll: Option<glow::UniformLocation>,
     pub turb_light: Option<glow::UniformLocation>,
     pub styles: Option<glow::UniformLocation>,
+    pub dlight_origin: Option<glow::UniformLocation>,
+    pub dlight_color: Option<glow::UniformLocation>,
+    pub num_dlights: Option<glow::UniformLocation>,
 }
 
 /// Compile and link one program from vertex and fragment source. Shader
 /// objects never outlive the call; the log is reported on failure.
-fn link_program(
+pub(super) fn link_program(
     gl: &glow::Context,
     vertex_src: &str,
     fragment_src: &str,
@@ -182,7 +218,7 @@ fn link_program(
 }
 
 /// Bind the named samplers of `program` to texture units 0, 1, ...
-fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
+pub(super) fn bind_samplers(gl: &glow::Context, program: glow::Program, names: &[&str]) {
     // SAFETY: `program` was linked on `gl` by the caller; this only sets
     // sampler uniforms on it and restores the null program binding.
     unsafe {
@@ -217,36 +253,47 @@ pub fn set_gamma(gl: &glow::Context, program: glow::Program, vid_gamma: f32) {
 /// `u_texture` = 0 and `u_lightmap0..3` = 1..4.
 pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, WorldUniforms), String> {
     let program = link_program(gl, VERTEX_SRC, FRAGMENT_SRC)?;
-    bind_samplers(
-        gl,
-        program,
-        &[
-            "u_texture",
-            "u_lightmap0",
-            "u_lightmap1",
-            "u_lightmap2",
-            "u_lightmap3",
-        ],
-    );
+    bind_samplers(gl, program, &WORLD_SAMPLERS);
     // SAFETY: `program` is the linked program above; uniform lookups only
     // read from it.
-    let uniforms = unsafe {
-        WorldUniforms {
-            view_proj: gl.get_uniform_location(program, "u_view_proj"),
-            mode: gl.get_uniform_location(program, "u_mode"),
-            alpha: gl.get_uniform_location(program, "u_alpha"),
-            time: gl.get_uniform_location(program, "u_time"),
-            scroll: gl.get_uniform_location(program, "u_scroll"),
-            turb_light: gl.get_uniform_location(program, "u_turb_light"),
-            styles: gl.get_uniform_location(program, "u_styles"),
-        }
-    };
+    let uniforms = world_uniforms(|name| unsafe { gl.get_uniform_location(program, name) });
     Ok((program, uniforms))
+}
+
+/// The world program's samplers in texture-unit order: `draw_batches`
+/// binds lightmap layer `n` to unit `1 + n`.
+const WORLD_SAMPLERS: [&str; 5] = [
+    "u_texture",
+    "u_lightmap0",
+    "u_lightmap1",
+    "u_lightmap2",
+    "u_lightmap3",
+];
+
+/// The one sampler of the alias and 2D programs, on unit 0.
+const TEXTURE_SAMPLER: [&str; 1] = ["u_texture"];
+
+fn world_uniforms(
+    mut location: impl FnMut(&str) -> Option<glow::UniformLocation>,
+) -> WorldUniforms {
+    WorldUniforms {
+        view_proj: location("u_view_proj"),
+        model: location("u_model"),
+        mode: location("u_mode"),
+        alpha: location("u_alpha"),
+        time: location("u_time"),
+        scroll: location("u_scroll"),
+        turb_light: location("u_turb_light"),
+        styles: location("u_styles"),
+        dlight_origin: location("u_dlight_origin"),
+        dlight_color: location("u_dlight_color"),
+        num_dlights: location("u_num_dlights"),
+    }
 }
 
 // C `vertexSrcAlias` / `fragmentSrcAlias`: vertex colour carries the shade
 // and alpha, scaled by overbrightbits; the fragment clamps it to 1.5.
-const ALIAS_VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const ALIAS_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec2 a_uv;
@@ -269,8 +316,14 @@ in vec2 v_uv;
 in vec4 v_color;
 out vec4 o_color;
 uniform float u_gamma;
+uniform int u_color_only;
 const float INTENSITY = 1.5;
 void main() {
+    if (u_color_only != 0) {
+        // C fragmentSrcAliasColor: colour shells.
+        o_color = vec4(pow(v_color.rgb, vec3(u_gamma)), v_color.a);
+        return;
+    }
     vec4 texel = texture(u_texture, v_uv);
     texel.rgb *= INTENSITY;
     texel *= min(vec4(1.5), v_color);
@@ -281,20 +334,30 @@ void main() {
 /// Uniform locations of the alias (MD2) program.
 pub struct AliasUniforms {
     pub mvp: Option<glow::UniformLocation>,
+    pub color_only: Option<glow::UniformLocation>,
 }
 
 /// Link the alias program; `u_texture` is unit 0.
 pub fn compile_alias_program(gl: &glow::Context) -> Result<(glow::Program, AliasUniforms), String> {
     let program = link_program(gl, ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC)?;
-    bind_samplers(gl, program, &["u_texture"]);
-    // SAFETY: `program` is the linked program above; the lookup only reads it.
-    let mvp = unsafe { gl.get_uniform_location(program, "u_mvp") };
-    Ok((program, AliasUniforms { mvp }))
+    bind_samplers(gl, program, &TEXTURE_SAMPLER);
+    // SAFETY: `program` is the linked program above; the lookups only read it.
+    let uniforms = alias_uniforms(|name| unsafe { gl.get_uniform_location(program, name) });
+    Ok((program, uniforms))
+}
+
+fn alias_uniforms(
+    mut location: impl FnMut(&str) -> Option<glow::UniformLocation>,
+) -> AliasUniforms {
+    AliasUniforms {
+        mvp: location("u_mvp"),
+        color_only: location("u_color_only"),
+    }
 }
 
 // C `vertexSrc2D` / `fragmentSrc2D` / `fragmentSrc2Dcolor` in one program:
 // fills sample a white texel, so colour is always texel * vertex colour.
-const UI_VERTEX_SRC: &str = r#"#version 300 es
+pub(super) const UI_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_position;
 layout(location = 1) in vec2 a_uv;
@@ -308,6 +371,9 @@ void main() {
     gl_Position = u_ortho * vec4(a_position, 0.0, 1.0);
 }
 "#;
+
+/// C `gl3_intensity_2D` default, the `INTENSITY_2D` of [`UI_FRAGMENT_SRC`].
+pub const INTENSITY_2D: f32 = 1.5;
 
 const UI_FRAGMENT_SRC: &str = r#"#version 300 es
 precision highp float;
@@ -336,15 +402,142 @@ pub struct UiUniforms {
 /// Link the 2D program; `u_texture` is unit 0.
 pub fn compile_ui_program(gl: &glow::Context) -> Result<(glow::Program, UiUniforms), String> {
     let program = link_program(gl, UI_VERTEX_SRC, UI_FRAGMENT_SRC)?;
-    bind_samplers(gl, program, &["u_texture"]);
+    bind_samplers(gl, program, &TEXTURE_SAMPLER);
     // SAFETY: `program` is the linked program above; the lookup only reads it.
-    let ortho = unsafe { gl.get_uniform_location(program, "u_ortho") };
-    Ok((program, UiUniforms { ortho }))
+    let uniforms = ui_uniforms(|name| unsafe { gl.get_uniform_location(program, name) });
+    Ok((program, uniforms))
+}
+
+fn ui_uniforms(mut location: impl FnMut(&str) -> Option<glow::UniformLocation>) -> UiUniforms {
+    UiUniforms {
+        ortho: location("u_ortho"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gl3::lightmap::MAX_LIGHTMAPS_PER_SURFACE;
+    use q2_shared::constants::MAX_LIGHTSTYLES;
+
+    /// `(type, name)` of every `uniform` of a program's two stages, once.
+    fn declared_uniforms(stages: [&str; 2]) -> Vec<(String, String)> {
+        let mut uniforms: Vec<(String, String)> = stages
+            .iter()
+            .flat_map(|src| src.lines())
+            .filter_map(|line| {
+                let mut words = line.trim().strip_prefix("uniform ")?.split_whitespace();
+                let kind = words.next()?.to_string();
+                let name = words.next()?.trim_end_matches(';');
+                let name = name.split('[').next()?.to_string();
+                Some((kind, name))
+            })
+            .collect();
+        uniforms.sort();
+        uniforms.dedup();
+        uniforms
+    }
+
+    /// Run a uniform lookup against the program's sources: the names it
+    /// asks for, sorted, each answered only when declared.
+    fn looked_up<T>(
+        stages: [&str; 2],
+        lookup: impl FnOnce(&mut dyn FnMut(&str) -> Option<glow::UniformLocation>) -> T,
+    ) -> (Vec<String>, T) {
+        let declared = declared_uniforms(stages);
+        let mut asked = Vec::new();
+        let found = lookup(&mut |name| {
+            asked.push(name.to_string());
+            let index = declared.iter().position(|(_, n)| n == name)?;
+            Some(glow::NativeUniformLocation(u32::try_from(index).unwrap()))
+        });
+        asked.sort();
+        (asked, found)
+    }
+
+    /// Declared uniforms a program looks up by location: all but its
+    /// samplers (bound by `bind_samplers`) and `u_gamma` (`set_gamma`).
+    fn settable(stages: [&str; 2]) -> Vec<String> {
+        let mut names: Vec<String> = declared_uniforms(stages)
+            .into_iter()
+            .filter(|(kind, name)| kind != "sampler2D" && name != "u_gamma")
+            .map(|(_, name)| name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Sampler names, sorted.
+    fn samplers(stages: [&str; 2]) -> Vec<String> {
+        declared_uniforms(stages)
+            .into_iter()
+            .filter(|(kind, _)| kind == "sampler2D")
+            .map(|(_, name)| name)
+            .collect()
+    }
+
+    // A misspelt name gets no location and its uniform silently keeps 0.
+    #[test]
+    fn every_program_looks_up_each_of_its_uniforms_by_its_declared_name() {
+        let world = [VERTEX_SRC, FRAGMENT_SRC];
+        let (asked, u) = looked_up(world, |l| world_uniforms(l));
+        assert_eq!(asked, settable(world));
+        let all = [
+            &u.view_proj,
+            &u.model,
+            &u.mode,
+            &u.alpha,
+            &u.time,
+            &u.scroll,
+            &u.turb_light,
+            &u.styles,
+            &u.dlight_origin,
+            &u.dlight_color,
+            &u.num_dlights,
+        ];
+        assert!(all.iter().all(|location| location.is_some()));
+
+        let alias = [ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC];
+        let (asked, u) = looked_up(alias, |l| alias_uniforms(l));
+        assert_eq!(asked, settable(alias));
+        assert!(u.mvp.is_some() && u.color_only.is_some());
+
+        let ui = [UI_VERTEX_SRC, UI_FRAGMENT_SRC];
+        let (asked, u) = looked_up(ui, |l| ui_uniforms(l));
+        assert_eq!(asked, settable(ui));
+        assert!(u.ortho.is_some());
+    }
+
+    #[test]
+    fn world_samplers_are_the_texture_then_one_lightmap_per_layer_in_unit_order() {
+        assert_eq!(WORLD_SAMPLERS.len(), 1 + MAX_LIGHTMAPS_PER_SURFACE);
+        assert_eq!(WORLD_SAMPLERS[0], "u_texture");
+        for layer in 0..MAX_LIGHTMAPS_PER_SURFACE {
+            assert_eq!(WORLD_SAMPLERS[1 + layer], format!("u_lightmap{layer}"));
+        }
+        let mut bound = WORLD_SAMPLERS.map(String::from).to_vec();
+        bound.sort();
+        assert_eq!(bound, samplers([VERTEX_SRC, FRAGMENT_SRC]));
+        for stages in [
+            [ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC],
+            [UI_VERTEX_SRC, UI_FRAGMENT_SRC],
+        ] {
+            assert_eq!(samplers(stages), TEXTURE_SAMPLER);
+        }
+    }
+
+    // The uploads fill whole arrays: RefDef::lightstyles holds a float per
+    // style, four to a vec4, and dlight_uniforms MAX_DLIGHTS vec4s.
+    #[test]
+    fn uniform_arrays_hold_every_style_and_dynamic_light_slot() {
+        let styles = format!("uniform vec4 u_styles[{}];", MAX_LIGHTSTYLES / 4);
+        assert!(VERTEX_SRC.contains(&styles), "{styles}");
+        let max = crate::gl3::MAX_DLIGHTS;
+        for name in ["u_dlight_origin", "u_dlight_color"] {
+            let line = format!("uniform vec4 {name}[{max}];");
+            assert!(FRAGMENT_SRC.contains(&line), "{line}");
+        }
+    }
 
     #[test]
     fn every_fragment_shader_takes_gamma_from_the_u_gamma_uniform() {
@@ -353,6 +546,55 @@ mod tests {
             assert!(source.contains("vec3(u_gamma)"));
             assert!(!source.contains("GAMMA"));
         }
+    }
+
+    #[test]
+    fn lit_world_faces_add_c_gl3_dynamic_lights_on_their_front_side() {
+        for line in [
+            "uniform vec4 u_dlight_origin[32];",
+            "uniform vec4 u_dlight_color[32];",
+            "uniform int u_num_dlights;",
+            "if (dot(v_normal, to_light) < 0.0)",
+            "float fact = max(0.0, u_dlight_color[i].a - length(to_light) - 52.0);",
+            "to_light += v_normal * 32.0;",
+            "fact *= max(0.0, dot(v_normal, normalize(to_light)));",
+            "light += u_dlight_color[i].rgb * fact * (1.0 / 256.0);",
+        ] {
+            assert!(FRAGMENT_SRC.contains(line), "{line}");
+        }
+        assert!(VERTEX_SRC.contains("layout(location = 4) in vec3 a_normal;"));
+        // Added before overbrightbits scales the lightmap, as in C.
+        let lights = FRAGMENT_SRC.find("light += u_dlight_color").unwrap();
+        let overbright = FRAGMENT_SRC.find("light *= OVERBRIGHT").unwrap();
+        assert!(lights < overbright);
+    }
+
+    // C vertexSrc3Dlm: passWorldCoord and passNormal go through transModel,
+    // so a moved or rotated brush entity is lit where it now stands.
+    #[test]
+    fn dynamic_lights_see_brush_entities_at_their_moved_position_like_c() {
+        for line in [
+            "uniform mat4 u_model;",
+            "vec4 world_pos = u_model * vec4(a_position, 1.0);",
+            "v_world_pos = world_pos.xyz;",
+            "v_normal = normalize((u_model * vec4(a_normal, 0.0)).xyz);",
+            "gl_Position = u_view_proj * world_pos;",
+        ] {
+            assert!(VERTEX_SRC.contains(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn colour_only_alias_draws_skip_the_texture_and_intensity_like_c() {
+        // C fragmentSrcAliasColor: the vertex colour through gamma.
+        assert!(ALIAS_FRAGMENT_SRC.contains("uniform int u_color_only;"));
+        assert!(ALIAS_FRAGMENT_SRC.contains("if (u_color_only != 0) {"));
+    }
+
+    #[test]
+    fn the_2d_shader_scales_by_the_rust_intensity_2d() {
+        let line = format!("const float INTENSITY_2D = {INTENSITY_2D:?};");
+        assert!(UI_FRAGMENT_SRC.contains(&line), "{line}");
     }
 
     #[test]

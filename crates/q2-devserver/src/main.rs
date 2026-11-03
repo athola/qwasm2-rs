@@ -53,7 +53,7 @@ async fn main() {
     let root = repo_root(std::env::var_os("Q2_ROOT"));
     let app = build_app(&root);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = listen_addr(port);
 
     // Startup asset inventory
     let gamedata_dir = root.join("gamedata");
@@ -106,6 +106,12 @@ fn parse_port(raw: Option<String>) -> Result<u16, String> {
             .parse()
             .map_err(|e| format!("invalid PORT {s:?}: {e} (expected 1-65535)")),
     }
+}
+
+/// Loopback only: the server exposes the checkout's `dist/` and `gamedata/`
+/// with no auth, so it must not be reachable from the network.
+fn listen_addr(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
 }
 
 fn build_app(root: &Path) -> Router {
@@ -166,18 +172,41 @@ fn log_asset(path: &Path, label: &str, fix_hint: &str) {
     }
 }
 
-fn log_web_pak(gamedata_dir: &Path) {
+/// What the devserver will serve for the web pak, reported at startup.
+#[derive(Debug, PartialEq, Eq)]
+enum WebPakState {
+    Missing,
+    Plain,
+    Brotli,
+    StaleBrotli,
+}
+
+fn web_pak_state(gamedata_dir: &Path) -> WebPakState {
     let pak = gamedata_dir.join(WEB_PAK);
     let br = gamedata_dir.join(WEB_PAK_BR);
     if !pak.exists() {
-        tracing::warn!("pak0-web.pak NOT FOUND — run: make pak-web");
-        return;
+        WebPakState::Missing
+    } else if !br.exists() {
+        WebPakState::Plain
+    } else if br_is_fresh(&pak, &br) {
+        WebPakState::Brotli
+    } else {
+        WebPakState::StaleBrotli
     }
-    log_asset(&pak, "web-optimized", "make pak-web");
-    if br.exists() {
-        if br_is_fresh(&pak, &br) {
+}
+
+fn log_web_pak(gamedata_dir: &Path) {
+    let pak = gamedata_dir.join(WEB_PAK);
+    let br = gamedata_dir.join(WEB_PAK_BR);
+    match web_pak_state(gamedata_dir) {
+        WebPakState::Missing => tracing::warn!("pak0-web.pak NOT FOUND — run: make pak-web"),
+        WebPakState::Plain => log_asset(&pak, "web-optimized", "make pak-web"),
+        WebPakState::Brotli => {
+            log_asset(&pak, "web-optimized", "make pak-web");
             log_asset(&br, "brotli — served to browsers", "make pak-web");
-        } else {
+        }
+        WebPakState::StaleBrotli => {
+            log_asset(&pak, "web-optimized", "make pak-web");
             tracing::warn!(
                 "{} is older than pak0-web.pak and will not be served — run: make pak-web",
                 br.display()

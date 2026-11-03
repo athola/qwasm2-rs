@@ -6,10 +6,10 @@
 //! the `BspData` and does not retain it. `r_modulate` (1.0) is not modelled.
 
 use q2_render_api::DLight;
-use q2_shared::constants::MAX_LIGHTSTYLES;
+use q2_shared::constants::{MAX_LIGHTSTYLES, SURF_WARP};
 
 use super::lightmap::{calc_surface_extents, style_count};
-use super::world::{face_positions, SURF_WARP};
+use super::world::face_positions;
 use crate::bsp::BspData;
 
 /// C `GL3_LightPoint` traces this far below the point.
@@ -416,7 +416,7 @@ mod tests {
     // stock sky faces carry lightmap samples, so the trace stops there.
     #[test]
     fn sky_faces_are_lit_like_c_default_r_fixsurfsky() {
-        let tree = LightTree::from_bsp(&floor_bsp(crate::gl3::world::SURF_SKY, 0));
+        let tree = LightTree::from_bsp(&floor_bsp(q2_shared::constants::SURF_SKY, 0));
         near(
             tree.light_point([20.0, 36.0, 100.0], &ON, &[]),
             [110.0 / 255.0, 55.0 / 255.0, 0.0],

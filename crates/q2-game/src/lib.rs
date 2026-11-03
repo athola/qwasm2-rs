@@ -9,6 +9,7 @@
 //! - Inherent: 0
 
 pub mod ai;
+pub mod cmds;
 pub mod combat;
 pub mod constants;
 pub mod entity;
@@ -16,9 +17,12 @@ pub mod func;
 pub mod game;
 pub mod items;
 pub mod misc;
+pub mod misc_func;
+pub mod misc_models;
 pub mod monster;
 pub mod physics;
 pub mod player;
+pub mod rules;
 pub mod spawn;
 pub mod targets;
 pub mod traits;
