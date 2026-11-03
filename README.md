@@ -117,32 +117,10 @@ Run `make prereqs` to verify all tools are present.
 
 ## Architecture
 
-14 crates organized in a strict DAG with no circular dependencies.
-See [ADR-001](docs/adr/001-crate-decomposition-and-trait-boundaries.md)
-for the rationale. Layers, lowest first (workspace edges per crate are in
-the table below):
-
-```
-Foundation:    q2-shared
-Services:      q2-common, q2-render-api      (each depends only on q2-shared)
-Engine:        q2-game, q2-client, q2-render, q2-server
-Adapter:       q2-platform
-Entry point:   q2-wasm (browser)
-Placeholders:  q2-bin (native), q2-net (networking, #22)    (no dependencies)
-Tools:         q2-devserver, q2-bundler, q2-pak-repack      (no workspace dependencies)
-```
-
-### Trait Boundaries
-
-Four traits enforce the key abstraction seams, replacing the C
-function-pointer tables and backend coupling:
-
-| Trait | Crate | Replaces |
-|-------|-------|----------|
-| `Renderer` | q2-render-api | Renderer backend interface |
-| `GameImport` | q2-game | `game_import_t` (server → game callbacks) |
-| `GameExport` | q2-game | `game_export_t` (game → server interface) |
-| `PakReader` | q2-common | PAK archive byte-range reader (disk / in-mem / JS heap) |
+14 crates in a strict dependency DAG; four traits (`Renderer`,
+`GameImport`, `GameExport`, `PakReader`) replace the C function-pointer
+tables and backend coupling. Layers and rationale:
+[ADR-001](docs/adr/001-crate-decomposition-and-trait-boundaries.md).
 
 ### Project Structure
 
@@ -188,36 +166,15 @@ contents of `pak1.pak` and `pak2.pak` are not loaded.
 
 ## Development
 
-```bash
-make ci             # everything below except fmt, as CI runs it
-                    # (CI fetches the demo pak first; run `make gamedata`
-                    # for the same map-data test coverage locally)
-make test           # run all workspace tests
-make lint           # clippy, native + wasm32 (zero warnings required)
-make fmt            # format code
-make fmt-check      # check formatting without modifying
-make check          # type-check native + WASM targets
-```
+`make ci` runs what CI runs: fmt-check, lint, check and test. CI fetches
+the demo pak first, so run `make gamedata` locally for the same map-data
+test coverage.
 
-### Conventions
-
-- **Commits:** conventional commits (`feat:`, `fix:`, `refactor:`,
-  `test:`, `docs:`)
-- **No global mutable state.** All state is instance-owned or passed
-  by reference.
-- **Unsafe code** only at FFI boundaries (q2-render). Every `unsafe`
-  block requires a `// SAFETY:` comment.
-- **Entity storage** in the game uses SlotMap with generational keys,
-  never raw pointers. The `GameImport` boundary names entities by C
-  edict number (ADR-003).
-- **Physics constants** must match the C original exactly (numerical
-  precision matters for prediction sync).
-
-### Reference Implementation
-
-The original C Quake 2 source lives at `~/Qwasm2`. Algorithmic
-modules (collision, pmove) are faithful ports; cross-reference
-against the C source before modifying.
+Contributor rules (no global mutable state, unsafe only in q2-render,
+C parity for physics and protocol) are in [CLAUDE.md](CLAUDE.md) and
+[ADR-005](docs/adr/005-c-parity-and-quality-gates.md). The C original is
+[GMH-Code/Qwasm2](https://github.com/GMH-Code/Qwasm2); collision and
+pmove are faithful ports, so check changes there against the C source.
 
 ## Documentation
 
