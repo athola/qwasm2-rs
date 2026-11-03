@@ -35,7 +35,7 @@ WebGL2, and runs player movement in the browser.
 | CP-3 Server | Frame loop runs the game; map loading, SV_Trace and entity links; the browser runs it in-process | done |
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | done |
-| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (no weapons yet) |
+| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (a dead player cannot restart until saves, #15) |
 | CP-5c Sound | Sound through Web Audio | in progress (game sounds play; no PHS culling) |
 | CP-6 Saves | Saves persist across a browser refresh | not started |
 | CP-7 Multiplayer | Two browser tabs connect via Matchbox | not started |

@@ -41,7 +41,7 @@ q2-pak-repack   Repacks a PAK and writes a Brotli variant for web delivery (stan
 
 Four trait interfaces enforce the key abstraction boundaries:
 
-1. **`Renderer`** (q2-render-api) - 15 methods covering init, registration,
+1. **`Renderer`** (q2-render-api) - 19 methods covering init, registration,
    rendering, 2D drawing. Object-safe, and not `Send`: a GL context is bound
    to the thread that created it. Backends implement this trait without
    touching game logic.
@@ -102,9 +102,12 @@ yet implemented.
 - Unsafe code is contained to q2-render (`src/gl3`, each block with a
   `// SAFETY` comment); the audit header in `q2-render/src/lib.rs` holds the
   block count. Clippy denies undocumented unsafe blocks workspace-wide.
+- `crates/q2-shared/tests/workspace_invariants.rs` fails `make test` on a
+  dependency edge outside the DAG above, `unsafe` outside q2-render, or a
+  `static mut`.
 
 **Negative:**
-- q2-common is a large crate (~11,000 LOC including tests) aggregating
+- q2-common is a large crate (~12,000 LOC including tests) aggregating
   weakly-related modules. May need splitting if it exceeds ~15k LOC.
 - Cross-crate refactoring requires coordinating changes across multiple
   Cargo.toml files.

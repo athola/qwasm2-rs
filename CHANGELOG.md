@@ -6,7 +6,8 @@ All notable changes to qwasm2-rs are documented here.
 
 ### Changed (breaking)
 - `Renderer` gains the required `set_hand`;
-  `ServerStatic::connect_local_client` takes the client's `userinfo`
+  `ServerStatic::connect_local_client` takes the client's `userinfo`;
+  the unused `q2_client::state::ClientStatic` is removed
 
 ### Added
 - The player fires the blaster: `ClientThink` latches the attack button
@@ -177,6 +178,8 @@ All notable changes to qwasm2-rs are documented here.
   drift
 
 ### Fixed
+- `register_model` no longer refuses names of four characters or
+  fewer; like C `Mod_ForName`, the file load decides
 - Multicasts reach the local client only as C `SV_Multicast` routes
   them: through the origin's PVS or PHS and connected areas, and
   unreliable ones only once the client is in the game, so effects in
