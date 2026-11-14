@@ -375,12 +375,13 @@ fn word_lines(code: &str, word: &str) -> Vec<usize> {
     lines
 }
 
-/// Every `.rs` file under `crates/`, with its crate directory name.
+/// `path` relative to the repo root, for failure messages.
 fn shown(path: &Path) -> String {
     let rel = path.strip_prefix(repo_root()).unwrap_or(path);
     rel.display().to_string()
 }
 
+/// Every `.rs` file in a workspace member, with its crate directory name.
 fn rust_sources() -> Vec<(String, PathBuf)> {
     fn walk(dir: &Path, krate: &str, out: &mut Vec<(String, PathBuf)>) {
         for entry in fs::read_dir(dir).unwrap() {
