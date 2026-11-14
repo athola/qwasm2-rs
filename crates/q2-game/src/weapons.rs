@@ -1351,7 +1351,7 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
 }
 
 /// C `(int)(atan2(y, x) * 180 / M_PI)`: atan2 and the product in double.
-fn degrees_from_atan2(y: f32, x: f32) -> f32 {
+pub(crate) fn degrees_from_atan2(y: f32, x: f32) -> f32 {
     (((y as f64).atan2(x as f64) * 180.0 / std::f64::consts::PI) as i32) as f32
 }
 
