@@ -5,7 +5,7 @@
 
 use q2_common::pmove::angle_vectors;
 use q2_shared::constants::*;
-use q2_shared::flash::MONSTER_FLASH_OFFSET;
+use q2_shared::flash::{project_source, MONSTER_FLASH_OFFSET};
 use q2_shared::types::{EntityState, Vec3f};
 
 /// C `MAX_DLIGHTS`.
@@ -280,8 +280,7 @@ impl Effects {
             return Vec::new();
         };
         let (forward, right, _) = angle_vectors(monster.angles);
-        let mut origin = monster.origin + forward * offset[0] + right * offset[1];
-        origin.z += offset[2];
+        let origin = project_source(monster.origin, offset, forward, right);
         let entnum = monster.number;
         let radius = 200.0 + (randk() & 31) as f32;
         let light = self.alloc_dlight(entnum, time);

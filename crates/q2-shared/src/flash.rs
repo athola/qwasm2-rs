@@ -2,6 +2,18 @@
 //! client to light and sound the flash. C ref:
 //! `~/Qwasm2/src/common/shared/flash.c`.
 
+use crate::types::Vec3f;
+
+/// The point `distance` (forward, right, up) from `point`. Up is world z,
+/// not the `up` vector, as in C. C ref: `G_ProjectSource` (g_utils.c).
+pub fn project_source(point: Vec3f, distance: [f32; 3], forward: Vec3f, right: Vec3f) -> Vec3f {
+    Vec3f::new(
+        point.x + forward.x * distance[0] + right.x * distance[1],
+        point.y + forward.y * distance[0] + right.y * distance[1],
+        point.z + forward.z * distance[0] + right.z * distance[1] + distance[2],
+    )
+}
+
 /// Muzzle offsets (forward, right, up) from a monster's origin, indexed by
 /// its `MZ2_*` flash number. Entry 0 is unused and the last is C's
 /// end-of-table marker. C ref: `monster_flash_offset` (flash.c).

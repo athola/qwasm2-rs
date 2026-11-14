@@ -11,18 +11,8 @@ use crate::entity::EntityKey;
 use crate::world::GameWorld;
 
 /// C `monster_flash_offset` lives in `common/shared/flash.c`, shared with
-/// the client's `CL_AddMuzzleFlash2`.
-pub use q2_shared::flash::MONSTER_FLASH_OFFSET;
-
-/// The point `distance` (forward, right, up) from `point`. Up is world z,
-/// not the `up` vector, as in C. C ref: `G_ProjectSource` (g_utils.c).
-pub fn project_source(point: Vec3f, distance: [f32; 3], forward: Vec3f, right: Vec3f) -> Vec3f {
-    Vec3f::new(
-        point.x + forward.x * distance[0] + right.x * distance[1],
-        point.y + forward.y * distance[0] + right.y * distance[1],
-        point.z + forward.z * distance[0] + right.z * distance[1] + distance[2],
-    )
-}
+/// the client's `CL_AddMuzzleFlash2`, which projects from it the same way.
+pub use q2_shared::flash::{project_source, MONSTER_FLASH_OFFSET};
 
 /// Muzzle start, forward and right for `key` firing flash `flash`: the
 /// `AngleVectors` + `G_ProjectSource(origin, monster_flash_offset[flash])`
