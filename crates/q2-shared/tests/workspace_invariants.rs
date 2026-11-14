@@ -40,23 +40,55 @@ const ALLOWED_DEPS: &[(&str, &[&str])] = &[
 /// The only crate allowed to contain `unsafe` (CLAUDE.md Rules, ADR-001).
 const UNSAFE_CRATE: &str = "q2-render";
 
-fn crates_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Member paths in the root Cargo.toml `[workspace] members`, the crates
+/// cargo builds. Panics on a glob rather than skip the crates it names.
+fn workspace_members(toml: &str) -> Vec<String> {
+    let at = toml
+        .find("\nmembers")
+        .expect("root Cargo.toml has no `members`");
+    let list = &toml[at..];
+    let list = &list[list.find('[').unwrap() + 1..list.find(']').unwrap()];
+    let members: Vec<String> = list
+        .lines()
+        .flat_map(|line| line.split('#').next().unwrap().split(','))
+        .map(|m| m.trim().trim_matches('"').to_owned())
+        .filter(|m| !m.is_empty())
+        .collect();
+    assert!(!members.is_empty(), "no workspace members read");
+    for m in &members {
+        assert!(!m.contains('*'), "member glob {m:?}: list members by path");
+    }
+    members
+}
+
+/// Every workspace member as (crate directory name, directory).
+fn member_dirs() -> Vec<(String, PathBuf)> {
+    let root = fs::read_to_string(repo_root().join("Cargo.toml")).unwrap();
+    workspace_members(&root)
+        .into_iter()
+        .map(|m| {
+            (
+                m.rsplit('/').next().unwrap().to_owned(),
+                repo_root().join(m),
+            )
+        })
+        .collect()
 }
 
 /// Crate directory name -> workspace crates named in any of its dependency
 /// tables (normal, dev, build, and `[target.'cfg(..)'.dependencies]`).
 fn workspace_graph() -> BTreeMap<String, BTreeSet<String>> {
-    let mut graph = BTreeMap::new();
-    for entry in fs::read_dir(crates_dir()).unwrap() {
-        let dir = entry.unwrap().path();
-        let manifest = dir.join("Cargo.toml");
-        if manifest.is_file() {
-            let name = dir.file_name().unwrap().to_str().unwrap().to_owned();
-            graph.insert(name, manifest_deps(&fs::read_to_string(manifest).unwrap()));
-        }
-    }
-    graph
+    member_dirs()
+        .into_iter()
+        .map(|(name, dir)| {
+            let manifest = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+            (name, manifest_deps(&manifest))
+        })
+        .collect()
 }
 
 fn manifest_deps(toml: &str) -> BTreeSet<String> {
@@ -229,6 +261,21 @@ q2-client = { path = "../q2-client" }
     );
 }
 
+#[test]
+fn workspace_members_reads_every_listed_path_inside_or_outside_crates() {
+    let toml = "[workspace]\nresolver = \"2\"\nmembers = [\n    \"crates/q2-shared\", # types\n    \"tools/q2-foo\",\n]\n";
+    assert_eq!(
+        workspace_members(toml),
+        ["crates/q2-shared", "tools/q2-foo"]
+    );
+}
+
+#[test]
+#[should_panic(expected = "glob")]
+fn workspace_members_rejects_a_glob_it_cannot_expand() {
+    workspace_members("[workspace]\nmembers = [\"crates/*\"]\n");
+}
+
 /// `src` with comments, string and char literals blanked to spaces (newlines
 /// kept), so keyword searches see only code and line numbers still match.
 fn code_only(src: &str) -> String {
@@ -330,8 +377,8 @@ fn word_lines(code: &str, word: &str) -> Vec<usize> {
 
 /// Every `.rs` file under `crates/`, with its crate directory name.
 fn shown(path: &Path) -> String {
-    let rel = path.strip_prefix(crates_dir()).unwrap_or(path);
-    format!("crates/{}", rel.display())
+    let rel = path.strip_prefix(repo_root()).unwrap_or(path);
+    rel.display().to_string()
 }
 
 fn rust_sources() -> Vec<(String, PathBuf)> {
@@ -347,8 +394,8 @@ fn rust_sources() -> Vec<(String, PathBuf)> {
         }
     }
     let mut out = Vec::new();
-    for krate in workspace_graph().keys() {
-        walk(&crates_dir().join(krate), krate, &mut out);
+    for (krate, dir) in member_dirs() {
+        walk(&dir, &krate, &mut out);
     }
     out
 }
