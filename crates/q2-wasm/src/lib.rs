@@ -91,6 +91,9 @@ struct Engine {
     cl_gun: f32,
     /// The keys legend (F4, C `menu_keys`, or the page's Keys button).
     show_legend: bool,
+    /// A level change failed: C's ERR_DROP ends the server, so no more
+    /// frames run and the page shows the error.
+    dropped: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -127,6 +130,7 @@ impl Engine {
             hand: 0,
             cl_gun: 2.0,
             show_legend: false,
+            dropped: false,
         };
         engine.register_sounds();
         engine
@@ -398,6 +402,9 @@ impl Engine {
     /// to the local player (C ClientThink), advance the server (game frames
     /// at 10 Hz) and the client clock, and render from the player's eye.
     fn tick(&mut self, timestamp: f64, input: &q2_platform::wasm::input::WasmInputState) {
+        if self.dropped {
+            return;
+        }
         let elapsed_us = elapsed_microseconds(timestamp, self.last_time);
         let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
@@ -456,7 +463,11 @@ impl Engine {
         if let Some((level, change)) = output.level {
             log(&format!("Level exit to {level}"));
             if let Err(e) = change.and_then(|request| self.prep_level(&request)) {
-                console::error_1(&q2err_to_js(e));
+                // C CM_LoadMap and SV_Map raise ERR_DROP: the server ends
+                // and the console shows why.
+                report_error(&level_change_error(&level, &e));
+                self.dropped = true;
+                return;
             }
         }
         self.frames.advance(elapsed_us);
@@ -1862,7 +1873,7 @@ fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
 
     q2_platform::wasm::game_loop::start_game_loop(
         frame_callback,
-        Box::new(|msg| log(&format!("Game loop stopped: {msg}"))),
+        Box::new(|msg| report_error(&format!("ERROR: game loop stopped: {msg}"))),
     )
     .map_err(q2err_to_js)?;
 
@@ -1896,6 +1907,41 @@ async fn fetch_array_buffer(url: &str) -> Result<js_sys::Uint8Array, JsValue> {
     Ok(js_sys::Uint8Array::new(&array_buffer))
 }
 
+/// The page's status line for a level change that failed with `err`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn level_change_error(level: &str, err: &q2_common::Q2Error) -> String {
+    format!("ERROR: level change to {level}: {err}")
+}
+
+/// Show `msg` the way the page's startup catch does: `console.error`, a
+/// `fail` line in the status console, and the console un-hidden so it is
+/// seen. Used from the panic hook, so nothing here may panic.
+#[cfg(target_arch = "wasm32")]
+fn report_error(msg: &str) {
+    console::error_1(&format!("[qwasm2-rs] {msg}").into());
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if let Some(container) = document.get_element_by_id("status-container") {
+        if let Err(e) = container.class_list().remove_1("hidden") {
+            console::error_1(&e);
+        }
+    }
+    let Some(status) = document.get_element_by_id("status") else {
+        return;
+    };
+    let line = match document.create_element("span") {
+        Ok(line) => line,
+        Err(e) => return console::error_1(&e),
+    };
+    line.set_class_name("fail");
+    // textContent: the text can carry pak-derived strings.
+    line.set_text_content(Some(&format!("{msg}\n")));
+    if let Err(e) = status.append_child(&line) {
+        console::error_1(&e);
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn log(msg: &str) {
     console::log_1(&format!("[qwasm2-rs] {}", msg).into());
@@ -1920,6 +1966,9 @@ fn log(msg: &str) {
 fn console_error_panic_hook_setup() {
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("[qwasm2-rs PANIC] {}", info);
+        #[cfg(target_arch = "wasm32")]
+        report_error(&msg);
+        #[cfg(not(target_arch = "wasm32"))]
         web_sys::console::error_1(&msg.into());
     }));
 }
@@ -2898,6 +2947,17 @@ mod tests {
         assert_eq!(
             origins,
             [Vec3f::new(118.0, -16.0, 0.0), Vec3f::new(18.0, -16.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn a_failed_level_change_is_an_error_line_naming_the_level() {
+        // The page's startup catch writes "ERROR: <e>"; C's console shows
+        // CM_LoadMap's ERR_DROP text.
+        let err = q2_common::Q2Error::Drop("maps/base2.bsp: not found".into());
+        assert_eq!(
+            level_change_error("base2", &err),
+            "ERROR: level change to base2: drop: maps/base2.bsp: not found"
         );
     }
 
