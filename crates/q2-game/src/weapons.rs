@@ -1331,7 +1331,7 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
         (0.0, if v.z > 0.0 { 90.0 } else { 270.0 })
     } else {
         let mut yaw = if v.x != 0.0 {
-            (v.y.atan2(v.x).to_degrees() as i32) as f32
+            degrees_from_atan2(v.y, v.x)
         } else if v.y > 0.0 {
             90.0
         } else {
@@ -1341,13 +1341,18 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
             yaw += 360.0;
         }
         let forward = (v.x * v.x + v.y * v.y).sqrt();
-        let mut pitch = (v.z.atan2(forward).to_degrees() as i32) as f32;
+        let mut pitch = degrees_from_atan2(v.z, forward);
         if pitch < 0.0 {
             pitch += 360.0;
         }
         (yaw, pitch)
     };
     Vec3f::new(-pitch, yaw, 0.0)
+}
+
+/// C `(int)(atan2(y, x) * 180 / M_PI)`: atan2 and the product in double.
+fn degrees_from_atan2(y: f32, x: f32) -> f32 {
+    (((y as f64).atan2(x as f64) * 180.0 / std::f64::consts::PI) as i32) as f32
 }
 
 // ==========================================================================
@@ -1856,6 +1861,24 @@ mod tests {
             g.state.modelindex,
             world.gi.model_index("models/objects/grenade/tris.md2")
         );
+    }
+
+    #[test]
+    fn vectoangles_truncates_from_double_like_c() {
+        // C atan2 and the degree conversion are double; in f32 these
+        // directions truncate one degree off. Expected values are C's
+        // (int)(atan2(y, x) * 180 / M_PI), plus 360 when negative.
+        let unit = |degrees: f64| {
+            let r = degrees.to_radians();
+            (r.cos() as f32, r.sin() as f32)
+        };
+        for (degrees, yaw) in [(-177.0, 184.0), (-170.0, 191.0)] {
+            let (x, y) = unit(degrees);
+            assert_eq!(vectoangles(Vec3f::new(x, y, 0.0)).y, yaw, "{degrees}");
+        }
+        // Pitch: atan2(z, forward) with forward = 0.99939, C -1 (359).
+        let (x, z) = unit(-178.0);
+        assert_eq!(vectoangles(Vec3f::new(x, 0.0, z)).x, -359.0);
     }
 
     #[test]
