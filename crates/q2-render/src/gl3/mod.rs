@@ -1728,8 +1728,11 @@ mod tests {
         assert_eq!(draw.areabits, Some(&[0b10u8][..]));
     }
 
+    // Only the setter: the gun draw reads `hand` through EntityScene, which
+    // needs a GL context; gun_view_projection and gun_cull_face are tested
+    // above.
     #[test]
-    fn set_hand_keeps_the_cvar_for_the_gun_draw() {
+    fn set_hand_stores_the_cvar_starting_at_c_default_0() {
         let mut r = Gl3Renderer::headless(no_files());
         assert_eq!(r.hand, 0);
         r.set_hand(1);
