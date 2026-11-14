@@ -522,10 +522,10 @@ impl GameWorld {
 
     /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
     /// one survived, `true` once the box is clear; no caller reads it.
-    /// C ref: `KillBox` (g_utils.c). C's SV_Trace reports the world when
+    /// C ref: `KillBox` (g_utils.c). C SV_Trace names the world when
     /// nothing is hit, so C's loop ends by "damaging" the solid world and
-    /// returns false every time; here `world_trace`'s "world only on a hit"
-    /// (ADR-005) makes a clear box return true. The telefrags are the same.
+    /// returns false every time; here entity 0 counts as a clear box and
+    /// returns true. The telefrags are the same.
     pub fn kill_box(&mut self, key: EntityKey) -> bool {
         use crate::constants::{DamageFlags, MeansOfDeath};
         loop {
