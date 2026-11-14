@@ -505,12 +505,9 @@ pub fn bfg_think(world: &mut GameWorld, self_key: EntityKey) {
             let Some(h) = world.entities.get(hit) else {
                 break;
             };
-            let (hurtable, body) = (
-                h.game.takedamage != TakeDamage::No
-                    && !h.game.flags.contains(EntityFlags::IMMUNE_LASER)
-                    && Some(hit) != owner,
-                h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some(),
-            );
+            let hurtable = h.game.takedamage != TakeDamage::No
+                && !h.game.flags.contains(EntityFlags::IMMUNE_LASER)
+                && Some(hit) != owner;
             if hurtable {
                 world.t_damage(
                     hit,
@@ -525,7 +522,13 @@ pub fn bfg_think(world: &mut GameWorld, self_key: EntityKey) {
                     MeansOfDeath::BfgLaser,
                 );
             }
-            // Something that's not a monster or player ends the laser.
+            // Something that's not a monster or player ends the laser. Tested
+            // after the damage, as C does: a monster it gibbed has lost
+            // SVF_MONSTER, and a freed one (C zeroes its svflags) is gone.
+            let body = world
+                .entities
+                .get(hit)
+                .is_some_and(|h| h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some());
             if !body {
                 world.gi.write_byte(SvcOp::TempEntity as i32);
                 world.gi.write_byte(TE_LASER_SPARKS);
@@ -1772,6 +1775,71 @@ mod tests {
         *gi.box_edicts.borrow_mut() = vec![world.number_of(monster).unwrap()];
         bfg_think(&mut world, ball);
         assert!(temp_entities(&gi).contains(&TE_BFG_LASER));
+    }
+
+    /// C ThrowHead: the gibbed monster's edict stays, minus SVF_MONSTER.
+    fn die_into_a_head(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.entities.get_mut(key).unwrap().svflags &= !SvFlags::MONSTER.bits();
+    }
+
+    /// C BecomeExplosion1: the monster's edict is freed.
+    fn die_and_vanish(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.free_entity(key);
+    }
+
+    #[test]
+    fn a_bfg_laser_stops_at_a_monster_its_damage_gibs_or_frees() {
+        // C bfg_think tests SVF_MONSTER after T_Damage, so a monster the
+        // laser kills into a head or an explosion ends it there.
+        for die in [die_into_a_head as crate::entity::DieFn, die_and_vanish] {
+            let (mut world, owner, gi) = shooter();
+            world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 500, 400, 1000.0);
+            let ball = world.find_by_classname(None, "bfg blast").unwrap();
+            let monster = |world: &mut GameWorld, x: f32, health: i32| {
+                let key = world.spawn().unwrap();
+                let m = world.entities.get_mut(key).unwrap();
+                m.state.origin = Vec3f::new(x, 0.0, 0.0);
+                m.game.takedamage = TakeDamage::Yes;
+                m.game.health = health;
+                m.svflags |= SvFlags::MONSTER.bits();
+                m.solid = Solid::Bbox;
+                key
+            };
+            let first = monster(&mut world, 100.0, 1);
+            world.entities.get_mut(first).unwrap().die = Some(die);
+            let behind = monster(&mut world, 300.0, 100); // outside the 256 radius
+            let at = Vec3f::new(100.0, 0.0, 0.0);
+            let hit = |ent, endpos| Trace {
+                fraction: 0.05,
+                endpos,
+                ent_index: ent,
+                ..Default::default()
+            };
+            gi.queued_traces.borrow_mut().extend([
+                hit(world.number_of(first), at),
+                hit(world.number_of(behind), Vec3f::new(300.0, 0.0, 0.0)),
+                wall_hit(Vec3f::new(2048.0, 0.0, 0.0), "e1u1/wall", 0),
+            ]);
+            bfg_think(&mut world, ball);
+            assert_eq!(world.entities.get(behind).unwrap().game.health, 100);
+            let sent = temp_entities(&gi);
+            assert_eq!(sent, [TE_BLOOD, TE_LASER_SPARKS, TE_BFG_LASER], "one spark");
+            assert_eq!(gi.vectors.borrow().last(), Some(&at), "beam ends there");
+        }
     }
 
     #[test]
