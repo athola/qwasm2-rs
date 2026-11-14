@@ -980,6 +980,22 @@ use crate::traits::AREA_TRIGGERS;
 #[cfg(test)]
 pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 
+/// One message write, with its type, as `MockGameImport::message` keeps
+/// them: the other write lists cannot tell a byte from a short, or show
+/// how bytes and vectors interleave.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Write {
+    Byte(i32),
+    Short(i32),
+    Long(i32),
+    Float(f32),
+    String(String),
+    Position(Vec3f),
+    Dir(Vec3f),
+    Angle(f32),
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
@@ -1036,6 +1052,8 @@ pub struct MockGameImport {
     pub bprints: RefCell<Vec<(i32, String)>>,
     /// Every `write_byte` and `write_short` value, in order.
     pub writes: RefCell<Vec<i32>>,
+    /// Every write of any type, in order.
+    pub message: RefCell<Vec<Write>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
     /// Every `write_position` and `write_dir`, in order.
@@ -1184,22 +1202,33 @@ impl GameImport for MockGameImport {
     }
     fn write_byte(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Byte(c));
     }
     fn write_short(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Short(c));
     }
-    fn write_long(&self, _: i32) {}
-    fn write_float(&self, _: f32) {}
+    fn write_long(&self, c: i32) {
+        self.message.borrow_mut().push(Write::Long(c));
+    }
+    fn write_float(&self, f: f32) {
+        self.message.borrow_mut().push(Write::Float(f));
+    }
     fn write_string(&self, s: &str) {
         self.strings.borrow_mut().push(s.to_string());
+        self.message.borrow_mut().push(Write::String(s.to_string()));
     }
     fn write_position(&self, pos: Vec3f) {
         self.vectors.borrow_mut().push(pos);
+        self.message.borrow_mut().push(Write::Position(pos));
     }
     fn write_dir(&self, dir: Vec3f) {
         self.vectors.borrow_mut().push(dir);
+        self.message.borrow_mut().push(Write::Dir(dir));
     }
-    fn write_angle(&self, _: f32) {}
+    fn write_angle(&self, a: f32) {
+        self.message.borrow_mut().push(Write::Angle(a));
+    }
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));
     }

@@ -2254,4 +2254,27 @@ mod tests {
             .borrow()
             .contains(&"untargeted target_earthquake at (1 2 3)\n".to_string()));
     }
+
+    #[test]
+    fn target_splash_writes_c_field_types_in_c_order() {
+        use crate::world::Write::{Byte, Dir, Position};
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_splash" "sounds" "2" "origin" "1 2 3" "targetname" "s" }"#,
+        );
+        let before = gi.message.borrow().len();
+        use_named(&mut world, "s");
+        assert_eq!(
+            gi.message.borrow()[before..],
+            [
+                Byte(3),
+                Byte(TE_SPLASH),
+                Byte(32),
+                Position(Vec3f::new(1.0, 2.0, 3.0)),
+                Dir(Vec3f::new(1.0, 0.0, 0.0)),
+                Byte(2),
+            ]
+        );
+    }
 }
