@@ -151,9 +151,6 @@ pub enum MeansOfDeath {
     TargetBlaster = 33,
 }
 
-/// Friendly fire flag OR'd onto MeansOfDeath. C: MOD_FRIENDLY_FIRE
-pub const MOD_FRIENDLY_FIRE: i32 = 0x0800_0000;
-
 // ---------------------------------------------------------------------------
 // Item type flags (IT_*) — local.h:213-219
 // ---------------------------------------------------------------------------
@@ -524,18 +521,6 @@ mod tests {
         assert_eq!(MASK_MONSTERSOLID, 0x0202_0003);
         assert_eq!(MASK_SHOT, 0x0600_0003);
         assert_eq!(MASK_WATER, 0x38);
-    }
-
-    #[test]
-    fn mod_friendly_fire_flag() {
-        assert_eq!(MOD_FRIENDLY_FIRE, 0x0800_0000);
-        // Can be OR'd onto any MOD value
-        let mod_with_friendly = MeansOfDeath::Blaster as i32 | MOD_FRIENDLY_FIRE;
-        assert_eq!(mod_with_friendly & MOD_FRIENDLY_FIRE, MOD_FRIENDLY_FIRE);
-        assert_eq!(
-            mod_with_friendly & !MOD_FRIENDLY_FIRE,
-            MeansOfDeath::Blaster as i32
-        );
     }
 
     #[test]
