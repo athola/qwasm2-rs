@@ -2106,11 +2106,13 @@ pub fn sp_func_door_rotating(
         movedir = -movedir;
     }
     let mut distance = spawn_temp(fields, "distance");
+    let mut warning = None;
     if distance == 0.0 {
-        tracing::debug!(
-            "func_door_rotating at {:?} with no distance set",
-            ent.state.origin
-        );
+        warning = Some(format!(
+            "{} at {} with no distance set\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        ));
         distance = 90.0;
     }
     let mut pos1 = ent.state.angles;
@@ -2178,6 +2180,9 @@ pub fn sp_func_door_rotating(
     } else {
         Some(think_spawn_door_trigger)
     };
+    if let Some(warning) = warning {
+        storage.dprintf(warning);
+    }
 }
 
 /// A movable water brush: a door that only opens when targeted, toggles

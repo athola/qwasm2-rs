@@ -1668,6 +1668,11 @@ impl GameWorld {
                 continue;
             };
             crate::spawn::apply_spawn_fields(ent, fields);
+            // C ED_ParseField; the block is a HashMap, so several unknown
+            // keys print in an unspecified order where C uses file order.
+            for unknown in crate::spawn::unknown_spawn_keys(fields) {
+                self.gi.dprintf(&format!("{unknown} is not a field\n"));
+            }
 
             // Yet another map hack.
             if mapname.eq_ignore_ascii_case("command")
@@ -3619,5 +3624,30 @@ mod tests {
             let dprints = gi.dprints.borrow();
             assert!(dprints.iter().any(|d| d == warning), "{keys}: {dprints:?}");
         }
+    }
+
+    #[test]
+    fn spawn_parsing_names_unknown_keys_and_door_rotating_without_distance() {
+        // C ED_ParseField prints unknown keys, skipping spawn-temp and
+        // F_IGNORE ones; ED_ParseEdict drops `_` keys before it.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" }
+               { "classname" "func_door_rotating" "origin" "1 2 3" "foo" "1" }
+               { "classname" "info_null" "LIP" "1" "light" "200" "_color" "1 0 0" "sounds" "2" "nextmap" "x" }
+               { "classname" "info_null" "enemy" "1" }"#,
+            "",
+        );
+        let dprints = gi.dprints.borrow();
+        let fields: Vec<&String> = dprints
+            .iter()
+            .filter(|d| d.ends_with(" is not a field\n"))
+            .collect();
+        assert_eq!(fields, ["foo is not a field\n", "enemy is not a field\n"]);
+        assert!(
+            dprints.contains(&"func_door_rotating at (1 2 3) with no distance set\n".to_string())
+        );
     }
 }

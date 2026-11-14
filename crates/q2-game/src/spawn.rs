@@ -348,6 +348,68 @@ pub(crate) fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
     q2_shared::types::Vec3f::from_array(v)
 }
 
+/// The keys C ED_ParseField accepts from a map: `fields[]` in
+/// game/savegame/tables/fields.h without the FFL_NOSPAWN ones, including
+/// the spawn-temp (FFL_SPAWNTEMP) keys and the ignored `light`.
+const SPAWN_KEYS: [&str; 47] = [
+    "classname",
+    "model",
+    "spawnflags",
+    "speed",
+    "accel",
+    "decel",
+    "target",
+    "targetname",
+    "pathtarget",
+    "deathtarget",
+    "killtarget",
+    "combattarget",
+    "message",
+    "team",
+    "wait",
+    "delay",
+    "random",
+    "move_origin",
+    "move_angles",
+    "style",
+    "count",
+    "health",
+    "sounds",
+    "light",
+    "dmg",
+    "mass",
+    "volume",
+    "attenuation",
+    "map",
+    "origin",
+    "angles",
+    "angle",
+    "lip",
+    "distance",
+    "height",
+    "noise",
+    "pausetime",
+    "item",
+    "gravity",
+    "sky",
+    "skyrotate",
+    "skyaxis",
+    "minyaw",
+    "maxyaw",
+    "minpitch",
+    "maxpitch",
+    "nextmap",
+];
+
+/// Keys of an entity-string block that C would report with "%s is not a
+/// field": not in `SPAWN_KEYS` (compared ignoring case) and not a `_`
+/// comment key, which C ED_ParseEdict drops first.
+pub fn unknown_spawn_keys(fields: &HashMap<String, String>) -> impl Iterator<Item = &str> {
+    fields.keys().map(String::as_str).filter(|key| {
+        !key.starts_with('_') && !SPAWN_KEYS.iter().any(|k| k.eq_ignore_ascii_case(key))
+    })
+}
+
 /// Set the generic entity fields from an entity-string block, as C
 /// ED_ParseEdict does for every entity before its spawn function runs.
 /// The block is a `HashMap`, so when it has both `angle` and `angles` which
