@@ -4,8 +4,8 @@
 
 use q2_common::cmd::com_parse;
 use q2_shared::constants::{
-    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, MAX_QPATH, STAT_AMMO, STAT_ARMOR, STAT_FLASHES,
-    STAT_HEALTH,
+    CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, MAX_CONFIGSTRINGS, MAX_IMAGES, MAX_QPATH, STAT_AMMO,
+    STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
 };
 
 /// One 2D draw the renderer performs, in screen pixels.
@@ -236,7 +236,10 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             "yv" => y = input.height / 2 - 120 + strtol(arg(&mut toks)),
             "pic" => {
                 let value = stat(stats, strtol(arg(&mut toks)));
-                if let Ok(value) = usize::try_from(value) {
+                // C drops the connection: "Pic >= MAX_IMAGES".
+                if value >= MAX_IMAGES as i32 {
+                    tracing::warn!("layout: pic {value} >= MAX_IMAGES");
+                } else if let Ok(value) = usize::try_from(value) {
                     let name = (input.configstrings)(CS_IMAGES + value);
                     if !name.is_empty() {
                         out.push(HudDraw::Pic {
@@ -309,9 +312,13 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             }
             "stat_string" => {
                 let index = stat(stats, strtol(arg(&mut toks)));
-                if let Ok(index) = usize::try_from(index) {
-                    let text = (input.configstrings)(index);
-                    draw_string(&mut out, x, y, text, 0);
+                // C drops the connection: "Bad stat_string index".
+                match usize::try_from(index)
+                    .ok()
+                    .filter(|&i| i < MAX_CONFIGSTRINGS)
+                {
+                    Some(index) => draw_string(&mut out, x, y, (input.configstrings)(index), 0),
+                    None => tracing::warn!("layout: bad stat_string index {index}"),
                 }
             }
             "cstring" => draw_hud_string(&mut out, x, y, 320, arg(&mut toks), 0),
@@ -358,6 +365,7 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use q2_shared::constants::CS_LIGHTS;
 
     const W: i32 = 640;
     const H: i32 = 480;
@@ -699,6 +707,16 @@ mod tests {
         stats[0] = 3;
         let draws = run("xl 10 yt 20 pic 0", &stats, &[(CS_IMAGES + 3, "i_health")]);
         assert_eq!(draws, vec![pic(10, 20, "i_health")]);
+    }
+
+    #[test]
+    fn pic_and_stat_string_past_their_tables_draw_nothing() {
+        // C drops with "Pic >= MAX_IMAGES" / "Bad stat_string index".
+        let mut stats = [0; 32];
+        stats[0] = MAX_IMAGES as i16;
+        assert!(run("pic 0", &stats, &[(CS_LIGHTS, "m")]).is_empty());
+        stats[0] = MAX_CONFIGSTRINGS as i16;
+        assert!(run("stat_string 0", &stats, &[(MAX_CONFIGSTRINGS, "Hi")]).is_empty());
     }
 
     #[test]
