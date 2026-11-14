@@ -727,6 +727,7 @@ dependencies = [
  "q2-game",
  "q2-shared",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

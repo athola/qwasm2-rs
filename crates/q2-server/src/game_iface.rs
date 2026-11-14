@@ -513,6 +513,11 @@ impl Default for ServerGameImport {
 // GameImport impl
 // ---------------------------------------------------------------------------
 
+/// The `tracing` target of the game's console prints (C `PF_dprintf`, and
+/// `PF_cprintf` to no entity), which C always shows: both call
+/// `Com_Printf`, not the developer-only `Com_DPrintf`.
+pub const GAME_PRINT_TARGET: &str = "game";
+
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
@@ -527,7 +532,7 @@ impl GameImport for ServerGameImport {
     }
 
     fn dprintf(&self, msg: &str) {
-        tracing::debug!("[dprintf] {}", msg.trim_end());
+        tracing::info!(target: GAME_PRINT_TARGET, "{}", msg.trim_end());
     }
 
     /// C PF_cprintf: to a client as `svc_print`, or the console for none.
@@ -535,10 +540,11 @@ impl GameImport for ServerGameImport {
     /// `1..=maxclients`; the trait cannot fail, so the print is logged as
     /// an error and dropped.
     fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
-        tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
         let Some(ent) = ent_idx else {
+            tracing::info!(target: GAME_PRINT_TARGET, "{}", msg.trim_end());
             return;
         };
+        tracing::debug!(ent, "[cprintf] {}", msg.trim_end());
         if self.is_client(ent) {
             self.queue_print(printlevel, msg);
         } else {
@@ -1285,6 +1291,51 @@ mod tests {
         gi.add_command_string("echo hi\n");
         assert_eq!(gi.take_commands(), "gamemap \"base2\"\necho hi\n");
         assert_eq!(gi.take_commands(), "");
+    }
+
+    /// The `target level: message` of each event `run` logs at INFO or
+    /// above.
+    fn logged(run: impl FnOnce()) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        struct Shared(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Shared {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log lock").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let writer = out.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || Shared(writer.clone()))
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let text = String::from_utf8(out.lock().expect("log lock").clone()).expect("utf-8");
+        text.lines().map(|line| line.trim().to_string()).collect()
+    }
+
+    #[test]
+    fn dprintf_and_a_console_cprintf_log_at_info_under_the_game_target() {
+        // C PF_dprintf and PF_cprintf with no entity call Com_Printf, which
+        // always reaches the console (not Com_DPrintf).
+        let gi = ServerGameImport::new();
+        let lines = logged(|| {
+            gi.dprintf("teleporter without a target\n");
+            gi.cprintf(None, q2_shared::constants::PRINT_HIGH, "console line\n");
+        });
+        assert_eq!(
+            lines,
+            [
+                format!("INFO {GAME_PRINT_TARGET}: teleporter without a target"),
+                format!("INFO {GAME_PRINT_TARGET}: console line"),
+            ]
+        );
     }
 
     #[test]
