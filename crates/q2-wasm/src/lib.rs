@@ -2424,6 +2424,35 @@ mod tests {
 
     /// A local game whose last server frame both sent a print and asked
     /// for a level exit to `level`, and a client that has a frame.
+    fn test_rocket() -> q2_shared::types::EntityState {
+        q2_shared::types::EntityState {
+            number: 20,
+            modelindex: 3,
+            effects: q2_shared::constants::EF_ROCKET,
+            ..Default::default()
+        }
+    }
+
+    /// The effects' models `fx` draws now (explosions and the like).
+    fn fx_entities(fx: &mut q2_client::fx::ClientFx) -> Vec<q2_client::fx::FxEntity> {
+        let view = q2_client::fx::FxView::default();
+        fx.frame_view(1000, 1.0, &view, &mut || 0).entities
+    }
+
+    /// The lights `client`'s trails give `test_rocket`: none once its
+    /// trail state is gone.
+    fn rocket_lights(client: &mut TestClient) -> Vec<q2_client::fx::FxLight> {
+        let rocket = test_rocket();
+        client.trails.run(
+            &mut client.fx,
+            std::slice::from_ref(&rocket),
+            1.0,
+            1,
+            1000,
+            &mut || 0,
+        )
+    }
+
     fn frame_with_a_print_and_a_level_exit(
         level: &str,
     ) -> (q2_server::local::LocalGame, TestClient) {
@@ -2445,6 +2474,30 @@ mod tests {
         let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
         print.extend_from_slice(b"late\n\0");
         client.text.message(&print, 600_000, 40);
+        // A muzzle flash light, an explosion and a rocket's trail state.
+        let mut flash = q2_common::net_msg::NetMsg::new();
+        flash.write_byte(q2_shared::protocol::SvcOp::MuzzleFlash as i32);
+        flash.write_short(1);
+        flash.write_byte(q2_shared::constants::MZ_SHOTGUN);
+        let mut tent = q2_common::net_msg::NetMsg::new();
+        tent.write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+        tent.write_byte(q2_shared::constants::TE_EXPLOSION1);
+        tent.write_position(q2_shared::types::Vec3f::ONE);
+        run_effect_messages(
+            &mut client.effects,
+            &mut client.fx,
+            &[flash.data().to_vec(), tent.data().to_vec()],
+            |n| flash_state(&client.last_states, n),
+            1000,
+            1000,
+            &mut || 0,
+        );
+        client
+            .trails
+            .server_frame(std::slice::from_ref(&test_rocket()), &[]);
+        assert!(client.effects.dlights().next().is_some());
+        assert!(!fx_entities(&mut client.fx).is_empty());
+        assert!(!rocket_lights(&mut client).is_empty());
         // A skipped cinematic hands its next server to take_map_change.
         local
             .change_map(
@@ -2472,6 +2525,9 @@ mod tests {
         assert_eq!(client.frames.serverframe(), None);
         assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
         assert!(client.last_states.is_empty());
+        assert!(client.effects.dlights().next().is_none());
+        assert!(fx_entities(&mut client.fx).is_empty());
+        assert!(rocket_lights(&mut client).is_empty());
         assert!(client.text.layout.is_empty());
         // C CL_PrepRefresh -> Con_ClearNotify: the old lines are gone on
         // the new level's restarted clock.
