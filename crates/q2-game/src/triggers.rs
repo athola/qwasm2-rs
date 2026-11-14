@@ -478,15 +478,18 @@ impl GameWorld {
             "trigger_always" => self.use_targets(key, key),
             // C SP_trigger_key.
             "trigger_key" => {
-                let origin = self.entities.get(key).map(|e| e.state.origin);
+                let origin = self
+                    .entities
+                    .get(key)
+                    .map_or(String::new(), |e| crate::ai::vtos(e.state.origin));
                 let Some(item_name) = fields.get("item") else {
                     self.gi
-                        .dprintf(&format!("no key item for trigger_key at {origin:?}\n"));
+                        .dprintf(&format!("no key item for trigger_key at {origin}\n"));
                     return;
                 };
                 let Some(item) = self.find_item_by_classname(item_name) else {
                     self.gi.dprintf(&format!(
-                        "item {item_name} not found for trigger_key at {origin:?}\n"
+                        "item {item_name} not found for trigger_key at {origin}\n"
                     ));
                     return;
                 };
@@ -496,7 +499,7 @@ impl GameWorld {
                 ent.game.item = Some(item);
                 if ent.game.target.is_empty() {
                     self.gi
-                        .dprintf(&format!("trigger_key at {origin:?} has no target\n"));
+                        .dprintf(&format!("{classname} at {origin} has no target\n"));
                     return;
                 }
                 ent.use_fn = Some(trigger_key_use);
@@ -561,11 +564,19 @@ pub fn sp_trigger_once(
     let Some(ent) = storage.get_mut(key) else {
         return;
     };
+    ent.game.wait = -1.0;
     // Old maps put TRIGGERED on bit 1 instead of bit 4.
     if ent.game.spawnflags & 1 != 0 {
         ent.game.spawnflags = (ent.game.spawnflags & !1) | MULTI_TRIGGERED;
+        // C prints mins + size / 2 before its setmodel, while both are
+        // still zero; `call_spawn` has already set the model here.
+        let warning = format!(
+            "fixed TRIGGERED flag on {} at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(Vec3f::ZERO)
+        );
+        storage.dprintf(warning);
     }
-    ent.game.wait = -1.0;
     sp_trigger_multiple(storage, key, fields);
 }
 
@@ -654,10 +665,11 @@ pub fn sp_trigger_gravity(
         return;
     };
     if fields.get("gravity").is_none_or(|g| g.is_empty()) {
-        tracing::debug!(
-            "trigger_gravity without gravity set at {:?}",
-            ent.state.origin
+        let warning = format!(
+            "trigger_gravity without gravity set at {}\n",
+            crate::ai::vtos(ent.state.origin)
         );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }

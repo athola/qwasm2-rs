@@ -1538,7 +1538,8 @@ pub fn train_next(world: &mut GameWorld, key: EntityKey) {
         let Some(c) = world.entities.get(corner) else {
             return;
         };
-        let (c_origin, c_target, c_flags, c_wait) = (
+        let (c_class, c_origin, c_target, c_flags, c_wait) = (
+            c.game.classname.clone(),
             c.state.origin,
             c.game.target.clone(),
             c.game.spawnflags,
@@ -1553,7 +1554,8 @@ pub fn train_next(world: &mut GameWorld, key: EntityKey) {
         if c_flags & PATH_CORNER_TELEPORT != 0 {
             if !first {
                 world.gi.dprintf(&format!(
-                    "connected teleport path_corners, see path_corner at {c_origin:?}\n"
+                    "connected teleport path_corners, see {c_class} at {}\n",
+                    crate::ai::vtos(c_origin)
                 ));
                 return;
             }
@@ -2263,7 +2265,11 @@ pub fn sp_func_train(
     ent.use_fn = Some(train_use);
 
     if ent.game.target.is_empty() {
-        tracing::debug!("func_train without a target at {:?}", ent.absmin);
+        let warning = format!(
+            "func_train without a target at {}\n",
+            crate::ai::vtos(ent.absmin)
+        );
+        storage.dprintf(warning);
     } else {
         // Start trains on the second frame, to make sure their targets
         // have had a chance to spawn.
@@ -2456,11 +2462,15 @@ pub fn sp_func_timer(
     }
     ent.use_fn = Some(func_timer_use);
     ent.think = Some(func_timer_think);
+    ent.svflags = q2_shared::constants::SVF_NOCLIENT;
     if ent.game.random >= ent.game.wait {
         ent.game.random = (f64::from(ent.game.wait) - FRAMETIME_C) as f32;
-        tracing::debug!("func_timer at {:?} has random >= wait", ent.state.origin);
+        let warning = format!(
+            "func_timer at {} has random >= wait\n",
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
     }
-    ent.svflags = q2_shared::constants::SVF_NOCLIENT;
 }
 
 /// The `GameWorld` half of C SP_func_explosive: removed in deathmatch,
@@ -4319,6 +4329,19 @@ mod tests {
         let e = world.entities.get(train).unwrap();
         assert_eq!(e.state.origin, at_corner(Vec3f::new(900.0, 0.0, 0.0)));
         assert_eq!(e.velocity, Vec3f::ZERO);
+    }
+
+    #[test]
+    fn connected_teleport_corners_name_the_second_corner_in_c_form() {
+        let (mut world, gi) = spawned_gi(concat!(
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p1\" \"target\" \"p2\" \"origin\" \"100 0 0\" }\n",
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p2\" \"target\" \"p3\" \"origin\" \"900 0 0\" \"spawnflags\" \"1\" }\n",
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p3\" \"target\" \"p1\" \"origin\" \"900 100 0\" \"spawnflags\" \"1\" }\n",
+            "{ \"classname\" \"func_train\" \"model\" \"*3\" \"target\" \"p1\" }",
+        ));
+        run_for(&mut world, 1.0);
+        let warning = "connected teleport path_corners, see path_corner at (900 100 0)\n";
+        assert!(gi.dprints.borrow().iter().any(|d| d == warning));
     }
 
     #[test]

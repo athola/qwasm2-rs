@@ -712,7 +712,7 @@ pub fn sp_misc_teleporter(
         return;
     };
     if ent.game.target.is_empty() {
-        tracing::debug!("teleporter without a target");
+        storage.dprintf("teleporter without a target.\n".to_string());
         storage.soft_free(key);
         return;
     }
@@ -763,7 +763,11 @@ pub fn sp_path_corner(
         return;
     };
     if ent.game.targetname.is_empty() {
-        tracing::debug!("path_corner with no targetname at {:?}", ent.state.origin);
+        let warning = format!(
+            "path_corner with no targetname at {}\n",
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }

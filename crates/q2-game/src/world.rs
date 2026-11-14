@@ -1466,6 +1466,9 @@ impl GameWorld {
             self.set_model(key, model);
         }
         sfn(&mut self.entities, key, fields);
+        for text in self.entities.take_dprints() {
+            self.gi.dprintf(&text);
+        }
         if !self.entities.is_live(key) {
             return; // The spawn function removed it (info_null, bad keys).
         }
@@ -3533,5 +3536,88 @@ mod tests {
         let freed = radius_target(&mut world, Vec3f::ZERO, Solid::Bbox);
         world.free_entity(freed);
         assert_eq!(world.find_radius(None, Vec3f::ZERO, 1000.0), None);
+    }
+
+    #[test]
+    fn spawn_warnings_reach_dprintf_in_c_form() {
+        // Each C SP_* below warns with gi.dprintf, vectors through vtos.
+        let cases = [
+            (
+                r#""classname" "func_wall" "model" "*1" "spawnflags" "4""#,
+                "func_wall START_ON without TOGGLE\n",
+            ),
+            (
+                r#""classname" "func_clock" "origin" "1 2 3""#,
+                "func_clock with no target at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_clock" "target" "d" "spawnflags" "2" "origin" "1 2 3""#,
+                "func_clock with no count at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "misc_strogg_ship" "origin" "1 2 3""#,
+                "misc_strogg_ship without a target at (0 0 0)\n",
+            ),
+            (
+                r#""classname" "misc_teleporter""#,
+                "teleporter without a target.\n",
+            ),
+            (
+                r#""classname" "path_corner" "origin" "1 2 3""#,
+                "path_corner with no targetname at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_train" "model" "*1""#,
+                "func_train without a target at (-1 -1 -1)\n",
+            ),
+            (
+                r#""classname" "func_timer" "random" "2" "origin" "1 2 3""#,
+                "func_timer at (1 2 3) has random >= wait\n",
+            ),
+            (
+                r#""classname" "trigger_gravity" "model" "*1" "origin" "1 2 3""#,
+                "trigger_gravity without gravity set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_changelevel" "origin" "1 2 3""#,
+                "target_changelevel with no map at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_speaker" "origin" "1 2 3""#,
+                "target_speaker with no noise set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "origin" "1 2 3""#,
+                "no key item for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "foo" "origin" "1 2 3""#,
+                "item foo not found for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "key_blue_key" "origin" "1 2 3""#,
+                "trigger_key at (1 2 3) has no target\n",
+            ),
+            (
+                // C prints mins + size / 2 before its setmodel, while both
+                // are still zero.
+                r#""classname" "trigger_once" "model" "*1" "spawnflags" "1" "origin" "1 2 3""#,
+                "fixed TRIGGERED flag on trigger_once at (0 0 0)\n",
+            ),
+        ];
+        for (keys, warning) in cases {
+            let (mut world, gi) = test_world_recording();
+            gi.inline_bounds
+                .borrow_mut()
+                .insert("*1".into(), (Vec3f::ZERO, Vec3f::splat(16.0)));
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                &format!("{{ \"classname\" \"worldspawn\" }}\n{{ {keys} }}"),
+                "",
+            );
+            let dprints = gi.dprints.borrow();
+            assert!(dprints.iter().any(|d| d == warning), "{keys}: {dprints:?}");
+        }
     }
 }

@@ -459,11 +459,12 @@ fn flyby_ship(storage: &mut EntityStorage, key: EntityKey) {
         return;
     };
     if ent.game.target.is_empty() {
-        tracing::debug!(
-            "{} without a target at {:?}",
+        let warning = format!(
+            "{} without a target at {}\n",
             ent.game.classname,
-            ent.absmin
+            crate::ai::vtos(ent.absmin)
         );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }

@@ -842,9 +842,14 @@ impl GameWorld {
         fields: &HashMap<String, String>,
     ) {
         let Some(noise) = fields.get("noise") else {
-            let origin = self.entities.get(key).map(|e| e.state.origin);
-            self.gi
-                .dprintf(&format!("target_speaker with no noise set at {origin:?}\n"));
+            let origin = self
+                .entities
+                .get(key)
+                .map_or(Vec3f::ZERO, |e| e.state.origin);
+            self.gi.dprintf(&format!(
+                "target_speaker with no noise set at {}\n",
+                crate::ai::vtos(origin)
+            ));
             return;
         };
         let name = if noise.contains(".wav") {
@@ -1137,7 +1142,11 @@ pub fn sp_target_changelevel(
         return;
     };
     if ent.game.map.is_empty() {
-        tracing::debug!("target_changelevel with no map at {:?}", ent.state.origin);
+        let warning = format!(
+            "target_changelevel with no map at {}\n",
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }
