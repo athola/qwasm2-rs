@@ -303,7 +303,8 @@ impl Renderer for Gl3Renderer {
         self.width = width;
         self.height = height;
 
-        let (prog, uniforms) = shader::compile_world_program(gl)?;
+        let (prog, uniforms) = shader::compile_world_program(gl)
+            .map_err(in_step("Failed to compile world shaders"))?;
 
         // SAFETY: `prog` and any previous program were created by this same
         // `gl` context in `compile_world_program`, and `old` is no longer
@@ -316,11 +317,12 @@ impl Renderer for Gl3Renderer {
         }
         self.uniforms = Some(uniforms);
 
-        let extra = create_extra(gl)?;
+        let extra = create_extra(gl).map_err(in_step("Failed to set up entity and 2D drawing"))?;
         if let Some(old) = self.extra.replace(extra) {
             free_extra(gl, old);
         }
-        let effects = fx::create_fx(gl)?;
+        let effects =
+            fx::create_fx(gl).map_err(in_step("Failed to set up particles and sprites"))?;
         if let Some(old) = self.fx.replace(effects) {
             fx::free_fx(gl, old);
         }
@@ -915,6 +917,15 @@ fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16]
     m
 }
 
+/// Prefix a `Q2Error::Drop` from an init step with the step's name. The
+/// message is prefixed directly so Display does not print "drop:" twice.
+fn in_step(step: &'static str) -> impl FnOnce(Q2Error) -> Q2Error {
+    move |error| match error {
+        Q2Error::Drop(message) => Q2Error::Drop(format!("{step}: {message}")),
+        other => other,
+    }
+}
+
 /// `MD2_IDENT` as the unsigned word C `Mod_ForName` switches on.
 const MD2_MAGIC: u32 = MD2_IDENT as u32;
 
@@ -996,6 +1007,18 @@ mod tests {
     fn init_fails_without_context() {
         let mut r = Gl3Renderer::headless(no_files());
         assert!(r.init(800, 600).is_err());
+    }
+
+    #[test]
+    fn an_init_step_error_names_the_step_once_and_stays_a_drop() {
+        let error = in_step("Failed to compile world shaders")(Q2Error::Drop(
+            "VS compile error: bad".into(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "drop: Failed to compile world shaders: VS compile error: bad"
+        );
+        assert!(matches!(in_step("x")(Q2Error::Quit), Q2Error::Quit));
     }
 
     #[test]
