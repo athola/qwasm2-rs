@@ -12,6 +12,7 @@ use q2_shared::types::{Multicast, Vec3f};
 
 use crate::constants::*;
 use crate::entity::{EntityKey, WeaponState};
+use crate::monster::sound;
 use crate::world::GameWorld;
 
 // Player model frames the weapon code starts (C `player.h`).
@@ -492,11 +493,7 @@ pub fn weapon_generic(
     if client.weaponstate == WeaponState::Firing {
         if fire_frames.contains(&client.ps.gunframe) {
             if client.quad_framenum > world.level.framenum {
-                let number = world.number_of(key);
-                let damage3 = world.gi.sound_index("items/damage3.wav");
-                world
-                    .gi
-                    .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
+                sound(world, key, CHAN_ITEM, "items/damage3.wav", ATTN_NORM);
             }
             fire(world, key);
         } else {
@@ -591,11 +588,7 @@ fn click_and_switch(world: &mut GameWorld, key: EntityKey) {
         due
     });
     if click {
-        let number = world.number_of(key);
-        let noammo = world.gi.sound_index("weapons/noammo.wav");
-        world
-            .gi
-            .sound(number, CHAN_VOICE, noammo, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_VOICE, "weapons/noammo.wav", ATTN_NORM);
     }
     world.no_ammo_weapon_change(key);
 }
@@ -801,17 +794,13 @@ pub fn weapon_machinegun(world: &mut GameWorld, key: EntityKey) {
 /// on release. C ref: `Chaingun_Fire` (player/weapon.c).
 pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
     let damage = if world.game.deathmatch { 6 } else { 8 };
-    let number = world.number_of(key);
     let ammo = ammo_left(world, key);
     let Some(client) = world.client(key) else {
         return;
     };
     let held = client.buttons & BUTTON_ATTACK != 0;
     if client.ps.gunframe == 5 {
-        let spin_up = world.gi.sound_index("weapons/chngnu1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, spin_up, 1.0, ATTN_IDLE, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/chngnu1a.wav", ATTN_IDLE);
     }
     let Some(client) = world.client_mut(key) else {
         return;
@@ -828,10 +817,7 @@ pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
     let gunframe = client.ps.gunframe;
     if gunframe == 22 {
         client.weapon_sound = 0;
-        let spin_down = world.gi.sound_index("weapons/chngnd1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, spin_down, 1.0, ATTN_IDLE, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/chngnd1a.wav", ATTN_IDLE);
     } else {
         let spin = world.gi.sound_index("weapons/chngnl1a.wav");
         if let Some(client) = world.client_mut(key) {
@@ -949,11 +935,7 @@ pub fn weapon_hyperblaster_fire(world: &mut GameWorld, key: EntityKey) {
         }
     }
     if world.client(key).is_some_and(|c| c.ps.gunframe == 12) {
-        let number = world.number_of(key);
-        let wind_down = world.gi.sound_index("weapons/hyprbd1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, wind_down, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/hyprbd1a.wav", ATTN_NORM);
         if let Some(client) = world.client_mut(key) {
             client.weapon_sound = 0;
         }
@@ -1133,11 +1115,7 @@ pub fn weapon_grenade_fire(world: &mut GameWorld, key: EntityKey, held: bool) {
     let radius = (damage + 40) as f32;
     if quad {
         damage *= 4;
-        let number = world.number_of(key);
-        let damage3 = world.gi.sound_index("items/damage3.wav");
-        world
-            .gi
-            .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_ITEM, "items/damage3.wav", ATTN_NORM);
     }
     let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
     let grenade_time = world.client(key).map_or(0.0, |c| c.grenade_time);
@@ -1221,12 +1199,8 @@ pub fn weapon_grenade(world: &mut GameWorld, key: EntityKey) {
         }
         WeaponState::Firing => {
             let gunframe = client.ps.gunframe;
-            let number = world.number_of(key);
             if gunframe == 5 {
-                let pin = world.gi.sound_index("weapons/hgrena1b.wav");
-                world
-                    .gi
-                    .sound(number, CHAN_WEAPON, pin, 1.0, ATTN_NORM, 0.0);
+                sound(world, key, CHAN_WEAPON, "weapons/hgrena1b.wav", ATTN_NORM);
             }
             if world.client(key).is_some_and(|c| c.ps.gunframe == 11) {
                 let tick = world.gi.sound_index("weapons/hgrenc1b.wav");

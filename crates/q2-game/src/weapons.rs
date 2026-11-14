@@ -288,11 +288,7 @@ pub fn grenade_touch(
         } else {
             "weapons/hgrenb2a.wav"
         };
-        let number = world.number_of(self_key);
-        let index = world.gi.sound_index(sound);
-        world
-            .gi
-            .sound(number, CHAN_VOICE, index, 1.0, ATTN_NORM, 0.0);
+        crate::monster::sound(world, self_key, CHAN_VOICE, sound, ATTN_NORM);
         return;
     }
 
@@ -355,11 +351,13 @@ pub fn bfg_touch(
         100.0,
         MeansOfDeath::BfgBlast,
     );
-    let number = world.number_of(self_key);
-    let boom = world.gi.sound_index("weapons/bfg__x1b.wav");
-    world
-        .gi
-        .sound(number, CHAN_VOICE, boom, 1.0, ATTN_NORM, 0.0);
+    crate::monster::sound(
+        world,
+        self_key,
+        CHAN_VOICE,
+        "weapons/bfg__x1b.wav",
+        ATTN_NORM,
+    );
     // C reads `other->takedamage` again here, after the damage; a freed
     // edict is zeroed, so one that is gone takes no damage.
     let other_takes_damage = world
@@ -1082,10 +1080,7 @@ impl GameWorld {
         if timer <= 0.0 {
             grenade_explode(self, key);
         } else {
-            let number = self.number_of(owner);
-            let throw = self.gi.sound_index("weapons/hgrent1a.wav");
-            self.gi
-                .sound(number, CHAN_WEAPON, throw, 1.0, ATTN_NORM, 0.0);
+            crate::monster::sound(self, owner, CHAN_WEAPON, "weapons/hgrent1a.wav", ATTN_NORM);
             self.link_entity(key);
         }
     }

@@ -6,6 +6,7 @@ use crate::constants::{
     SKILL_HARD, SKILL_MEDIUM,
 };
 use crate::entity::EntityKey;
+use crate::monster::sound;
 use crate::world::GameWorld;
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::{PmType, Solid, Vec3f};
@@ -40,9 +41,7 @@ impl GameWorld {
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.game.flags.remove(EntityFlags::POWER_ARMOR);
             }
-            let power2 = self.gi.sound_index("misc/power2.wav");
-            self.gi
-                .sound(self.number_of(key), CHAN_ITEM, power2, 1.0, ATTN_NORM, 0.0);
+            sound(self, key, CHAN_ITEM, "misc/power2.wav", ATTN_NORM);
             power_armor = POWER_ARMOR_NONE;
         }
         let ammo = self.client(key).map_or(0, |c| c.ammo_index);

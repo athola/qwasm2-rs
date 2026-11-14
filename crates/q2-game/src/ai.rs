@@ -1322,13 +1322,6 @@ pub(crate) fn world_damage(
     );
 }
 
-fn body_sound(world: &mut GameWorld, key: EntityKey, name: &str) {
-    let sound = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), CHAN_BODY, sound, 1.0, ATTN_NORM, 0.0);
-}
-
 /// Drown a monster too long under water, or suffocate a swimmer out of
 /// it; burn it in lava and slime, and splash on entering and leaving.
 /// C ref: `M_WorldEffects` (g_monster.c).
@@ -1370,7 +1363,7 @@ pub fn m_world_effects(world: &mut GameWorld, key: EntityKey) {
     let (waterlevel, watertype, flags) = (ent.game.waterlevel, ent.game.watertype, ent.game.flags);
     if waterlevel == 0 {
         if flags.contains(EntityFlags::INWATER) {
-            body_sound(world, key, "player/watr_out.wav");
+            crate::monster::sound(world, key, CHAN_BODY, "player/watr_out.wav", ATTN_NORM);
             if let Some(ent) = world.entities.get_mut(key) {
                 ent.game.flags.remove(EntityFlags::INWATER);
             }
@@ -1398,9 +1391,9 @@ pub fn m_world_effects(world: &mut GameWorld, key: EntityKey) {
                 } else {
                     "player/lava2.wav"
                 };
-                body_sound(world, key, name);
+                crate::monster::sound(world, key, CHAN_BODY, name, ATTN_NORM);
             } else if watertype & (CONTENTS_SLIME | CONTENTS_WATER) != 0 {
-                body_sound(world, key, "player/watr_in.wav");
+                crate::monster::sound(world, key, CHAN_BODY, "player/watr_in.wav", ATTN_NORM);
             }
         }
         if let Some(ent) = world.entities.get_mut(key) {

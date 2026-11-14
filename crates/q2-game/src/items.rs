@@ -1397,7 +1397,7 @@ pub fn use_quad(world: &mut GameWorld, key: EntityKey, item: usize) {
     if let Some(client) = world.client_mut(key) {
         extend(&mut client.quad_framenum, now, timeout);
     }
-    world.item_sound(key, "items/damage.wav");
+    crate::monster::sound(world, key, CHAN_ITEM, "items/damage.wav", ATTN_NORM);
 }
 
 /// C ref: `Use_Breather`.
@@ -1425,7 +1425,7 @@ pub fn use_invulnerability(world: &mut GameWorld, key: EntityKey, item: usize) {
     if let Some(client) = world.client_mut(key) {
         extend(&mut client.invincible_framenum, now, 300);
     }
-    world.item_sound(key, "items/protect.wav");
+    crate::monster::sound(world, key, CHAN_ITEM, "items/protect.wav", ATTN_NORM);
 }
 
 /// C ref: `Use_Silencer`.
@@ -1475,7 +1475,7 @@ pub fn use_power_armor(world: &mut GameWorld, key: EntityKey, _item: usize) {
         if let Some(ent) = world.entities.get_mut(key) {
             ent.game.flags.remove(EntityFlags::POWER_ARMOR);
         }
-        world.auto_sound(key, "misc/power2.wav");
+        crate::monster::sound(world, key, CHAN_AUTO, "misc/power2.wav", ATTN_NORM);
         return;
     }
     let cells = world.find_item_by_name("Cells");
@@ -1492,7 +1492,7 @@ pub fn use_power_armor(world: &mut GameWorld, key: EntityKey, _item: usize) {
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.flags |= EntityFlags::POWER_ARMOR;
     }
-    world.auto_sound(key, "misc/power1.wav");
+    crate::monster::sound(world, key, CHAN_AUTO, "misc/power1.wav", ATTN_NORM);
 }
 
 /// Dropping the last of the armor in use switches it off first. C ref:
@@ -1510,22 +1510,6 @@ pub fn drop_power_armor(world: &mut GameWorld, key: EntityKey, item: usize) {
         use_power_armor(world, key, item);
     }
     drop_general(world, key, item);
-}
-
-impl GameWorld {
-    /// `sound` on CHAN_ITEM from `key`.
-    fn item_sound(&self, key: EntityKey, sound: &str) {
-        let index = self.gi.sound_index(sound);
-        self.gi
-            .sound(self.number_of(key), CHAN_ITEM, index, 1.0, ATTN_NORM, 0.0);
-    }
-
-    /// `sound` on CHAN_AUTO from `key`.
-    fn auto_sound(&self, key: EntityKey, sound: &str) {
-        let index = self.gi.sound_index(sound);
-        self.gi
-            .sound(self.number_of(key), CHAN_AUTO, index, 1.0, ATTN_NORM, 0.0);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,7 +1901,7 @@ pub fn touch_item(
             def.pickup_sound
         };
         if !sound.is_empty() {
-            world.item_sound(other, sound);
+            crate::monster::sound(world, other, CHAN_ITEM, sound, ATTN_NORM);
         }
         // Activate the item instantly if appropriate; after the pickup
         // sound so activation sounds override it.
