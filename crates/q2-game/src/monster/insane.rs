@@ -8,7 +8,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{footstep, frame, set_move, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{footstep, frame, monster_footsteps, set_move, throw_organic_gibs};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -570,7 +570,8 @@ fn is_down(frame: i32) -> bool {
 
 /// C ref: `insane_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn insane_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 0.7);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 0.7);
 }
 
 /// C ref: `insane_fist`.

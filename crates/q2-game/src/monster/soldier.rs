@@ -10,7 +10,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash, footstep, MONSTER_FOOTSTEPS};
+use crate::monster::{fire, flash, footstep, monster_footsteps};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -725,7 +725,8 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `soldier_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn soldier_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `soldier_idle`.

@@ -9,7 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{fire, flash, footstep, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{fire, flash, footstep, monster_footsteps, throw_organic_gibs};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -408,7 +408,8 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
 
 /// C ref: `gunner_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn gunner_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `gunner_idlesound`.

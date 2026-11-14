@@ -9,7 +9,7 @@ use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_railgun;
 use crate::monster::flash::monster_flash_source;
-use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{footstep, frame, monster_footsteps, set_move, sound, throw_organic_gibs};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -272,7 +272,8 @@ fn aiflags(world: &GameWorld, key: EntityKey) -> AiFlags {
 
 /// C ref: `gladiator_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn gladiator_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `gladiator_idle`.

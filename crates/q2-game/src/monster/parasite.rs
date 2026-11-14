@@ -8,7 +8,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::flash::project_source;
-use crate::monster::{frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{frame, monster_footsteps, set_move, sound, throw_organic_gibs};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -367,7 +367,8 @@ pub fn parasite_tap(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `parasite_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn parasite_footstep(world: &mut GameWorld, key: EntityKey) {
-    parasite_step(world, key, MONSTER_FOOTSTEPS);
+    let on = monster_footsteps(world);
+    parasite_step(world, key, on);
 }
 
 /// The `parasite_footstep` body: the tap, without a `randk()`, when
