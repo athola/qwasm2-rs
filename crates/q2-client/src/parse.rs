@@ -46,8 +46,11 @@ impl ClientState {
                 }
                 Ok(SvcOp::Nop) => {}
                 Ok(SvcOp::Reconnect) => self.state = ConnState::Connecting,
-                // No client handler yet: consume the payload per its C layout
-                // so the opcodes after it (often the frame) still parse.
+                // The handlers exist (`effects::Effects::message`,
+                // `notify::ServerText::message`) but this parser is not
+                // connected to them yet (#19): consume the payload per its
+                // C layout so the opcodes after it (often the frame) still
+                // parse.
                 Ok(SvcOp::MuzzleFlash) | Ok(SvcOp::MuzzleFlash2) => {
                     let _entity = msg.read_short();
                     let _flash = msg.read_byte();
@@ -62,12 +65,13 @@ impl ClientState {
                 }
                 Ok(SvcOp::Sound) => skip_sound(msg),
                 Ok(SvcOp::Download) => skip_download(msg),
-                // The payload depends on a per-type table not ported yet
-                // (opcode handlers, issue #19). Unreliable temp entities trail
-                // the frame in the datagram; reliable ones (MULTICAST_*_R) ride
-                // ahead of it and still cost that frame until #19 lands.
+                // `fx::ClientFx::temp_entity` parses the per-type payload
+                // (C CL_ParseTEnt), but this parser does not pass it there
+                // yet (#19). Unreliable temp entities trail the frame in the
+                // datagram; reliable ones (MULTICAST_*_R) ride ahead of it
+                // and still cost that frame until #19 lands.
                 Ok(SvcOp::TempEntity) => {
-                    q2_drop!("parse_server_message: svc_temp_entity is not supported yet");
+                    q2_drop!("parse_server_message: svc_temp_entity is not wired to fx yet");
                 }
                 // PlayerInfo (17) and PacketEntities (18) are sub-commands of
                 // svc_frame and MUST NOT appear as top-level opcodes.
