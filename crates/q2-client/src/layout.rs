@@ -7,6 +7,7 @@ use q2_shared::constants::{
     CS_IMAGES, CS_PLAYERSKINS, MAX_CLIENTS, MAX_CONFIGSTRINGS, MAX_IMAGES, MAX_QPATH, STAT_AMMO,
     STAT_ARMOR, STAT_FLASHES, STAT_HEALTH,
 };
+use std::num::IntErrorKind;
 
 /// One 2D draw the renderer performs, in screen pixels.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,13 +78,21 @@ fn tokens(program: &str) -> Vec<&str> {
     .collect()
 }
 
-/// C strtol(token, NULL, 10): leading sign and digits, 0 when none.
+/// C strtol(token, NULL, 10): leading sign and digits, 0 when none, and
+/// LONG_MAX / LONG_MIN on overflow (long is 32 bits on wasm32).
 fn strtol(token: &str) -> i32 {
     let digits_end = token
         .char_indices()
         .find(|&(i, c)| !(c.is_ascii_digit() || (i == 0 && (c == '-' || c == '+'))))
         .map_or(token.len(), |(i, _)| i);
-    token[..digits_end].parse().unwrap_or(0)
+    match token[..digits_end].parse() {
+        Ok(value) => value,
+        Err(e) => match e.kind() {
+            IntErrorKind::PosOverflow => i32::MAX,
+            IntErrorKind::NegOverflow => i32::MIN,
+            _ => 0,
+        },
+    }
 }
 
 /// A stat by a program-supplied index; out-of-range indexes read 0 (C
@@ -103,7 +112,7 @@ fn draw_field(out: &mut Vec<HudDraw>, x: i32, y: i32, color: usize, width: i32, 
     let width = width.min(5);
     let num = value.to_string();
     let l = (num.len() as i32).min(width);
-    let mut x = x + 2 + CHAR_WIDTH * (width - l);
+    let mut x = x.wrapping_add(2 + CHAR_WIDTH * (width - l));
     for ch in num.bytes().take(l as usize) {
         let frame = if ch == b'-' {
             STAT_MINUS
@@ -115,7 +124,7 @@ fn draw_field(out: &mut Vec<HudDraw>, x: i32, y: i32, color: usize, width: i32, 
             y,
             name: SB_NUMS[color][frame].to_string(),
         });
-        x += CHAR_WIDTH;
+        x = x.wrapping_add(CHAR_WIDTH);
     }
 }
 
@@ -131,7 +140,7 @@ pub(crate) fn wire_bytes(text: &str) -> impl Iterator<Item = u8> + '_ {
 fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
     for (i, ch) in wire_bytes(text).enumerate() {
         out.push(HudDraw::Char {
-            x: x + 8 * i as i32,
+            x: x.wrapping_add(8 * i as i32),
             y,
             ch: ch ^ xor,
         });
@@ -142,11 +151,11 @@ fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
 fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, text: &str, xor: u8) {
     for (n, line) in text.split('\n').enumerate() {
         let lx = if centerwidth != 0 {
-            x + (centerwidth - line.chars().count() as i32 * 8) / 2
+            x.wrapping_add((centerwidth - line.chars().count() as i32 * 8) / 2)
         } else {
             x
         };
-        draw_string(out, lx, y + 8 * n as i32, line, xor);
+        draw_string(out, lx, y.wrapping_add(8 * n as i32), line, xor);
     }
 }
 
@@ -225,15 +234,17 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
     let mut out = Vec::new();
     let stats = input.stats;
     let (mut x, mut y) = (0, 0);
+    // Coordinates wrap like C's int sums, so a huge program-supplied
+    // number cannot panic.
     let mut toks = tokens(program).into_iter();
     while let Some(token) = toks.next() {
         match token {
             "xl" => x = strtol(arg(&mut toks)),
-            "xr" => x = input.width + strtol(arg(&mut toks)),
-            "xv" => x = input.width / 2 - 160 + strtol(arg(&mut toks)),
+            "xr" => x = input.width.wrapping_add(strtol(arg(&mut toks))),
+            "xv" => x = (input.width / 2 - 160).wrapping_add(strtol(arg(&mut toks))),
             "yt" => y = strtol(arg(&mut toks)),
-            "yb" => y = input.height + strtol(arg(&mut toks)),
-            "yv" => y = input.height / 2 - 120 + strtol(arg(&mut toks)),
+            "yb" => y = input.height.wrapping_add(strtol(arg(&mut toks))),
+            "yv" => y = (input.height / 2 - 120).wrapping_add(strtol(arg(&mut toks))),
             "pic" => {
                 let value = stat(stats, strtol(arg(&mut toks)));
                 // C drops the connection: "Pic >= MAX_IMAGES".
@@ -333,8 +344,8 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             }
             // A deathmatch scoreboard entry; "ctf" is not ported.
             "client" => {
-                x = input.width / 2 - 160 + strtol(arg(&mut toks));
-                y = input.height / 2 - 120 + strtol(arg(&mut toks));
+                x = (input.width / 2 - 160).wrapping_add(strtol(arg(&mut toks)));
+                y = (input.height / 2 - 120).wrapping_add(strtol(arg(&mut toks)));
                 let value = strtol(arg(&mut toks));
                 let (score, ping, time) = (
                     strtol(arg(&mut toks)),
@@ -349,11 +360,31 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
                     (input.configstrings)(CS_PLAYERSKINS + index),
                     input.file_exists,
                 );
-                draw_string(&mut out, x + 32, y, &name, 0x80);
-                draw_string(&mut out, x + 32, y + 8, "Score: ", 0x80);
-                draw_string(&mut out, x + 32 + 7 * 8, y + 8, &score.to_string(), 0x80);
-                draw_string(&mut out, x + 32, y + 16, &format!("Ping:  {ping}"), 0);
-                draw_string(&mut out, x + 32, y + 24, &format!("Time:  {time}"), 0);
+                let tx = x.wrapping_add(32);
+                let score_x = tx.wrapping_add(7 * 8);
+                draw_string(&mut out, tx, y, &name, 0x80);
+                draw_string(&mut out, tx, y.wrapping_add(8), "Score: ", 0x80);
+                draw_string(
+                    &mut out,
+                    score_x,
+                    y.wrapping_add(8),
+                    &score.to_string(),
+                    0x80,
+                );
+                draw_string(
+                    &mut out,
+                    tx,
+                    y.wrapping_add(16),
+                    &format!("Ping:  {ping}"),
+                    0,
+                );
+                draw_string(
+                    &mut out,
+                    tx,
+                    y.wrapping_add(24),
+                    &format!("Time:  {time}"),
+                    0,
+                );
                 out.push(HudDraw::Pic { x, y, name: icon });
             }
             _ => {}
@@ -717,6 +748,31 @@ mod tests {
         assert!(run("pic 0", &stats, &[(CS_LIGHTS, "m")]).is_empty());
         stats[0] = MAX_CONFIGSTRINGS as i16;
         assert!(run("stat_string 0", &stats, &[(MAX_CONFIGSTRINGS, "Hi")]).is_empty());
+    }
+
+    #[test]
+    fn strtol_saturates_like_c_on_wasm32() {
+        // C strtol returns LONG_MAX / LONG_MIN on overflow; long is 32
+        // bits on wasm32.
+        assert_eq!(strtol("99999999999"), i32::MAX);
+        assert_eq!(strtol("-99999999999x"), i32::MIN);
+        assert_eq!(strtol("-12x"), -12);
+    }
+
+    #[test]
+    fn huge_layout_coordinates_do_not_panic() {
+        let stats = [0; 32];
+        for program in [
+            "xr 2147483647 picn a",
+            "yb 2147483647 picn a",
+            "xv 2147483647 picn a",
+            "yv -2147483648 picn a",
+            "client 2147483647 2147483647 0 0 0 0",
+            "client 2147483477 2147483517 0 0 0 0",
+            "xl 2147483647 yt 2147483647 string ab cstring ab num 3 0 hnum",
+        ] {
+            run(program, &stats, &[]);
+        }
     }
 
     #[test]
