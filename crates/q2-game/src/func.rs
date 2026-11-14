@@ -179,10 +179,10 @@ pub fn move_calc(world: &mut GameWorld, key: EntityKey, dest: Vec3f, endfunc: En
 
 /// C `FRAMETIME`, the double 0.1: the float expressions it appears in
 /// are evaluated in double and rounded to float once.
-const FRAMETIME_C: f64 = 0.1;
+pub(crate) const FRAMETIME_C: f64 = 0.1;
 
 /// C `level.time + seconds`, where `seconds` is a double expression.
-fn time_plus(time: f32, seconds: f64) -> f32 {
+pub(crate) fn time_plus(time: f32, seconds: f64) -> f32 {
     (f64::from(time) + seconds) as f32
 }
 

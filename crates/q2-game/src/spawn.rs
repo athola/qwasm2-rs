@@ -209,21 +209,21 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("trigger_gravity", triggers::sp_trigger_gravity, None, None, false),
     ("trigger_monsterjump", triggers::sp_trigger_monsterjump, None, None, false),
 
-    ("target_temp_entity", targets::sp_target_generic, None, None, false),
+    ("target_temp_entity", targets::sp_target_temp_entity, None, None, false),
     ("target_speaker", targets::sp_target_speaker, None, Some(GameWorld::finish_target_speaker), false),
     ("target_explosion", targets::sp_target_explosion, None, None, false),
     ("target_changelevel", targets::sp_target_changelevel, None, Some(targets::finish_target_changelevel), false),
     ("target_secret", targets::sp_target_secret, None, Some(targets::finish_found_target), false),
     ("target_goal", targets::sp_target_goal, None, Some(targets::finish_found_target), false),
-    ("target_splash", targets::sp_target_generic, None, None, false),
-    ("target_spawner", targets::sp_target_generic, None, None, false),
-    ("target_blaster", targets::sp_target_generic, None, None, false),
-    ("target_crosslevel_trigger", targets::sp_target_generic, None, None, false),
-    ("target_crosslevel_target", targets::sp_target_generic, None, None, false),
+    ("target_splash", targets::sp_target_splash, None, None, false),
+    ("target_spawner", targets::sp_target_spawner, None, Some(targets::finish_target_spawner), false),
+    ("target_blaster", targets::sp_target_blaster, None, Some(targets::finish_target_blaster), false),
+    ("target_crosslevel_trigger", targets::sp_target_crosslevel_trigger, None, None, false),
+    ("target_crosslevel_target", targets::sp_target_in_finish, None, Some(targets::finish_target_crosslevel_target), false),
     ("target_laser", targets::sp_target_laser, None, Some(targets::finish_target_laser), false),
-    ("target_help", targets::sp_target_generic, None, Some(targets::finish_target_help), false),
-    ("target_lightramp", targets::sp_target_generic, None, None, false),
-    ("target_earthquake", targets::sp_target_generic, None, None, false),
+    ("target_help", targets::sp_target_in_finish, None, Some(targets::finish_target_help), false),
+    ("target_lightramp", targets::sp_target_in_finish, None, Some(targets::finish_target_lightramp), false),
+    ("target_earthquake", targets::sp_target_earthquake, None, Some(targets::finish_target_earthquake), false),
     ("target_character", misc_func::sp_target_character, None, None, false),
     ("target_string", misc_func::sp_target_string, None, None, false),
 
@@ -353,8 +353,7 @@ pub(crate) fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
 /// The block is a `HashMap`, so when it has both `angle` and `angles` which
 /// one wins is unspecified (C: the later key in the file); keeping file
 /// order would change `SpawnFn`'s signature across every spawn module.
-/// Fields this port has no slot for yet (`sounds`, the spawn-temp keys)
-/// are left to the spawn functions.
+/// The spawn-temp keys have no slot and are left to the spawn functions.
 pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<String, String>) {
     use q2_common::cvar::parse_value as strtod;
     for (key, value) in fields {
@@ -381,6 +380,7 @@ pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<Stri
             "move_origin" => g.move_origin = scan_vector(value),
             "move_angles" => g.move_angles = scan_vector(value),
             "style" => g.style = strtol(value),
+            "sounds" => g.sounds = strtol(value),
             "count" => g.count = strtol(value),
             "health" => g.health = strtol(value),
             "dmg" => g.dmg = strtol(value),

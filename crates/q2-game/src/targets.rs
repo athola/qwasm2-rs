@@ -1,12 +1,7 @@
 //! Target entities — produce effects when triggered.
 //!
 //! Port of `g_target.c`. Each target has a `use` callback that fires when
-//! the entity is triggered. Ported: target_explosion, target_speaker,
-//! target_changelevel, target_secret, target_goal,
-//! target_help, target_laser.
-//! The other C target classes (temp_entity, splash, spawner, blaster,
-//! crosslevel_*, lightramp, earthquake) are registered as
-//! relays that only fire their own targets until they are ported.
+//! the entity is triggered. Every C target class is ported.
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_target.c`
@@ -509,14 +504,332 @@ pub fn finish_target_laser(
     }
 }
 
-/// Generic target use — just fires its own targets (relay behavior).
-fn target_generic_use(
+/// Send the `style` temp entity at the target. C ref: `Use_Target_Tent`.
+fn use_target_tent(
     world: &mut GameWorld,
-    self_key: EntityKey,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let (style, origin) = (ent.game.style, ent.state.origin);
+    world
+        .gi
+        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+    world.gi.write_byte(style);
+    world.gi.write_position(origin);
+    world.gi.multicast(origin, Multicast::PVS);
+}
+
+/// A `count`-particle splash of colour `sounds` along `movedir`, and
+/// radius damage when `dmg` is set. C ref: `use_target_splash`.
+fn use_target_splash(
+    world: &mut GameWorld,
+    key: EntityKey,
     _other: EntityKey,
     activator: EntityKey,
 ) {
-    world.use_targets(self_key, activator);
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let (count, origin, movedir, sounds, dmg) = (
+        ent.game.count,
+        ent.state.origin,
+        ent.game.movedir,
+        ent.game.sounds,
+        ent.game.dmg,
+    );
+    world
+        .gi
+        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+    world.gi.write_byte(TE_SPLASH);
+    world.gi.write_byte(count);
+    world.gi.write_position(origin);
+    world.gi.write_dir(movedir);
+    world.gi.write_byte(sounds);
+    world.gi.multicast(origin, Multicast::PVS);
+    if dmg != 0 {
+        world.t_radius_damage(
+            key,
+            activator,
+            dmg as f32,
+            None,
+            (dmg + 40) as f32,
+            MeansOfDeath::Splash,
+        );
+    }
+}
+
+/// Spawn an entity of the classname in `target` at the spawner, telefrag
+/// what it lands in, and launch it along `movedir` when `speed` is set.
+/// C ref: `use_target_spawner`.
+fn use_target_spawner(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let (classname, origin, angles, speed, movedir) = (
+        ent.game.target.clone(),
+        ent.state.origin,
+        ent.state.angles,
+        ent.game.speed,
+        ent.game.movedir,
+    );
+    let Some(spawned) = world.spawn() else {
+        return;
+    };
+    if let Some(e) = world.entities.get_mut(spawned) {
+        e.game.classname = classname.clone();
+        e.state.origin = origin;
+        e.state.angles = angles;
+    }
+    if classname.is_empty() {
+        world.gi.dprintf("ED_CallSpawn: NULL classname\n");
+        world.free_entity(spawned);
+        return;
+    }
+    let fields = HashMap::from([("classname".to_string(), classname.clone())]);
+    world.call_spawn(spawned, &classname, &fields);
+    // C goes on to KillBox the freed edict, at the origin with no size,
+    // when the spawn function removed it; that is skipped here.
+    let Some(number) = world
+        .number_of(spawned)
+        .filter(|_| world.entities.is_live(spawned))
+    else {
+        return;
+    };
+    world.gi.unlink_entity(number);
+    world.kill_box(spawned);
+    world.link_entity(spawned);
+    if speed != 0.0 {
+        if let Some(e) = world.entities.get_mut(spawned) {
+            e.velocity = movedir;
+        }
+    }
+}
+
+/// Fire a blaster bolt along `movedir`. C passes `MOD_TARGET_BLASTER` in
+/// fire_blaster's `hyper` slot, so the bolt counts as a hyperblaster's.
+/// C ref: `use_target_blaster`.
+fn use_target_blaster(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let (origin, movedir, dmg, speed, noise) = (
+        ent.state.origin,
+        ent.game.movedir,
+        ent.game.dmg,
+        ent.game.speed,
+        ent.game.noise_index,
+    );
+    world.fire_blaster(
+        key,
+        origin,
+        movedir,
+        dmg,
+        speed as i32,
+        q2_shared::constants::EF_BLASTER,
+        true,
+    );
+    world
+        .gi
+        .sound(world.number_of(key), CHAN_VOICE, noise, 1.0, ATTN_NORM, 0.0);
+}
+
+/// Set the unit's cross-level flags, fire the targets and go.
+/// C ref: `trigger_crosslevel_trigger_use`.
+fn trigger_crosslevel_trigger_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    activator: EntityKey,
+) {
+    let flags = world.entities.get(key).map_or(0, |e| e.game.spawnflags);
+    world.game.serverflags |= flags;
+    world.use_targets(key, activator);
+    world.free_entity(key);
+}
+
+/// Once the level has started, fire the targets (as their own activator)
+/// if every flag this target names was set earlier in the unit.
+/// C ref: `target_crosslevel_target_think`.
+fn target_crosslevel_target_think(world: &mut GameWorld, key: EntityKey) {
+    let flags = world.entities.get(key).map_or(0, |e| e.game.spawnflags);
+    if flags == world.game.serverflags & SFL_CROSS_TRIGGER_MASK & flags {
+        world.use_targets(key, key);
+        world.free_entity(key);
+    }
+}
+
+/// target_lightramp spawnflag: reverse the ramp each time it ends.
+const LIGHTRAMP_TOGGLE: i32 = 1;
+
+/// Write the ramp's current letter to the light's style, a frame at a time
+/// for `speed` seconds. `movedir` holds the start and end letters (from
+/// 'a') and the step per frame. C ref: `target_lightramp_think`.
+fn target_lightramp_think(world: &mut GameWorld, key: EntityKey) {
+    let time = world.level.time;
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let Some(style) = ent
+        .game
+        .enemy
+        .and_then(|l| world.entities.get(l))
+        .map(|l| l.game.style)
+    else {
+        return;
+    };
+    let elapsed = time - ent.game.timestamp;
+    // C promotes to double through FRAMETIME and truncates to a char.
+    let letter = f64::from(b'a')
+        + f64::from(ent.game.movedir.x)
+        + f64::from(elapsed) / crate::func::FRAMETIME_C * f64::from(ent.game.movedir.z);
+    let letter = char::from(letter as i32 as u8);
+    world.gi.configstring(
+        q2_shared::constants::CS_LIGHTS as i32 + style,
+        &letter.to_string(),
+    );
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    if elapsed < ent.game.speed {
+        ent.game.nextthink = crate::func::time_plus(time, crate::func::FRAMETIME_C);
+    } else if ent.game.spawnflags & LIGHTRAMP_TOGGLE != 0 {
+        let d = &mut ent.game.movedir;
+        (d.x, d.y) = (d.y, d.x.trunc());
+        d.z *= -1.0;
+    }
+}
+
+/// Find the light on first use (complaining about targets that are not
+/// lights), then start the ramp. C ref: `target_lightramp_use`.
+fn target_lightramp_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    if ent.game.enemy.is_none() {
+        let (classname, target, origin) = (
+            ent.game.classname.clone(),
+            ent.game.target.clone(),
+            ent.state.origin,
+        );
+        let mut light = None;
+        let mut search = None;
+        while let Some(e) = world.find_by_targetname(search, &target) {
+            search = Some(e);
+            let Some(found) = world.entities.get(e) else {
+                continue;
+            };
+            if found.game.classname != "light" {
+                let warning = format!(
+                    "{classname} at {} target {target} ({} at {}) is not a light\n",
+                    crate::ai::vtos(origin),
+                    found.game.classname,
+                    crate::ai::vtos(found.state.origin)
+                );
+                world.gi.dprintf(&warning);
+            } else {
+                light = Some(e);
+            }
+        }
+        let Some(light) = light else {
+            world.gi.dprintf(&format!(
+                "{classname} target {target} not found at {}\n",
+                crate::ai::vtos(origin)
+            ));
+            world.free_entity(key);
+            return;
+        };
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.game.enemy = Some(light);
+        }
+    }
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.timestamp = time;
+    }
+    target_lightramp_think(world, key);
+}
+
+/// Rumble every half second and throw every client standing on something,
+/// each frame until `timestamp`. C ref: `target_earthquake_think`.
+fn target_earthquake_think(world: &mut GameWorld, key: EntityKey) {
+    let time = world.level.time;
+    let Some(number) = world.number_of(key) else {
+        return;
+    };
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    let (origin, noise, speed, until) = (
+        ent.state.origin,
+        ent.game.noise_index,
+        ent.game.speed,
+        ent.game.timestamp,
+    );
+    if ent.game.last_move_time < time {
+        ent.game.last_move_time = time + 0.5;
+        world
+            .gi
+            .positioned_sound(origin, number, CHAN_AUTO, noise, 1.0, ATTN_NONE, 0.0);
+    }
+    let shaken: Vec<EntityKey> = world.entities.keys_from(1).collect();
+    for e in shaken {
+        let Some(mass) = world
+            .entities
+            .get(e)
+            .filter(|e| e.in_use && e.client.is_some() && e.game.ground_entity.is_some())
+            .map(|e| e.game.mass)
+        else {
+            continue;
+        };
+        let x = world.crandom() * 150.0;
+        let y = world.crandom() * 150.0;
+        if let Some(e) = world.entities.get_mut(e) {
+            e.game.ground_entity = None;
+            e.velocity.x += x;
+            e.velocity.y += y;
+            e.velocity.z = (f64::from(speed) * (100.0 / f64::from(mass))) as f32;
+        }
+    }
+    if time < until {
+        if let Some(ent) = world.entities.get_mut(key) {
+            ent.game.nextthink = crate::func::time_plus(time, crate::func::FRAMETIME_C);
+        }
+    }
+}
+
+/// Start a `count`-second quake next frame. C ref: `target_earthquake_use`.
+fn target_earthquake_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    activator: EntityKey,
+) {
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.timestamp = time + ent.game.count as f32;
+        ent.game.nextthink = crate::func::time_plus(time, crate::func::FRAMETIME_C);
+        ent.game.activator = Some(activator);
+        ent.game.last_move_time = 0.0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,17 +876,226 @@ impl GameWorld {
     }
 }
 
-pub fn sp_target_generic(
+/// For targets whose whole C SP_* function needs `GameWorld`
+/// (target_help, target_crosslevel_target, target_lightramp): the finish
+/// function in their SPAWNS row does it.
+pub fn sp_target_in_finish(
+    _storage: &mut EntityStorage,
+    _key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+}
+
+/// C ref: `SP_target_temp_entity`.
+pub fn sp_target_temp_entity(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
     if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields
-            .get("classname")
-            .cloned()
-            .unwrap_or_else(|| "target".to_string());
-        ent.use_fn = Some(target_generic_use);
+        ent.use_fn = Some(use_target_tent);
+    }
+}
+
+/// C ref: `SP_target_splash`.
+pub fn sp_target_splash(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.use_fn = Some(use_target_splash);
+        ent.game.movedir = GameWorld::set_movedir(ent.state.angles);
+        ent.state.angles = Vec3f::ZERO;
+        if ent.game.count == 0 {
+            ent.game.count = 32;
+        }
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+    }
+}
+
+/// C ref: `SP_target_spawner`; `finish_target_spawner` has its fact2 fix.
+pub fn sp_target_spawner(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.use_fn = Some(use_target_spawner);
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+        if ent.game.speed != 0.0 {
+            ent.game.movedir = GameWorld::set_movedir(ent.state.angles) * ent.game.speed;
+            ent.state.angles = Vec3f::ZERO;
+        }
+    }
+}
+
+/// C SP_target_spawner's map hack, from KMQuake2: fact2's spawner sits 8
+/// units too high.
+pub fn finish_target_spawner(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let fact2 = world.level.mapname.eq_ignore_ascii_case("fact2");
+    if let Some(ent) = world.entities.get_mut(key) {
+        if fact2 && ent.state.origin == Vec3f::new(-1504.0, 512.0, 72.0) {
+            ent.state.origin.z -= 8.0;
+        }
+    }
+}
+
+/// C ref: `SP_target_blaster`; `finish_target_blaster` registers its sound.
+pub fn sp_target_blaster(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.use_fn = Some(use_target_blaster);
+        ent.game.movedir = GameWorld::set_movedir(ent.state.angles);
+        ent.state.angles = Vec3f::ZERO;
+        if ent.game.dmg == 0 {
+            ent.game.dmg = 15;
+        }
+        if ent.game.speed == 0.0 {
+            ent.game.speed = 1000.0;
+        }
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+    }
+}
+
+/// The `GameWorld` half of C SP_target_blaster.
+pub fn finish_target_blaster(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let noise = world.gi.sound_index("weapons/laser2.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = noise;
+    }
+}
+
+/// C ref: `SP_target_crosslevel_trigger`.
+pub fn sp_target_crosslevel_trigger(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+        ent.use_fn = Some(trigger_crosslevel_trigger_use);
+    }
+}
+
+/// C ref: `SP_target_crosslevel_target`, thinking `delay` (default 1)
+/// seconds into the level.
+pub fn finish_target_crosslevel_target(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let time = world.level.time;
+    if let Some(ent) = world.entities.get_mut(key) {
+        if ent.game.delay == 0.0 {
+            ent.game.delay = 1.0;
+        }
+        ent.svflags = q2_shared::constants::SVF_NOCLIENT;
+        ent.think = Some(target_crosslevel_target_think);
+        ent.game.nextthink = time + ent.game.delay;
+    }
+}
+
+/// C ref: `SP_target_lightramp`. The ramp is two different letters a-z;
+/// removed in deathmatch.
+pub fn finish_target_lightramp(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let deathmatch = world.game.deathmatch;
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    let ramp = ent.game.message.as_bytes();
+    let letter = |c: u8| c.is_ascii_lowercase();
+    if ramp.len() != 2 || !letter(ramp[0]) || !letter(ramp[1]) || ramp[0] == ramp[1] {
+        let warning = format!(
+            "target_lightramp has bad ramp ({}) at {}\n",
+            ent.game.message,
+            crate::ai::vtos(ent.state.origin)
+        );
+        world.gi.dprintf(&warning);
+        world.free_entity(key);
+        return;
+    }
+    if deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    if ent.game.target.is_empty() {
+        let warning = format!(
+            "{} with no target at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        world.gi.dprintf(&warning);
+        world.free_entity(key);
+        return;
+    }
+    let (start, end) = (f32::from(ramp[0] - b'a'), f32::from(ramp[1] - b'a'));
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
+    ent.use_fn = Some(target_lightramp_use);
+    ent.think = Some(target_lightramp_think);
+    let step = f64::from(end - start) / (f64::from(ent.game.speed) / crate::func::FRAMETIME_C);
+    ent.game.movedir = Vec3f::new(start, end, step as f32);
+}
+
+/// C ref: `SP_target_earthquake`: `speed` (default 200) is how hard it
+/// throws, `count` (default 5) how many seconds it lasts.
+pub fn sp_target_earthquake(
+    storage: &mut EntityStorage,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if let Some(ent) = storage.get_mut(key) {
+        if ent.game.count == 0 {
+            ent.game.count = 5;
+        }
+        if ent.game.speed == 0.0 {
+            ent.game.speed = 200.0;
+        }
+        ent.svflags |= q2_shared::constants::SVF_NOCLIENT;
+        ent.think = Some(target_earthquake_think);
+        ent.use_fn = Some(target_earthquake_use);
+    }
+}
+
+/// The `GameWorld` half of C SP_target_earthquake: the untargeted warning
+/// and the rumble sound.
+pub fn finish_target_earthquake(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let Some(ent) = world.entities.get(key) else {
+        return;
+    };
+    if ent.game.targetname.is_empty() {
+        let warning = format!(
+            "untargeted {} at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        world.gi.dprintf(&warning);
+    }
+    let noise = world.gi.sound_index("world/quake.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = noise;
     }
 }
 
@@ -1453,5 +1975,277 @@ mod tests {
         };
         assert_eq!(changelevel("base2"), 0x0000_0103);
         assert_eq!(changelevel("*bunk1$start"), 0x0000_0100);
+    }
+
+    /// Use the entity `targetname` names, as a trigger would.
+    fn use_named(world: &mut GameWorld, targetname: &str) -> EntityKey {
+        let key = world.find_by_targetname(None, targetname).unwrap();
+        let use_fn = world.entities.get(key).unwrap().use_fn.unwrap();
+        use_fn(world, key, key, key);
+        key
+    }
+
+    #[test]
+    fn target_temp_entity_sends_its_style_at_its_origin_to_the_pvs() {
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_temp_entity" "style" "5" "origin" "1 2 3" "targetname" "t" }"#,
+        );
+        let (writes, vectors) = (gi.writes.borrow().len(), gi.vectors.borrow().len());
+        use_named(&mut world, "t");
+        assert_eq!(gi.writes.borrow()[writes..], [3, 5]);
+        assert_eq!(gi.vectors.borrow()[vectors..], [Vec3f::new(1.0, 2.0, 3.0)]);
+        assert_eq!(
+            gi.multicasts.borrow().last(),
+            Some(&(Vec3f::new(1.0, 2.0, 3.0), Multicast::PVS))
+        );
+    }
+
+    #[test]
+    fn target_splash_sends_count_origin_movedir_and_sounds_and_hurts_with_dmg() {
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_splash" "sounds" "2" "angle" "90" "dmg" "50" "targetname" "s" }"#,
+        );
+        let victim = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(victim).unwrap();
+            e.state.origin = Vec3f::new(70.0, 0.0, 0.0); // beyond dmg, within dmg + 40
+            e.game.health = 100;
+            e.game.takedamage = TakeDamage::Yes;
+            e.solid = Solid::Bbox;
+        }
+        let (writes, vectors) = (gi.writes.borrow().len(), gi.vectors.borrow().len());
+        let splash = use_named(&mut world, "s");
+        let ent = world.entities.get(splash).unwrap();
+        assert_eq!(ent.svflags, q2_shared::constants::SVF_NOCLIENT);
+        assert_eq!(ent.state.angles, Vec3f::ZERO); // G_SetMovedir clears them
+                                                   // svc_temp_entity, TE_SPLASH, the default count 32, then sounds
+                                                   // (the damage's blood follows).
+        assert_eq!(
+            gi.writes.borrow()[writes..writes + 4],
+            [3, TE_SPLASH, 32, 2]
+        );
+        let sent = gi.vectors.borrow()[vectors..].to_vec();
+        assert_eq!(sent[0], Vec3f::ZERO);
+        assert!((sent[1] - Vec3f::new(0.0, 1.0, 0.0)).length() < 1e-6);
+        assert!(world.entities.get(victim).unwrap().game.health < 100);
+    }
+
+    #[test]
+    fn target_spawner_spawns_its_target_classname_with_its_movedir_velocity() {
+        let (mut world, _) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_spawner" "target" "info_notnull" "origin" "8 0 0" "angle" "90" "speed" "100" "targetname" "sp" }"#,
+        );
+        assert!(world.find_by_classname(None, "info_notnull").is_none());
+        use_named(&mut world, "sp");
+        let spawned = world.find_by_classname(None, "info_notnull").unwrap();
+        let e = world.entities.get(spawned).unwrap();
+        assert_eq!(e.state.origin, Vec3f::new(8.0, 0.0, 0.0));
+        // G_SetMovedir cleared the spawner's angles when it set movedir.
+        assert_eq!(e.state.angles, Vec3f::ZERO);
+        assert!((e.velocity - Vec3f::new(0.0, 100.0, 0.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn target_spawner_on_fact2_lowers_the_insane_spawner_by_8() {
+        let (world, _) = spawn_map(
+            "fact2",
+            false,
+            r#"{ "classname" "target_spawner" "target" "misc_insane" "origin" "-1504 512 72" }"#,
+        );
+        let spawner = world.find_by_classname(None, "target_spawner").unwrap();
+        let e = world.entities.get(spawner).unwrap();
+        assert_eq!(e.state.origin, Vec3f::new(-1504.0, 512.0, 64.0));
+        assert_eq!(e.svflags, q2_shared::constants::SVF_NOCLIENT);
+    }
+
+    #[test]
+    fn target_blaster_fires_a_hyperblaster_bolt_along_its_movedir() {
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_blaster" "targetname" "b" }"#,
+        );
+        assert!(gi
+            .sounds
+            .borrow()
+            .contains(&"weapons/laser2.wav".to_string()));
+        let blaster = use_named(&mut world, "b");
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        let b = world.entities.get(bolt).unwrap();
+        assert_eq!(b.game.dmg, 15);
+        assert_eq!(b.velocity, Vec3f::new(1000.0, 0.0, 0.0));
+        // C passes MOD_TARGET_BLASTER in fire_blaster's `hyper` slot.
+        assert_eq!(b.game.spawnflags, 1);
+        assert_eq!(b.owner, Some(blaster));
+        let noise = world.entities.get(blaster).unwrap().game.noise_index;
+        assert!(gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .any(|s| s.1 == CHAN_VOICE && s.2 == noise));
+    }
+
+    #[test]
+    fn target_crosslevel_trigger_sets_its_serverflags_fires_and_goes() {
+        let (mut world, _) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_crosslevel_trigger" "spawnflags" "3" "targetname" "c" "target" "next" }"#,
+        );
+        let next = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(next).unwrap();
+            e.game.targetname = "next".into();
+            e.use_fn = Some(bump);
+        }
+        world.game.serverflags = 0x100;
+        let trigger = use_named(&mut world, "c");
+        assert_eq!(world.game.serverflags, 0x103);
+        assert_eq!(world.entities.get(next).unwrap().game.count, 1);
+        assert!(!world.entities.is_live(trigger));
+    }
+
+    #[test]
+    fn target_crosslevel_target_fires_after_two_delays_only_when_its_flags_are_set() {
+        let (mut world, _) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_crosslevel_target" "spawnflags" "3" "target" "yes" }
+               { "classname" "target_crosslevel_target" "spawnflags" "4" "target" "no" }"#,
+        );
+        world.game.serverflags = 0x103;
+        let mut counter = |name: &str| {
+            let key = world.spawn().unwrap();
+            let e = world.entities.get_mut(key).unwrap();
+            e.game.targetname = name.into();
+            e.use_fn = Some(bump);
+            key
+        };
+        let (yes, no) = (counter("yes"), counter("no"));
+        // It thinks at its delay (default 1 s), and G_UseTargets waits the
+        // same delay again through a DelayedUse.
+        for _ in 0..19 {
+            world.run_frame();
+        }
+        assert_eq!(world.entities.get(yes).unwrap().game.count, 0);
+        world.run_frame();
+        assert_eq!(world.entities.get(yes).unwrap().game.count, 1);
+        assert_eq!(world.entities.get(no).unwrap().game.count, 0);
+    }
+
+    fn lightramp_world(ramp: &str) -> (GameWorld, std::rc::Rc<crate::world::MockGameImport>) {
+        spawn_map(
+            "base1",
+            false,
+            &format!(
+                r#"{{ "classname" "light" "targetname" "l" "style" "32" }}
+                   {{ "classname" "target_lightramp" "target" "l" "message" "{ramp}" "speed" "1" "targetname" "r" }}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn target_lightramp_ramps_the_light_style_each_frame_without_using_the_light() {
+        let (mut world, gi) = lightramp_world("kz");
+        let index = q2_shared::constants::CS_LIGHTS as i32 + 32;
+        let light = world.find_by_targetname(None, "l").unwrap();
+        let spawnflags = world.entities.get(light).unwrap().game.spawnflags;
+        let before = gi.configstrings.borrow().len();
+        use_named(&mut world, "r");
+        for _ in 0..12 {
+            world.run_frame();
+        }
+        let ramp: String = gi.configstrings.borrow()[before..]
+            .iter()
+            .filter(|(i, _)| *i == index)
+            .map(|(_, s)| s.as_str())
+            .collect();
+        // C's float time over its double FRAMETIME, truncated to a letter.
+        assert_eq!(ramp, "klnoqrtuwxz");
+        assert_eq!(
+            world.entities.get(light).unwrap().game.spawnflags,
+            spawnflags
+        );
+    }
+
+    #[test]
+    fn target_lightramp_with_a_bad_ramp_or_no_target_is_freed_with_a_warning() {
+        let (world, gi) = lightramp_world("zz");
+        assert!(world.find_by_classname(None, "target_lightramp").is_none());
+        assert!(gi
+            .dprints
+            .borrow()
+            .contains(&"target_lightramp has bad ramp (zz) at (0 0 0)\n".to_string()));
+        let (world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_lightramp" "message" "az" "origin" "1 2 3" }"#,
+        );
+        assert!(world.find_by_classname(None, "target_lightramp").is_none());
+        assert!(gi
+            .dprints
+            .borrow()
+            .contains(&"target_lightramp with no target at (1 2 3)\n".to_string()));
+    }
+
+    #[test]
+    fn target_earthquake_throws_grounded_clients_and_rumbles() {
+        let (mut world, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_earthquake" "targetname" "q" "origin" "4 5 6" }"#,
+        );
+        let ground = world.entities.key_for_number(0);
+        let player = world.spawn_test_client(crate::entity::ClientData::default());
+        {
+            let p = world.entities.get_mut(player).unwrap();
+            p.game.ground_entity = ground;
+            p.game.mass = 200;
+        }
+        let monster = world.spawn().unwrap();
+        {
+            let m = world.entities.get_mut(monster).unwrap();
+            m.game.ground_entity = ground;
+            m.game.mass = 200;
+        }
+        let quake = use_named(&mut world, "q");
+        world.run_frame();
+        let p = world.entities.get(player).unwrap();
+        assert_eq!(p.game.ground_entity, None);
+        // C `speed * (100.0 / mass)`, speed defaulting to 200.
+        assert_eq!(p.velocity.z, 100.0);
+        assert_eq!(
+            world.entities.get(monster).unwrap().game.ground_entity,
+            ground
+        );
+        let noise = world.entities.get(quake).unwrap().game.noise_index;
+        assert_eq!(
+            gi.sounds.borrow()[noise as usize - 1],
+            "world/quake.wav".to_string()
+        );
+        let number = world.number_of(quake).unwrap();
+        assert_eq!(
+            gi.positioned_sounds.borrow().as_slice(),
+            [(Vec3f::new(4.0, 5.0, 6.0), number, CHAN_AUTO, noise)]
+        );
+    }
+
+    #[test]
+    fn untargeted_target_earthquake_warns_in_c_form() {
+        let (_, gi) = spawn_map(
+            "base1",
+            false,
+            r#"{ "classname" "target_earthquake" "origin" "1 2 3" }"#,
+        );
+        assert!(gi
+            .dprints
+            .borrow()
+            .contains(&"untargeted target_earthquake at (1 2 3)\n".to_string()));
     }
 }
