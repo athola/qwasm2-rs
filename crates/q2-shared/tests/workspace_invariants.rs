@@ -436,7 +436,11 @@ fn q2_render_header_states_its_unsafe_block_count() {
         .filter(|(krate, _)| krate == UNSAFE_CRATE)
         .map(|(_, path)| word_lines(&code_only(&fs::read_to_string(path).unwrap()), "unsafe").len())
         .sum();
-    let lib = crates_dir().join(UNSAFE_CRATE).join("src/lib.rs");
+    let (_, dir) = member_dirs()
+        .into_iter()
+        .find(|(krate, _)| krate == UNSAFE_CRATE)
+        .expect("q2-render is a workspace member");
+    let lib = dir.join("src/lib.rs");
     let stated: usize = fs::read_to_string(&lib)
         .unwrap()
         .lines()
