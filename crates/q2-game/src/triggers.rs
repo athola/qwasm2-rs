@@ -260,9 +260,10 @@ fn trigger_push_touch(
     let Some(ent) = world.entities.get(self_key) else {
         return;
     };
-    let (push, once) = (
+    let (push, once, windsound) = (
         ent.game.movedir * (ent.game.speed * 10.0),
         ent.game.spawnflags & PUSH_ONCE != 0,
+        ent.game.noise_index,
     );
     let time = world.level.time;
     let mut wind = None;
@@ -280,10 +281,9 @@ fn trigger_push_touch(
         }
     }
     if let Some(number) = wind {
-        let sound = world.gi.sound_index("misc/windfly.wav");
         world
             .gi
-            .sound(Some(number), CHAN_AUTO, sound, 1.0, ATTN_NORM, 0.0);
+            .sound(Some(number), CHAN_AUTO, windsound, 1.0, ATTN_NORM, 0.0);
     }
     if once {
         world.free_entity(self_key);
@@ -320,10 +320,9 @@ fn trigger_hurt_touch(
         } else {
             FRAMETIME
         };
-    let dmg = ent.game.dmg;
+    let (dmg, sound) = (ent.game.dmg, ent.game.noise_index);
 
     if flags & HURT_SILENT == 0 && world.level.framenum % 10 == 0 {
-        let sound = world.gi.sound_index("world/electro.wav");
         world.gi.sound(
             world.number_of(other_key),
             CHAN_AUTO,
@@ -580,7 +579,32 @@ pub fn sp_trigger_relay(
     }
 }
 
-/// C ref: `SP_trigger_push`.
+/// C SP_trigger_push's `windsound`, kept on each push trigger here
+/// rather than in a static.
+pub fn finish_trigger_push(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let windsound = world.gi.sound_index("misc/windfly.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = windsound;
+    }
+}
+
+/// C SP_trigger_hurt's sound registration.
+pub fn finish_trigger_hurt(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let noise = world.gi.sound_index("world/electro.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = noise;
+    }
+}
+
+/// C ref: `SP_trigger_push`; `finish_trigger_push` registers its sound.
 pub fn sp_trigger_push(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -595,7 +619,7 @@ pub fn sp_trigger_push(
     }
 }
 
-/// C ref: `SP_trigger_hurt`.
+/// C ref: `SP_trigger_hurt`; `finish_trigger_hurt` registers its sound.
 pub fn sp_trigger_hurt(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -1175,5 +1199,25 @@ mod tests {
         let v = world.entities.get(monster).unwrap().velocity;
         assert!((v.x - 100.0).abs() < 1e-3, "{v:?}");
         assert_eq!(v.z, 0.0);
+    }
+
+    #[test]
+    fn trigger_hurt_and_trigger_push_register_their_sounds_at_spawn() {
+        // C SP_trigger_hurt sets noise_index and SP_trigger_push the
+        // static windsound, so both are precached with the map.
+        let (mut world, gi) = test_world_recording();
+        spawn_map(
+            &mut world,
+            r#"{ "classname" "trigger_hurt" } { "classname" "trigger_push" }"#,
+        );
+        let sounds = gi.sounds.borrow();
+        assert!(
+            sounds.contains(&"world/electro.wav".to_string()),
+            "{sounds:?}"
+        );
+        assert!(
+            sounds.contains(&"misc/windfly.wav".to_string()),
+            "{sounds:?}"
+        );
     }
 }
