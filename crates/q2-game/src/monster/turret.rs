@@ -16,6 +16,10 @@ use crate::monster::infantry;
 use crate::weapons::vectoangles;
 use crate::world::GameWorld;
 use std::collections::HashMap;
+use std::f64::consts::PI;
+
+/// C `FRAMETIME` (local.h), a double literal.
+const C_FRAMETIME: f64 = 0.1;
 
 /// Set on the breach by its driver to fire on the breach's next think.
 const SPAWNFLAG_FIRE: i32 = 65536;
@@ -200,18 +204,26 @@ pub fn turret_breach_think(world: &mut GameWorld, key: EntityKey) {
     d.avelocity.x = avelocity.x;
     d.avelocity.y = avelocity.y;
 
+    // C works these in double: `angle *= (M_PI * 2 / 360)` rounds into a
+    // float, then double cos/sin/tan, and `dir * 1.0 / FRAMETIME` divides by
+    // the double 0.1.
+    let radians = |deg: f32| f64::from((f64::from(deg) * (PI * 2.0 / 360.0)) as f32);
+    let speed = |dir: f32| (f64::from(dir) * 1.0 / C_FRAMETIME) as f32;
+    let reach = f64::from(d.game.move_origin.x);
+
     // X and y.
-    let angle = (angles.y + d.game.move_origin.y).to_radians();
-    let target_x = snap_to_eights(origin.x + angle.cos() * d.game.move_origin.x);
-    let target_y = snap_to_eights(origin.y + angle.sin() * d.game.move_origin.x);
-    d.velocity.x = (target_x - d.state.origin.x) / FRAMETIME;
-    d.velocity.y = (target_y - d.state.origin.y) / FRAMETIME;
+    let angle = radians(angles.y + d.game.move_origin.y);
+    let target_x = snap_to_eights((f64::from(origin.x) + angle.cos() * reach) as f32);
+    let target_y = snap_to_eights((f64::from(origin.y) + angle.sin() * reach) as f32);
+    d.velocity.x = speed(target_x - d.state.origin.x);
+    d.velocity.y = speed(target_y - d.state.origin.y);
 
     // Z.
-    let angle = angles.x.to_radians();
-    let target_z =
-        snap_to_eights(origin.z + d.game.move_origin.x * angle.tan() + d.game.move_origin.z);
-    d.velocity.z = (target_z - d.state.origin.z) / FRAMETIME;
+    let angle = radians(angles.x);
+    let target_z = snap_to_eights(
+        (f64::from(origin.z) + reach * angle.tan() + f64::from(d.game.move_origin.z)) as f32,
+    );
+    d.velocity.z = speed(target_z - d.state.origin.z);
 
     if fire {
         turret_breach_fire(world, key);
@@ -802,6 +814,24 @@ mod tests {
             "{:?}",
             d.velocity
         );
+    }
+
+    #[test]
+    fn turret_breach_think_drags_the_driver_in_c_double_precision() {
+        // C rounds the radians to float, then works the seat and the
+        // `dir * 1.0 / FRAMETIME` speed in double. Expected values come
+        // from that sequence; f32 throughout gives 60.749996 and -175.49998.
+        let mut world = test_world();
+        let t = turret(&mut world);
+        let b = world.entities.get_mut(t.breach).unwrap();
+        b.state.origin = Vec3f::ZERO;
+        b.state.angles = Vec3f::new(10.0, 21.0, 0.0);
+        let d = world.entities.get_mut(t.driver).unwrap();
+        d.game.move_origin = Vec3f::new(10.0, 0.0, -16.0);
+        d.state.origin = Vec3f::splat(3.3);
+        turret_breach_think(&mut world, t.breach);
+        let v = world.entities.get(t.driver).unwrap().velocity;
+        assert_eq!(v, Vec3f::new(60.75, 3.250_000_5, -175.5));
     }
 
     #[test]
