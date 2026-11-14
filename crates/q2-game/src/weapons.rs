@@ -252,11 +252,6 @@ pub fn grenade_explode(world: &mut GameWorld, self_key: EntityKey) {
     world.free_entity(self_key);
 }
 
-/// Grenade think callback — wraps `grenade_explode` for timer detonation.
-fn grenade_think(world: &mut GameWorld, self_key: EntityKey) {
-    grenade_explode(world, self_key);
-}
-
 /// Grenade touch handler — bounces off world, explodes on entities.
 /// C ref: `Grenade_Touch` (g_weapon.c:598-644).
 pub fn grenade_touch(
@@ -459,7 +454,7 @@ pub fn bfg_explode(world: &mut GameWorld, self_key: EntityKey) {
     ent.game.nextthink = time + FRAMETIME;
     ent.state.frame += 1;
     if ent.state.frame == 5 {
-        ent.think = Some(projectile_timeout);
+        ent.think = Some(crate::misc::free_think);
     }
 }
 
@@ -638,11 +633,6 @@ fn projectile_lifetime(speed: i32) -> f32 {
     8000_i32.checked_div(speed).unwrap_or(8000) as f32
 }
 
-/// Timeout cleanup — remove projectile entities that outlived their duration.
-fn projectile_timeout(world: &mut GameWorld, self_key: EntityKey) {
-    world.free_entity(self_key);
-}
-
 // ---------------------------------------------------------------------------
 // Weapon fire functions
 // ---------------------------------------------------------------------------
@@ -696,7 +686,7 @@ impl GameWorld {
             bolt.velocity = dir * speed as f32;
 
             bolt.touch = Some(blaster_touch);
-            bolt.think = Some(projectile_timeout);
+            bolt.think = Some(crate::misc::free_think);
             bolt.game.nextthink = self.level.time + 2.0;
         }
         self.launch_projectile(bolt_key, dir, "models/objects/laser/tris.md2");
@@ -972,7 +962,7 @@ impl GameWorld {
             rocket.velocity = dir.normalize_or_zero() * speed as f32;
 
             rocket.touch = Some(rocket_touch);
-            rocket.think = Some(projectile_timeout);
+            rocket.think = Some(crate::misc::free_think);
             rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
@@ -1035,7 +1025,7 @@ impl GameWorld {
             gren.avelocity = Vec3f::new(300.0, 300.0, 300.0);
 
             gren.touch = Some(grenade_touch);
-            gren.think = Some(grenade_think);
+            gren.think = Some(grenade_explode);
             gren.game.nextthink = self.level.time + timer;
         }
         // Not launch_projectile: C fire_grenade leaves s.angles at zero.
@@ -1082,7 +1072,7 @@ impl GameWorld {
             gren.owner = Some(owner);
             gren.touch = Some(grenade_touch);
             gren.game.nextthink = nextthink;
-            gren.think = Some(grenade_think);
+            gren.think = Some(grenade_explode);
             gren.game.dmg = damage;
             gren.game.dmg_radius = damage_radius;
             gren.game.classname = "hgrenade".into();
@@ -2435,13 +2425,14 @@ mod tests {
     }
 
     #[test]
-    fn projectile_timeout_frees_entity() {
+    fn a_bolt_that_outlives_its_flight_frees_itself() {
         let mut world = test_world();
-        let ent = world.spawn().unwrap();
-
-        projectile_timeout(&mut world, ent);
-
-        assert!(!world.entities.get(ent).is_some_and(|e| e.in_use));
+        let owner = world.spawn().unwrap();
+        world.fire_blaster(owner, Vec3f::ZERO, Vec3f::X, 10, 1000, EF_BLASTER, false);
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        let think = world.entities.get(bolt).unwrap().think.unwrap();
+        think(&mut world, bolt);
+        assert!(!world.entities.get(bolt).is_some_and(|e| e.in_use));
     }
 
     fn target_at(world: &mut GameWorld, origin: Vec3f, health: i32) -> EntityKey {
