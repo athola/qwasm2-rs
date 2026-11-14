@@ -8,6 +8,7 @@
 
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage};
+use crate::weapons::{spark_temp_entity, temp_entity};
 use crate::world::GameWorld;
 use q2_shared::types::{Multicast, Solid, Vec3f};
 use std::collections::HashMap;
@@ -27,12 +28,14 @@ fn target_explosion_explode(world: &mut GameWorld, self_key: EntityKey) {
         ent.state.origin,
         ent.game.activator.unwrap_or(self_key),
     );
-    world
-        .gi
-        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_EXPLOSION1);
-    world.gi.write_position(origin);
-    world.gi.multicast(origin, q2_shared::types::Multicast::PHS);
+    temp_entity(
+        world,
+        TE_EXPLOSION1,
+        &[origin],
+        None,
+        origin,
+        Multicast::PHS,
+    );
 
     world.t_radius_damage(
         self_key,
@@ -355,15 +358,14 @@ fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
                 if let Some(ent) = world.entities.get_mut(self_key) {
                     ent.game.spawnflags &= !LASER_MOVED;
                 }
-                world
-                    .gi
-                    .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-                world.gi.write_byte(q2_shared::constants::TE_LASER_SPARKS);
-                world.gi.write_byte(count);
-                world.gi.write_position(tr.endpos);
-                world.gi.write_dir(tr.plane.normal);
-                world.gi.write_byte(skinnum);
-                world.gi.multicast(tr.endpos, Multicast::PVS);
+                spark_temp_entity(
+                    world,
+                    q2_shared::constants::TE_LASER_SPARKS,
+                    count,
+                    tr.endpos,
+                    tr.plane.normal,
+                    skinnum,
+                );
             }
             break tr;
         }
@@ -515,12 +517,7 @@ fn use_target_tent(
         return;
     };
     let (style, origin) = (ent.game.style, ent.state.origin);
-    world
-        .gi
-        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-    world.gi.write_byte(style);
-    world.gi.write_position(origin);
-    world.gi.multicast(origin, Multicast::PVS);
+    temp_entity(world, style, &[origin], None, origin, Multicast::PVS);
 }
 
 /// A `count`-particle splash of colour `sounds` along `movedir`, and
@@ -541,15 +538,7 @@ fn use_target_splash(
         ent.game.sounds,
         ent.game.dmg,
     );
-    world
-        .gi
-        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_SPLASH);
-    world.gi.write_byte(count);
-    world.gi.write_position(origin);
-    world.gi.write_dir(movedir);
-    world.gi.write_byte(sounds);
-    world.gi.multicast(origin, Multicast::PVS);
+    spark_temp_entity(world, TE_SPLASH, count, origin, movedir, sounds);
     if dmg != 0 {
         world.t_radius_damage(
             key,
@@ -1425,6 +1414,53 @@ mod tests {
         assert!(world.entities.get(laser).unwrap().use_fn.is_none());
     }
 
+    const TE: i32 = q2_shared::protocol::SvcOp::TempEntity as i32;
+
+    #[test]
+    fn a_laser_turning_on_against_a_wall_writes_c_s_sparks_layout() {
+        // C target_laser_think: TE_LASER_SPARKS, count, endpos, normal,
+        // skinnum, then the PVS of endpos.
+        use crate::world::Write;
+        let (mut world, laser, gi) = laser_world(1);
+        let start = world.entities.get(laser).unwrap().think.unwrap();
+        let hit = Vec3f::new(300.0, 0.0, 0.0);
+        gi.queued_traces.borrow_mut().push_back(wall(hit));
+        start(&mut world, laser);
+        let skinnum = world.entities.get(laser).unwrap().state.skinnum;
+        assert_eq!(
+            *gi.message.borrow(),
+            [
+                Write::Byte(TE),
+                Write::Byte(q2_shared::constants::TE_LASER_SPARKS),
+                Write::Byte(8),
+                Write::Position(hit),
+                Write::Dir(Vec3f::new(-1.0, 0.0, 0.0)),
+                Write::Byte(skinnum),
+            ]
+        );
+        assert_eq!(*gi.multicasts.borrow(), [(hit, Multicast::PVS)]);
+    }
+
+    #[test]
+    fn target_explosion_writes_explosion1_to_the_phs() {
+        // C target_explosion_explode.
+        use crate::world::Write;
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.spawn().unwrap();
+        let at = Vec3f::new(1.0, 2.0, 3.0);
+        world.entities.get_mut(key).unwrap().state.origin = at;
+        target_explosion_explode(&mut world, key);
+        assert_eq!(
+            *gi.message.borrow(),
+            [
+                Write::Byte(TE),
+                Write::Byte(TE_EXPLOSION1),
+                Write::Position(at)
+            ]
+        );
+        assert_eq!(*gi.multicasts.borrow(), [(at, Multicast::PHS)]);
+    }
+
     #[test]
     fn a_target_laser_that_hits_nothing_ends_on_the_world_with_sparks() {
         // SV_Trace names the world when nothing is hit, so C's not-a-body
@@ -2276,6 +2312,10 @@ mod tests {
                 Dir(Vec3f::new(1.0, 0.0, 0.0)),
                 Byte(2),
             ]
+        );
+        assert_eq!(
+            gi.multicasts.borrow().last(),
+            Some(&(Vec3f::new(1.0, 2.0, 3.0), Multicast::PVS))
         );
     }
 }

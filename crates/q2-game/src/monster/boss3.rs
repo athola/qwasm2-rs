@@ -6,7 +6,6 @@
 //! numbers every `boss31.h` frame the same.
 
 use q2_shared::constants::*;
-use q2_shared::protocol::SvcOp;
 use q2_shared::types::*;
 
 use crate::ai;
@@ -20,6 +19,7 @@ use crate::monster::flash::monster_flash_source;
 use crate::monster::movement::vectoyaw;
 use crate::monster::supertank::boss_explode;
 use crate::monster::{frame, set_move, sound};
+use crate::weapons::temp_entity;
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -968,10 +968,7 @@ pub fn use_boss3(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _acti
     let Some(origin) = world.entities.get(key).map(|e| e.state.origin) else {
         return;
     };
-    world.gi.write_byte(SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_BOSSTPORT);
-    world.gi.write_position(origin);
-    world.gi.multicast(origin, Multicast::PVS);
+    temp_entity(world, TE_BOSSTPORT, &[origin], None, origin, Multicast::PVS);
     world.free_entity(key);
 }
 
@@ -1904,6 +1901,7 @@ mod tests {
     use crate::misc::wire::{wire_world, Wire, WireImport};
     use crate::monster::test_support::{assert_moves_match_c, CMoveRow};
     use crate::world::{test_world, test_world_recording, MockGameImport};
+    use q2_shared::protocol::SvcOp;
 
     #[test]
     fn jorg_moves_match_c_boss31_c() {
