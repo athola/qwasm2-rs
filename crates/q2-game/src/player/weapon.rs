@@ -231,7 +231,14 @@ impl GameWorld {
     }
 
     /// Quad damage multiplier and muzzle flash silencer bit for a shot
-    /// now (C `is_quad`, `is_silenced`, set by `Think_Weapon`).
+    /// now (C `is_quad`, `is_silenced`). Deviation: C keeps these in file
+    /// statics that `Think_Weapon` sets only after its dead check, so the
+    /// grenade a dying player drops (`think_weapon` to `change_weapon` to
+    /// `weapon_grenade_fire`) reads the value from the last weapon think
+    /// of whichever client ran it. In single player that is this player's
+    /// previous frame, so C gives that grenade quad damage even though
+    /// `player_die` has cleared `quad_framenum`. Here the value is read
+    /// live, so it never has quad.
     fn shot_modifiers(&self, key: EntityKey) -> (bool, i32) {
         self.client(key).map_or((false, 0), |c| {
             let silenced = if c.silencer_shots > 0 { MZ_SILENCED } else { 0 };
