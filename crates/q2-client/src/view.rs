@@ -10,5 +10,5 @@ pub fn calc_fov(fov_x: f32, width: f32, height: f32) -> Q2Result<f32> {
     }
     let x = width / (f64::from(fov_x / 360.0) * std::f64::consts::PI).tan() as f32;
     let a = f64::from(height / x).atan() as f32;
-    Ok((f64::from(a) * 360.0 / std::f64::consts::PI) as f32)
+    Ok((f64::from(a * 360.0) / std::f64::consts::PI) as f32)
 }
