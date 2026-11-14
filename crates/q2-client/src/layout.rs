@@ -136,15 +136,25 @@ pub(crate) fn wire_bytes(text: &str) -> impl Iterator<Item = u8> + '_ {
         .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))
 }
 
-/// C DrawString / DrawAltString (`xor` 0x80).
-fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
-    for (i, ch) in wire_bytes(text).enumerate() {
+/// One `Draw_Char` per byte, 8 pixels apart.
+pub(crate) fn draw_bytes(
+    out: &mut Vec<HudDraw>,
+    x: i32,
+    y: i32,
+    bytes: impl IntoIterator<Item = u8>,
+) {
+    for (i, ch) in bytes.into_iter().enumerate() {
         out.push(HudDraw::Char {
             x: x.wrapping_add(8 * i as i32),
             y,
-            ch: ch ^ xor,
+            ch,
         });
     }
+}
+
+/// C DrawString / DrawAltString (`xor` 0x80).
+fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
+    draw_bytes(out, x, y, wire_bytes(text).map(|ch| ch ^ xor));
 }
 
 /// C DrawHUDString: lines centred in `centerwidth` (0 = left aligned).
