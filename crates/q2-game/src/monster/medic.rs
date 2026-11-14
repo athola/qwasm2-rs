@@ -12,7 +12,7 @@ use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::fire::monster_fire_blaster;
 use crate::monster::flash::{monster_flash_source, project_source};
-use crate::monster::{footstep, frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{footstep, frame, monster_footsteps, set_move, sound, throw_organic_gibs};
 use crate::world::GameWorld;
 
 // C's sound_* names, one per file, shared by the call sites and
@@ -456,7 +456,8 @@ fn take_patient(world: &mut GameWorld, key: EntityKey, patient: EntityKey, keep_
 
 /// C ref: `medic_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn medic_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `medic_idle`.

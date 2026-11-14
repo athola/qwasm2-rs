@@ -2062,7 +2062,106 @@ mod tests {
         assert_eq!(pm.s.pm_flags & PMF_ON_GROUND, 0);
         assert_ne!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
         assert_eq!(pm.s.velocity[2], ((270.0f32 - 800.0 * 0.016) * 8.0) as i16);
-        // Holding jump does not jump again after landing.
+        // Holding jump through the landing and past PMF_TIME_LAND does not
+        // jump again: C PM_CheckJump returns while PMF_JUMP_HELD is set.
+        let mut landed_frames = 0;
+        for _ in 0..80 {
+            pm.run();
+            if pm.s.pm_flags & PMF_ON_GROUND != 0 {
+                landed_frames += 1;
+                assert_eq!(pm.s.velocity[2], 0, "held jump re-jumped");
+            }
+        }
+        assert!(landed_frames > 30, "landed for {landed_frames} frames");
+        assert_eq!(pm.s.pm_flags & PMF_TIME_LAND, 0);
+        assert_ne!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        // Releasing (upmove < 10) clears PMF_JUMP_HELD, so the next press jumps.
+        pm.cmd.upmove = 9;
+        pm.run();
+        assert_eq!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        pm.cmd.upmove = 200;
+        pm.run();
+        assert_eq!(pm.s.pm_flags & PMF_ON_GROUND, 0);
+        assert!(pm.s.velocity[2] > 0);
+    }
+
+    /// On the ground with jump pressed, nothing held, nothing timed.
+    fn jump_ready() -> (Pmove, PmLocal) {
+        let mut pm = make_test_pmove();
+        pm.cmd.upmove = 200;
+        (pm, PmLocal::default())
+    }
+
+    #[test]
+    fn check_jump_is_blocked_by_land_time() {
+        let (mut pm, mut pml) = jump_ready();
+        pm.s.pm_flags |= PMF_TIME_LAND;
+        pm_check_jump(&mut pm, &mut pml);
+        assert_eq!(pml.velocity.z, 0.0);
+        assert!(pm.ground_entity.is_some());
+    }
+
+    #[test]
+    fn check_jump_does_nothing_for_a_dead_player() {
+        let (mut pm, mut pml) = jump_ready();
+        pm.s.pm_type = PmType::Dead;
+        pm_check_jump(&mut pm, &mut pml);
+        assert_eq!(pml.velocity.z, 0.0);
+        assert!(pm.ground_entity.is_some());
+    }
+
+    #[test]
+    fn check_jump_in_the_air_does_not_jump() {
+        // waterlevel 1 is not swimming: C's swim-up needs waterlevel >= 2.
+        for waterlevel in [0, 1] {
+            let (mut pm, mut pml) = jump_ready();
+            pm.ground_entity = None;
+            pm.waterlevel = waterlevel;
+            pml.velocity.z = -40.0;
+            pm_check_jump(&mut pm, &mut pml);
+            assert_eq!(pml.velocity.z, -40.0, "waterlevel {waterlevel}");
+            assert_eq!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        }
+    }
+
+    #[test]
+    fn check_jump_raises_vertical_speed_to_at_least_270() {
+        for (vz, expected) in [(-100.0, 270.0), (50.0, 320.0)] {
+            let (mut pm, mut pml) = jump_ready();
+            pml.velocity.z = vz;
+            pm_check_jump(&mut pm, &mut pml);
+            assert_eq!(pml.velocity.z, expected, "from {vz}");
+            assert!(pm.ground_entity.is_none());
+            assert_ne!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        }
+    }
+
+    #[test]
+    fn check_jump_swims_up_100_in_water_80_in_slime_50_in_lava() {
+        for (watertype, expected) in [
+            (CONTENTS_WATER, 100.0),
+            (CONTENTS_SLIME, 80.0),
+            (q2_shared::constants::CONTENTS_LAVA, 50.0),
+        ] {
+            let (mut pm, mut pml) = jump_ready();
+            pm.waterlevel = 2;
+            pm.watertype = watertype;
+            pm_check_jump(&mut pm, &mut pml);
+            assert_eq!(pml.velocity.z, expected, "watertype {watertype}");
+            assert!(pm.ground_entity.is_none());
+            // Swimming up does not set PMF_JUMP_HELD.
+            assert_eq!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        }
+    }
+
+    #[test]
+    fn check_jump_in_water_leaves_a_fast_sink_alone() {
+        let (mut pm, mut pml) = jump_ready();
+        pm.waterlevel = 2;
+        pm.watertype = CONTENTS_WATER;
+        pml.velocity.z = -300.0;
+        pm_check_jump(&mut pm, &mut pml);
+        assert_eq!(pml.velocity.z, -300.0);
         assert!(pm.ground_entity.is_none());
     }
 
@@ -2107,5 +2206,28 @@ mod tests {
         pm.cmd.upmove = 0;
         pm.run();
         assert_eq!(pm.s.pm_flags & PMF_DUCKED, 0);
+    }
+
+    #[test]
+    fn run_ducked_player_under_a_low_ceiling_stays_ducked() {
+        // Ceiling at z = 40. Ducked, the hull top is 20 + 4 = 24; standing,
+        // it would be 20 + 32 = 52, inside the ceiling, so C PM_CheckDuck's
+        // stand-up trace is allsolid and PMF_DUCKED stays set.
+        let mut cm = CollisionMap::new();
+        cm.load_map(&crate::collision::tests::build_ceiling_bsp(40.0))
+            .unwrap();
+        let mut pm = make_test_pmove();
+        let cm = RefCell::new(cm);
+        pm.trace = Box::new(move |start, mins, maxs, end| {
+            cm.borrow_mut()
+                .world_trace(start, mins, maxs, end, MASK_PLAYERSOLID)
+        });
+        pm.s.origin = [0, 0, 20 * 8];
+        pm.s.pm_flags = PMF_DUCKED;
+        pm.cmd.msec = 16;
+        pm.run();
+        assert_ne!(pm.s.pm_flags & PMF_DUCKED, 0);
+        assert_eq!(pm.maxs.z, 4.0);
+        assert_eq!(pm.viewheight, -2.0);
     }
 }

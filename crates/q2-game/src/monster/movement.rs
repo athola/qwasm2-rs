@@ -319,8 +319,7 @@ pub fn sv_step_direction(world: &mut GameWorld, key: EntityKey, yaw: f32, dist: 
     ent.game.ideal_yaw = yaw;
     m_change_yaw(world, key);
 
-    let rad = yaw.to_radians();
-    let step = Vec3f::new(rad.cos() * dist, rad.sin() * dist, 0.0);
+    let step = yaw_step(yaw, dist);
     let Some(old_origin) = world.entities.get(key).map(|e| e.state.origin) else {
         return false;
     };
@@ -486,15 +485,32 @@ pub fn m_walkmove(world: &mut GameWorld, key: EntityKey, yaw: f32, dist: f32) ->
     {
         return false;
     }
-    let rad = yaw.to_radians();
-    let step = Vec3f::new(rad.cos() * dist, rad.sin() * dist, 0.0);
+    let step = yaw_step(yaw, dist);
     sv_movestep(world, key, step, true)
+}
+
+/// `dist` along `yaw` (degrees) in the horizontal plane. C stores the
+/// double `yaw * M_PI * 2 / 360` back into the float `yaw`, then takes the
+/// double `cos(yaw) * dist`, rounded once into each float component.
+fn yaw_step(yaw: f32, dist: f32) -> Vec3f {
+    let rad = f64::from((f64::from(yaw) * std::f64::consts::PI * 2.0 / 360.0) as f32);
+    let dist = f64::from(dist);
+    Vec3f::new((rad.cos() * dist) as f32, (rad.sin() * dist) as f32, 0.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::monster::test_support::*;
+
+    #[test]
+    fn yaw_step_rounds_like_c_float_radians_and_double_trig() {
+        // C: `yaw = yaw * M_PI * 2 / 360` into a float, then double
+        // `cos(yaw) * dist` rounded once into the float move[0].
+        let step = yaw_step(2.0, 3.5);
+        assert_eq!(step.x, 3.4978678226470947_f64 as f32);
+        assert_eq!(step.y, 0.12214823812246323_f64 as f32);
+    }
 
     #[test]
     fn walkmove_steps_along_the_floor() {

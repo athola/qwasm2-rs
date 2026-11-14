@@ -1380,14 +1380,13 @@ pub fn makron_bfg(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Remember where the enemy's eyes are for the railgun shot on the next
-/// frame. `game.move_origin` stands in for C `pos1`, which the entity
-/// does not carry. C ref: `MakronSaveloc`.
+/// frame, in `pos1` as in C. C ref: `MakronSaveloc`.
 pub fn makron_saveloc(world: &mut GameWorld, key: EntityKey) {
     let Some((_, enemy_origin, viewheight, _)) = enemy_of(world, key) else {
         return;
     };
     if let Some(ent) = world.entities.get_mut(key) {
-        ent.game.move_origin = enemy_origin + Vec3f::new(0.0, 0.0, viewheight);
+        ent.game.pos1 = enemy_origin + Vec3f::new(0.0, 0.0, viewheight);
     }
 }
 
@@ -1396,7 +1395,7 @@ pub fn makron_railgun(world: &mut GameWorld, key: EntityKey) {
     let Some((start, _, _)) = monster_flash_source(world, key, MZ2_MAKRON_RAILGUN_1) else {
         return;
     };
-    let Some(pos1) = world.entities.get(key).map(|e| e.game.move_origin) else {
+    let Some(pos1) = world.entities.get(key).map(|e| e.game.pos1) else {
         return;
     };
     let dir = (pos1 - start).normalize_or_zero();
@@ -1799,10 +1798,7 @@ pub fn makron_spawn(world: &mut GameWorld, key: EntityKey) {
 
     if enemy.is_some() {
         ai::found_target(world, key);
-        let pos1 = world
-            .entities
-            .get(key)
-            .map_or(Vec3f::ZERO, |e| e.game.move_origin);
+        let pos1 = world.entities.get(key).map_or(Vec3f::ZERO, |e| e.game.pos1);
         if let Some(mi) = monsterinfo_mut(world, key) {
             mi.last_sighting = pos1;
         }
@@ -1839,8 +1835,8 @@ pub fn makron_spawn(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Jorg is just about dead: a placeholder entity that becomes the Makron
-/// 0.8 s later where Jorg stands. `game.move_origin` carries C `pos1`
-/// (Jorg's last sighting) to `makron_spawn`. C ref: `MakronToss`.
+/// 0.8 s later where Jorg stands. `pos1` carries Jorg's last sighting to
+/// `makron_spawn`, as in C. C ref: `MakronToss`.
 pub fn makron_toss(world: &mut GameWorld, key: EntityKey) {
     let Some(jorg) = world.entities.get(key) else {
         return;
@@ -1865,7 +1861,7 @@ pub fn makron_toss(world: &mut GameWorld, key: EntityKey) {
     ent.game.target = target;
     ent.state.origin = origin;
     ent.state.angles = angles;
-    ent.game.move_origin = last_sighting;
+    ent.game.pos1 = last_sighting;
     ent.game.enemy = enemy;
     ent.game.oldenemy = oldenemy;
 }
@@ -2634,7 +2630,7 @@ mod tests {
 
         makron_saveloc(&mut world, key);
         assert_eq!(
-            world.entities.get(key).unwrap().game.move_origin,
+            world.entities.get(key).unwrap().game.pos1,
             Vec3f::new(500.0, 0.0, 22.0)
         );
         world.entities.get_mut(enemy).unwrap().state.origin.y = 300.0;
@@ -2841,7 +2837,7 @@ mod tests {
             (m.state.origin, m.state.angles.y),
             (Vec3f::new(10.0, 20.0, 30.0), 45.0)
         );
-        assert_eq!(m.game.move_origin, Vec3f::new(1.0, 2.0, 3.0));
+        assert_eq!(m.game.pos1, Vec3f::new(1.0, 2.0, 3.0));
         assert_eq!((m.game.enemy, m.game.oldenemy), (Some(enemy), Some(jorg)));
         assert!(m.monsterinfo.is_none(), "not yet a monster");
     }
@@ -2858,7 +2854,7 @@ mod tests {
         let m = world.entities.get_mut(key).unwrap();
         m.game.classname = "monster_makron".to_string();
         m.game.enemy = Some(enemy);
-        m.game.move_origin = Vec3f::new(5.0, 6.0, 7.0);
+        m.game.pos1 = Vec3f::new(5.0, 6.0, 7.0);
         let total = world.level.total_monsters;
         makron_spawn(&mut world, key);
 

@@ -13,6 +13,9 @@
 //! - Performance: 0 (vertex floats are viewed as bytes with `bytemuck`)
 //! - Inherent: 0
 
+// The one crate CLAUDE.md lets use unsafe; the workspace denies `unsafe_code`.
+#![allow(unsafe_code)]
+
 pub mod bsp;
 pub mod files;
 pub mod gl3;
