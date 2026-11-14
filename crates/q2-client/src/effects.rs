@@ -739,6 +739,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::particles::cycling_rng as rng;
 
     fn player_at(number: i32, yaw: f32) -> EntityState {
         EntityState {
@@ -746,16 +747,6 @@ mod tests {
             origin: Vec3f::new(100.0, 0.0, 24.0),
             angles: Vec3f::new(0.0, yaw, 0.0),
             ..Default::default()
-        }
-    }
-
-    /// A fixed randk() sequence.
-    fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
-        let mut i = 0;
-        move || {
-            let v = values[i % values.len()];
-            i += 1;
-            v
         }
     }
 

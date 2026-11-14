@@ -1664,17 +1664,9 @@ impl EntityTrails {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::particles::cycling_rng as rng;
     use q2_common::net_msg::NetMsg;
     use q2_shared::protocol::SvcOp;
-
-    fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
-        let mut i = 0;
-        move || {
-            let v = values[i % values.len()];
-            i += 1;
-            v
-        }
-    }
 
     /// An svc_temp_entity message: the type, then `fill` writes its body.
     fn tent(kind: i32, fill: impl FnOnce(&mut NetMsg)) -> Vec<u8> {
