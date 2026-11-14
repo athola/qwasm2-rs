@@ -1128,11 +1128,12 @@ fn hand_from_query(search: &str) -> i32 {
         .unwrap_or(0)
 }
 
-/// The local client's userinfo: C sends its `CVAR_USERINFO` cvars, of
-/// which this port has only `hand`.
+/// The local client's userinfo: the `CVAR_USERINFO` cvars the game reads,
+/// at C's defaults (cl_main.c: name "unnamed", skin "male/grunt", gender
+/// "male"), and `hand` from the page.
 #[cfg(any(target_arch = "wasm32", test))]
 fn local_userinfo(hand: i32) -> String {
-    format!("\\hand\\{hand}")
+    format!("\\name\\unnamed\\skin\\male/grunt\\gender\\male\\hand\\{hand}")
 }
 
 /// C cvar `cl_gun` from `?cl_gun=`, as text for the game; C's default 2.
@@ -2122,12 +2123,33 @@ mod tests {
     }
 
     #[test]
+    fn the_local_userinfo_carries_c_cvar_defaults_and_the_hand() {
+        // C cl_main.c: name "unnamed", skin "male/grunt" and gender "male"
+        // are CVAR_USERINFO, so a single player is "unnamed" to the game.
+        assert_eq!(
+            local_userinfo(1),
+            "\\name\\unnamed\\skin\\male/grunt\\gender\\male\\hand\\1"
+        );
+        let mut local =
+            q2_server::local::LocalGame::start_with_userinfo("empty", &[], &local_userinfo(0))
+                .expect("empty map loads");
+        // The first game frame, which publishes the configstrings.
+        local.frame(100_000);
+        local.frame(100_000);
+        // C ClientUserinfoChanged: CS_PLAYERSKINS is "name\\skin", which
+        // the obituaries also print ("unnamed died.").
+        assert_eq!(
+            local.configstring(q2_shared::constants::CS_PLAYERSKINS),
+            "unnamed\\male/grunt"
+        );
+    }
+
+    #[test]
     fn hand_and_game_come_from_the_query_with_c_defaults() {
         assert_eq!(hand_from_query("?hand=1"), 1);
         assert_eq!(hand_from_query("?hand=2"), 2);
         assert_eq!(hand_from_query("?hand=left"), 0);
         assert_eq!(hand_from_query(""), 0);
-        assert_eq!(local_userinfo(1), "\\hand\\1");
         assert_eq!(game_from_query("?game=rogue"), "rogue");
         // C cl_gun: 0 no gun, 1 none in a wide view, 2 (default) always.
         assert_eq!(cl_gun_from_query("?cl_gun=0"), "0");
