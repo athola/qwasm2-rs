@@ -148,12 +148,14 @@ impl GameWorld {
     /// Blood or sparks where a hit landed. C ref: `SpawnDamage`
     /// (g_combat.c).
     pub(crate) fn spawn_damage(&self, te: i32, origin: Vec3f, normal: Vec3f) {
-        self.gi
-            .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-        self.gi.write_byte(te);
-        self.gi.write_position(origin);
-        self.gi.write_dir(normal);
-        self.gi.multicast(origin, q2_shared::types::Multicast::PVS);
+        crate::weapons::temp_entity(
+            self,
+            te,
+            &[origin],
+            Some(normal),
+            origin,
+            q2_shared::types::Multicast::PVS,
+        );
     }
 
     /// The power armor a player has switched on: the shield if carried,

@@ -530,13 +530,14 @@ pub fn bfg_think(world: &mut GameWorld, self_key: EntityKey) {
                 .get(hit)
                 .is_some_and(|h| h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some());
             if !body {
-                world.gi.write_byte(SvcOp::TempEntity as i32);
-                world.gi.write_byte(TE_LASER_SPARKS);
-                world.gi.write_byte(4);
-                world.gi.write_position(tr.endpos);
-                world.gi.write_dir(tr.plane.normal);
-                world.gi.write_byte(skinnum);
-                world.gi.multicast(tr.endpos, Multicast::PVS);
+                spark_temp_entity(
+                    world,
+                    TE_LASER_SPARKS,
+                    4,
+                    tr.endpos,
+                    tr.plane.normal,
+                    skinnum,
+                );
                 break;
             }
             ignore = tr.ent_index;
@@ -592,7 +593,7 @@ fn check_dodge(world: &mut GameWorld, shooter: EntityKey, start: Vec3f, dir: Vec
 
 /// `svc_temp_entity` of `te` with its positions and an optional direction,
 /// multicast from `at`.
-fn temp_entity(
+pub(crate) fn temp_entity(
     world: &GameWorld,
     te: i32,
     positions: &[Vec3f],
@@ -609,6 +610,26 @@ fn temp_entity(
         world.gi.write_dir(dir);
     }
     world.gi.multicast(at, to);
+}
+
+/// `svc_temp_entity` in the splash and sparks layout (TE_SPLASH,
+/// TE_LASER_SPARKS, TE_WELDING_SPARKS): `count` particles of `color` at
+/// `pos` along `dir`, multicast to the PVS of `pos`.
+pub(crate) fn spark_temp_entity(
+    world: &GameWorld,
+    te: i32,
+    count: i32,
+    pos: Vec3f,
+    dir: Vec3f,
+    color: i32,
+) {
+    world.gi.write_byte(SvcOp::TempEntity as i32);
+    world.gi.write_byte(te);
+    world.gi.write_byte(count);
+    world.gi.write_position(pos);
+    world.gi.write_dir(dir);
+    world.gi.write_byte(color);
+    world.gi.multicast(pos, Multicast::PVS);
 }
 
 /// C `8000 / speed`, an int division. C divides by zero on a zero
@@ -805,13 +826,7 @@ impl GameWorld {
                         SPLASH_UNKNOWN
                     };
                     if color != SPLASH_UNKNOWN {
-                        self.gi.write_byte(SvcOp::TempEntity as i32);
-                        self.gi.write_byte(TE_SPLASH);
-                        self.gi.write_byte(8);
-                        self.gi.write_position(tr.endpos);
-                        self.gi.write_dir(tr.plane.normal);
-                        self.gi.write_byte(color);
-                        self.gi.multicast(tr.endpos, Multicast::PVS);
+                        spark_temp_entity(self, TE_SPLASH, 8, tr.endpos, tr.plane.normal, color);
                     }
                     // Change the bullet's course when it enters water.
                     let (forward, right, up) = angle_vectors(vectoangles(end - start));
