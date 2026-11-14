@@ -1491,6 +1491,14 @@ impl GameWorld {
         self.link_entity(key);
     }
 
+    /// C `FindItemByClassname`, which compares with Q_stricmp, where
+    /// ED_CallSpawn's item lookup (`find_item`) uses strcmp.
+    pub(crate) fn find_item_by_classname(&self, classname: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(classname))
+    }
+
     /// The item a monster drops on death, from its `item` key. C ref:
     /// `monster_start` (g_monster.c), which reads `st.item`.
     pub(crate) fn monster_start_item(
@@ -1502,13 +1510,7 @@ impl GameWorld {
         let Some(name) = fields.get("item") else {
             return;
         };
-        // C FindItemByClassname compares with Q_stricmp, where
-        // ED_CallSpawn's item lookup (find_item) uses strcmp.
-        let found = self
-            .items
-            .iter()
-            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(name));
-        match found {
+        match self.find_item_by_classname(name) {
             Some(item) => {
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.item = Some(item);

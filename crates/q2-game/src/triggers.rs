@@ -484,7 +484,7 @@ impl GameWorld {
                         .dprintf(&format!("no key item for trigger_key at {origin:?}\n"));
                     return;
                 };
-                let Some(item) = self.find_item(item_name) else {
+                let Some(item) = self.find_item_by_classname(item_name) else {
                     self.gi.dprintf(&format!(
                         "item {item_name} not found for trigger_key at {origin:?}\n"
                     ));
@@ -1219,5 +1219,19 @@ mod tests {
             sounds.contains(&"misc/windfly.wav".to_string()),
             "{sounds:?}"
         );
+    }
+
+    #[test]
+    fn trigger_key_finds_its_item_ignoring_case() {
+        // C SP_trigger_key: FindItemByClassname compares with Q_stricmp.
+        let mut world = test_world();
+        spawn_map(
+            &mut world,
+            r#"{ "classname" "trigger_key" "item" "KEY_BLUE_KEY" "target" "t" }"#,
+        );
+        let trigger = world.find_by_classname(None, "trigger_key").unwrap();
+        let ent = world.entities.get(trigger).unwrap();
+        assert_eq!(ent.game.item, world.find_item("key_blue_key"));
+        assert!(ent.use_fn.is_some());
     }
 }
