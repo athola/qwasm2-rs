@@ -548,11 +548,10 @@ impl Engine {
             cl_time,
             &mut randk,
         );
-        let mut entities = render_entities(&views, &self.models);
         let gun = self
             .frames
             .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
-        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
+        let gun = gun.and_then(|gun| gun_entity(&gun, &self.models));
         let view = q2_client::fx::FxView::new(
             player,
             vieworg,
@@ -560,9 +559,8 @@ impl Engine {
             self.frames.gun_offsets(),
             self.hand,
         );
-        let mut effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
-        effects.entities.extend(power_screens(&views));
-        entities.extend(fx_render_entities(&effects.entities, &self.models));
+        let effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
+        let entities = frame_entities(gun, &views, &effects.entities, &self.models);
         lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
         let dlights = frame_dlights(&lights, &self.effects);
@@ -955,6 +953,45 @@ fn power_screens(views: &[q2_client::entities::EntityView]) -> Vec<q2_client::fx
         })
         .map(q2_client::fx::powerscreen_entity)
         .collect()
+}
+
+/// C `MAX_ENTITIES` (client/vid/header/ref.h): `V_AddEntity` drops the
+/// rest of a frame's entities.
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_ENTITIES: usize = 128;
+
+/// The frame's refresh entities in the order C adds them (`V_AddEntity`),
+/// at most `MAX_ENTITIES`: the view weapon (`CL_CalcViewValues`), each
+/// packet entity's models and then its power screen
+/// (`CL_AddPacketEntities`), then the effects' models (`CL_AddTEnts`). C
+/// never adds the viewer's own model, which the renderer leaves out too.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_entities(
+    gun: Option<q2_render_api::RenderEntity>,
+    views: &[q2_client::entities::EntityView],
+    fx_entities: &[q2_client::fx::FxEntity],
+    models: &ModelTable,
+) -> Vec<q2_render_api::RenderEntity> {
+    use q2_shared::constants::RF_VIEWERMODEL;
+    let mut entities: Vec<_> = gun.into_iter().collect();
+    let mut screens = Vec::new();
+    for (i, view) in views.iter().enumerate() {
+        if view.flags & RF_VIEWERMODEL == 0 {
+            entities.extend(render_entities(std::slice::from_ref(view), models));
+            screens.extend(power_screens(std::slice::from_ref(view)));
+        }
+        // An entity's views (model, shell, linked models) are adjacent.
+        if views
+            .get(i + 1)
+            .is_none_or(|next| next.number != view.number)
+        {
+            entities.extend(fx_render_entities(&screens, models));
+            screens.clear();
+        }
+    }
+    entities.extend(fx_render_entities(fx_entities, models));
+    entities.truncate(MAX_ENTITIES);
+    entities
 }
 
 /// C `V_AddParticle` for each live particle.
@@ -2502,6 +2539,88 @@ mod tests {
             ..gun
         };
         assert!(gun_entity(&unknown, &table).is_none());
+    }
+
+    #[test]
+    fn the_frame_keeps_c_max_entities_in_c_order_and_power_screens_with_their_entity() {
+        // C V_AddEntity drops entities past MAX_ENTITIES (128). C adds the
+        // view weapon (CL_CalcViewValues), then each packet entity with its
+        // power screen (CL_AddPacketEntities), then the temp entities.
+        use q2_client::entities::EntityView;
+        use q2_client::fx::{FxEntity, MOD_EXPLODE, MOD_POWERSCREEN};
+        use q2_shared::constants::{CS_MODELS, EF_POWERSCREEN, RF_VIEWERMODEL};
+        let mut table = ModelTable::default();
+        table.sync(
+            |i| {
+                if i == CS_MODELS + 2 {
+                    "models/a/tris.md2"
+                } else {
+                    ""
+                }
+            },
+            |_| q2_render_api::ModelHandle::new(7),
+        );
+        table.register_fx(|name| match name {
+            MOD_POWERSCREEN => q2_render_api::ModelHandle::new(8),
+            MOD_EXPLODE => q2_render_api::ModelHandle::new(9),
+            _ => q2_render_api::ModelHandle::NONE,
+        });
+        let view = |number| EntityView {
+            number,
+            effects: 0,
+            modelindex: 2,
+            frame: 0,
+            oldframe: 0,
+            backlerp: 0.0,
+            origin: q2_shared::types::Vec3f::ZERO,
+            oldorigin: q2_shared::types::Vec3f::ZERO,
+            angles: q2_shared::types::Vec3f::ZERO,
+            skinnum: 0,
+            flags: 0,
+            alpha: 1.0,
+        };
+        let gun = q2_render_api::RenderEntity {
+            model: q2_render_api::ModelHandle::new(6),
+            ..Default::default()
+        };
+        let explosion = FxEntity {
+            model: Some(MOD_EXPLODE),
+            ..FxEntity::default()
+        };
+        let screened = [
+            EntityView {
+                effects: EF_POWERSCREEN,
+                ..view(2)
+            },
+            EntityView {
+                modelindex: 2,
+                effects: 0,
+                ..view(2)
+            },
+            view(3),
+        ];
+        let models = |ents: &[q2_render_api::RenderEntity]| -> Vec<i32> {
+            ents.iter().map(|e| e.model.raw()).collect()
+        };
+        let ents = frame_entities(
+            Some(gun.clone()),
+            &screened,
+            std::slice::from_ref(&explosion),
+            &table,
+        );
+        assert_eq!(models(&ents), [6, 7, 7, 8, 7, 9]);
+
+        // C never adds the viewer's own model; past 128 the rest is lost.
+        let mut crowd = vec![EntityView {
+            flags: RF_VIEWERMODEL,
+            ..view(1)
+        }];
+        crowd.extend((2..132).map(view));
+        let ents = frame_entities(Some(gun), &crowd, &[explosion], &table);
+        assert_eq!(ents.len(), 128);
+        assert_eq!(ents[0].model.raw(), 6, "the view weapon is first");
+        assert!(ents.iter().all(|e| e.model.raw() != 9), "no explosion");
+        assert!(ents.iter().all(|e| e.flags & RF_VIEWERMODEL == 0));
     }
 
     #[test]
