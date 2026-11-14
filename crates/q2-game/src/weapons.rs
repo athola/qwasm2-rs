@@ -1023,7 +1023,8 @@ impl GameWorld {
             gren.think = Some(grenade_think);
             gren.game.nextthink = self.level.time + timer;
         }
-        self.launch_projectile(gren_key, dir, "models/objects/grenade/tris.md2");
+        // Not launch_projectile: C fire_grenade leaves s.angles at zero.
+        self.set_model(gren_key, "models/objects/grenade/tris.md2");
 
         self.link_entity(gren_key);
     }
@@ -1840,6 +1841,21 @@ mod tests {
             assert_eq!(sent, [TE_BLOOD, TE_LASER_SPARKS, TE_BFG_LASER], "one spark");
             assert_eq!(gi.vectors.borrow().last(), Some(&at), "beam ends there");
         }
+    }
+
+    #[test]
+    fn a_launcher_grenade_starts_unrotated_whatever_the_aim() {
+        // C fire_grenade never sets s.angles; only the spin turns it.
+        let (mut world, owner, _) = shooter();
+        world.fire_grenade(owner, Vec3f::ZERO, Vec3f::Y, 120, 600, 2.5, 160.0);
+        let gren = world.find_by_classname(None, "grenade").unwrap();
+        let g = world.entities.get(gren).unwrap();
+        assert_eq!(g.state.angles, Vec3f::ZERO);
+        assert_eq!(g.clipmask, MASK_SHOT);
+        assert_eq!(
+            g.state.modelindex,
+            world.gi.model_index("models/objects/grenade/tris.md2")
+        );
     }
 
     #[test]
