@@ -176,6 +176,10 @@ pub struct GameWorld {
     /// Which of the three pain animations a hit starts next (C
     /// `P_DamageFeedback`'s static counter).
     pub pain_anim_cycle: i32,
+    /// Whether the last weapon think ran with quad damage (C player/weapon.c's
+    /// `is_quad` static). The grenade a dying player drops reads it from
+    /// that think, as C does.
+    pub is_quad: bool,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -207,6 +211,7 @@ impl GameWorld {
             friendly_fire: false,
             quad_drop_timeout_hack: 0,
             pain_anim_cycle: 0,
+            is_quad: false,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),

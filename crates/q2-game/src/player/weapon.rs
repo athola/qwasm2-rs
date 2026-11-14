@@ -141,6 +141,10 @@ impl GameWorld {
             .and_then(|w| self.items.get(w))
             .and_then(|item| item.weaponthink);
         if let Some(think) = think {
+            // C sets the is_quad static here, after the dead check.
+            self.is_quad = self
+                .client(key)
+                .is_some_and(|c| c.quad_framenum > self.level.framenum);
             think(self, key);
         }
     }
@@ -232,14 +236,8 @@ impl GameWorld {
     }
 
     /// Quad damage multiplier and muzzle flash silencer bit for a shot
-    /// now (C `is_quad`, `is_silenced`). Deviation: C keeps these in file
-    /// statics that `Think_Weapon` sets only after its dead check, so the
-    /// grenade a dying player drops (`think_weapon` to `change_weapon` to
-    /// `weapon_grenade_fire`) reads the value from the last weapon think
-    /// of whichever client ran it. In single player that is this player's
-    /// previous frame, so C gives that grenade quad damage even though
-    /// `player_die` has cleared `quad_framenum`. Here the value is read
-    /// live, so it never has quad.
+    /// now (C `is_quad`, `is_silenced`), read live: every caller fires
+    /// inside a weapon think, where C's statics hold the same values.
     fn shot_modifiers(&self, key: EntityKey) -> (bool, i32) {
         self.client(key).map_or((false, 0), |c| {
             let silenced = if c.silencer_shots > 0 { MZ_SILENCED } else { 0 };
@@ -1110,7 +1108,9 @@ const GRENADE_MAXSPEED: i32 = 800;
 /// the longer it was held, the faster it flies and the sooner it goes
 /// off. C ref: `weapon_grenade_fire` (player/weapon.c).
 pub fn weapon_grenade_fire(world: &mut GameWorld, key: EntityKey, held: bool) {
-    let (quad, _) = world.shot_modifiers(key);
+    // C reads the is_quad static: a grenade thrown by ChangeWeapon for a
+    // dying player gets the previous think's value (see `is_quad`).
+    let quad = world.is_quad;
     let mut damage = 125;
     let radius = (damage + 40) as f32;
     if quad {
@@ -2263,6 +2263,44 @@ mod tests {
     }
 
     #[test]
+    fn a_cooked_grenade_dropped_on_death_keeps_the_last_weapon_thinks_quad() {
+        // C Think_Weapon sets the is_quad static only after its dead check,
+        // so the grenade ChangeWeapon throws for a dying player reads the
+        // previous think's value: quad, though player_die cleared it.
+        let (mut world, key, gi) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        world.client_mut(key).unwrap().quad_framenum = world.level.framenum + 300;
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        think_n(&mut world, key, 12);
+        assert_ne!(world.client(key).unwrap().grenade_time, 0.0, "cooking");
+
+        let origin = world.entities.get(key).unwrap().state.origin;
+        let target = world.spawn().unwrap();
+        let ent = world.entities.get_mut(target).unwrap();
+        ent.state.origin = origin;
+        ent.solid = q2_shared::types::Solid::Bbox;
+        ent.game.takedamage = crate::constants::TakeDamage::Yes;
+        ent.game.health = 1000;
+
+        world.entities.get_mut(key).unwrap().game.health = 0;
+        crate::player::client::player_die(&mut world, key, key, key, 100, Vec3f::ZERO);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 0);
+        gi.sound_calls.borrow_mut().clear();
+        world.think_weapon(key);
+
+        let damage3 = world.gi.sound_index("items/damage3.wav");
+        assert!(gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .any(|&(_, chan, index, ..)| chan == CHAN_ITEM && index == damage3));
+        // 500 at the blast less half the distance, where 125 is no quad.
+        let health = world.entities.get(target).unwrap().game.health;
+        assert!(health < 1000 - 125, "{health}");
+    }
+
+    #[test]
     fn hand_grenades_put_weap_grenades_in_the_skin_for_vwep() {
         let (mut world, key, _) = ready();
         world.entities.get_mut(key).unwrap().state.modelindex = 255;
@@ -2740,6 +2778,8 @@ mod tests {
         // radius = damage + 40, damage x4 with quad.
         let (mut world, key, _) = gunner("Grenades");
         quad(&mut world, key);
+        // What Think_Weapon sets before the weapon think that fires.
+        world.is_quad = true;
         world.level.time = 10.0;
         world.client_mut(key).unwrap().grenade_time = 12.0;
         weapon_grenade_fire(&mut world, key, false);
