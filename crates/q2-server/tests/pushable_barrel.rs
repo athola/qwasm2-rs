@@ -27,8 +27,9 @@ fn run(game: &mut LocalGame, frames: usize, forwardmove: i16) {
             msec: 100,
             forwardmove,
             ..Default::default()
-        });
-        game.frame(100_000);
+        })
+        .unwrap();
+        game.frame(100_000).unwrap();
     }
 }
 

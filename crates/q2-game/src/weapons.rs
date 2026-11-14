@@ -1385,6 +1385,7 @@ mod tests {
     ) {
         let (mut world, gi) = crate::world::test_world_recording();
         let player = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(player);
         let monster = world.spawn().unwrap();
         let m = world.entities.get_mut(monster).unwrap();

@@ -1596,6 +1596,9 @@ pub(crate) mod wire {
         fn dprintf(&self, a: &str) {
             self.inner.dprintf(a)
         }
+        fn error(&self, a: &str) {
+            self.inner.error(a)
+        }
         fn cprintf(&self, a: Option<usize>, b: i32, c: &str) {
             self.inner.cprintf(a, b, c)
         }

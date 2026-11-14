@@ -836,6 +836,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().game.flags |= EntityFlags::GODMODE;
         world.t_damage(
@@ -908,6 +909,7 @@ mod tests {
             let (mut world, gi) = crate::world::test_world_recording();
             world.init_items();
             let key = world.connect_client(1, "\\name\\P").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             let cells = world.find_item_by_name("Cells").unwrap();
             let armor = world.find_item_by_name(item).unwrap();
@@ -948,6 +950,7 @@ mod tests {
         }
         let mut world = crate::world::test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().pain = Some(note_blood);
         world.t_damage(
@@ -970,6 +973,7 @@ mod tests {
     fn damage_to_a_player_adds_up_for_the_end_of_frame_feedback() {
         let mut world = crate::world::test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let point = Vec3f::new(3.0, 4.0, 5.0);
         for _ in 0..2 {
@@ -996,6 +1000,7 @@ mod tests {
     fn easy_skill_halves_damage_to_players_outside_deathmatch_but_never_to_0() {
         let (mut world, _) = crate::world::test_world_recording();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.game.skill = SKILL_EASY;
         let health = |world: &mut GameWorld, damage| {
@@ -1051,6 +1056,7 @@ mod tests {
     fn an_invulnerable_player_takes_nothing_and_hears_protect4_every_2_seconds() {
         let (mut world, gi) = crate::world::test_world_recording();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         world.level.time = 10.0;
@@ -1096,6 +1102,7 @@ mod tests {
         // C ref: T_Damage, pain_debounce_time < level.time.
         let (mut world, gi) = crate::world::test_world_recording();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         world.level.time = 10.0;
@@ -3107,6 +3114,7 @@ mod tests {
             let key = world
                 .connect_client(n, &format!("\\name\\P\\skin\\{skin}"))
                 .unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             key
         };

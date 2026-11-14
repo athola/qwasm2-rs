@@ -28,8 +28,9 @@ fn run(game: &mut LocalGame, frames: usize, buttons: u8) -> Vec<Vec<EntityState>
                 msec: 100,
                 buttons,
                 ..Default::default()
-            });
-            game.frame(100_000);
+            })
+            .unwrap();
+            game.frame(100_000).unwrap();
             game.entity_states()
         })
         .collect()

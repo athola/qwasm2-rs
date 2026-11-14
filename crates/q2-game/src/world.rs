@@ -3,6 +3,7 @@
 //! `GameWorld` owns all entities, level state, and engine callbacks.
 //! It replaces the C globals `g_edicts[]`, `level`, `game`, `globals`.
 
+use q2_common::error::Q2Error;
 use q2_shared::types::*;
 
 use crate::constants::{
@@ -1035,6 +1036,8 @@ pub struct MockGameImport {
     pub sounds: RefCell<Vec<String>>,
     /// Every `dprintf` text, in order.
     pub dprints: RefCell<Vec<String>>,
+    /// Every `error` text, in order.
+    pub errors: RefCell<Vec<String>>,
     /// Every `positioned_sound` call as (origin, entity, channel, sound).
     pub positioned_sounds: RefCell<Vec<(Vec3f, usize, i32, i32)>>,
     /// Every `sound` call (entity, channel, index, volume, attenuation,
@@ -1074,6 +1077,9 @@ impl GameImport for MockGameImport {
     }
     fn dprintf(&self, msg: &str) {
         self.dprints.borrow_mut().push(msg.to_string());
+    }
+    fn error(&self, msg: &str) {
+        self.errors.borrow_mut().push(msg.to_string());
     }
     fn cprintf(&self, ent: Option<usize>, _: i32, msg: &str) {
         self.cprints.borrow_mut().push((ent, msg.to_string()));
@@ -1661,13 +1667,11 @@ impl GameWorld {
             &self.game.maxclients().to_string(),
         );
 
-        // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
+        // C ED_ParseEdict errors are gi.error: spawn nothing from a bad string.
         let parsed = match crate::spawn::parse_entity_string(entstring) {
             Ok(parsed) => parsed,
-            Err(e) => {
-                tracing::error!("spawn_entities: {e}");
-                return;
-            }
+            Err(Q2Error::Drop(msg)) => return self.gi.error(&msg),
+            Err(e) => return self.gi.error(&e.to_string()),
         };
 
         let mut inhibit = 0;
@@ -1687,11 +1691,8 @@ impl GameWorld {
                 self.entities.spawn()
             };
             let Some(key) = slot else {
-                // C G_Spawn raises ERR_DROP here; GameExport::spawn_entities
-                // cannot fail, so report it and stop parsing.
-                self.gi.dprintf("ED_Alloc: no free edicts\n");
-                tracing::error!("spawn_entities: no free edicts");
-                break;
+                // C G_Spawn.
+                return self.gi.error("ED_Alloc: no free edicts");
             };
             let Some(ent) = self.entities.get_mut(key) else {
                 continue;
@@ -1779,6 +1780,23 @@ pub fn test_world_recording() -> (GameWorld, Rc<MockGameImport>) {
 
 #[cfg(test)]
 impl GameWorld {
+    /// An `info_player_start` for `begin_client` unless the world has a
+    /// start it can use: C SelectSpawnPoint raises gi.error without one. It
+    /// stands 9 units below the origin, so the player, raised 9, starts at
+    /// the origin.
+    pub(crate) fn ensure_player_start(&mut self) {
+        if ["info_player_start", "info_player_deathmatch"]
+            .iter()
+            .any(|class| self.find_by_classname(None, class).is_some())
+        {
+            return;
+        }
+        let key = self.spawn().expect("a free edict");
+        let ent = self.entities.get_mut(key).expect("just spawned");
+        ent.game.classname = "info_player_start".to_string();
+        ent.state.origin = Vec3f::new(0.0, 0.0, -9.0);
+    }
+
     /// Spawn a fake player in the first free client number, holding
     /// `client` in that number's `game.clients` slot. Panics when every
     /// client number is taken: C has no client record for other edicts.
@@ -2420,8 +2438,9 @@ mod tests {
     }
 
     #[test]
-    fn running_out_of_edicts_while_spawning_is_reported() {
-        // C G_Spawn raises "ED_Alloc: no free edicts".
+    fn running_out_of_edicts_while_spawning_is_a_game_error() {
+        // C G_Spawn raises gi.error "ED_Alloc: no free edicts", which never
+        // returns: the rest of SpawnEntities does not run.
         let (mut world, gi) = test_world_recording();
         world.init_game();
         let lots = "{ \"classname\" \"info_notnull\" }\n".repeat(1100);
@@ -2430,11 +2449,23 @@ mod tests {
             &format!("{{ \"classname\" \"worldspawn\" }}\n{lots}"),
             "",
         );
-        assert!(gi
+        assert_eq!(*gi.errors.borrow(), ["ED_Alloc: no free edicts"]);
+        assert!(!gi
             .dprints
             .borrow()
             .iter()
-            .any(|m| m == "ED_Alloc: no free edicts\n"));
+            .any(|m| m.ends_with("entities inhibited.\n")));
+    }
+
+    #[test]
+    fn a_malformed_entity_string_is_a_game_error() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\"", "");
+        assert_eq!(
+            *gi.errors.borrow(),
+            ["ED_ParseEntity: EOF without closing brace"]
+        );
     }
 
     #[test]
@@ -2958,6 +2989,7 @@ mod tests {
 
         // Connect and begin.
         let player = world.connect_client(1, "\\name\\TestPlayer").unwrap();
+        world.ensure_player_start();
         world.begin_client(player);
 
         assert_eq!(world.entities.get(player).unwrap().game.health, 100);
@@ -3208,6 +3240,9 @@ mod tests {
             }
             fn dprintf(&self, a: &str) {
                 self.inner.dprintf(a)
+            }
+            fn error(&self, a: &str) {
+                self.inner.error(a)
             }
             fn cprintf(&self, a: Option<usize>, b: i32, c: &str) {
                 self.inner.cprintf(a, b, c)

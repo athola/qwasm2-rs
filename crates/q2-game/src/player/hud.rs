@@ -452,6 +452,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         (world, key, gi)
@@ -846,12 +847,9 @@ mod tests {
     fn without_an_intermission_spot_the_player_start_is_used() {
         let (mut world, key, _) = armed_player();
         world.game.deathmatch = true;
-        spot(
-            &mut world,
-            "info_player_start",
-            Vec3f::new(8.0, 0.0, 0.0),
-            0.0,
-        );
+        // The start armed_player spawned the player at.
+        let start = world.find_by_classname(None, "info_player_start").unwrap();
+        world.entities.get_mut(start).unwrap().state.origin = Vec3f::new(8.0, 0.0, 0.0);
         let exit = exit_to(&mut world, "q2dm2");
         world.begin_intermission(exit);
         assert_eq!(
@@ -878,7 +876,8 @@ mod tests {
         use q2_shared::types::UserCmd;
         let (mut world, key, _) = armed_player();
         world.game.deathmatch = true;
-        spot(&mut world, "info_player_start", Vec3f::ZERO, 0.0);
+        let start = world.find_by_classname(None, "info_player_start").unwrap();
+        world.entities.get_mut(start).unwrap().state.origin = Vec3f::ZERO;
         world.level.time = 10.0;
         let exit = exit_to(&mut world, "q2dm2");
         world.begin_intermission(exit);
@@ -920,10 +919,12 @@ mod tests {
         let a = world
             .connect_client(1, "\\name\\Ann\\skin\\female/athena")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(a);
         let b = world
             .connect_client(2, "\\name\\Bob\\skin\\male/grunt")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(b);
         (world, a, b, gi)
     }
@@ -964,6 +965,7 @@ mod tests {
         let mut players = Vec::new();
         for n in 1..=4 {
             let key = world.connect_client(n, "\\name\\P").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             world.client_mut(key).unwrap().resp.score = 10 - n as i32;
             players.push(key);

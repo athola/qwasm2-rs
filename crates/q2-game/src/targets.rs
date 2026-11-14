@@ -1248,6 +1248,7 @@ mod tests {
         let start = world.spawn().unwrap();
         world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
         let player = world.connect_client(1, "\\name\\Ann").unwrap();
+        world.ensure_player_start();
         world.begin_client(player);
         let exit = world.spawn().unwrap();
         world.entities.get_mut(exit).unwrap().game.map = "q2dm2".into();

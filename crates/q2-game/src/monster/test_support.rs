@@ -163,6 +163,9 @@ impl GameImport for FloorImport {
     fn dprintf(&self, m: &str) {
         self.inner.dprintf(m)
     }
+    fn error(&self, m: &str) {
+        self.inner.error(m)
+    }
     fn cprintf(&self, e: Option<usize>, l: i32, m: &str) {
         self.inner.cprintf(e, l, m)
     }
@@ -371,6 +374,9 @@ impl GameImport for ArenaImport {
     }
     fn dprintf(&self, m: &str) {
         self.floor.dprintf(m)
+    }
+    fn error(&self, m: &str) {
+        self.floor.error(m)
     }
     fn cprintf(&self, e: Option<usize>, l: i32, m: &str) {
         self.floor.cprintf(e, l, m)

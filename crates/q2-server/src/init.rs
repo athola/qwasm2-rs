@@ -56,6 +56,13 @@ impl Server {
         self.spawn_server(svs, name, &[], spawnpoint, ServerState::Pic, gi, game)
     }
 
+    /// Raise the C `Com_Error` the last game call latched: the server ends
+    /// (C SV_Shutdown) and the caller gets the error.
+    pub(crate) fn drop_on_game_error(&mut self, gi: &ServerGameImport) -> Q2Result<()> {
+        gi.take_error()
+            .inspect_err(|_| self.state = ServerState::Dead)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn spawn_server(
         &mut self,
@@ -110,8 +117,11 @@ impl Server {
         }
 
         game.spawn_entities(map_name, &gi.entity_string(), spawnpoint);
+        self.drop_on_game_error(gi)?;
         game.run_frame();
+        self.drop_on_game_error(gi)?;
         game.run_frame();
+        self.drop_on_game_error(gi)?;
 
         self.sync_configstrings(gi);
         // C strtol: a string that is not a number reads as 0.

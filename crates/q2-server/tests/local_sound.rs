@@ -21,8 +21,8 @@ fn a_triggered_target_speaker_is_heard_once_at_its_origin() {
     let mut game = LocalGame::start("floor_wall", &map).expect("map loads");
     let mut heard = Vec::new();
     for _ in 0..5 {
-        game.think(&UserCmd::default());
-        game.frame(100_000);
+        game.think(&UserCmd::default()).unwrap();
+        game.frame(100_000).unwrap();
         heard.extend(game.take_sounds());
     }
     assert_eq!(heard.len(), 1, "{heard:?}");

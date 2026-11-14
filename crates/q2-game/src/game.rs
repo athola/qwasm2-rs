@@ -205,6 +205,7 @@ mod tests {
         world.init();
         assert!(!world.client_connect(0, ""), "0 is the world");
         assert!(!world.client_connect(3, ""));
+        world.ensure_player_start();
         world.client_begin(3);
         world.client_disconnect(MAX_CLIENTS + 1);
         world.client_think(0, &UserCmd::default());
@@ -218,6 +219,7 @@ mod tests {
         world.init();
         world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
         assert!(world.client_connect(1, ""));
+        world.ensure_player_start();
         world.client_begin(1);
         let key = world.entities.key_for_number(1).unwrap();
         let ps = &world.client(key).unwrap().ps;
@@ -236,6 +238,7 @@ mod tests {
             "",
         );
         assert!(world.client_connect(2, r"\name\Tester"));
+        world.ensure_player_start();
         world.client_begin(2);
 
         let key = world.entities.key_for_number(2).unwrap();
@@ -265,6 +268,7 @@ mod tests {
             world.level.intermission_time = 3.0;
             world.level.intermission_origin = q2_shared::Vec3f::new(100.0, 200.0, 40.0);
             assert!(world.client_connect(1, r"\name\Tester"));
+            world.ensure_player_start();
             world.client_begin(1);
             let ent = player(&world);
             assert_eq!(ent.state.origin, q2_shared::Vec3f::new(100.0, 200.0, 40.0));
@@ -296,6 +300,7 @@ mod tests {
         world.init();
         world.spawn_entities("demo1", TWO_STARTS, "");
         assert!(world.client_connect(1, r"\name\Tester"));
+        world.ensure_player_start();
         world.client_begin(1);
         world
     }
@@ -354,6 +359,7 @@ mod tests {
                 .is_some_and(|k| world.entities.is_live(k)),
             "the new map starts without the player"
         );
+        world.ensure_player_start();
         world.client_begin(1);
 
         let ent = player(&world);
@@ -388,6 +394,7 @@ mod tests {
         }
         world.client_disconnect(1);
         assert!(world.client_connect(1, r"\name\Again"));
+        world.ensure_player_start();
         world.client_begin(1);
 
         let blaster = world.find_item_by_name("Blaster").unwrap();
@@ -415,6 +422,7 @@ mod tests {
             client_mut(&mut world).pers.inventory[shotgun] = 1;
         }
         world.spawn_entities("demo2", TWO_STARTS, "");
+        world.ensure_player_start();
         world.client_begin(1);
 
         let blaster = world.find_item_by_name("Blaster").unwrap();
@@ -430,6 +438,7 @@ mod tests {
         let mut world = world_with_player();
         client_mut(&mut world).resp.score = 9;
         world.spawn_entities("demo2", TWO_STARTS, "");
+        world.ensure_player_start();
         world.client_begin(1);
         assert_eq!(client(&world).resp.score, 0);
     }
@@ -440,6 +449,7 @@ mod tests {
         world.set_max_clients(1);
         world.init();
         world.spawn_entities("demo1", TWO_STARTS, "");
+        world.ensure_player_start();
         world.client_begin(1);
         let blaster = world.find_item_by_name("Blaster").unwrap();
         let ent = player(&world);
@@ -460,6 +470,7 @@ mod tests {
         world.init();
         world.spawn_entities("demo1", TWO_STARTS, "");
         assert!(world.client_connect(1, r"\name\Tester"));
+        world.ensure_player_start();
         world.client_begin(1);
         (world, gi)
     }
@@ -470,6 +481,7 @@ mod tests {
         client_mut(&mut world).resp.score = 9;
         world.spawn_entities("demo2", TWO_STARTS, "");
         assert_eq!(world.clients[0].pers.score, 9, "SaveClientData");
+        world.ensure_player_start();
         world.client_begin(1);
         let client = client(&world);
         assert_eq!(client.resp.score, 9, "FetchClientEntData");
@@ -559,6 +571,7 @@ mod tests {
         let shotgun = world.find_item("weapon_shotgun").unwrap();
         client_mut(&mut world).pers.inventory[shotgun] = 1;
         player_mut(&mut world).game.flags |= EntityFlags::GODMODE;
+        world.ensure_player_start();
         world.client_begin(1);
 
         assert!(
@@ -606,6 +619,7 @@ mod tests {
         world.init();
         world.spawn_entities("demo1", TWO_STARTS, "");
         assert!(world.client_connect(2, r"\name\Second"));
+        world.ensure_player_start();
         world.client_begin(2);
         assert_eq!(
             *gi.writes.borrow(),

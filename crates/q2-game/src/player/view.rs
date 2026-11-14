@@ -676,6 +676,7 @@ mod tests {
     fn a_shot_kicks_the_view_for_one_frame_like_c() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let client = world.client_mut(key).unwrap();
         client.kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
@@ -702,6 +703,7 @@ mod tests {
     fn the_kick_offset_is_clamped_like_sv_calcviewoffset() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.client_mut(key).unwrap().kick_origin = Vec3f::new(-30.0, 30.0, 40.0);
         world.update_player_view(key);
@@ -713,6 +715,7 @@ mod tests {
     fn a_damage_kick_fades_over_damage_time_like_c() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.time = 10.0;
         let client = world.client_mut(key).unwrap();
@@ -740,6 +743,7 @@ mod tests {
 
     fn player_in(world: &mut GameWorld) -> EntityKey {
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         key
@@ -1534,6 +1538,7 @@ mod tests {
     fn a_dead_player_gets_no_kick_angles() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().game.deadflag = crate::constants::DeadFlag::Dead;
         world.client_mut(key).unwrap().kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
@@ -1545,6 +1550,7 @@ mod tests {
     fn view_offset_default_height() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key); // viewheight 22
         world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
 
@@ -1572,6 +1578,7 @@ mod tests {
             let mut world = test_world();
             world.level.time = 1.0;
             let key = world.connect_client(1, "\\name\\P").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             let ent = world.entities.get_mut(key).unwrap();
             ent.velocity = Vec3f::new(speed, 0.0, 0.0);
@@ -1597,6 +1604,7 @@ mod tests {
 
     fn player(world: &mut GameWorld) -> EntityKey {
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         key
     }

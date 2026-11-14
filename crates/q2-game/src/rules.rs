@@ -127,6 +127,7 @@ mod tests {
         let key = world
             .connect_client(1, "\\name\\P1\\skin\\male/grunt")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         (world, key, gi)
     }
@@ -228,6 +229,7 @@ mod tests {
         let key = world
             .connect_client(2, &format!("\\name\\P2\\skin\\{skin}"))
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         key
     }
@@ -332,6 +334,7 @@ mod tests {
         let her = world
             .connect_client(1, "\\name\\Ann\\gender\\female")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(her);
         die(&mut world, her, her, MeansOfDeath::GrenadeSplash);
         assert_eq!(printed(&gi), ["Ann tripped on her own grenade.\n"]);

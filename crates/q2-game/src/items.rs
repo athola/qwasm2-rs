@@ -3234,6 +3234,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         (world, key, gi)
