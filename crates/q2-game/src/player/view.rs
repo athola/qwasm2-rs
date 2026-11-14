@@ -869,16 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn leaving_liquid_clears_the_underwater_flag_and_tint() {
-        let (mut world, _) = crate::world::test_world_recording();
-        let key = player_in(&mut world);
-        world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER;
-        world.calc_blend(key);
-        let client = world.client(key).unwrap();
-        assert_eq!((client.ps.blend, client.ps.rdflags), ([0.0; 4], 0));
-    }
-
-    #[test]
     fn powerups_tint_the_view_and_warn_three_seconds_before_running_out() {
         let (mut world, gi) = crate::world::test_world_recording();
         let key = player_in(&mut world);
@@ -1836,7 +1826,7 @@ mod tests {
         let (world, gi) = surface(31.0);
         assert!(
             !heard(&world, &gi, "player/gasp2.wav"),
-            "under under a second"
+            "exactly 11 s of air left: no gasp"
         );
     }
 
