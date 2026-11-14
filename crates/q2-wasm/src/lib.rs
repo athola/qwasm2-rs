@@ -596,6 +596,8 @@ impl LevelClient<'_> {
         self.fx.clear();
         *self.trails = q2_client::fx::EntityTrails::default();
         self.text.layout.clear();
+        // C CL_PrepRefresh -> Con_ClearNotify.
+        self.text.clear_notify();
         *self.view_angles = q2_shared::types::Vec3f::ZERO;
     }
 }
@@ -2229,6 +2231,14 @@ mod tests {
         client.frames.receive(local.framenum(), Vec::new(), &ps);
         client.view_angles = q2_shared::types::Vec3f::new(10.0, 20.0, 0.0);
         client.text.layout = "xv 0".into();
+        // Printed late in a long level: C times it on cls.realtime, which
+        // a level change does not restart.
+        let mut center = vec![q2_shared::protocol::SvcOp::CenterPrint as u8];
+        center.extend_from_slice(b"centre\0");
+        client.text.message(&center, 600_000, 40);
+        let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"late\n\0");
+        client.text.message(&print, 600_000, 40);
         // A skipped cinematic hands its next server to take_map_change.
         local
             .change_map(
@@ -2256,6 +2266,9 @@ mod tests {
         assert_eq!(client.frames.serverframe(), None);
         assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
         assert!(client.text.layout.is_empty());
+        // C CL_PrepRefresh -> Con_ClearNotify: the old lines are gone on
+        // the new level's restarted clock.
+        assert!(client.text.draws(320, 240, 500).is_empty());
     }
 
     #[test]

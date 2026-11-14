@@ -147,6 +147,18 @@ impl ServerText {
         self.line_open = false;
     }
 
+    /// C `Con_ClearNotify`, which `CL_PrepRefresh` runs for a new level:
+    /// the notify lines are dropped and the open one is closed. The centre
+    /// print goes too. C counts it down on real time, so one printed just
+    /// before a level change has run out during the load; here it is timed
+    /// on `cl.time`, which a level change restarts at 0.
+    pub fn clear_notify(&mut self) {
+        self.lines.clear();
+        self.line_open = false;
+        self.center.clear();
+        self.center_until = 0;
+    }
+
     /// The notify lines (C `Con_DrawNotify`, one character in from the
     /// left, down from the top) and the centre print (C
     /// `SCR_DrawCenterString`: from 35% down for up to four lines, else
@@ -411,6 +423,22 @@ mod tests {
         let mut text = ServerText::default();
         text.message(&print(PRINT_HIGH, "a\u{1}\n"), 0, 80);
         assert_eq!(line_bytes(&text), [vec![b'a', 1]]);
+    }
+
+    #[test]
+    fn clear_notify_drops_the_lines_and_the_centre_print_before_a_clock_restart() {
+        // C CL_PrepRefresh -> Con_ClearNotify at a level change, where the
+        // port's cl.time starts over at 0.
+        let mut text = ServerText::default();
+        text.message(&center("centre"), 600_000, 40);
+        text.message(&print(PRINT_HIGH, "late\n"), 600_000, 40);
+        text.message(&print(PRINT_HIGH, "open"), 600_000, 40);
+        assert!(!text.draws(320, 240, 500).is_empty());
+        text.clear_notify();
+        assert!(text.draws(320, 240, 500).is_empty());
+        // The open line was closed: what follows starts a new line.
+        text.message(&print(PRINT_HIGH, "next\n"), 500, 40);
+        assert_eq!(rows(&text.draws(320, 240, 500)), [(0, "next".to_string())]);
     }
 
     #[test]
