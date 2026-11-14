@@ -1,5 +1,6 @@
 //! World texture loading: `.wal` through the colormap palette to RGBA, and the
-//! GL upload (C `GL3_FindImage` / `LoadWal` / `GL3_Upload32` in `gl3_image.c`).
+//! GL upload (C `GL3_FindImage` and `GL3_Upload32` in `gl3_image.c`, `LoadWal`
+//! in `files/wal.c`).
 
 use std::collections::HashMap;
 

@@ -810,7 +810,7 @@ impl GameWorld {
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
-    /// C ref: `ClientEndServerFrames` (player/client.c).
+    /// C ref: `ClientEndServerFrames` (g_main.c).
     pub fn client_end_server_frames(&mut self) {
         let keys: Vec<EntityKey> = self
             .entities
