@@ -1383,6 +1383,17 @@ mod tests {
     }
 
     #[test]
+    fn disconnecting_an_edict_without_a_client_does_nothing() {
+        // C ClientDisconnect returns at `!ent->client`.
+        let (mut world, gi) = crate::world::test_world_recording();
+        let key = world.spawn().unwrap();
+        world.disconnect_client(key);
+        assert!(world.entities.get(key).unwrap().in_use);
+        assert!(gi.writes.borrow().is_empty());
+        assert!(gi.configstrings.borrow().is_empty());
+    }
+
+    #[test]
     fn begin_client_clears_what_a_gibbed_body_left_on_the_edict() {
         // C PutClientInServer: effects 0, skin = client index, frame 0,
         // modelindex2 255, svflags 0, no FL_NO_KNOCKBACK, no ground, dry.
