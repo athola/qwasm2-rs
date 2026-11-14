@@ -9,6 +9,7 @@
 //! style (C `lmScales`), then the sum by `overbrightbits`.
 
 use glow::HasContext;
+use q2_shared::error::{Q2Error, Q2Result};
 
 pub const MODE_LIT: i32 = 0;
 pub const MODE_PLAIN: i32 = 1;
@@ -162,18 +163,18 @@ pub(super) fn link_program(
     gl: &glow::Context,
     vertex_src: &str,
     fragment_src: &str,
-) -> Result<glow::Program, String> {
+) -> Q2Result<glow::Program> {
     // SAFETY: Every shader and program handle is created on `gl` within
     // this block and deleted on it on each error path; only the linked
     // program escapes, to a caller that owns the same context.
     unsafe {
         let program = gl
             .create_program()
-            .map_err(|e| format!("create_program failed: {e}"))?;
+            .map_err(|e| Q2Error::Drop(format!("create_program failed: {e}")))?;
 
         let vs = gl.create_shader(glow::VERTEX_SHADER).map_err(|e| {
             gl.delete_program(program);
-            format!("create vertex shader failed: {e}")
+            Q2Error::Drop(format!("create vertex shader failed: {e}"))
         })?;
         gl.shader_source(vs, vertex_src);
         gl.compile_shader(vs);
@@ -183,13 +184,13 @@ pub(super) fn link_program(
             gl.delete_program(program);
             let msg = format!("VS compile error: {}", log);
             tracing::error!("{}", msg);
-            return Err(msg);
+            return Err(Q2Error::Drop(msg));
         }
 
         let fs = gl.create_shader(glow::FRAGMENT_SHADER).map_err(|e| {
             gl.delete_shader(vs);
             gl.delete_program(program);
-            format!("create fragment shader failed: {e}")
+            Q2Error::Drop(format!("create fragment shader failed: {e}"))
         })?;
         gl.shader_source(fs, fragment_src);
         gl.compile_shader(fs);
@@ -200,7 +201,7 @@ pub(super) fn link_program(
             gl.delete_program(program);
             let msg = format!("FS compile error: {}", log);
             tracing::error!("{}", msg);
-            return Err(msg);
+            return Err(Q2Error::Drop(msg));
         }
 
         gl.attach_shader(program, vs);
@@ -213,7 +214,7 @@ pub(super) fn link_program(
             gl.delete_program(program);
             let msg = format!("Program link error: {}", log);
             tracing::error!("{}", msg);
-            return Err(msg);
+            return Err(Q2Error::Drop(msg));
         }
 
         gl.delete_shader(vs);
@@ -256,7 +257,7 @@ pub fn set_gamma(gl: &glow::Context, program: glow::Program, vid_gamma: f32) {
 
 /// Compile and link the world program; texture units are bound to
 /// `u_texture` = 0 and `u_lightmap0..3` = 1..4.
-pub fn compile_world_program(gl: &glow::Context) -> Result<(glow::Program, WorldUniforms), String> {
+pub fn compile_world_program(gl: &glow::Context) -> Q2Result<(glow::Program, WorldUniforms)> {
     let program = link_program(gl, VERTEX_SRC, FRAGMENT_SRC)?;
     bind_samplers(gl, program, &WORLD_SAMPLERS);
     // SAFETY: `program` is the linked program above; uniform lookups only
@@ -343,7 +344,7 @@ pub struct AliasUniforms {
 }
 
 /// Link the alias program; `u_texture` is unit 0.
-pub fn compile_alias_program(gl: &glow::Context) -> Result<(glow::Program, AliasUniforms), String> {
+pub fn compile_alias_program(gl: &glow::Context) -> Q2Result<(glow::Program, AliasUniforms)> {
     let program = link_program(gl, ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC)?;
     bind_samplers(gl, program, &TEXTURE_SAMPLER);
     // SAFETY: `program` is the linked program above; the lookups only read it.
@@ -405,7 +406,7 @@ pub struct UiUniforms {
 }
 
 /// Link the 2D program; `u_texture` is unit 0.
-pub fn compile_ui_program(gl: &glow::Context) -> Result<(glow::Program, UiUniforms), String> {
+pub fn compile_ui_program(gl: &glow::Context) -> Q2Result<(glow::Program, UiUniforms)> {
     let program = link_program(gl, UI_VERTEX_SRC, UI_FRAGMENT_SRC)?;
     bind_samplers(gl, program, &TEXTURE_SAMPLER);
     // SAFETY: `program` is the linked program above; the lookup only reads it.

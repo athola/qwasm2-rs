@@ -5,6 +5,7 @@
 use glow::HasContext;
 use q2_render_api::{Particle, RefDef, RenderEntity};
 use q2_shared::constants::RF_TRANSLUCENT;
+use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use super::alias::angle_vectors;
@@ -331,7 +332,7 @@ impl FxGpu {
 
 /// Every step is attempted; on failure the objects already made are freed
 /// and the first error is returned.
-pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
+pub fn create_fx(gl: &glow::Context) -> Q2Result<FxGpu> {
     let particle_program = link_program(gl, PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC);
     let fx_program = link_program(gl, FX_VERTEX_SRC, FX_FRAGMENT_SRC);
     let particle_stream = create_stream_buffer(gl, PARTICLE_FLOATS, &PARTICLE_ATTRIBUTES);
@@ -376,7 +377,7 @@ pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
                     }
                 }
             }
-            Err(first_error.unwrap_or_default())
+            Err(first_error.unwrap_or_else(|| Q2Error::Drop("create_fx failed".into())))
         }
     }
 }

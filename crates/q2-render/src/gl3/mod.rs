@@ -302,8 +302,7 @@ impl Renderer for Gl3Renderer {
         self.width = width;
         self.height = height;
 
-        let (prog, uniforms) = shader::compile_world_program(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to compile world shaders: {e}")))?;
+        let (prog, uniforms) = shader::compile_world_program(gl)?;
 
         // SAFETY: `prog` and any previous program were created by this same
         // `gl` context in `compile_world_program`, and `old` is no longer
@@ -316,13 +315,11 @@ impl Renderer for Gl3Renderer {
         }
         self.uniforms = Some(uniforms);
 
-        let extra = create_extra(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to set up entity and 2D drawing: {e}")))?;
+        let extra = create_extra(gl)?;
         if let Some(old) = self.extra.replace(extra) {
             free_extra(gl, old);
         }
-        let effects = fx::create_fx(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to set up particles and sprites: {e}")))?;
+        let effects = fx::create_fx(gl)?;
         if let Some(old) = self.fx.replace(effects) {
             fx::free_fx(gl, old);
         }
