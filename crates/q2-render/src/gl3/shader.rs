@@ -27,6 +27,7 @@ uniform mat4 u_view_proj;
 // matrix for a brush entity.
 uniform mat4 u_model;
 uniform int u_mode;
+const int MODE_WARP = 2;
 uniform float u_scroll;
 // Light style brightness, four styles per vector (C lightstyles[].rgb).
 uniform vec4 u_styles[64];
@@ -48,7 +49,7 @@ void main() {
                           style_scale(a_styles.z), style_scale(a_styles.w));
     v_uv = a_uv;
     // SURF_FLOWING shifts s in the vertex stage; warp applies it after the wobble.
-    if (u_mode != 2) {
+    if (u_mode != MODE_WARP) {
         v_uv.x += u_scroll;
     }
     v_lightmap_uv = a_lightmap_uv;
@@ -70,6 +71,10 @@ uniform sampler2D u_lightmap1;
 uniform sampler2D u_lightmap2;
 uniform sampler2D u_lightmap3;
 uniform int u_mode;
+const int MODE_LIT = 0;
+const int MODE_PLAIN = 1;
+const int MODE_WARP = 2;
+const int MODE_SKY = 3;
 uniform float u_alpha;
 uniform float u_time;
 uniform float u_scroll;
@@ -90,7 +95,7 @@ const float INTENSITY = 1.5;
 const float OVERBRIGHT = 1.3;
 
 void main() {
-    if (u_mode == 2) {
+    if (u_mode == MODE_WARP) {
         // gl3_shaders.c fragmentSrc3Dwater: sine wobble on raw texel coordinates.
         vec2 tc = v_uv;
         tc.x += sin(v_uv.y * 0.125 + u_time) * 4.0;
@@ -100,7 +105,7 @@ void main() {
         vec4 texel = texture(u_texture, tc);
         texel.rgb *= INTENSITY * u_turb_light;
         o_color = vec4(pow(texel.rgb, vec3(u_gamma)), texel.a * u_alpha);
-    } else if (u_mode == 0) {
+    } else if (u_mode == MODE_LIT) {
         vec4 texel = texture(u_texture, v_uv);
         texel.rgb *= INTENSITY;
         vec3 light = texture(u_lightmap0, v_lightmap_uv).rgb * v_style_scales.x
@@ -125,7 +130,7 @@ void main() {
         }
         light *= OVERBRIGHT;
         o_color = vec4(pow(light * texel.rgb, vec3(u_gamma)), 1.0);
-    } else if (u_mode == 3) {
+    } else if (u_mode == MODE_SKY) {
         vec4 texel = texture(u_texture, v_uv);
         o_color = vec4(pow(texel.rgb, vec3(u_gamma)), 1.0);
     } else {
@@ -521,6 +526,42 @@ mod tests {
         assert_eq!(asked, settable(fx));
         let all = [&u.view_proj, &u.color, &u.alpha_test, &u.intensity];
         assert!(all.iter().all(|location| location.is_some()));
+    }
+
+    // draw_batches sets u_mode from the Rust MODE_* constants, so the
+    // shaders must branch on the same values. MODE_PLAIN is the final else.
+    #[test]
+    fn the_world_shaders_branch_on_the_rust_mode_constants() {
+        let modes = [
+            ("MODE_LIT", MODE_LIT),
+            ("MODE_PLAIN", MODE_PLAIN),
+            ("MODE_WARP", MODE_WARP),
+            ("MODE_SKY", MODE_SKY),
+        ];
+        for (name, mode) in modes {
+            let line = format!("const int {name} = {mode};");
+            assert!(FRAGMENT_SRC.contains(&line), "{line}");
+        }
+        let line = format!("const int MODE_WARP = {MODE_WARP};");
+        assert!(VERTEX_SRC.contains(&line), "{line}");
+        let mut values = modes.map(|(_, mode)| mode).to_vec();
+        values.sort();
+        values.dedup();
+        assert_eq!(values.len(), modes.len());
+        for test in [
+            "u_mode == MODE_WARP",
+            "u_mode == MODE_LIT",
+            "u_mode == MODE_SKY",
+        ] {
+            assert!(FRAGMENT_SRC.contains(test), "{test}");
+        }
+        assert!(VERTEX_SRC.contains("u_mode != MODE_WARP"));
+        for src in [VERTEX_SRC, FRAGMENT_SRC] {
+            for (at, _) in src.match_indices("u_mode ") {
+                let operand = src[at..].split_whitespace().nth(2).unwrap();
+                assert!(operand.starts_with("MODE_"), "u_mode compared to {operand}");
+            }
+        }
     }
 
     #[test]

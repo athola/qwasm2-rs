@@ -694,7 +694,6 @@ mod tests {
         assert_eq!(shading_mode(Shading::Lit), MODE_LIT);
         assert_eq!(shading_mode(Shading::Plain), MODE_PLAIN);
         assert_eq!(shading_mode(Shading::Warp), MODE_WARP);
-        assert!(VERTEX_SRC.contains(&format!("if (u_mode != {MODE_WARP})")));
     }
 
     #[test]
