@@ -75,6 +75,9 @@ struct Engine {
     fx: q2_client::fx::ClientFx,
     /// Each entity's trail state (C `centity_t`).
     trails: q2_client::fx::EntityTrails,
+    /// The last state received for each entity number (C
+    /// `cl_entities[].current`), which muzzle flashes read.
+    last_states: std::collections::HashMap<i32, q2_shared::types::EntityState>,
     /// The client's random numbers (C `randk`) for flash sizes and sounds.
     rng: u32,
     /// Printed lines, the centre print and the server layout.
@@ -117,6 +120,7 @@ impl Engine {
             effects: q2_client::effects::Effects::default(),
             fx: q2_client::fx::ClientFx::default(),
             trails: q2_client::fx::EntityTrails::default(),
+            last_states: std::collections::HashMap::new(),
             rng: 0x1234_5678,
             text: q2_client::notify::ServerText::default(),
             game: String::new(),
@@ -167,7 +171,8 @@ impl Engine {
         // C cl.frame.servertime.
         let servertime = self.frames.serverframe().unwrap_or(0).wrapping_mul(100);
         let current = &self.frames.current;
-        let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
+        let last_states = &self.last_states;
+        let entity = |n: i32| flash_state(last_states, n);
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
         let mut fx_sounds = Vec::new();
@@ -306,6 +311,7 @@ impl Engine {
             .receive(framenum, self.local.entity_states(), ps);
         self.trails
             .server_frame(&self.frames.current, &self.frames.previous);
+        remember_states(&mut self.last_states, &self.frames.current);
         let local = &self.local;
         let renderer = &mut self.renderer;
         self.models.sync(
@@ -441,6 +447,7 @@ impl Engine {
             effects: &mut self.effects,
             fx: &mut self.fx,
             trails: &mut self.trails,
+            last_states: &mut self.last_states,
             text: &mut self.text,
             view_angles: &mut self.input.view_angles,
         };
@@ -579,6 +586,7 @@ struct LevelClient<'a> {
     effects: &'a mut q2_client::effects::Effects,
     fx: &'a mut q2_client::fx::ClientFx,
     trails: &'a mut q2_client::fx::EntityTrails,
+    last_states: &'a mut std::collections::HashMap<i32, q2_shared::types::EntityState>,
     text: &'a mut q2_client::notify::ServerText,
     view_angles: &'a mut q2_shared::types::Vec3f,
 }
@@ -593,6 +601,8 @@ impl LevelClient<'_> {
         self.effects.clear();
         self.fx.clear();
         *self.trails = q2_client::fx::EntityTrails::default();
+        // C memsets cl_entities.
+        self.last_states.clear();
         self.text.layout.clear();
         // C CL_PrepRefresh -> Con_ClearNotify.
         self.text.clear_notify();
@@ -1042,6 +1052,35 @@ fn run_effect_messages(
         }
     }
     (sounds, fx_sounds)
+}
+
+/// Keep `current`, a new server frame's entities, as the last state of
+/// each (C `CL_ParseDelta` into `cl_entities[].current`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn remember_states(
+    last_states: &mut std::collections::HashMap<i32, q2_shared::types::EntityState>,
+    current: &[q2_shared::types::EntityState],
+) {
+    last_states.extend(current.iter().map(|s| (s.number, s.clone())));
+}
+
+/// The state a muzzle flash for entity `number` is drawn at (C
+/// `cl_entities[number].current`): the last one received, kept after the
+/// entity leaves the frame, or C's zeroed state for one never seen.
+#[cfg(any(target_arch = "wasm32", test))]
+fn flash_state(
+    last_states: &std::collections::HashMap<i32, q2_shared::types::EntityState>,
+    number: i32,
+) -> Option<q2_shared::types::EntityState> {
+    Some(
+        last_states
+            .get(&number)
+            .cloned()
+            .unwrap_or_else(|| q2_shared::types::EntityState {
+                number,
+                ..Default::default()
+            }),
+    )
 }
 
 /// The frame's dynamic lights in C `V_RenderView` order: the trail and
@@ -2308,6 +2347,7 @@ mod tests {
         effects: q2_client::effects::Effects,
         fx: q2_client::fx::ClientFx,
         trails: q2_client::fx::EntityTrails,
+        last_states: std::collections::HashMap<i32, q2_shared::types::EntityState>,
         text: q2_client::notify::ServerText,
         view_angles: q2_shared::types::Vec3f,
     }
@@ -2324,6 +2364,7 @@ mod tests {
             effects: &mut client.effects,
             fx: &mut client.fx,
             trails: &mut client.trails,
+            last_states: &mut client.last_states,
             text: &mut client.text,
             view_angles: &mut client.view_angles,
         };
@@ -2344,6 +2385,7 @@ mod tests {
         let (_, ps) = local.player().expect("player in game");
         let ps = ps.clone();
         client.frames.receive(local.framenum(), Vec::new(), &ps);
+        remember_states(&mut client.last_states, &local.entity_states());
         client.view_angles = q2_shared::types::Vec3f::new(10.0, 20.0, 0.0);
         client.text.layout = "xv 0".into();
         // Printed late in a long level: C times it on cls.realtime, which
@@ -2380,6 +2422,7 @@ mod tests {
         assert!(output.sounds.is_empty());
         assert_eq!(client.frames.serverframe(), None);
         assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
+        assert!(client.last_states.is_empty());
         assert!(client.text.layout.is_empty());
         // C CL_PrepRefresh -> Con_ClearNotify: the old lines are gone on
         // the new level's restarted clock.
@@ -2806,6 +2849,56 @@ mod tests {
         assert!(!flash_sounds.is_empty() && !fx_sounds.is_empty());
         let radii: Vec<f32> = effects.dlights().map(|l| l.radius).collect();
         assert_eq!(radii, [150.0, 203.0], "tracker light, then the flash");
+    }
+
+    #[test]
+    fn a_flash_for_an_entity_not_in_the_frame_uses_its_last_state_like_c() {
+        // C CL_AddMuzzleFlash reads cl_entities[i].current: the last state
+        // received, kept after the entity leaves the frame, and zeroed for
+        // one never seen. The light, randk draw and sound always happen.
+        use q2_common::net_msg::NetMsg;
+        use q2_shared::constants::MZ_SHOTGUN;
+        use q2_shared::protocol::SvcOp;
+        use q2_shared::types::{EntityState, Vec3f};
+        let monster = EntityState {
+            number: 5,
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let mut last_states = std::collections::HashMap::new();
+        remember_states(&mut last_states, std::slice::from_ref(&monster));
+        remember_states(&mut last_states, &[]);
+        let flash = |number| {
+            let mut flash = NetMsg::new();
+            flash.write_byte(SvcOp::MuzzleFlash as i32);
+            flash.write_short(number);
+            flash.write_byte(MZ_SHOTGUN);
+            flash.data().to_vec()
+        };
+        let mut effects = q2_client::effects::Effects::default();
+        let mut fx = q2_client::fx::ClientFx::default();
+        let mut draws = 0;
+        let (sounds, _) = run_effect_messages(
+            &mut effects,
+            &mut fx,
+            &[flash(5), flash(9)],
+            |n| flash_state(&last_states, n),
+            1000,
+            1000,
+            &mut || {
+                draws += 1;
+                0
+            },
+        );
+        // C MZ_SHOTGUN: the shot, then the reload 0.1 s later.
+        assert_eq!(sounds.len(), 4, "both flashes sound");
+        assert_eq!(draws, 2, "one randk draw per flash");
+        // C: 18 forward and 16 right of the origin, angles zero.
+        let origins: Vec<Vec3f> = effects.dlights().map(|l| l.origin).collect();
+        assert_eq!(
+            origins,
+            [Vec3f::new(118.0, -16.0, 0.0), Vec3f::new(18.0, -16.0, 0.0)]
+        );
     }
 
     #[test]
