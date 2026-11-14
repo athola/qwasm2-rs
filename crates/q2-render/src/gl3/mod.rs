@@ -11,6 +11,7 @@
 //! - [`model`]: model handle registry; [`light`]: light under a point
 //! - [`entity`]: entity matrices; [`alias`]: MD2 frame interpolation and shading
 //! - [`images`] / [`pics`]: pic and skin cache, 2D quads and font cells
+//! - [`fx`]: particle, beam and sprite vertices and their draws
 //! - [`shader`] / [`draw`] / [`entities`]: the GL programs and draw loops
 //!
 //! MD2 frames are interpolated on the CPU every draw, as C does, and streamed
