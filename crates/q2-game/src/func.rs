@@ -2544,28 +2544,16 @@ pub fn sp_func_killbox(
     }
 }
 
-/// func_areaportal (see `sp_func_areaportal`): C SP_func_areaportal
+/// C ref: `SP_func_areaportal` (g_misc.c): it always starts closed, and
 /// never sets a solid (a solid portal brush would close every doorway it
 /// sits in).
-pub fn sp_func_nonsolid(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    fields: &HashMap<String, String>,
-) {
-    if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields.get("classname").cloned().unwrap_or_default();
-        ent.state.modelindex = 0; // C never calls setmodel: nothing to draw
-    }
-}
-
-/// C ref: `SP_func_areaportal` (g_misc.c): it always starts closed.
 pub fn sp_func_areaportal(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
-    sp_func_nonsolid(storage, key, fields);
     if let Some(ent) = storage.get_mut(key) {
+        ent.state.modelindex = 0; // C never calls setmodel: nothing to draw
         ent.use_fn = Some(use_areaportal);
         ent.game.count = 0;
     }
