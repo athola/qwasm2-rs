@@ -13,6 +13,7 @@ pub mod wav;
 
 use std::rc::Rc;
 
+use q2_common::pmove::angle_vectors;
 use q2_shared::constants::{ATTN_STATIC, CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
 use q2_shared::types::{EntityState, Vec3f};
 
@@ -42,15 +43,7 @@ impl Listener {
     /// The listener at the view (C `S_Update(cl.refdef.vieworg, v_forward,
     /// v_right, v_up)`), `right` from C `AngleVectors`.
     pub fn from_view(origin: Vec3f, angles: Vec3f) -> Self {
-        let rad = |degrees: f32| f64::from(degrees) * (std::f64::consts::PI / 180.0);
-        let (sp, cp) = (rad(angles.x).sin() as f32, rad(angles.x).cos() as f32);
-        let (sy, cy) = (rad(angles.y).sin() as f32, rad(angles.y).cos() as f32);
-        let (sr, cr) = (rad(angles.z).sin() as f32, rad(angles.z).cos() as f32);
-        let right = Vec3f::new(
-            -(sr * sp * cy) + (cr * sy),
-            -(sr * sp * sy) + -(cr * cy),
-            -sr * cp,
-        );
+        let (_, right, _) = angle_vectors(angles);
         Self { origin, right }
     }
 }
@@ -66,11 +59,13 @@ pub fn spatialize_origin(
     dist_mult: f32,
 ) -> (i32, i32) {
     let source = origin - listener.origin;
+    // C VectorNormalize: a multiply by the reciprocal, which rounds
+    // differently from a divide.
     let length = source.length();
-    let source = if length > 0.0 {
-        source / length
+    let source = if length != 0.0 {
+        source * (1.0 / length)
     } else {
-        Vec3f::ZERO
+        source
     };
     let dist = (length - FULL_VOLUME_DIST).max(0.0) * dist_mult;
     let dot = listener.right.dot(source);
@@ -80,7 +75,9 @@ pub fn spatialize_origin(
         (0.5 * (1.0 + dot), 0.5 * (1.0 - dot))
     };
     let right = ((master_vol * ((1.0 - dist) * rscale)) as i32).max(0);
-    let left = ((master_vol * ((1.0 - dist) * lscale)) as i32).max(0);
+    // C writes `(1.0 - dist) * lscale` with a double 1.0 for this ear.
+    let lscale = ((1.0 - f64::from(dist)) * f64::from(lscale)) as f32;
+    let left = ((master_vol * lscale) as i32).max(0);
     (left, right)
 }
 

@@ -509,17 +509,9 @@ impl Particles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::particles::cycling_rng as rng;
     use crate::particles::Particles;
     use q2_shared::constants::{EF_GIB, EF_GREENGIB, EF_GRENADE, MZ_LOGIN, MZ_LOGOUT, MZ_RESPAWN};
-
-    fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
-        let mut i = 0;
-        move || {
-            let v = values[i % values.len()];
-            i += 1;
-            v
-        }
-    }
 
     fn colours(particles: &Particles) -> Vec<i32> {
         particles.active.iter().map(|p| p.color).collect()

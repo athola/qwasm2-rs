@@ -1,10 +1,9 @@
 //! Qwasm2-rs: Client — input, server message parsing, client state, view math
 //!
-//! The browser build uses `entities`, `frame`, `input::InputState::build_cmd`,
-//! `layout`, `lightstyles` and `view::calc_fov` around the in-process server.
-//! `parse` (the protocol parser) and `state` (`ClientState`, `CEntity`) are
-//! groundwork for the networked client (#19, #22): tested, but not wired to
-//! anything yet.
+//! The browser build uses every module but two around the in-process
+//! server. `parse` (the protocol parser) and `state` (`ClientState`,
+//! `CEntity`) are groundwork for the networked client (#19, #22): tested,
+//! but not wired to anything yet.
 //!
 //! # Unsafe Audit Status
 //! - Total unsafe blocks: 0
@@ -72,6 +71,19 @@ mod tests {
         // At 4:3 ratio (640x480), horizontal FOV 90 -> vertical FOV ~73.74
         let fov_y = calc_fov(90.0, 640.0, 480.0).unwrap();
         assert!((fov_y - 73.74).abs() < 0.1, "fov_y was {}", fov_y);
+    }
+
+    #[test]
+    fn calc_fov_rounds_like_c() {
+        // Bits from C CalcFov compiled: `a * 360` is a float product.
+        for (width, height, bits) in [
+            (320.0, 248.0, 0x4297_1a4c),
+            (320.0, 280.0, 0x42a4_be64),
+            (320.0, 408.0, 0x42cf_91d7),
+        ] {
+            let fov_y = calc_fov(90.0, width, height).unwrap();
+            assert_eq!(fov_y.to_bits(), bits, "{width}x{height}");
+        }
     }
 
     #[test]

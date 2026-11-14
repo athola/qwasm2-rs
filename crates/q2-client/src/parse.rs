@@ -46,8 +46,11 @@ impl ClientState {
                 }
                 Ok(SvcOp::Nop) => {}
                 Ok(SvcOp::Reconnect) => self.state = ConnState::Connecting,
-                // No client handler yet: consume the payload per its C layout
-                // so the opcodes after it (often the frame) still parse.
+                // The handlers exist (`effects::Effects::message`,
+                // `notify::ServerText::message`) but this parser is not
+                // connected to them yet (#19): consume the payload per its
+                // C layout so the opcodes after it (often the frame) still
+                // parse.
                 Ok(SvcOp::MuzzleFlash) | Ok(SvcOp::MuzzleFlash2) => {
                     let _entity = msg.read_short();
                     let _flash = msg.read_byte();
@@ -62,12 +65,13 @@ impl ClientState {
                 }
                 Ok(SvcOp::Sound) => skip_sound(msg),
                 Ok(SvcOp::Download) => skip_download(msg),
-                // The payload depends on a per-type table not ported yet
-                // (opcode handlers, issue #19). Unreliable temp entities trail
-                // the frame in the datagram; reliable ones (MULTICAST_*_R) ride
-                // ahead of it and still cost that frame until #19 lands.
+                // `fx::ClientFx::temp_entity` parses the per-type payload
+                // (C CL_ParseTEnt), but this parser does not pass it there
+                // yet (#19). Unreliable temp entities trail the frame in the
+                // datagram; reliable ones (MULTICAST_*_R) ride ahead of it
+                // and still cost that frame until #19 lands.
                 Ok(SvcOp::TempEntity) => {
-                    q2_drop!("parse_server_message: svc_temp_entity is not supported yet");
+                    q2_drop!("parse_server_message: svc_temp_entity is not wired to fx yet");
                 }
                 // PlayerInfo (17) and PacketEntities (18) are sub-commands of
                 // svc_frame and MUST NOT appear as top-level opcodes.
@@ -135,17 +139,18 @@ impl ClientState {
         Ok(())
     }
 
-    /// Parse a SpawnBaseline message: entity bits + full delta from null state.
+    /// Parse a SpawnBaseline message: entity bits + full delta from null
+    /// state. The delta is read for every number, to keep the stream
+    /// aligned. C ref: `CL_ParseBaseline`.
     fn parse_baseline(&mut self, msg: &mut NetMsg) {
         let (num, bits) = parse_entity_bits(msg);
-        let num = num as usize;
-        if num > 0 && num < self.entities.len() {
-            self.entities[num].baseline =
-                read_delta_entity(msg, &EntityState::default(), num as i32, bits);
-        } else if num != 0 {
-            tracing::warn!("parse_baseline: entity number {} out of range", num);
-            // Still must consume the delta bytes to keep stream aligned.
-            read_delta_entity(msg, &EntityState::default(), num as i32, bits);
+        let baseline = read_delta_entity(msg, &EntityState::default(), num, bits);
+        match usize::try_from(num)
+            .ok()
+            .and_then(|n| self.entities.get_mut(n))
+        {
+            Some(entity) => entity.baseline = baseline,
+            None => tracing::warn!("parse_baseline: entity number {num} out of range"),
         }
     }
 
@@ -953,6 +958,25 @@ mod tests {
 
         cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
+    }
+
+    #[test]
+    fn a_baseline_for_entity_0_reads_its_fields_like_c() {
+        // C CL_ParseBaseline parses the delta for every number, so the
+        // opcode after it is read from the right place.
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::SpawnBaseline as i32);
+        msg.write_byte(UpdateFlags::MOREBITS1.bits() as i32);
+        msg.write_byte((UpdateFlags::MODEL.bits() >> 8) as i32);
+        msg.write_byte(0); // entity number
+        msg.write_byte(5); // modelindex
+        msg.write_byte(SvcOp::Nop as i32);
+        msg.begin_reading();
+
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert!(msg.remaining_data().is_empty());
+        assert_eq!(cs.entities[0].baseline.modelindex, 5);
     }
 
     #[test]

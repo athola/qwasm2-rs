@@ -715,17 +715,9 @@ impl Particles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::particles::cycling_rng as rng;
     use crate::particles::{Particles, Spray, INSTANT_PARTICLE, PARTICLE_GRAVITY};
     use q2_shared::types::Vec3f;
-
-    fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
-        let mut i = 0;
-        move || {
-            let v = values[i % values.len()];
-            i += 1;
-            v
-        }
-    }
 
     const X100: Vec3f = Vec3f::new(100.0, 0.0, 0.0);
 

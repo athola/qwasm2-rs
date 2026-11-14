@@ -199,19 +199,17 @@ impl Particles {
     }
 }
 
+/// A fixed randk() sequence, repeating, for the effects tests.
+#[cfg(test)]
+pub(crate) fn cycling_rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
+    let mut values = values.iter().copied().cycle();
+    move || values.next().expect("cycling_rng needs at least one value")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::cycling_rng as rng;
     use super::*;
-
-    /// A fixed randk() sequence, repeating.
-    fn rng(values: &[u32]) -> impl FnMut() -> u32 + '_ {
-        let mut i = 0;
-        move || {
-            let v = values[i % values.len()];
-            i += 1;
-            v
-        }
-    }
 
     fn spray(org: Vec3f, dir: Vec3f, color: i32, count: i32) -> Spray {
         Spray {

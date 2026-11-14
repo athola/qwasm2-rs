@@ -11,7 +11,7 @@ use q2_common::net_msg::NetMsg;
 use q2_shared::constants::PRINT_CHAT;
 use q2_shared::protocol::SvcOp;
 
-use crate::layout::{wire_bytes, HudDraw};
+use crate::layout::{draw_bytes, wire_bytes, HudDraw};
 
 /// Notify lines kept on screen (C `NUM_CON_TIMES`).
 const NUM_CON_TIMES: usize = 4;
@@ -158,13 +158,7 @@ impl ServerText {
             if now - start > CON_NOTIFYTIME_MS {
                 continue;
             }
-            for (x, &ch) in line.iter().enumerate() {
-                out.push(HudDraw::Char {
-                    x: (x as i32 + 1) * 8,
-                    y: v,
-                    ch,
-                });
-            }
+            draw_bytes(&mut out, 8, v, line.iter().copied());
             v += 8;
         }
         if now < self.center_until {
@@ -176,13 +170,7 @@ impl ServerText {
             };
             for line in &self.center {
                 let x = (width - line.len() as i32 * 8) / 2;
-                for (i, &ch) in line.iter().enumerate() {
-                    out.push(HudDraw::Char {
-                        x: x + 8 * i as i32,
-                        y,
-                        ch,
-                    });
-                }
+                draw_bytes(&mut out, x, y, line.iter().copied());
                 y += 8;
             }
         }
