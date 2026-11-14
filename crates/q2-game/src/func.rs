@@ -5,8 +5,8 @@
 //! func_conveyor, func_timer, func_explosive and func_killbox. These
 //! entities use `MoveInfo` for smooth acceleration/deceleration.
 //!
-//! Not ported yet: func_wall/func_object spawnflags. Sound registration
-//! and door message touches are set by the `finish_*` functions, which
+//! func_wall, func_object and func_clock (g_misc.c) are in `misc_func`.
+//! Sound registration and door message touches are set by the `finish_*` functions, which
 //! `SPAWNS` runs after the spawn functions.
 //!
 //! # Movement pattern
