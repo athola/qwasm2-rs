@@ -823,7 +823,7 @@ mod tests {
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{
         assert_moves_match_c, keep_kick, mi, mi_mut, player_arena, playing, seed, sounds,
-        think_for, ArenaImport, CMoveRow,
+        spawn_monster, think_for, ArenaImport, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
@@ -1272,15 +1272,7 @@ mod tests {
     fn gunner_facing_player(x: f32) -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
         let (mut world, gi, player) = player_arena(x);
         world.game.skill = 1;
-        let key = world.spawn().unwrap();
-        let fields: HashMap<String, String> =
-            [("classname".to_string(), "monster_gunner".to_string())].into();
-        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(0.0, 0.0, 24.0);
-        let &(_, spawn, _, finish, _) = crate::spawn::find_spawn("monster_gunner").unwrap();
-        spawn(&mut world.entities, key, &fields);
-        finish.unwrap()(&mut world, key, &fields);
-        ai::monster_start(&mut world, key);
-        world.link_entity(key);
+        let key = spawn_monster(&mut world, "monster_gunner", Vec3f::new(0.0, 0.0, 24.0));
         (world, gi, key, player)
     }
 
