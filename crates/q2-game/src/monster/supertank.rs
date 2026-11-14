@@ -485,14 +485,16 @@ pub fn supertank_machine_gun(world: &mut GameWorld, key: EntityKey) {
         return;
     };
     let flash = MZ2_SUPERTANK_MACHINEGUN_1 + (ent.state.frame - FRAME_ATTAK1_1);
+    // A flash off the table fires nothing, as monster_flash_source does.
+    let Some(&offset) = usize::try_from(flash)
+        .ok()
+        .and_then(|i| MONSTER_FLASH_OFFSET.get(i))
+    else {
+        return;
+    };
     let (forward, right, _) =
         crate::physics::angle_vectors(Vec3f::new(0.0, ent.state.angles.y, 0.0));
-    let start = project_source(
-        ent.state.origin,
-        MONSTER_FLASH_OFFSET[flash as usize],
-        forward,
-        right,
-    );
+    let start = project_source(ent.state.origin, offset, forward, right);
     // C adds the enemy's velocity times 0: no lead.
     let dir = enemy_eye(world, key).map_or(forward, |eye| (eye - start).normalize_or_zero());
     monster_fire_bullet(
@@ -983,6 +985,18 @@ mod tests {
         }
         let want: Vec<i32> = (MZ2_SUPERTANK_MACHINEGUN_1..MZ2_SUPERTANK_MACHINEGUN_1 + 6).collect();
         assert_eq!(muzzle_flashes(&gi), want);
+    }
+
+    #[test]
+    fn supertank_machine_gun_off_the_flash_table_skips_the_shot() {
+        let (mut world, gi, key) = supertank();
+        let below = FRAME_ATTAK1_1 - MZ2_SUPERTANK_MACHINEGUN_1 - 1;
+        let past = FRAME_ATTAK1_1 + MONSTER_FLASH_OFFSET.len() as i32;
+        for frame in [below, past] {
+            set_frame(&mut world, key, frame);
+            supertank_machine_gun(&mut world, key);
+        }
+        assert!(muzzle_flashes(&gi).is_empty());
     }
 
     /// A supertank at (0, 0, 24) facing +x but pitched 20 degrees, on
