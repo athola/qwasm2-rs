@@ -1,8 +1,7 @@
 //! Item system — definitions, pickup handlers, and inventory management.
 //!
 //! Port of the item table, pickups, item use and drops of `g_items.c`
-//! (weapon use and drop live in `player::weapon`). Not ported: the random
-//! pick among an item team when a deathmatch item respawns.
+//! (weapon use and drop live in `player::weapon`).
 //!
 //! # C source reference
 //! `~/Qwasm2/src/game/g_items.c`
