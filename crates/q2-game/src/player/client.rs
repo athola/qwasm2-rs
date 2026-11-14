@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use q2_common::pmove::Pmove;
-use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID, MZ_LOGIN};
+use q2_shared::constants::{BUTTON_ATTACK, MASK_DEADSOLID, MASK_PLAYERSOLID, MZ_LOGIN, MZ_LOGOUT};
 use q2_shared::types::*;
 
 use crate::constants::*;
@@ -515,9 +515,24 @@ impl GameWorld {
         }
     }
 
-    /// Handle client disconnection. Free the player entity.
-    /// C ref: `ClientDisconnect` (player/client.c).
+    /// Handle client disconnection: announce it, show the logout flash,
+    /// take the player out of the world and clear its `CS_PLAYERSKINS`
+    /// string. C ref: `ClientDisconnect` (player/client.c).
     pub fn disconnect_client(&mut self, key: EntityKey) {
+        let (Some(number), Some(client)) = (self.number_of(key), self.client(key)) else {
+            return;
+        };
+        self.gi.bprintf(
+            q2_shared::constants::PRINT_HIGH,
+            &format!("{} disconnected\n", client.pers.netname),
+        );
+        if let Some(ent) = self.entities.get(key) {
+            self.gi
+                .write_byte(q2_shared::protocol::SvcOp::MuzzleFlash as i32);
+            self.gi.write_short(number as i32);
+            self.gi.write_byte(MZ_LOGOUT);
+            self.gi.multicast(ent.state.origin, Multicast::PVS);
+        }
         if let Some(client) = self.client_mut(key) {
             client.pers.connected = false;
         }
@@ -529,6 +544,8 @@ impl GameWorld {
         }
         // Unlinks; a client slot is never freed (C G_FreeEdict).
         self.free_entity(key);
+        let index = q2_shared::constants::CS_PLAYERSKINS + number - 1;
+        self.gi.configstring(index as i32, "");
     }
 
     /// Move the player by one user command with pmove, tracing through the
@@ -1336,14 +1353,33 @@ mod tests {
     }
 
     #[test]
-    fn client_disconnect_frees_entity() {
-        let mut world = test_world();
+    fn client_disconnect_keeps_the_edict_but_not_in_use() {
+        let (mut world, gi) = crate::world::test_world_recording();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
 
         assert_eq!(world.entities.count(), 1);
         world.disconnect_client(key);
         // C keeps client edicts allocated; the slot is just no longer in use.
         assert!(!world.entities.get(key).unwrap().in_use);
+        // C ClientDisconnect tells everyone, shows the logout flash and
+        // clears the player's CS_PLAYERSKINS string.
+        assert!(gi.bprints.borrow().contains(&(
+            q2_shared::constants::PRINT_HIGH,
+            "P1 disconnected\n".to_string()
+        )));
+        assert_eq!(
+            *gi.writes.borrow(),
+            [
+                q2_shared::protocol::SvcOp::MuzzleFlash as i32,
+                1,
+                q2_shared::constants::MZ_LOGOUT
+            ]
+        );
+        assert_eq!(gi.multicasts.borrow().len(), 1);
+        assert_eq!(
+            gi.configstrings.borrow().last(),
+            Some(&(q2_shared::constants::CS_PLAYERSKINS as i32, String::new()))
+        );
     }
 
     #[test]
