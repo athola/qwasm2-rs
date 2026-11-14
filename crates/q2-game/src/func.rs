@@ -520,7 +520,8 @@ pub fn touch_plat_center(
 
 /// Crush something that is neither a monster nor a client (C nukes it with
 /// an explosion if 100000 damage did not remove it). Returns `true` if
-/// `other` was such an entity. Shared head of C plat_blocked/door_blocked.
+/// `other` was such an entity. Shared head of C plat_blocked,
+/// door_blocked, train_blocked and door_secret_blocked.
 fn crush_non_living(world: &mut GameWorld, self_key: EntityKey, other: EntityKey) -> bool {
     let Some(o) = world.entities.get(other) else {
         return true;
@@ -542,10 +543,11 @@ fn crush_non_living(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         DamageFlags::empty(),
         MeansOfDeath::Crush,
     );
-    // If it's still there, nuke it (C BecomeExplosion1; the explosion
-    // effect is not ported).
-    if world.entities.is_live(other) {
-        world.free_entity(other);
+    // If it's still there, nuke it, at its box centre for entities whose
+    // origin is not near the model.
+    if let Some(o) = world.entities.get_mut(other).filter(|o| o.in_use) {
+        o.state.origin = o.absmin + o.size * 0.5;
+        crate::misc::become_explosion1(world, other);
     }
     true
 }
@@ -3604,6 +3606,28 @@ mod tests {
         let item = world.spawn().unwrap();
         door_blocked(&mut world, door, item);
         assert!(!world.entities.is_live(item));
+    }
+
+    #[test]
+    fn an_uncrushable_blocker_explodes_at_its_box_centre() {
+        // C door_blocked: VectorMA(absmin, 0.5, size, s.origin), then
+        // BecomeExplosion1.
+        let (mut world, gi) = spawned_gi("{ \"classname\" \"func_door\" \"model\" \"*1\" }");
+        let door = by_class(&world, "func_door");
+        let blocker = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(blocker).unwrap();
+            e.absmin = Vec3f::new(100.0, 0.0, 0.0);
+            e.size = Vec3f::new(10.0, 20.0, 30.0);
+        }
+        let (writes, vectors) = (gi.writes.borrow().len(), gi.vectors.borrow().len());
+        door_blocked(&mut world, door, blocker);
+        assert!(!world.entities.is_live(blocker));
+        assert_eq!(gi.writes.borrow()[writes..], [3, TE_EXPLOSION1]);
+        assert_eq!(
+            gi.vectors.borrow()[vectors..],
+            [Vec3f::new(105.0, 10.0, 15.0)]
+        );
     }
 
     #[test]
