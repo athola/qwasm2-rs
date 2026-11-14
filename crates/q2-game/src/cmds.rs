@@ -8,7 +8,11 @@ use q2_shared::constants::PRINT_HIGH;
 
 use crate::constants::{ItemFlags, MAX_ITEMS};
 use crate::entity::EntityKey;
+use crate::items::{ItemDef, UseItemFn};
 use crate::world::GameWorld;
+
+/// Picks the use or the drop callback of an item.
+type ItemCallback = fn(&ItemDef) -> Option<UseItemFn>;
 
 impl GameWorld {
     /// Run the client command in `gi.argv`/`gi.args` for `key`. C ref:
@@ -67,36 +71,32 @@ impl GameWorld {
             .is_some_and(|c| c.pers.inventory[index] > 0)
     }
 
-    /// C ref: `Cmd_Use_f`.
-    fn cmd_use(&mut self, key: EntityKey) {
+    /// The body of `Cmd_Use_f` and `Cmd_Drop_f`: the named item's `pick`
+    /// callback, in C's order of checks (unknown item, no callback, not
+    /// owned).
+    fn cmd_named_item(&mut self, key: EntityKey, pick: ItemCallback, missing: &str) {
         let Some(index) = self.named_item(key) else {
             return;
         };
-        let Some(use_fn) = self.items[index].use_fn else {
-            self.print_to(key, "Item is not usable.\n");
+        let Some(callback) = pick(&self.items[index]) else {
+            self.print_to(key, missing);
             return;
         };
         if !self.owns(key, index) {
             self.print_to(key, &format!("Out of item: {}\n", self.gi.args()));
             return;
         }
-        use_fn(self, key, index);
+        callback(self, key, index);
+    }
+
+    /// C ref: `Cmd_Use_f`.
+    fn cmd_use(&mut self, key: EntityKey) {
+        self.cmd_named_item(key, |item| item.use_fn, "Item is not usable.\n");
     }
 
     /// C ref: `Cmd_Drop_f`.
     fn cmd_drop(&mut self, key: EntityKey) {
-        let Some(index) = self.named_item(key) else {
-            return;
-        };
-        let Some(drop_fn) = self.items[index].drop_fn else {
-            self.print_to(key, "Item is not dropable.\n");
-            return;
-        };
-        if !self.owns(key, index) {
-            self.print_to(key, &format!("Out of item: {}\n", self.gi.args()));
-            return;
-        }
-        drop_fn(self, key, index);
+        self.cmd_named_item(key, |item| item.drop_fn, "Item is not dropable.\n");
     }
 
     /// Select the next owned, usable item with `flags`, scanning by
@@ -175,6 +175,14 @@ impl GameWorld {
         }
     }
 
+    /// The use callback of item `index` if it is a weapon.
+    fn weapon_use_fn(&self, index: usize) -> Option<UseItemFn> {
+        self.items
+            .get(index)
+            .filter(|item| item.flags.contains(ItemFlags::WEAPON))
+            .and_then(|item| item.use_fn)
+    }
+
     /// Use each owned weapon in scan order from the current one, stopping
     /// once one becomes current. `Use_Weapon` only sets `newweapon`, so in
     /// practice the last weapon reached wins, as in C. C ref:
@@ -188,12 +196,7 @@ impl GameWorld {
             if !self.owns(key, index) {
                 continue;
             }
-            let Some(use_fn) = self.items.get(index).and_then(|item| {
-                item.flags
-                    .contains(ItemFlags::WEAPON)
-                    .then_some(item.use_fn)
-                    .flatten()
-            }) else {
+            let Some(use_fn) = self.weapon_use_fn(index) else {
                 continue;
             };
             use_fn(self, key, index);
@@ -214,13 +217,7 @@ impl GameWorld {
         if !self.owns(key, last) {
             return;
         }
-        let use_fn = self.items.get(last).and_then(|item| {
-            item.flags
-                .contains(ItemFlags::WEAPON)
-                .then_some(item.use_fn)
-                .flatten()
-        });
-        if let Some(use_fn) = use_fn {
+        if let Some(use_fn) = self.weapon_use_fn(last) {
             use_fn(self, key, last);
         }
     }

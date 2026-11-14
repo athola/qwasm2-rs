@@ -231,7 +231,14 @@ impl GameWorld {
     }
 
     /// Quad damage multiplier and muzzle flash silencer bit for a shot
-    /// now (C `is_quad`, `is_silenced`, set by `Think_Weapon`).
+    /// now (C `is_quad`, `is_silenced`). Deviation: C keeps these in file
+    /// statics that `Think_Weapon` sets only after its dead check, so the
+    /// grenade a dying player drops (`think_weapon` to `change_weapon` to
+    /// `weapon_grenade_fire`) reads the value from the last weapon think
+    /// of whichever client ran it. In single player that is this player's
+    /// previous frame, so C gives that grenade quad damage even though
+    /// `player_die` has cleared `quad_framenum`. Here the value is read
+    /// live, so it never has quad.
     fn shot_modifiers(&self, key: EntityKey) -> (bool, i32) {
         self.client(key).map_or((false, 0), |c| {
             let silenced = if c.silencer_shots > 0 { MZ_SILENCED } else { 0 };
@@ -458,9 +465,7 @@ pub fn weapon_generic(
             if pause_frames.contains(&client.ps.gunframe) && world.random_u32() & 15 != 0 {
                 return;
             }
-            if let Some(client) = world.client_mut(key) {
-                client.ps.gunframe += 1;
-            }
+            step_gunframe(world, key);
             return;
         }
         client.latched_buttons &= !BUTTON_ATTACK;
@@ -494,8 +499,8 @@ pub fn weapon_generic(
                     .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
             }
             fire(world, key);
-        } else if let Some(client) = world.client_mut(key) {
-            client.ps.gunframe += 1;
+        } else {
+            step_gunframe(world, key);
         }
         if let Some(client) = world.client_mut(key) {
             if client.ps.gunframe == idle_first + 1 {
@@ -518,17 +523,14 @@ pub fn blaster_fire(
 ) {
     let (quad, silenced) = world.shot_modifiers(key);
     let damage = if quad { damage * 4 } else { damage };
-    let viewheight = world.entities.get(key).map_or(0.0, |e| e.game.viewheight);
+    let viewheight = viewheight(world, key);
     let offset = [
         24.0 + g_offset.x,
         8.0 + g_offset.y,
         viewheight - 8.0 + g_offset.z,
     ];
     let (start, forward, _) = world.shot_source(key, offset);
-    if let Some(client) = world.client_mut(key) {
-        client.kick_origin = forward * -2.0;
-        client.kick_angles.x = -1.0;
-    }
+    kick(world, key, forward, 2.0, -1.0);
     world.fire_blaster(key, start, forward, damage, 1000, effect, hyper);
     let flash = if hyper { MZ_HYPERBLASTER } else { MZ_BLASTER };
     world.player_muzzle_flash(key, flash | silenced);
@@ -539,9 +541,7 @@ pub fn blaster_fire(
 pub fn weapon_blaster_fire(world: &mut GameWorld, key: EntityKey) {
     let damage = if world.game.deathmatch { 15 } else { 10 };
     blaster_fire(world, key, Vec3f::ZERO, damage, false, EF_BLASTER);
-    if let Some(client) = world.client_mut(key) {
-        client.ps.gunframe += 1;
-    }
+    step_gunframe(world, key);
 }
 
 /// C ref: `Weapon_Blaster` (player/weapon.c).
@@ -1118,9 +1118,11 @@ pub fn weapon_bfg(world: &mut GameWorld, key: EntityKey) {
     );
 }
 
-const GRENADE_TIMER: f32 = 3.0;
-const GRENADE_MINSPEED: f32 = 400.0;
-const GRENADE_MAXSPEED: f32 = 800.0;
+// C types: GRENADE_TIMER is a double literal, the speeds are ints, so the
+// arithmetic that uses them is done in double.
+const GRENADE_TIMER: f64 = 3.0;
+const GRENADE_MINSPEED: i32 = 400;
+const GRENADE_MAXSPEED: i32 = 800;
 
 /// Throw (or, `held`, drop where the player stands) the cooked grenade:
 /// the longer it was held, the faster it flies and the sooner it goes
@@ -1140,8 +1142,9 @@ pub fn weapon_grenade_fire(world: &mut GameWorld, key: EntityKey, held: bool) {
     let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
     let grenade_time = world.client(key).map_or(0.0, |c| c.grenade_time);
     let timer = grenade_time - world.level.time;
-    let speed = GRENADE_MINSPEED
-        + (GRENADE_TIMER - timer) * ((GRENADE_MAXSPEED - GRENADE_MINSPEED) / GRENADE_TIMER);
+    let speed = f64::from(GRENADE_MINSPEED)
+        + (GRENADE_TIMER - f64::from(timer))
+            * (f64::from(GRENADE_MAXSPEED - GRENADE_MINSPEED) / GRENADE_TIMER);
     world.fire_grenade2(
         key,
         start,
@@ -1231,7 +1234,7 @@ pub fn weapon_grenade(world: &mut GameWorld, key: EntityKey) {
                     return;
                 };
                 if client.grenade_time == 0.0 {
-                    client.grenade_time = now + GRENADE_TIMER + 0.2;
+                    client.grenade_time = (f64::from(now) + GRENADE_TIMER + 0.2) as f32;
                     client.weapon_sound = tick;
                 }
                 // They waited too long: it goes off in their hand.
@@ -2251,6 +2254,23 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_grenade_fuse_is_set_in_double_like_c() {
+        // C weapon_grenade: grenade_time = level.time + 3.0 + 0.2 in
+        // double, stored as a float. At frame 4 that is 3.5999999, which
+        // frame 36 (level.time 3.5999999) reaches; f32 sums give 3.6000001.
+        let (mut world, key, _) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        world.level.time = (4.0_f64 * 0.1) as f32;
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        think_n(&mut world, key, 12);
+        assert_eq!(world.client(key).unwrap().grenade_time, 3.6_f32);
+        world.level.time = (36.0_f64 * 0.1) as f32;
+        world.think_weapon(key);
+        assert!(world.client(key).unwrap().grenade_blew_up);
+    }
+
+    #[test]
     fn switching_away_with_a_cooked_grenade_sets_it_off() {
         // C ChangeWeapon fires it with grenade_time = now: a zero timer.
         let (mut world, key, _) = ready();
@@ -2515,15 +2535,26 @@ mod tests {
     #[test]
     fn the_machinegun_attack_animation_starts_a_frame_early_a_quarter_of_the_time() {
         // C ref: Machinegun_Fire, (int)(random() + 0.25) frames back.
+        // That random() is the last draw, so it is read back from the
+        // state the LCG was left in.
         let mut frames = Vec::new();
+        let mut between_half_and_three_quarters = false;
         for seed in (0..16).map(|n| n * 997) {
             let (mut world, key, _) = gunner("Bullets");
             world.level.rand_state = seed;
             machinegun_fire(&mut world, key);
-            frames.push(world.entities.get(key).unwrap().state.frame);
+            let r = ((world.level.rand_state >> 8) & 0x7fff) as f32 / 0x7fff as f32;
+            between_half_and_three_quarters |= (0.5..0.75).contains(&r);
+            let frame = world.entities.get(key).unwrap().state.frame;
+            assert_eq!(frame, FRAME_ATTACK1 - (r + 0.25) as i32, "seed {seed}");
+            frames.push(frame);
         }
         assert!(frames.contains(&FRAME_ATTACK1), "{frames:?}");
         assert!(frames.contains(&(FRAME_ATTACK1 - 1)), "{frames:?}");
+        assert!(
+            between_half_and_three_quarters,
+            "a seed tells + 0.25 from + 0.5"
+        );
     }
 
     #[test]
@@ -2741,6 +2772,18 @@ mod tests {
         assert_eq!(grenade.state.origin, LAUNCHER_START);
         assert_eq!(grenade.velocity.x, 533.0);
         assert_eq!((grenade.game.dmg, grenade.game.dmg_radius), (500, 165.0));
+    }
+
+    #[test]
+    fn a_thrown_grenade_speed_is_worked_out_in_double_like_c() {
+        // C weapon_grenade_fire: GRENADE_TIMER is the double 3.0, so the
+        // speed is a double truncated to int. Cooked at frame 0, thrown at
+        // frame 14: C gives 559 where f32 gives 560.
+        let (mut world, key, _) = gunner("Grenades");
+        world.level.time = (14.0_f64 * 0.1) as f32;
+        world.client_mut(key).unwrap().grenade_time = (0.0_f64 + 3.0 + 0.2) as f32;
+        weapon_grenade_fire(&mut world, key, false);
+        assert_eq!(only(&world, "hgrenade").velocity.x, 559.0);
     }
 
     #[test]

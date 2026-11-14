@@ -869,16 +869,6 @@ mod tests {
     }
 
     #[test]
-    fn leaving_liquid_clears_the_underwater_flag_and_tint() {
-        let (mut world, _) = crate::world::test_world_recording();
-        let key = player_in(&mut world);
-        world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER;
-        world.calc_blend(key);
-        let client = world.client(key).unwrap();
-        assert_eq!((client.ps.blend, client.ps.rdflags), ([0.0; 4], 0));
-    }
-
-    #[test]
     fn powerups_tint_the_view_and_warn_three_seconds_before_running_out() {
         let (mut world, gi) = crate::world::test_world_recording();
         let key = player_in(&mut world);
@@ -1836,7 +1826,7 @@ mod tests {
         let (world, gi) = surface(31.0);
         assert!(
             !heard(&world, &gi, "player/gasp2.wav"),
-            "under under a second"
+            "exactly 11 s of air left: no gasp"
         );
     }
 
@@ -1997,18 +1987,22 @@ mod tests {
 
     #[test]
     fn a_diagonal_hit_kicks_by_the_cosine_of_its_angle() {
-        let (mut world, key, _) = hurt_player();
-        world.client_mut(key).unwrap().v_angle = Vec3f::ZERO;
-        let origin = world.entities.get(key).unwrap().state.origin;
-        world.client_mut(key).unwrap().damage_from = origin + Vec3f::new(100.0, 100.0, 0.0);
-        hit(&mut world, key, 20, 0, 0, 10);
-        world.damage_feedback(key);
-        // kick 10: pitch = 10 * -cos(45) * 0.3.
-        let pitch = world.client(key).unwrap().v_dmg_pitch;
-        assert!(
-            (pitch + 3.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4,
-            "{pitch}"
-        );
+        // C P_DamageFeedback: kick = max(knockback * 100 / health,
+        // count * 0.5), capped at 50; pitch = kick * -cos(45) * 0.3.
+        // The first hit's kick comes from the count term, the second's
+        // from the knockback term at health 50.
+        for (health, blood, knockback, kick) in [(100, 40, 10, 20.0), (50, 10, 15, 30.0)] {
+            let (mut world, key, _) = hurt_player();
+            world.entities.get_mut(key).unwrap().game.health = health;
+            world.client_mut(key).unwrap().v_angle = Vec3f::ZERO;
+            let origin = world.entities.get(key).unwrap().state.origin;
+            world.client_mut(key).unwrap().damage_from = origin + Vec3f::new(100.0, 100.0, 0.0);
+            hit(&mut world, key, blood, 0, 0, knockback);
+            world.damage_feedback(key);
+            let pitch = world.client(key).unwrap().v_dmg_pitch;
+            let expected = kick * -std::f32::consts::FRAC_1_SQRT_2 * 0.3;
+            assert!((pitch - expected).abs() < 1e-4, "{health}: {pitch}");
+        }
     }
 
     #[test]

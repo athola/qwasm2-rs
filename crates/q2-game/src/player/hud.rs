@@ -62,7 +62,6 @@ impl GameWorld {
             .find(|&(until, _)| until > framenum)
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
-        let power_icon = self.gi.image_index("i_powershield");
         // Help icon blinks on new help; else, centre-handed or with a wide
         // view, the weapon icon unless cl_gun 2 (C's default) draws the
         // gun anyway.
@@ -91,6 +90,13 @@ impl GameWorld {
             let icon = self.items[i].icon;
             (self.gi.image_index(icon), i)
         });
+        // Flash between power armor and other armor icon.
+        let show_power = power_armor != POWER_ARMOR_NONE && (armor.is_none() || framenum & 8 != 0);
+        let power_icon = if show_power {
+            self.gi.image_index("i_powershield")
+        } else {
+            0
+        };
         let selected = self.client(key).map_or(-1, |c| c.pers.selected_item);
         let selected_icon = usize::try_from(selected)
             .ok()
@@ -109,8 +115,6 @@ impl GameWorld {
         let ammo_count = client.pers.inventory[client.ammo_index];
         stats[STAT_AMMO_ICON] = ammo_icon as i16;
         stats[STAT_AMMO] = if ammo_icon == 0 { 0 } else { ammo_count as i16 };
-        // Flash between power armor and other armor icon.
-        let show_power = power_armor != POWER_ARMOR_NONE && (armor.is_none() || framenum & 8 != 0);
         match armor {
             _ if show_power => {
                 stats[STAT_ARMOR_ICON] = power_icon as i16;
@@ -154,8 +158,8 @@ impl GameWorld {
 
 impl GameWorld {
     /// Publish the player's name and skin for scoreboards and other
-    /// players (C `ClientUserinfoChanged`'s `CS_PLAYERSKINS`; its fov,
-    /// hand and spectator parts are not ported).
+    /// players (C `ClientUserinfoChanged`'s `CS_PLAYERSKINS`; what else
+    /// of it is ported is listed on `client_userinfo_changed`).
     pub fn player_skin_configstring(&mut self, key: EntityKey) {
         let (Some(number), Some(client)) = (self.number_of(key), self.client(key)) else {
             return;
@@ -394,7 +398,8 @@ impl GameWorld {
         };
         ent.state.origin = origin;
         for i in 0..3 {
-            client.ps.pmove.origin[i] = (origin[i] * 8.0) as i16;
+            // Through i32 so an overflowing short wraps as in C.
+            client.ps.pmove.origin[i] = (origin[i] * 8.0) as i32 as i16;
         }
         client.ps.viewangles = angles;
         client.ps.pmove.pm_type = PmType::Freeze;
@@ -450,6 +455,15 @@ mod tests {
         world.begin_client(key);
         world.level.framenum = 100;
         (world, key, gi)
+    }
+
+    #[test]
+    fn the_power_shield_icon_is_only_registered_when_it_shows() {
+        // C G_SetStats calls gi.imageindex("i_powershield") only in the
+        // branch that shows power armor; SV_FindIndex registers on first ask.
+        let (mut world, key, gi) = armed_player();
+        world.update_player_stats(key);
+        assert!(!gi.images.borrow().iter().any(|i| i == "i_powershield"));
     }
 
     #[test]
@@ -774,6 +788,16 @@ mod tests {
         world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER | RDF_NOWORLDMODEL;
         world.move_client_to_intermission(key);
         assert_eq!(world.client(key).unwrap().ps.rdflags, RDF_NOWORLDMODEL);
+    }
+
+    #[test]
+    fn the_intermission_origin_wraps_into_a_short_like_c() {
+        // C MoveClientToIntermission assigns origin * 8 to a short, so
+        // 4096 * 8 = 32768 wraps to -32768 instead of saturating.
+        let (mut world, key, _) = armed_player();
+        world.level.intermission_origin = Vec3f::new(4096.0, 0.0, 0.0);
+        world.move_client_to_intermission(key);
+        assert_eq!(world.client(key).unwrap().ps.pmove.origin[0], -32768);
     }
 
     #[test]
