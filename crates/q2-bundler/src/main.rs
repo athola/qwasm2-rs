@@ -552,10 +552,9 @@ mod tests {
         // Hidden by default, the log would otherwise swallow the error.
         let html = generate_html("");
         let catch = html
-            .split("}} catch (e) {{")
+            .split("} catch (e) {")
             .nth(1)
-            .or_else(|| html.split("} catch (e) {").nth(1));
-        let catch = catch.expect("startup catch block");
+            .expect("startup catch block");
         assert!(
             catch.contains(
                 "document.getElementById('status-container').classList.remove('hidden');"
