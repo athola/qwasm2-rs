@@ -2542,15 +2542,26 @@ mod tests {
     #[test]
     fn the_machinegun_attack_animation_starts_a_frame_early_a_quarter_of_the_time() {
         // C ref: Machinegun_Fire, (int)(random() + 0.25) frames back.
+        // That random() is the last draw, so it is read back from the
+        // state the LCG was left in.
         let mut frames = Vec::new();
+        let mut between_half_and_three_quarters = false;
         for seed in (0..16).map(|n| n * 997) {
             let (mut world, key, _) = gunner("Bullets");
             world.level.rand_state = seed;
             machinegun_fire(&mut world, key);
-            frames.push(world.entities.get(key).unwrap().state.frame);
+            let r = ((world.level.rand_state >> 8) & 0x7fff) as f32 / 0x7fff as f32;
+            between_half_and_three_quarters |= (0.5..0.75).contains(&r);
+            let frame = world.entities.get(key).unwrap().state.frame;
+            assert_eq!(frame, FRAME_ATTACK1 - (r + 0.25) as i32, "seed {seed}");
+            frames.push(frame);
         }
         assert!(frames.contains(&FRAME_ATTACK1), "{frames:?}");
         assert!(frames.contains(&(FRAME_ATTACK1 - 1)), "{frames:?}");
+        assert!(
+            between_half_and_three_quarters,
+            "a seed tells + 0.25 from + 0.5"
+        );
     }
 
     #[test]
