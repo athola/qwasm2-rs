@@ -270,8 +270,8 @@ const WORLD_SAMPLERS: [&str; 5] = [
     "u_lightmap3",
 ];
 
-/// The one sampler of the alias and 2D programs, on unit 0.
-const TEXTURE_SAMPLER: [&str; 1] = ["u_texture"];
+/// The one sampler of the alias, 2D and sprite programs, on unit 0.
+pub(super) const TEXTURE_SAMPLER: [&str; 1] = ["u_texture"];
 
 fn world_uniforms(
     mut location: impl FnMut(&str) -> Option<glow::UniformLocation>,
@@ -417,6 +417,10 @@ fn ui_uniforms(mut location: impl FnMut(&str) -> Option<glow::UniformLocation>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gl3::fx::{
+        fx_uniforms, particle_uniforms, FX_FRAGMENT_SRC, FX_VERTEX_SRC, PARTICLE_FRAGMENT_SRC,
+        PARTICLE_VERTEX_SRC,
+    };
     use crate::gl3::lightmap::MAX_LIGHTMAPS_PER_SURFACE;
     use q2_shared::constants::MAX_LIGHTSTYLES;
 
@@ -506,6 +510,17 @@ mod tests {
         let (asked, u) = looked_up(ui, |l| ui_uniforms(l));
         assert_eq!(asked, settable(ui));
         assert!(u.ortho.is_some());
+
+        let particle = [PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC];
+        let (asked, view_proj) = looked_up(particle, |l| particle_uniforms(l));
+        assert_eq!(asked, settable(particle));
+        assert!(view_proj.is_some());
+
+        let fx = [FX_VERTEX_SRC, FX_FRAGMENT_SRC];
+        let (asked, u) = looked_up(fx, |l| fx_uniforms(l));
+        assert_eq!(asked, settable(fx));
+        let all = [&u.view_proj, &u.color, &u.alpha_test, &u.intensity];
+        assert!(all.iter().all(|location| location.is_some()));
     }
 
     #[test]
@@ -521,9 +536,11 @@ mod tests {
         for stages in [
             [ALIAS_VERTEX_SRC, ALIAS_FRAGMENT_SRC],
             [UI_VERTEX_SRC, UI_FRAGMENT_SRC],
+            [FX_VERTEX_SRC, FX_FRAGMENT_SRC],
         ] {
             assert_eq!(samplers(stages), TEXTURE_SAMPLER);
         }
+        assert!(samplers([PARTICLE_VERTEX_SRC, PARTICLE_FRAGMENT_SRC]).is_empty());
     }
 
     // The uploads fill whole arrays: RefDef::lightstyles holds a float per

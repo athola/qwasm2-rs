@@ -12,7 +12,7 @@ use super::draw::{
     create_stream_buffer, fill_stream, free_stream_buffer, set_alpha_blend, Attribute, StreamBuffer,
 };
 use super::images::{ImageKind, ImageStore};
-use super::shader::{bind_samplers, link_program};
+use super::shader::{bind_samplers, link_program, TEXTURE_SAMPLER};
 use super::texture::FileLoader;
 use crate::files::{palette::Palette, sp2::load_sp2};
 
@@ -292,11 +292,34 @@ pub struct FxGpu {
     particle_view_proj: Option<glow::UniformLocation>,
     particle_stream: StreamBuffer,
     fx_program: glow::Program,
-    fx_view_proj: Option<glow::UniformLocation>,
-    fx_color: Option<glow::UniformLocation>,
-    fx_alpha_test: Option<glow::UniformLocation>,
-    fx_intensity: Option<glow::UniformLocation>,
+    fx_uniforms: FxUniforms,
     fx_stream: StreamBuffer,
+}
+
+/// Uniform locations of the beam and sprite program.
+pub(super) struct FxUniforms {
+    pub view_proj: Option<glow::UniformLocation>,
+    pub color: Option<glow::UniformLocation>,
+    pub alpha_test: Option<glow::UniformLocation>,
+    pub intensity: Option<glow::UniformLocation>,
+}
+
+pub(super) fn fx_uniforms(
+    mut location: impl FnMut(&str) -> Option<glow::UniformLocation>,
+) -> FxUniforms {
+    FxUniforms {
+        view_proj: location("u_view_proj"),
+        color: location("u_color"),
+        alpha_test: location("u_alpha_test"),
+        intensity: location("u_intensity"),
+    }
+}
+
+/// The particle program's one uniform, `u_view_proj`.
+pub(super) fn particle_uniforms(
+    mut location: impl FnMut(&str) -> Option<glow::UniformLocation>,
+) -> Option<glow::UniformLocation> {
+    location("u_view_proj")
 }
 
 impl FxGpu {
@@ -315,16 +338,13 @@ pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
     let fx_stream = create_stream_buffer(gl, FX_FLOATS, &FX_ATTRIBUTES);
     match (particle_program, fx_program, particle_stream, fx_stream) {
         (Ok(particle_program), Ok(fx_program), Ok(particle_stream), Ok(fx_stream)) => {
-            bind_samplers(gl, fx_program, &["u_texture"]);
+            bind_samplers(gl, fx_program, &TEXTURE_SAMPLER);
             // SAFETY: both programs were linked on `gl` above; the lookups
             // only read them.
-            let (particle_view_proj, fx_view_proj, fx_color, fx_alpha_test, fx_intensity) = unsafe {
+            let (particle_view_proj, fx_uniforms) = unsafe {
                 (
-                    gl.get_uniform_location(particle_program, "u_view_proj"),
-                    gl.get_uniform_location(fx_program, "u_view_proj"),
-                    gl.get_uniform_location(fx_program, "u_color"),
-                    gl.get_uniform_location(fx_program, "u_alpha_test"),
-                    gl.get_uniform_location(fx_program, "u_intensity"),
+                    particle_uniforms(|name| gl.get_uniform_location(particle_program, name)),
+                    fx_uniforms(|name| gl.get_uniform_location(fx_program, name)),
                 )
             };
             Ok(FxGpu {
@@ -332,10 +352,7 @@ pub fn create_fx(gl: &glow::Context) -> Result<FxGpu, String> {
                 particle_view_proj,
                 particle_stream,
                 fx_program,
-                fx_view_proj,
-                fx_color,
-                fx_alpha_test,
-                fx_intensity,
+                fx_uniforms,
                 fx_stream,
             })
         }
@@ -381,7 +398,7 @@ pub fn bind(gl: &glow::Context, fx: &FxGpu, view_proj: &[f32; 16]) {
     // SAFETY: the program and its uniform were made on `gl` by `create_fx`.
     unsafe {
         gl.use_program(Some(fx.fx_program));
-        gl.uniform_matrix_4_f32_slice(fx.fx_view_proj.as_ref(), false, view_proj);
+        gl.uniform_matrix_4_f32_slice(fx.fx_uniforms.view_proj.as_ref(), false, view_proj);
         gl.active_texture(glow::TEXTURE0);
     }
 }
@@ -550,9 +567,12 @@ fn fx_draw(gl: &glow::Context, fx: &FxGpu, draw: &FxDraw) {
     // SAFETY: the texture, stream and uniforms belong to `gl` and the bound
     // fx program; the stream was just filled with `count` vertices.
     unsafe {
-        gl.uniform_4_f32_slice(fx.fx_color.as_ref(), &style.color);
-        gl.uniform_1_i32(fx.fx_alpha_test.as_ref(), i32::from(style.alpha_test));
-        gl.uniform_1_f32(fx.fx_intensity.as_ref(), style.intensity);
+        gl.uniform_4_f32_slice(fx.fx_uniforms.color.as_ref(), &style.color);
+        gl.uniform_1_i32(
+            fx.fx_uniforms.alpha_test.as_ref(),
+            i32::from(style.alpha_test),
+        );
+        gl.uniform_1_f32(fx.fx_uniforms.intensity.as_ref(), style.intensity);
         gl.bind_texture(glow::TEXTURE_2D, Some(draw.texture));
         if style.blend {
             gl.enable(glow::BLEND);
