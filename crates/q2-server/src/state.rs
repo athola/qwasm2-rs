@@ -179,62 +179,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_state_field_assignment() {
-        let mut sv = Server::default();
-        assert_eq!(sv.state, ServerState::Dead);
-
-        sv.state = ServerState::Loading;
-        sv.name = "base1".to_string();
-        assert_eq!(sv.state, ServerState::Loading);
-        assert_eq!(sv.name, "base1");
-
-        sv.state = ServerState::Game;
-        sv.framenum = 1;
-        sv.time = 100;
-        assert_eq!(sv.state, ServerState::Game);
-        assert_eq!(sv.framenum, 1);
-    }
-
-    #[test]
-    fn client_state_lifecycle() {
-        let mut cl = ServerClient::default();
-        assert_eq!(cl.state, ClientState::Free);
-
-        // Client connects
-        cl.state = ClientState::Connected;
-        cl.name = "Player1".into();
-        cl.userinfo = r"name\Player1\skin\male/grunt".into();
-        assert_eq!(cl.state, ClientState::Connected);
-
-        // Client spawns into game
-        cl.state = ClientState::Spawned;
-        cl.edict_num = 1;
-        cl.command_msec = 1800;
-        assert_eq!(cl.state, ClientState::Spawned);
-        assert_eq!(cl.edict_num, 1);
-
-        // Client disconnects
-        cl.state = ClientState::Free;
-        assert_eq!(cl.state, ClientState::Free);
-    }
-
-    #[test]
-    fn server_static_client_allocation() {
-        let mut svs = ServerStatic::default();
-        assert!(!svs.initialized);
-
-        svs.max_clients = 4;
-        svs.clients = (0..4).map(|_| ServerClient::default()).collect();
-        svs.initialized = true;
-
-        assert!(svs.initialized);
-        assert_eq!(svs.clients.len(), 4);
-        assert!(svs.clients.iter().all(|c| c.state == ClientState::Free));
-    }
-
-    #[test]
-    fn server_client_default_rate() {
+    fn defaults_are_a_dead_server_and_free_clients_at_c_rate() {
+        assert_eq!(Server::default().state, ServerState::Dead);
+        assert!(!ServerStatic::default().initialized);
         let cl = ServerClient::default();
+        assert_eq!(cl.state, ClientState::Free);
+        // C SV_UserinfoChanged's default rate; no frame acknowledged yet.
         assert_eq!(cl.rate, 5000);
         assert_eq!(cl.last_frame, -1);
     }
