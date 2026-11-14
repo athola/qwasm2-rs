@@ -135,17 +135,18 @@ impl ClientState {
         Ok(())
     }
 
-    /// Parse a SpawnBaseline message: entity bits + full delta from null state.
+    /// Parse a SpawnBaseline message: entity bits + full delta from null
+    /// state. The delta is read for every number, to keep the stream
+    /// aligned. C ref: `CL_ParseBaseline`.
     fn parse_baseline(&mut self, msg: &mut NetMsg) {
         let (num, bits) = parse_entity_bits(msg);
-        let num = num as usize;
-        if num > 0 && num < self.entities.len() {
-            self.entities[num].baseline =
-                read_delta_entity(msg, &EntityState::default(), num as i32, bits);
-        } else if num != 0 {
-            tracing::warn!("parse_baseline: entity number {} out of range", num);
-            // Still must consume the delta bytes to keep stream aligned.
-            read_delta_entity(msg, &EntityState::default(), num as i32, bits);
+        let baseline = read_delta_entity(msg, &EntityState::default(), num, bits);
+        match usize::try_from(num)
+            .ok()
+            .and_then(|n| self.entities.get_mut(n))
+        {
+            Some(entity) => entity.baseline = baseline,
+            None => tracing::warn!("parse_baseline: entity number {num} out of range"),
         }
     }
 
@@ -953,6 +954,25 @@ mod tests {
 
         cs.parse_server_message(&mut msg).expect("valid message");
         assert!(msg.remaining_data().is_empty());
+    }
+
+    #[test]
+    fn a_baseline_for_entity_0_reads_its_fields_like_c() {
+        // C CL_ParseBaseline parses the delta for every number, so the
+        // opcode after it is read from the right place.
+        let mut cs = ClientState::default();
+        let mut msg = NetMsg::new();
+        msg.write_byte(SvcOp::SpawnBaseline as i32);
+        msg.write_byte(UpdateFlags::MOREBITS1.bits() as i32);
+        msg.write_byte((UpdateFlags::MODEL.bits() >> 8) as i32);
+        msg.write_byte(0); // entity number
+        msg.write_byte(5); // modelindex
+        msg.write_byte(SvcOp::Nop as i32);
+        msg.begin_reading();
+
+        cs.parse_server_message(&mut msg).expect("valid message");
+        assert!(msg.remaining_data().is_empty());
+        assert_eq!(cs.entities[0].baseline.modelindex, 5);
     }
 
     #[test]
