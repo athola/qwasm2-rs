@@ -192,6 +192,30 @@ pub struct ItemDef {
     pub precaches: &'static str,
 }
 
+impl ItemDef {
+    /// C `itemlist[0]`, all empty; the other rows start from it.
+    pub const NULL: ItemDef = ItemDef {
+        classname: "",
+        pickup_sound: "",
+        world_model: "",
+        world_model_flags: 0,
+        icon: "",
+        pickup_name: "",
+        quantity: 0,
+        ammo: "",
+        flags: ItemFlags::empty(),
+        weapmodel: 0,
+        tag: 0,
+        armor_info: None,
+        pickup: None,
+        use_fn: None,
+        drop_fn: None,
+        view_model: "",
+        weaponthink: None,
+        precaches: "",
+    };
+}
+
 impl std::fmt::Debug for ItemDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ItemDef")
@@ -240,30 +264,9 @@ pub const WEAP_BFG: i32 = 11;
 
 /// Build the complete item list matching C's `itemlist[]`.
 pub fn build_item_list() -> Vec<ItemDef> {
-    let null_item = || ItemDef {
-        classname: "",
-        pickup_sound: "",
-        world_model: "",
-        world_model_flags: 0,
-        icon: "",
-        pickup_name: "",
-        quantity: 0,
-        ammo: "",
-        flags: ItemFlags::empty(),
-        weapmodel: 0,
-        tag: 0,
-        armor_info: None,
-        pickup: None,
-        use_fn: None,
-        drop_fn: None,
-        view_model: "",
-        weaponthink: None,
-        precaches: "",
-    };
-
     vec![
         // [0] null
-        null_item(),
+        ItemDef::NULL,
         // [1] Body Armor
         ItemDef {
             classname: "item_armor_body",
@@ -272,18 +275,11 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_bodyarmor",
             pickup_name: "Body Armor",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
             tag: ArmorType::Body as i32,
             armor_info: Some(BODY_ARMOR_INFO),
             pickup: Some(pickup_armor),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [2] Combat Armor
         ItemDef {
@@ -293,18 +289,11 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_combatarmor",
             pickup_name: "Combat Armor",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
             tag: ArmorType::Combat as i32,
             armor_info: Some(COMBAT_ARMOR_INFO),
             pickup: Some(pickup_armor),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [3] Jacket Armor
         ItemDef {
@@ -314,18 +303,11 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_jacketarmor",
             pickup_name: "Jacket Armor",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
             tag: ArmorType::Jacket as i32,
             armor_info: Some(JACKET_ARMOR_INFO),
             pickup: Some(pickup_armor),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [4] Armor Shard
         ItemDef {
@@ -336,17 +318,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "i_jacketarmor",
             pickup_name: "Armor Shard",
             quantity: 2,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
             tag: ARMOR_SHARD,
-            armor_info: None,
             pickup: Some(pickup_armor),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [5] Power Screen
         ItemDef {
@@ -357,17 +332,11 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "i_powerscreen",
             pickup_name: "Power Screen",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_power_armor),
             use_fn: Some(use_power_armor),
             drop_fn: Some(drop_power_armor),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [6] Power Shield
         ItemDef {
@@ -378,38 +347,27 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "i_powershield",
             pickup_name: "Power Shield",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::ARMOR,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_power_armor),
             use_fn: Some(use_power_armor),
             drop_fn: Some(drop_power_armor),
-            view_model: "",
-            weaponthink: None,
             precaches: "misc/power2.wav misc/power1.wav",
+            ..ItemDef::NULL
         },
         // [7] Blaster
         ItemDef {
             classname: "weapon_blaster",
             pickup_sound: "misc/w_pkup.wav",
-            world_model: "",
-            world_model_flags: 0,
             icon: "w_blaster",
             pickup_name: "Blaster",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_BLASTER,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
-            drop_fn: None,
             view_model: "models/weapons/v_blast/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_blaster),
             precaches: "weapons/blastf1a.wav misc/lasfly.wav",
+            ..ItemDef::NULL
         },
         // [8] Shotgun
         ItemDef {
@@ -423,14 +381,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Shells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_SHOTGUN,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_shotgun),
             precaches: "weapons/shotgf1b.wav weapons/shotgr1b.wav",
+            ..ItemDef::NULL
         },
         // [9] Super Shotgun
         ItemDef {
@@ -444,14 +401,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Shells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_SUPERSHOTGUN,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_shotg2/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_supershotgun),
             precaches: "weapons/sshotf1b.wav",
+            ..ItemDef::NULL
         },
         // [10] Machinegun
         ItemDef {
@@ -465,14 +421,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Bullets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_MACHINEGUN,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_machn/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_machinegun),
             precaches: "weapons/machgf1b.wav weapons/machgf2b.wav weapons/machgf3b.wav weapons/machgf4b.wav weapons/machgf5b.wav",
+            ..ItemDef::NULL
         },
         // [11] Chaingun
         ItemDef {
@@ -486,21 +441,19 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Bullets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_CHAINGUN,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_chain/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_chaingun),
             precaches: "weapons/chngnu1a.wav weapons/chngnl1a.wav weapons/machgf3b.wav` weapons/chngnd1a.wav",
+            ..ItemDef::NULL
         },
         // [12] Grenades (ammo + weapon combo)
         ItemDef {
             classname: "ammo_grenades",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/grenades/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_grenades",
             pickup_name: "Grenades",
             quantity: 5,
@@ -508,13 +461,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             flags: ItemFlags::AMMO | ItemFlags::WEAPON,
             weapmodel: WEAP_GRENADES,
             tag: AMMO_GRENADES,
-            armor_info: None,
             pickup: Some(pickup_ammo),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(drop_ammo),
             view_model: "models/weapons/v_handgr/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenade),
             precaches: "weapons/hgrent1a.wav weapons/hgrena1b.wav weapons/hgrenc1b.wav weapons/hgrenb1a.wav weapons/hgrenb2a.wav ",
+            ..ItemDef::NULL
         },
         // [13] Grenade Launcher
         ItemDef {
@@ -528,14 +481,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Grenades",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_GRENADELAUNCHER,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_launch/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_grenadelauncher),
             precaches: "models/objects/grenade/tris.md2 weapons/grenlf1a.wav weapons/grenlr1b.wav weapons/grenlb1b.wav",
+            ..ItemDef::NULL
         },
         // [14] Rocket Launcher
         ItemDef {
@@ -549,14 +501,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Rockets",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_ROCKETLAUNCHER,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rocket/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_rocketlauncher),
             precaches: "models/objects/rocket/tris.md2 weapons/rockfly.wav weapons/rocklf1a.wav weapons/rocklr1b.wav models/objects/debris2/tris.md2",
+            ..ItemDef::NULL
         },
         // [15] HyperBlaster
         ItemDef {
@@ -570,14 +521,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Cells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_HYPERBLASTER,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_hyperb/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_hyperblaster),
             precaches: "weapons/hyprbu1a.wav weapons/hyprbl1a.wav weapons/hyprbf1a.wav weapons/hyprbd1a.wav misc/lasfly.wav",
+            ..ItemDef::NULL
         },
         // [16] Railgun
         ItemDef {
@@ -591,14 +541,13 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Slugs",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_RAILGUN,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_rail/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_railgun),
             precaches: "weapons/rg_hum.wav",
+            ..ItemDef::NULL
         },
         // [17] BFG10K
         ItemDef {
@@ -612,119 +561,83 @@ pub fn build_item_list() -> Vec<ItemDef> {
             ammo: "Cells",
             flags: ItemFlags::WEAPON | ItemFlags::STAY_COOP,
             weapmodel: WEAP_BFG,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_weapon),
             use_fn: Some(crate::player::weapon::use_weapon),
             drop_fn: Some(crate::player::weapon::drop_weapon),
             view_model: "models/weapons/v_bfg/tris.md2",
             weaponthink: Some(crate::player::weapon::weapon_bfg),
             precaches: "sprites/s_bfg1.sp2 sprites/s_bfg2.sp2 sprites/s_bfg3.sp2 weapons/bfg__f1y.wav weapons/bfg__l1a.wav weapons/bfg__x1b.wav weapons/bfg_hum.wav",
+            ..ItemDef::NULL
         },
         // [18] Shells
         ItemDef {
             classname: "ammo_shells",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/shells/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_shells",
             pickup_name: "Shells",
             quantity: 10,
-            ammo: "",
             flags: ItemFlags::AMMO,
-            weapmodel: 0,
             tag: AMMO_SHELLS,
-            armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
             drop_fn: Some(drop_ammo),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [19] Bullets
         ItemDef {
             classname: "ammo_bullets",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/bullets/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_bullets",
             pickup_name: "Bullets",
             quantity: 50,
-            ammo: "",
             flags: ItemFlags::AMMO,
-            weapmodel: 0,
             tag: AMMO_BULLETS,
-            armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
             drop_fn: Some(drop_ammo),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [20] Cells
         ItemDef {
             classname: "ammo_cells",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/cells/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_cells",
             pickup_name: "Cells",
             quantity: 50,
-            ammo: "",
             flags: ItemFlags::AMMO,
-            weapmodel: 0,
             tag: AMMO_CELLS,
-            armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
             drop_fn: Some(drop_ammo),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [21] Rockets
         ItemDef {
             classname: "ammo_rockets",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/rockets/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_rockets",
             pickup_name: "Rockets",
             quantity: 5,
-            ammo: "",
             flags: ItemFlags::AMMO,
-            weapmodel: 0,
             tag: AMMO_ROCKETS,
-            armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
             drop_fn: Some(drop_ammo),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [22] Slugs
         ItemDef {
             classname: "ammo_slugs",
             pickup_sound: "misc/am_pkup.wav",
             world_model: "models/items/ammo/slugs/medium/tris.md2",
-            world_model_flags: 0,
             icon: "a_slugs",
             pickup_name: "Slugs",
             quantity: 10,
-            ammo: "",
             flags: ItemFlags::AMMO,
-            weapmodel: 0,
             tag: AMMO_SLUGS,
-            armor_info: None,
             pickup: Some(pickup_ammo),
-            use_fn: None,
             drop_fn: Some(drop_ammo),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [23] Quad Damage
         ItemDef {
@@ -735,17 +648,12 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_quad",
             pickup_name: "Quad Damage",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_powerup),
             use_fn: Some(use_quad),
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
             precaches: "items/damage.wav items/damage2.wav items/damage3.wav",
+            ..ItemDef::NULL
         },
         // [24] Invulnerability
         ItemDef {
@@ -756,17 +664,12 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_invulnerability",
             pickup_name: "Invulnerability",
             quantity: 300,
-            ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_powerup),
             use_fn: Some(use_invulnerability),
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
             precaches: "items/protect.wav items/protect2.wav items/protect4.wav",
+            ..ItemDef::NULL
         },
         // [25] Silencer
         ItemDef {
@@ -777,17 +680,11 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_silencer",
             pickup_name: "Silencer",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_powerup),
             use_fn: Some(use_silencer),
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [26] Rebreather
         ItemDef {
@@ -798,17 +695,12 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_rebreather",
             pickup_name: "Rebreather",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_powerup),
             use_fn: Some(use_breather),
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
             precaches: "items/airout.wav",
+            ..ItemDef::NULL
         },
         // [27] Environment Suit
         ItemDef {
@@ -819,17 +711,12 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_envirosuit",
             pickup_name: "Environment Suit",
             quantity: 60,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::POWERUP | ItemFlags::INSTANT_USE,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_powerup),
             use_fn: Some(use_envirosuit),
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
             precaches: "items/airout.wav",
+            ..ItemDef::NULL
         },
         // [28] Ancient Head
         ItemDef {
@@ -840,17 +727,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "i_fixme",
             pickup_name: "Ancient Head",
             quantity: 60,
-            ammo: "",
-            flags: ItemFlags::empty(),
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_ancient_head),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [29] Adrenaline
         ItemDef {
@@ -861,17 +739,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_adrenaline",
             pickup_name: "Adrenaline",
             quantity: 60,
-            ammo: "",
-            flags: ItemFlags::empty(),
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_adrenaline),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [30] Bandolier
         ItemDef {
@@ -882,17 +751,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "p_bandolier",
             pickup_name: "Bandolier",
             quantity: 60,
-            ammo: "",
-            flags: ItemFlags::empty(),
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_bandolier),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [31] Ammo Pack
         ItemDef {
@@ -903,17 +763,8 @@ pub fn build_item_list() -> Vec<ItemDef> {
             icon: "i_pack",
             pickup_name: "Ammo Pack",
             quantity: 180,
-            ammo: "",
-            flags: ItemFlags::empty(),
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_pack),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [32-40] Keys — 9 key items
         ItemDef {
@@ -923,18 +774,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_datacd",
             pickup_name: "Data CD",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_power_cube",
@@ -943,18 +786,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_powercube",
             pickup_name: "Power Cube",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_pyramid",
@@ -963,18 +798,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_pyramid",
             pickup_name: "Pyramid Key",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_data_spinner",
@@ -983,18 +810,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_dataspin",
             pickup_name: "Data Spinner",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_pass",
@@ -1003,18 +822,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_security",
             pickup_name: "Security Pass",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_blue_key",
@@ -1023,18 +834,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_bluekey",
             pickup_name: "Blue Key",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_red_key",
@@ -1043,18 +846,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "k_redkey",
             pickup_name: "Red Key",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_commander_head",
@@ -1063,18 +858,10 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_GIB,
             icon: "k_comhead",
             pickup_name: "Commander's Head",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         ItemDef {
             classname: "key_airstrike_target",
@@ -1083,39 +870,19 @@ pub fn build_item_list() -> Vec<ItemDef> {
             world_model_flags: q2_shared::constants::EF_ROTATE,
             icon: "i_airstrike",
             pickup_name: "Airstrike Marker",
-            quantity: 0,
-            ammo: "",
             flags: ItemFlags::STAY_COOP | ItemFlags::KEY,
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_key),
-            use_fn: None,
             drop_fn: Some(drop_general),
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
         // [41] Health (generic — not spawned directly, used for health pickups)
         ItemDef {
             classname: "item_health",
             pickup_sound: "items/pkup.wav",
-            world_model: "",
-            world_model_flags: 0,
             icon: "i_health",
             pickup_name: "Health",
-            quantity: 0,
-            ammo: "",
-            flags: ItemFlags::empty(),
-            weapmodel: 0,
-            tag: 0,
-            armor_info: None,
             pickup: Some(pickup_health),
-            use_fn: None,
-            drop_fn: None,
-            view_model: "",
-            weaponthink: None,
-            precaches: "",
+            ..ItemDef::NULL
         },
     ]
 }
