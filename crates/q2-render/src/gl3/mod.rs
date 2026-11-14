@@ -61,7 +61,9 @@ use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use crate::bsp::BspData;
+use crate::files::md2::MD2_IDENT;
 use crate::files::palette::Palette;
+use crate::files::sp2::SP2_IDENT;
 use alias::AliasModel;
 use draw::{draw_batches, draw_ui, BatchDraw, BatchFilter, SkyGpu, UiTarget, WorldGpu};
 use entities::{
@@ -397,11 +399,15 @@ impl Renderer for Gl3Renderer {
         Ok(())
     }
 
-    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` and `*.sp2`
-    /// are loaded through the file loader with their skins or frame
-    /// images. Anything else, or a failure,
-    /// returns `ModelHandle::NONE` (logged once per name). A model found
-    /// again has its skins marked as used, like C `Mod_ReLoadSkins`.
+    /// `*n` is inline submodel `n` of the loaded BSP. Any other name is
+    /// read through the file loader, and its first four bytes pick the
+    /// loader as in C `Mod_ForName`: `IDP2` is an MD2 with its skins, `IDS2`
+    /// a sprite with its frame images. A missing file, a bad one, or any
+    /// other magic returns `ModelHandle::NONE` (logged once per name). C
+    /// also loads `IBSP` files here, which returns the world for the map
+    /// name `CL_PrepRefresh` registers as `CS_MODELS + 1`, and drops on an
+    /// unknown magic. A model found again has its skins marked as used,
+    /// like C `Mod_ReLoadSkins`.
     fn register_model(&mut self, name: &str) -> ModelHandle {
         if name.starts_with('*') {
             return self.models.register_inline(name, self.model_count);
@@ -410,13 +416,14 @@ impl Renderer for Gl3Renderer {
         let images = &mut self.images;
         let loader = &self.file_loader;
         let handle = self.models.register(name, || {
-            let lower = name.to_ascii_lowercase();
-            if lower.ends_with(".md2") {
-                entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
-            } else if lower.ends_with(".sp2") {
-                fx::load_sprite_model(gl, loader, palette, images, name).map(Model::Sprite)
-            } else {
-                None
+            let bytes = loader(name)?;
+            let magic = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
+            match magic {
+                MD2_MAGIC => entities::load_alias_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Alias),
+                SP2_IDENT => fx::load_sprite_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Sprite),
+                _ => None,
             }
         });
         let used: Vec<usize> = match self.models.get(handle) {
@@ -909,6 +916,9 @@ fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16]
     ];
     m
 }
+
+/// `MD2_IDENT` as the unsigned word C `Mod_ForName` switches on.
+const MD2_MAGIC: u32 = MD2_IDENT as u32;
 
 /// C `gl3_identityMat4`.
 const IDENTITY_MAT4: [f32; 16] = [
@@ -1679,6 +1689,24 @@ mod tests {
         }));
         let handle = r.register_model(".md2");
         assert!(matches!(r.models.get(handle), Some(Model::Alias(_))));
+    }
+
+    #[test]
+    fn the_file_magic_picks_the_loader_not_the_name_like_c_mod_forname() {
+        let mut r = Gl3Renderer::headless(Box::new(|path| match path {
+            "x.md2" => Some(synthetic_sp2(&[("a.pcx", 8, 8)])),
+            "x.sp2" => Some(synthetic_md2("skin.pcx")),
+            "x.bin" => Some(synthetic_md2("skin.pcx")),
+            "junk.md2" => Some(b"JUNKJUNK".to_vec()),
+            _ => None,
+        }));
+        let sprite = r.register_model("x.md2");
+        assert!(matches!(r.models.get(sprite), Some(Model::Sprite(_))));
+        let alias = r.register_model("x.sp2");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        let alias = r.register_model("x.bin");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        assert_eq!(r.register_model("junk.md2"), ModelHandle::NONE);
     }
 
     #[test]

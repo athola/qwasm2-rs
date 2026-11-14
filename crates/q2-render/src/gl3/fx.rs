@@ -158,9 +158,9 @@ pub fn load_sprite_model(
     palette: Option<&Palette>,
     images: &mut ImageStore,
     name: &str,
+    bytes: &[u8],
 ) -> Option<SpriteModel> {
-    let bytes = loader(name)?;
-    let sprite = match load_sp2(&bytes) {
+    let sprite = match load_sp2(bytes) {
         Ok(sprite) => sprite,
         Err(error) => {
             tracing::warn!("GL3: bad sprite {name}: {error:?}");
@@ -662,15 +662,12 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_corrupt_sp2_registers_no_sprite() {
-        let loader: FileLoader = Box::new(|name| match name {
-            "bad.sp2" => Some(b"IDS2 not a sprite".to_vec()),
-            _ => None,
-        });
+    fn a_corrupt_sp2_registers_no_sprite() {
+        // A missing file never gets here: register_model reads it first.
+        let loader: FileLoader = Box::new(|_| None);
         let mut images = ImageStore::default();
-        for name in ["bad.sp2", "gone.sp2"] {
-            assert!(load_sprite_model(None, &loader, None, &mut images, name).is_none());
-        }
+        let bytes = b"IDS2 not a sprite";
+        assert!(load_sprite_model(None, &loader, None, &mut images, "bad.sp2", bytes).is_none());
     }
 
     fn beam(origin: Vec3f, oldorigin: Vec3f, width: i32) -> RenderEntity {

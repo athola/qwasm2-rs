@@ -147,9 +147,9 @@ pub fn load_alias_model(
     palette: Option<&Palette>,
     images: &mut ImageStore,
     name: &str,
+    bytes: &[u8],
 ) -> Option<AliasModel> {
-    let bytes = loader(name)?;
-    let md2 = match load_md2(&bytes) {
+    let md2 = match load_md2(bytes) {
         Ok(md2) => md2,
         Err(error) => {
             tracing::warn!("GL3: bad model {name}: {error:?}");
@@ -633,15 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_corrupt_md2_registers_no_model() {
-        let loader: FileLoader = Box::new(|name| match name {
-            "bad.md2" => Some(b"IDP2 not a model".to_vec()),
-            _ => None,
-        });
+    fn a_corrupt_md2_registers_no_model() {
+        // A missing file never gets here: register_model reads it first.
+        let loader: FileLoader = Box::new(|_| None);
         let mut images = ImageStore::default();
-        for name in ["bad.md2", "gone.md2"] {
-            assert!(load_alias_model(None, &loader, None, &mut images, name).is_none());
-        }
+        let bytes = b"IDP2 not a model";
+        assert!(load_alias_model(None, &loader, None, &mut images, "bad.md2", bytes).is_none());
     }
 
     fn sprite() -> Model<&'static str> {
