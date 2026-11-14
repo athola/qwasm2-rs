@@ -931,7 +931,7 @@ const SAVED_FLAGS: EntityFlags = EntityFlags::GODMODE
 /// Keep the userinfo and take the player's name and handedness from it.
 /// The skin and fov parts are not ported. C ref: `ClientUserinfoChanged`.
 fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
-    pers.netname = extract_info_value(userinfo, "name").unwrap_or_else(|| "player".to_string());
+    pers.netname = extract_info_value(userinfo, "name").unwrap_or_default();
     if let Some(hand) = extract_info_value(userinfo, "hand").filter(|h| !h.is_empty()) {
         pers.hand = crate::spawn::strtol(&hand);
     }
@@ -1256,6 +1256,15 @@ mod tests {
         assert!(ent.client.is_some());
         assert_eq!(world.client(key).unwrap().pers.netname, "TestPlayer");
         assert!(world.client(key).unwrap().pers.connected);
+    }
+
+    #[test]
+    fn a_userinfo_without_a_name_leaves_the_netname_empty_like_c() {
+        // C ClientUserinfoChanged copies Info_ValueForKey(userinfo, "name"),
+        // which is "" for a missing key.
+        let mut world = test_world();
+        let key = world.connect_client(1, "\\skin\\male/grunt").unwrap();
+        assert_eq!(world.client(key).unwrap().pers.netname, "");
     }
 
     #[test]
