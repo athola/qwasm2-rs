@@ -341,7 +341,7 @@ pub fn gladiator_gun(world: &mut GameWorld, key: EntityKey) {
     let Some((start, _, _)) = monster_flash_source(world, key, MZ2_GLADIATOR_RAILGUN_1) else {
         return;
     };
-    let Some(pos1) = world.entities.get(key).map(|e| e.game.move_origin) else {
+    let Some(pos1) = world.entities.get(key).map(|e| e.game.pos1) else {
         return;
     };
     let dir = (pos1 - start).normalize_or_zero();
@@ -349,10 +349,8 @@ pub fn gladiator_gun(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Charge the railgun at the enemy's eyes, except inside a small safe zone
-/// (not for stand-ground gladiators: players could abuse it). C keeps the
-/// aim in `self->pos1`; the entity has no such field (needs-owner), so it
-/// lives in `game.move_origin`, which only movers use.
-/// C ref: `gladiator_attack`.
+/// (not for stand-ground gladiators: players could abuse it). The aim is
+/// saved in `pos1`, as in C. C ref: `gladiator_attack`.
 pub fn gladiator_attack(world: &mut GameWorld, key: EntityKey) {
     let Some(ent) = world.entities.get(key) else {
         return;
@@ -369,7 +367,7 @@ pub fn gladiator_attack(world: &mut GameWorld, key: EntityKey) {
     }
     sound(world, key, CHAN_WEAPON, SOUND_GUN, ATTN_NORM);
     if let Some(ent) = world.entities.get_mut(key) {
-        ent.game.move_origin = aim;
+        ent.game.pos1 = aim;
     }
     set_move(world, key, &GLADIATOR_MOVE_ATTACK_GUN);
 }
@@ -868,7 +866,7 @@ mod tests {
                 sounds(&gi),
                 [(CHAN_WEAPON, SOUND_GUN.to_string(), ATTN_NORM)]
             );
-            let pos1 = world.entities.get(key).unwrap().game.move_origin;
+            let pos1 = world.entities.get(key).unwrap().game.pos1;
             assert_eq!(pos1, Vec3f::new(x, 0.0, 22.0));
         }
     }
@@ -877,7 +875,7 @@ mod tests {
     fn gladiator_gun_fires_its_rail_flash_from_the_c_offset() {
         let (mut world, gi) = wire_world();
         let key = spawned(&mut world);
-        world.entities.get_mut(key).unwrap().game.move_origin = Vec3f::new(500.0, 0.0, 0.0);
+        world.entities.get_mut(key).unwrap().game.pos1 = Vec3f::new(500.0, 0.0, 0.0);
         gladiator_gun(&mut world, key);
         let number = world.number_of(key).unwrap() as i32;
         let wire = gi.wire.borrow();
