@@ -1775,7 +1775,7 @@ pub fn find_item_index(items: &[ItemDef], classname: &str) -> Option<usize> {
 pub fn find_item_index_by_name(items: &[ItemDef], name: &str) -> Option<usize> {
     items
         .iter()
-        .position(|i| i.pickup_name.eq_ignore_ascii_case(name))
+        .position(|i| !i.pickup_name.is_empty() && i.pickup_name.eq_ignore_ascii_case(name))
 }
 
 // ---------------------------------------------------------------------------
@@ -2888,6 +2888,14 @@ mod tests {
         assert_eq!(find_item_index_by_name(&items, "Shells"), Some(18));
         assert_eq!(find_item_index_by_name(&items, "shells"), Some(18)); // case insensitive
         assert_eq!(find_item_index_by_name(&items, "Rockets"), Some(21));
+    }
+
+    #[test]
+    fn an_empty_name_finds_no_item_not_the_null_item() {
+        // C FindItem skips items with no pickup_name, so `use` with no
+        // argument reports "unknown item".
+        let items = build_item_list();
+        assert_eq!(find_item_index_by_name(&items, ""), None);
     }
 
     #[test]
