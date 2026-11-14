@@ -319,56 +319,31 @@ impl Engine {
         true
     }
 
-    /// Follow a level exit (C `gamemap`): the server loads the next level
-    /// into the same game, then the client starts from a clear state (C
-    /// `CL_ClearState` on the reconnect, which stops all sounds) and, for a
-    /// game map, registers its sounds and preps the renderer (C
-    /// `CL_RegisterSounds`, `CL_PrepRefresh`). `sounds`, the old map's last
-    /// frame of sounds, go with the old map: their indices name its
-    /// `CS_SOUNDS`. The client is cleared before the renderer is prepped,
-    /// so a failed prep does not leave the old map's sounds and frames.
-    fn change_map(
+    /// Finish a level exit `frame_output` followed: for a game map,
+    /// register its sounds and prep the renderer (C `CL_RegisterSounds`,
+    /// `CL_PrepRefresh`). The client was cleared first, so a failed prep
+    /// does not leave the old map's sounds and frames.
+    fn prep_level(
         &mut self,
-        level: &str,
-        sounds: &mut Vec<q2_server::game_iface::SoundEvent>,
+        request: &q2_server::init::MapRequest,
     ) -> q2_common::error::Q2Result<()> {
-        use q2_server::init::{LevelKind, MapRequest};
-        let request = MapRequest::parse(level);
-        log(&format!("Level exit to {level}"));
-        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
-        // level with no map or player, which `tick` draws (C
-        // SCR_PlayCinematic). There is no cinematic or demo playback:
-        // LocalGame refuses one, or skips it to its next server.
-        let bsp = match request.kind {
-            LevelKind::Game => self.fs.load_file(&format!("maps/{}.bsp", request.map))?,
-            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Vec::new(),
-        };
-        self.local.change_map(&request, &bsp)?;
-        if matches!(request.kind, LevelKind::Cinematic | LevelKind::Demo) {
-            log(&format!("{}: skipped, no cinematic playback", request.map));
-            return Ok(());
+        use q2_server::init::LevelKind;
+        match request.kind {
+            LevelKind::Cinematic | LevelKind::Demo => {
+                log(&format!("{}: skipped, no cinematic playback", request.map));
+            }
+            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map)),
+            LevelKind::Game => {
+                self.register_sounds();
+                let local = &self.local;
+                prep_refresh(
+                    self.renderer.as_mut(),
+                    |i| local.configstring(i),
+                    &mut self.models,
+                )?;
+                log(&format!("Map: maps/{}.bsp loaded", request.map));
+            }
         }
-        // C CL_ClearState -> S_StopAllSounds.
-        self.sound.stop_all();
-        sounds.clear();
-        self.frames = q2_client::frame::FrameHistory::default();
-        self.effects.clear();
-        self.fx.clear();
-        self.trails = q2_client::fx::EntityTrails::default();
-        self.text.layout.clear();
-        self.input.view_angles = q2_shared::types::Vec3f::ZERO;
-        if request.kind == LevelKind::Pic {
-            log(&format!("Picture: pics/{} shown", request.map));
-            return Ok(());
-        }
-        self.register_sounds();
-        let local = &self.local;
-        prep_refresh(
-            self.renderer.as_mut(),
-            |i| local.configstring(i),
-            &mut self.models,
-        )?;
-        log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
     }
 
@@ -459,15 +434,24 @@ impl Engine {
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.
         self.local.frame(elapsed_us);
-        let mut sounds = self.local.take_sounds();
-        if let Some(level) = self.local.take_map_change() {
-            if let Err(e) = self.change_map(&level, &mut sounds) {
+        let fs = &self.fs;
+        let mut client = LevelClient {
+            sound: &mut self.sound,
+            frames: &mut self.frames,
+            effects: &mut self.effects,
+            fx: &mut self.fx,
+            trails: &mut self.trails,
+            text: &mut self.text,
+            view_angles: &mut self.input.view_angles,
+        };
+        let output = frame_output(&mut self.local, &mut client, |path| fs.load_file(path));
+        let (sounds, messages) = (output.sounds, output.messages);
+        if let Some((level, change)) = output.level {
+            log(&format!("Level exit to {level}"));
+            if let Err(e) = change.and_then(|request| self.prep_level(&request)) {
                 console::error_1(&q2err_to_js(e));
             }
         }
-        // Taken after the map change, which drops the old level's messages
-        // (C CL_ClearState): none run against the new level's frame.
-        let messages = self.local.take_messages();
         self.frames.advance(elapsed_us);
         let new_frame = self.sync_frame();
         let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
@@ -586,6 +570,84 @@ impl Engine {
             .render_frame(&fd, &entities, &dlights, &fx_particles(&effects.particles));
         self.draw_hud(&stats);
         self.renderer.end_frame();
+    }
+}
+
+/// The client state a level change starts over (C `CL_ClearState`).
+#[cfg(any(target_arch = "wasm32", test))]
+struct LevelClient<'a> {
+    sound: &'a mut q2_client::sound::SoundSystem,
+    frames: &'a mut q2_client::frame::FrameHistory,
+    effects: &'a mut q2_client::effects::Effects,
+    fx: &'a mut q2_client::fx::ClientFx,
+    trails: &'a mut q2_client::fx::EntityTrails,
+    text: &'a mut q2_client::notify::ServerText,
+    view_angles: &'a mut q2_shared::types::Vec3f,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl LevelClient<'_> {
+    /// C `CL_ClearState` on the reconnect, which stops all sounds
+    /// (`S_StopAllSounds`).
+    fn clear(&mut self) {
+        self.sound.stop_all();
+        *self.frames = q2_client::frame::FrameHistory::default();
+        self.effects.clear();
+        self.fx.clear();
+        *self.trails = q2_client::fx::EntityTrails::default();
+        self.text.layout.clear();
+        *self.view_angles = q2_shared::types::Vec3f::ZERO;
+    }
+}
+
+/// What a server frame hands the client: its sounds and messages, and the
+/// level exit it asked for with the outcome of following it.
+#[cfg(any(target_arch = "wasm32", test))]
+struct FrameOutput {
+    sounds: Vec<q2_server::game_iface::SoundEvent>,
+    messages: Vec<Vec<u8>>,
+    level: Option<(
+        String,
+        q2_common::error::Q2Result<q2_server::init::MapRequest>,
+    )>,
+}
+
+/// Take a server frame's output and follow a level exit (C `gamemap`) in
+/// between. The server loads the next level into the same game
+/// (`load_file` reads its BSP), then the client starts from a clear state.
+/// The sounds, taken before the change, go with the old map: their indices
+/// name its `CS_SOUNDS`. The messages are taken after it, which drops the
+/// old level's (C `CL_ClearState`): none run against the new level's
+/// frame. A skipped cinematic keeps the running map and its client state.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_output(
+    local: &mut q2_server::local::LocalGame,
+    client: &mut LevelClient<'_>,
+    load_file: impl FnOnce(&str) -> q2_common::error::Q2Result<Vec<u8>>,
+) -> FrameOutput {
+    use q2_server::init::{LevelKind, MapRequest};
+    let mut sounds = local.take_sounds();
+    let level = local.take_map_change().map(|level| {
+        let request = MapRequest::parse(&level);
+        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
+        // level with no map or player, which `tick` draws (C
+        // SCR_PlayCinematic). There is no cinematic or demo playback:
+        // LocalGame refuses one, or skips it to its next server.
+        let change = match request.kind {
+            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map)),
+            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Ok(Vec::new()),
+        }
+        .and_then(|bsp| local.change_map(&request, &bsp));
+        if change.is_ok() && matches!(request.kind, LevelKind::Game | LevelKind::Pic) {
+            client.clear();
+            sounds.clear();
+        }
+        (level, change.map(|()| request))
+    });
+    FrameOutput {
+        sounds,
+        messages: local.take_messages(),
+        level,
     }
 }
 
@@ -2120,6 +2182,92 @@ mod tests {
                 "{requested}"
             );
         }
+    }
+
+    /// The client state `LevelClient` borrows, owned for a test.
+    #[derive(Default)]
+    struct TestClient {
+        frames: q2_client::frame::FrameHistory,
+        effects: q2_client::effects::Effects,
+        fx: q2_client::fx::ClientFx,
+        trails: q2_client::fx::EntityTrails,
+        text: q2_client::notify::ServerText,
+        view_angles: q2_shared::types::Vec3f,
+    }
+
+    /// Run `frame_output` on `local` with `client`, reading no files.
+    fn run_frame_output(
+        local: &mut q2_server::local::LocalGame,
+        client: &mut TestClient,
+    ) -> FrameOutput {
+        let mut sound = q2_client::sound::SoundSystem::new(1);
+        let mut level = LevelClient {
+            sound: &mut sound,
+            frames: &mut client.frames,
+            effects: &mut client.effects,
+            fx: &mut client.fx,
+            trails: &mut client.trails,
+            text: &mut client.text,
+            view_angles: &mut client.view_angles,
+        };
+        frame_output(local, &mut level, |path| {
+            Err(q2_common::Q2Error::Drop(format!("{path}: no file")))
+        })
+    }
+
+    /// A local game whose last server frame both sent a print and asked
+    /// for a level exit to `level`, and a client that has a frame.
+    fn frame_with_a_print_and_a_level_exit(
+        level: &str,
+    ) -> (q2_server::local::LocalGame, TestClient) {
+        let mut local = q2_server::local::LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.frame(100_000);
+        let mut client = TestClient::default();
+        let (_, ps) = local.player().expect("player in game");
+        let ps = ps.clone();
+        client.frames.receive(local.framenum(), Vec::new(), &ps);
+        client.view_angles = q2_shared::types::Vec3f::new(10.0, 20.0, 0.0);
+        client.text.layout = "xv 0".into();
+        // A skipped cinematic hands its next server to take_map_change.
+        local
+            .change_map(
+                &q2_server::init::MapRequest::parse(&format!("intro.cin+{level}")),
+                &[],
+            )
+            .expect("the cinematic is skipped");
+        local.client_command("use Shotgun");
+        local.frame(100_000);
+        (local, client)
+    }
+
+    #[test]
+    fn a_level_exit_drops_the_old_levels_messages_and_clears_the_client() {
+        // C's client parses the old level's last messages against the old
+        // level, then CL_ClearState: nothing runs against the new level.
+        let (mut local, mut client) = frame_with_a_print_and_a_level_exit("victory.pcx");
+        let output = run_frame_output(&mut local, &mut client);
+        let (level, change) = output.level.expect("the level exit is followed");
+        assert_eq!(level, "victory.pcx");
+        assert!(change.is_ok());
+        assert_eq!(local.picture(), Some("victory.pcx"));
+        assert!(output.messages.is_empty(), "{:?}", output.messages);
+        assert!(output.sounds.is_empty());
+        assert_eq!(client.frames.serverframe(), None);
+        assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
+        assert!(client.text.layout.is_empty());
+    }
+
+    #[test]
+    fn a_failed_level_exit_keeps_the_running_levels_messages_and_client() {
+        // The next map's BSP cannot be read: the old level keeps running.
+        let (mut local, mut client) = frame_with_a_print_and_a_level_exit("base2");
+        let output = run_frame_output(&mut local, &mut client);
+        let (level, change) = output.level.expect("the level exit is taken");
+        assert_eq!(level, "base2");
+        assert!(change.is_err());
+        assert_eq!(output.messages.len(), 1);
+        assert!(client.frames.serverframe().is_some());
     }
 
     #[test]
