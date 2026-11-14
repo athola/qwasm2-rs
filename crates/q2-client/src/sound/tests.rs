@@ -162,6 +162,39 @@ fn listener_right_is_c_angle_vectors_right() {
     assert!((l.right - Vec3f::new(0.0, -1.0, 0.0)).length() < 1e-6);
 }
 
+#[test]
+fn listener_right_rounds_like_c_angle_vectors() {
+    // C AngleVectors stores the radian angle to float before sin/cos.
+    // View angles are lerped floats: sweep -180..180 degrees.
+    for step in 0..200_000u32 {
+        let degrees = step as f32 * 0.0018 - 180.0;
+        for angles in [
+            Vec3f::new(0.0, degrees, 0.0),
+            Vec3f::new(degrees, 45.0, 0.0),
+            Vec3f::new(10.0, degrees, degrees),
+        ] {
+            let right = q2_common::pmove::angle_vectors(angles).1;
+            assert_eq!(
+                Listener::from_view(Vec3f::ZERO, angles).right,
+                right,
+                "{angles}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spatialized_volumes_round_like_c() {
+    // Expected values from C SDL_SpatializeOrigin, compiled: VectorNormalize
+    // multiplies by the reciprocal, and the left scale is a double product.
+    let at = |x, y, master_vol| {
+        spatialize_origin(Vec3f::new(x, y, 0.0), &listener(), master_vol, 0.0005)
+    };
+    assert_eq!(at(20.0, 15.0, 255.0), (203, 51));
+    assert_eq!(at(-18.0, 667.0, 160.0), (112, 0));
+    assert_eq!(at(229.0, 931.0, 219.0), (121, 1));
+}
+
 // -- registration (C CL_RegisterSounds, S_LoadSound) -------------------------
 
 #[test]
