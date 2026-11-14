@@ -64,11 +64,13 @@ fn manifest_deps(toml: &str) -> BTreeSet<String> {
     let mut in_deps = false;
     for line in toml.lines().map(str::trim) {
         if let Some(header) = line.strip_prefix('[') {
-            let header = header.trim_end_matches(']');
+            // `[ dependencies ] # note` is the same table as `[dependencies]`.
+            let header = header.split('#').next().unwrap().trim();
+            let header = header.trim_end_matches(']').trim();
             // `[dependencies.q2-x]` names the dependency in the header.
             if let Some((table, dep)) = header.rsplit_once('.') {
-                if table.ends_with("dependencies") {
-                    deps.insert(dep.to_owned());
+                if table.trim_end().ends_with("dependencies") {
+                    deps.insert(dep.trim().trim_matches('"').to_owned());
                     in_deps = false;
                     continue;
                 }
@@ -87,7 +89,8 @@ fn manifest_deps(toml: &str) -> BTreeSet<String> {
             .split_once("package")
             .and_then(|(_, p)| p.split('"').nth(1))
             .unwrap_or_else(|| key.trim().split('.').next().unwrap());
-        deps.insert(name.trim().to_owned());
+        // A quoted key, `"q2-x" = ..`, names q2-x.
+        deps.insert(name.trim().trim_matches('"').to_owned());
     }
     deps.retain(|d| d.starts_with("q2-"));
     deps
@@ -206,12 +209,23 @@ game = { package = "q2-game", path = "../q2-game" }
 path = "../q2-server"
 [lints]
 q2-render = "not a dependency"
+[build-dependencies] # engine crates
+q2-client = { path = "../q2-client" }
+[ dependencies ]
+"q2-net" = { path = "../q2-net" }
 "#;
     assert_eq!(
         manifest_deps(toml),
-        ["q2-common", "q2-game", "q2-server", "q2-shared"]
-            .map(String::from)
-            .into()
+        [
+            "q2-client",
+            "q2-common",
+            "q2-game",
+            "q2-net",
+            "q2-server",
+            "q2-shared"
+        ]
+        .map(String::from)
+        .into()
     );
 }
 
