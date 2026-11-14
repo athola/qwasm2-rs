@@ -194,7 +194,7 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("func_wall", misc_func::sp_func_wall, None, None, false),
     ("func_object", misc_func::sp_func_object, None, Some(misc_func::finish_func_object), false),
     ("func_timer", func::sp_func_timer, None, Some(func::start_func_timer), false),
-    ("func_explosive", func::sp_func_explosive, None, None, false),
+    ("func_explosive", func::sp_func_explosive, None, Some(func::finish_func_explosive), false),
     ("func_killbox", func::sp_func_killbox, None, None, false),
 
     ("trigger_always", triggers::sp_trigger_always, None, Some(finish_trigger), false),

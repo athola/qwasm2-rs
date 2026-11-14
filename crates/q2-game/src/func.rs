@@ -2461,7 +2461,24 @@ pub fn sp_func_timer(
     ent.svflags = q2_shared::constants::SVF_NOCLIENT;
 }
 
-/// C ref: `SP_func_explosive` (single player).
+/// The `GameWorld` half of C SP_func_explosive: removed in deathmatch,
+/// otherwise the debris models are registered. C does both before its
+/// setmodel, where `call_spawn` has already set the brush model, so the
+/// brush's `*n` index comes before the debris here.
+pub fn finish_func_explosive(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    world.gi.model_index("models/objects/debris1/tris.md2");
+    world.gi.model_index("models/objects/debris2/tris.md2");
+}
+
+/// C ref: `SP_func_explosive`; `finish_func_explosive` does the rest.
 pub fn sp_func_explosive(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -3060,6 +3077,32 @@ mod tests {
             );
             assert!(!world.entities.is_live(brush));
         }
+    }
+
+    #[test]
+    fn deathmatch_removes_func_explosive() {
+        // C SP_func_explosive: "auto-remove for deathmatch".
+        let (mut world, _) = test_world_recording();
+        world.game.deathmatch = true;
+        world.init_game();
+        world.spawn_entities(
+            "test",
+            r#"{ "classname" "worldspawn" } { "classname" "func_explosive" "model" "*1" }"#,
+            "",
+        );
+        assert!(world.find_by_classname(None, "func_explosive").is_none());
+    }
+
+    #[test]
+    fn func_explosive_precaches_both_debris_models_at_spawn() {
+        let (_, gi) = spawned_gi(r#"{ "classname" "func_explosive" "model" "*1" }"#);
+        let models = gi.models.borrow();
+        let at = |name: &str| models.iter().position(|m| m == name);
+        let (one, two) = (
+            at("models/objects/debris1/tris.md2"),
+            at("models/objects/debris2/tris.md2"),
+        );
+        assert!(one.is_some() && one < two, "{models:?}");
     }
 
     #[test]
