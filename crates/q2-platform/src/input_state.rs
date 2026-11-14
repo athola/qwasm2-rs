@@ -16,6 +16,8 @@ pub struct WasmInputState {
     /// samples the input still counts once.
     pressed_keys: [bool; 256],
     pressed_buttons: u8,
+    /// The canvas holds the pointer lock (last `pointer_lock_changed`).
+    pointer_locked: bool,
 }
 
 impl WasmInputState {
@@ -28,8 +30,14 @@ impl WasmInputState {
         self.keys[usize::from(key)] = false;
     }
 
-    /// `mask` is the button's bit in `mouse_buttons`.
+    /// `mask` is the button's bit in `mouse_buttons`. Ignored without the
+    /// pointer lock: that click is the one that asks for it, and C never
+    /// passes its capture click to the game (its menu requests the
+    /// capture, `wasm_capture_mouse` in client/menu/menu.c).
     pub fn button_down(&mut self, mask: u8) {
+        if !self.pointer_locked {
+            return;
+        }
         self.mouse_buttons |= mask;
         self.pressed_buttons |= mask;
     }
@@ -74,6 +82,7 @@ impl WasmInputState {
     /// clicked again; on losing it, a button or key may be released where
     /// the page cannot see it, so everything is released.
     pub fn pointer_lock_changed(&mut self, locked: bool) {
+        self.pointer_locked = locked;
         if locked {
             self.mouse_dx = 0.0;
             self.mouse_dy = 0.0;
@@ -113,6 +122,7 @@ impl Default for WasmInputState {
             legend_requested: false,
             pressed_keys: [false; 256],
             pressed_buttons: 0,
+            pointer_locked: false,
         }
     }
 }
@@ -200,6 +210,7 @@ mod tests {
     #[test]
     fn a_tap_released_before_the_frame_counts_once() {
         let mut input = WasmInputState::default();
+        input.pointer_lock_changed(true);
         input.key_down(b'w');
         input.key_up(b'w');
         input.button_down(1);
@@ -210,6 +221,20 @@ mod tests {
         let next = input.take_frame();
         assert!(!next.keys[usize::from(b'w')]);
         assert_eq!(next.mouse_buttons, 0);
+    }
+
+    #[test]
+    fn a_click_that_takes_the_pointer_lock_does_not_fire() {
+        // The click that starts or resumes the game reaches the canvas
+        // before the lock does; C never passes that capture click to
+        // +attack (its menu requests the capture).
+        let mut input = WasmInputState::default();
+        input.button_down(1);
+        input.button_up(1);
+        input.pointer_lock_changed(true);
+        assert_eq!(input.take_frame().mouse_buttons, 0);
+        input.button_down(1);
+        assert_eq!(input.take_frame().mouse_buttons, 1, "locked: fires");
     }
 
     #[test]
@@ -236,6 +261,7 @@ mod tests {
     #[test]
     fn release_all_drops_holds_and_pending_taps() {
         let mut input = WasmInputState::default();
+        input.pointer_lock_changed(true);
         input.key_down(b'w');
         input.button_down(2);
         input.release_all();
