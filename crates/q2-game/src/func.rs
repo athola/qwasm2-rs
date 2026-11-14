@@ -3535,6 +3535,7 @@ mod tests {
         {
             let e = world.entities.get_mut(rider).unwrap();
             e.game.movetype = MoveType::Step;
+            e.solid = Solid::Bbox; // movers skip SOLID_NOT entities
             e.game.ground_entity = Some(plat);
             e.state.origin = Vec3f::new(32.0, 32.0, 32.0);
         }
@@ -3562,6 +3563,7 @@ mod tests {
         world.link_entity(plat);
         let rider = world.spawn().unwrap();
         world.entities.get_mut(rider).unwrap().game.movetype = MoveType::Step;
+        world.entities.get_mut(rider).unwrap().solid = Solid::Bbox;
         world.entities.get_mut(rider).unwrap().game.ground_entity = Some(plat);
         world.link_entity(rider);
         // The rider is stuck both at the pushed and at its old position.

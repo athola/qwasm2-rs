@@ -58,9 +58,7 @@ fn teleporter_touch(
     };
 
     // Unlink to make sure it can't possibly interfere with KillBox.
-    if let Some(number) = world.number_of(other_key) {
-        world.gi.unlink_entity(number);
-    }
+    world.unlink_entity(other_key);
     let Some(other) = world.entities.get_mut(other_key) else {
         return;
     };

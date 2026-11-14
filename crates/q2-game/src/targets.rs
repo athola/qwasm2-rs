@@ -598,13 +598,10 @@ fn use_target_spawner(
     world.call_spawn(spawned, &classname, &fields);
     // C goes on to KillBox the freed edict, at the origin with no size,
     // when the spawn function removed it; that is skipped here.
-    let Some(number) = world
-        .number_of(spawned)
-        .filter(|_| world.entities.is_live(spawned))
-    else {
+    if !world.entities.is_live(spawned) {
         return;
-    };
-    world.gi.unlink_entity(number);
+    }
+    world.unlink_entity(spawned);
     world.kill_box(spawned);
     world.link_entity(spawned);
     if speed != 0.0 {

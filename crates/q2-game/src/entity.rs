@@ -471,6 +471,11 @@ pub struct Entity {
     pub solid: Solid,
     pub svflags: u32,
     pub linkcount: i32,
+    /// Whether the server holds the entity in an area node (C
+    /// `area.prev != NULL`): set by `link_entity` unless SOLID_NOT, which
+    /// C SV_LinkEdict counts in `linkcount` but never area-links, and
+    /// cleared by `unlink_entity`. Movers only push area-linked entities.
+    pub area_linked: bool,
 
     pub mins: Vec3f,
     pub maxs: Vec3f,
@@ -521,6 +526,7 @@ impl Default for Entity {
             solid: Solid::Not,
             svflags: 0,
             linkcount: 0,
+            area_linked: false,
             mins: Vec3f::ZERO,
             maxs: Vec3f::ZERO,
             absmin: Vec3f::ZERO,

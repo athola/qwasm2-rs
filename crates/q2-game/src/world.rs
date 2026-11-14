@@ -266,9 +266,7 @@ impl GameWorld {
         let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
             return;
         };
-        if let Ok(n) = usize::try_from(number) {
-            self.gi.unlink_entity(n);
-        }
+        self.unlink_entity(key);
         // C G_FreeEdict: client edicts, and in coop or deathmatch the body
         // queue after them, are never freed. C always has `bodyque` edicts
         // there in those modes; checking the classname keeps entities
@@ -285,6 +283,17 @@ impl GameWorld {
         }
         self.entities.set_level_time(self.level.time);
         self.entities.soft_free(key);
+    }
+
+    /// Take the entity out of the server's world. C ref: `gi.unlinkentity`.
+    pub fn unlink_entity(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        ent.area_linked = false;
+        if let Ok(n) = usize::try_from(ent.state.number) {
+            self.gi.unlink_entity(n);
+        }
     }
 
     /// Recompute the link fields and hand the entity to the server.
@@ -335,6 +344,7 @@ impl GameWorld {
             ent.state.old_origin = ent.state.origin;
         }
         ent.linkcount += 1;
+        ent.area_linked = ent.solid != Solid::Not;
 
         let owner = ent.owner;
         let link = EntityLink {
