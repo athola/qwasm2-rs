@@ -8,6 +8,11 @@ All notable changes to qwasm2-rs are documented here.
 - `Renderer` gains the required `set_hand`;
   `ServerStatic::connect_local_client` takes the client's `userinfo`;
   the unused `q2_client::state::ClientStatic` is removed
+- `GameImport` gains the required `cvar` and `local_time` (C `gi.cvar`,
+  the game's `time`/`localtime`); `q2_client::entities::entity_views`
+  takes C's `game` value as its first argument
+- The workspace denies rustc's `unsafe_code` lint; q2-render allows it
+  at its crate root
 
 ### Added
 - The player fires the blaster: `ClientThink` latches the attack button
@@ -179,7 +184,30 @@ All notable changes to qwasm2-rs are documented here.
 
 ### Fixed
 - `register_model` no longer refuses names of four characters or
-  fewer; like C `Mod_ForName`, the file load decides
+  fewer, and picks the MD2 or sprite loader from the file's magic number
+  as C `Mod_ForName` does; an IBSP file or an unknown magic returns
+  `NONE` where C returns the world model or drops
+- From the round-3 and round-4 reviews of #33:
+  - the click that starts or resumes the game (pointer lock) no longer
+    fires the weapon
+  - a BFG laser stops at a monster its damage gibs or frees, as C's
+    `bfg_think` tests after `T_Damage`
+  - the local player sends C's default userinfo (`name unnamed`,
+    `skin male/grunt`), so deaths read "unnamed died."
+  - the game's `gi.dprintf` and console prints reach the browser console
+  - messages, sounds and notify lines from the old level stop at a map
+    change; a failed level change, a panic or a stopped game loop shows
+    in the status console
+  - target_temp_entity, target_splash, target_spawner, target_blaster,
+    target_crosslevel_trigger/_target, target_lightramp and
+    target_earthquake behave as in C instead of relaying their targets
+  - doors and plats no longer push entities C never links (SOLID_NOT);
+    func_explosive leaves deathmatch maps; crushed debris explodes
+  - a disconnecting player is announced, shows C's logout flash and
+    leaves the scoreboard
+  - hand grenade throws, vectoangles, monster steps, sound
+    spatialisation and the fov use C's double arithmetic where C does
+  - monster footsteps follow the `g_monsterfootsteps` cvar
 - Multicasts reach the local client only as C `SV_Multicast` routes
   them: through the origin's PVS or PHS and connected areas, and
   unreliable ones only once the client is in the game, so effects in
