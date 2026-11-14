@@ -21,7 +21,8 @@ struct Args {
     out: PathBuf,
 
     /// Comma-separated extensions to keep (e.g. "bsp,cfg"; any case, a
-    /// leading "." or "*." is ignored). Matching no file is an error.
+    /// leading "." or "*." is ignored). Matching no file in a non-empty pak
+    /// is an error.
     /// Without this flag every file is kept.
     #[arg(long)]
     allow: Option<String>,
