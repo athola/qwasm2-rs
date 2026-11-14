@@ -148,12 +148,14 @@ impl GameWorld {
     /// Blood or sparks where a hit landed. C ref: `SpawnDamage`
     /// (g_combat.c).
     pub(crate) fn spawn_damage(&self, te: i32, origin: Vec3f, normal: Vec3f) {
-        self.gi
-            .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-        self.gi.write_byte(te);
-        self.gi.write_position(origin);
-        self.gi.write_dir(normal);
-        self.gi.multicast(origin, q2_shared::types::Multicast::PVS);
+        crate::weapons::temp_entity(
+            self,
+            te,
+            &[origin],
+            Some(normal),
+            origin,
+            q2_shared::types::Multicast::PVS,
+        );
     }
 
     /// The power armor a player has switched on: the shield if carried,
@@ -3088,7 +3090,12 @@ mod tests {
     }
 
     /// Two connected players wearing the same skin, under `dmflags`.
-    fn teammates(deathmatch: bool, dmflags: i32) -> (GameWorld, EntityKey, EntityKey) {
+    /// Two players: one in male/grunt, the other in `other_skin`.
+    fn teammates(
+        deathmatch: bool,
+        dmflags: i32,
+        other_skin: &str,
+    ) -> (GameWorld, EntityKey, EntityKey) {
         let mut world = test_world();
         world.init_items();
         world.set_max_clients(2);
@@ -3096,14 +3103,14 @@ mod tests {
         world.game.dmflags = dmflags;
         let start = world.spawn().unwrap();
         world.entities.get_mut(start).unwrap().game.classname = "info_player_deathmatch".into();
-        let mut join = |n| {
+        let mut join = |n, skin: &str| {
             let key = world
-                .connect_client(n, "\\name\\P\\skin\\male/grunt")
+                .connect_client(n, &format!("\\name\\P\\skin\\{skin}"))
                 .unwrap();
             world.begin_client(key);
             key
         };
-        let (me, other) = (join(1), join(2));
+        let (me, other) = (join(1, "male/grunt"), join(2, other_skin));
         (world, me, other)
     }
 
@@ -3125,7 +3132,7 @@ mod tests {
     #[test]
     fn hitting_a_teammate_in_deathmatch_is_friendly_fire() {
         // C ref: T_Damage, deathmatch with DF_MODELTEAMS | DF_SKINTEAMS.
-        let (mut world, me, other) = teammates(true, DF_MODELTEAMS | DF_SKINTEAMS);
+        let (mut world, me, other) = teammates(true, DF_MODELTEAMS | DF_SKINTEAMS, "male/grunt");
         shoot(&mut world, other, me);
         assert!(world.friendly_fire);
     }
@@ -3133,14 +3140,15 @@ mod tests {
     #[test]
     fn team_flags_outside_deathmatch_and_coop_make_no_teammates() {
         // C ref: T_Damage, (deathmatch && teams) || coop.
-        let (mut world, me, other) = teammates(false, DF_MODELTEAMS);
+        let (mut world, me, other) = teammates(false, DF_MODELTEAMS, "male/grunt");
         shoot(&mut world, other, me);
         assert!(!world.friendly_fire);
     }
 
     #[test]
     fn hitting_someone_off_your_team_is_not_friendly_fire() {
-        let (mut world, me, other) = teammates(true, 0);
+        // C ref: T_Damage asks OnSameTeam; skin teams split grunt and athena.
+        let (mut world, me, other) = teammates(true, DF_SKINTEAMS, "female/athena");
         shoot(&mut world, other, me);
         assert!(!world.friendly_fire);
     }

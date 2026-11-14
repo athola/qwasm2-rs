@@ -252,11 +252,6 @@ pub fn grenade_explode(world: &mut GameWorld, self_key: EntityKey) {
     world.free_entity(self_key);
 }
 
-/// Grenade think callback — wraps `grenade_explode` for timer detonation.
-fn grenade_think(world: &mut GameWorld, self_key: EntityKey) {
-    grenade_explode(world, self_key);
-}
-
 /// Grenade touch handler — bounces off world, explodes on entities.
 /// C ref: `Grenade_Touch` (g_weapon.c:598-644).
 pub fn grenade_touch(
@@ -459,7 +454,7 @@ pub fn bfg_explode(world: &mut GameWorld, self_key: EntityKey) {
     ent.game.nextthink = time + FRAMETIME;
     ent.state.frame += 1;
     if ent.state.frame == 5 {
-        ent.think = Some(projectile_timeout);
+        ent.think = Some(crate::misc::free_think);
     }
 }
 
@@ -505,12 +500,9 @@ pub fn bfg_think(world: &mut GameWorld, self_key: EntityKey) {
             let Some(h) = world.entities.get(hit) else {
                 break;
             };
-            let (hurtable, body) = (
-                h.game.takedamage != TakeDamage::No
-                    && !h.game.flags.contains(EntityFlags::IMMUNE_LASER)
-                    && Some(hit) != owner,
-                h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some(),
-            );
+            let hurtable = h.game.takedamage != TakeDamage::No
+                && !h.game.flags.contains(EntityFlags::IMMUNE_LASER)
+                && Some(hit) != owner;
             if hurtable {
                 world.t_damage(
                     hit,
@@ -525,15 +517,22 @@ pub fn bfg_think(world: &mut GameWorld, self_key: EntityKey) {
                     MeansOfDeath::BfgLaser,
                 );
             }
-            // Something that's not a monster or player ends the laser.
+            // Something that's not a monster or player ends the laser. Tested
+            // after the damage, as C does: a monster it gibbed has lost
+            // SVF_MONSTER, and a freed one (C zeroes its svflags) is gone.
+            let body = world
+                .entities
+                .get(hit)
+                .is_some_and(|h| h.svflags & SvFlags::MONSTER.bits() != 0 || h.client.is_some());
             if !body {
-                world.gi.write_byte(SvcOp::TempEntity as i32);
-                world.gi.write_byte(TE_LASER_SPARKS);
-                world.gi.write_byte(4);
-                world.gi.write_position(tr.endpos);
-                world.gi.write_dir(tr.plane.normal);
-                world.gi.write_byte(skinnum);
-                world.gi.multicast(tr.endpos, Multicast::PVS);
+                spark_temp_entity(
+                    world,
+                    TE_LASER_SPARKS,
+                    4,
+                    tr.endpos,
+                    tr.plane.normal,
+                    skinnum,
+                );
                 break;
             }
             ignore = tr.ent_index;
@@ -589,7 +588,7 @@ fn check_dodge(world: &mut GameWorld, shooter: EntityKey, start: Vec3f, dir: Vec
 
 /// `svc_temp_entity` of `te` with its positions and an optional direction,
 /// multicast from `at`.
-fn temp_entity(
+pub(crate) fn temp_entity(
     world: &GameWorld,
     te: i32,
     positions: &[Vec3f],
@@ -608,15 +607,30 @@ fn temp_entity(
     world.gi.multicast(at, to);
 }
 
+/// `svc_temp_entity` in the splash and sparks layout (TE_SPLASH,
+/// TE_LASER_SPARKS, TE_WELDING_SPARKS): `count` particles of `color` at
+/// `pos` along `dir`, multicast to the PVS of `pos`.
+pub(crate) fn spark_temp_entity(
+    world: &GameWorld,
+    te: i32,
+    count: i32,
+    pos: Vec3f,
+    dir: Vec3f,
+    color: i32,
+) {
+    world.gi.write_byte(SvcOp::TempEntity as i32);
+    world.gi.write_byte(te);
+    world.gi.write_byte(count);
+    world.gi.write_position(pos);
+    world.gi.write_dir(dir);
+    world.gi.write_byte(color);
+    world.gi.multicast(pos, Multicast::PVS);
+}
+
 /// C `8000 / speed`, an int division. C divides by zero on a zero
 /// speed; this port gives that projectile 8000 seconds instead.
 fn projectile_lifetime(speed: i32) -> f32 {
     8000_i32.checked_div(speed).unwrap_or(8000) as f32
-}
-
-/// Timeout cleanup — remove projectile entities that outlived their duration.
-fn projectile_timeout(world: &mut GameWorld, self_key: EntityKey) {
-    world.free_entity(self_key);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +686,7 @@ impl GameWorld {
             bolt.velocity = dir * speed as f32;
 
             bolt.touch = Some(blaster_touch);
-            bolt.think = Some(projectile_timeout);
+            bolt.think = Some(crate::misc::free_think);
             bolt.game.nextthink = self.level.time + 2.0;
         }
         self.launch_projectile(bolt_key, dir, "models/objects/laser/tris.md2");
@@ -802,13 +816,7 @@ impl GameWorld {
                         SPLASH_UNKNOWN
                     };
                     if color != SPLASH_UNKNOWN {
-                        self.gi.write_byte(SvcOp::TempEntity as i32);
-                        self.gi.write_byte(TE_SPLASH);
-                        self.gi.write_byte(8);
-                        self.gi.write_position(tr.endpos);
-                        self.gi.write_dir(tr.plane.normal);
-                        self.gi.write_byte(color);
-                        self.gi.multicast(tr.endpos, Multicast::PVS);
+                        spark_temp_entity(self, TE_SPLASH, 8, tr.endpos, tr.plane.normal, color);
                     }
                     // Change the bullet's course when it enters water.
                     let (forward, right, up) = angle_vectors(vectoangles(end - start));
@@ -954,7 +962,7 @@ impl GameWorld {
             rocket.velocity = dir.normalize_or_zero() * speed as f32;
 
             rocket.touch = Some(rocket_touch);
-            rocket.think = Some(projectile_timeout);
+            rocket.think = Some(crate::misc::free_think);
             rocket.game.nextthink = self.level.time + projectile_lifetime(speed);
         }
         self.launch_projectile(rocket_key, dir, "models/objects/rocket/tris.md2");
@@ -1017,10 +1025,11 @@ impl GameWorld {
             gren.avelocity = Vec3f::new(300.0, 300.0, 300.0);
 
             gren.touch = Some(grenade_touch);
-            gren.think = Some(grenade_think);
+            gren.think = Some(grenade_explode);
             gren.game.nextthink = self.level.time + timer;
         }
-        self.launch_projectile(gren_key, dir, "models/objects/grenade/tris.md2");
+        // Not launch_projectile: C fire_grenade leaves s.angles at zero.
+        self.set_model(gren_key, "models/objects/grenade/tris.md2");
 
         self.link_entity(gren_key);
     }
@@ -1063,7 +1072,7 @@ impl GameWorld {
             gren.owner = Some(owner);
             gren.touch = Some(grenade_touch);
             gren.game.nextthink = nextthink;
-            gren.think = Some(grenade_think);
+            gren.think = Some(grenade_explode);
             gren.game.dmg = damage;
             gren.game.dmg_radius = damage_radius;
             gren.game.classname = "hgrenade".into();
@@ -1327,7 +1336,7 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
         (0.0, if v.z > 0.0 { 90.0 } else { 270.0 })
     } else {
         let mut yaw = if v.x != 0.0 {
-            (v.y.atan2(v.x).to_degrees() as i32) as f32
+            degrees_from_atan2(v.y, v.x)
         } else if v.y > 0.0 {
             90.0
         } else {
@@ -1337,13 +1346,18 @@ pub(crate) fn vectoangles(v: Vec3f) -> Vec3f {
             yaw += 360.0;
         }
         let forward = (v.x * v.x + v.y * v.y).sqrt();
-        let mut pitch = (v.z.atan2(forward).to_degrees() as i32) as f32;
+        let mut pitch = degrees_from_atan2(v.z, forward);
         if pitch < 0.0 {
             pitch += 360.0;
         }
         (yaw, pitch)
     };
     Vec3f::new(-pitch, yaw, 0.0)
+}
+
+/// C `(int)(atan2(y, x) * 180 / M_PI)`: atan2 and the product in double.
+fn degrees_from_atan2(y: f32, x: f32) -> f32 {
+    (((y as f64).atan2(x as f64) * 180.0 / std::f64::consts::PI) as i32) as f32
 }
 
 // ==========================================================================
@@ -1772,6 +1786,104 @@ mod tests {
         *gi.box_edicts.borrow_mut() = vec![world.number_of(monster).unwrap()];
         bfg_think(&mut world, ball);
         assert!(temp_entities(&gi).contains(&TE_BFG_LASER));
+    }
+
+    /// C ThrowHead: the gibbed monster's edict stays, minus SVF_MONSTER.
+    fn die_into_a_head(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.entities.get_mut(key).unwrap().svflags &= !SvFlags::MONSTER.bits();
+    }
+
+    /// C BecomeExplosion1: the monster's edict is freed.
+    fn die_and_vanish(
+        world: &mut GameWorld,
+        key: EntityKey,
+        _inflictor: EntityKey,
+        _attacker: EntityKey,
+        _damage: i32,
+        _point: Vec3f,
+    ) {
+        world.free_entity(key);
+    }
+
+    #[test]
+    fn a_bfg_laser_stops_at_a_monster_its_damage_gibs_or_frees() {
+        // C bfg_think tests SVF_MONSTER after T_Damage, so a monster the
+        // laser kills into a head or an explosion ends it there.
+        for die in [die_into_a_head as crate::entity::DieFn, die_and_vanish] {
+            let (mut world, owner, gi) = shooter();
+            world.fire_bfg(owner, Vec3f::ZERO, Vec3f::X, 500, 400, 1000.0);
+            let ball = world.find_by_classname(None, "bfg blast").unwrap();
+            let monster = |world: &mut GameWorld, x: f32, health: i32| {
+                let key = world.spawn().unwrap();
+                let m = world.entities.get_mut(key).unwrap();
+                m.state.origin = Vec3f::new(x, 0.0, 0.0);
+                m.game.takedamage = TakeDamage::Yes;
+                m.game.health = health;
+                m.svflags |= SvFlags::MONSTER.bits();
+                m.solid = Solid::Bbox;
+                key
+            };
+            let first = monster(&mut world, 100.0, 1);
+            world.entities.get_mut(first).unwrap().die = Some(die);
+            let behind = monster(&mut world, 300.0, 100); // outside the 256 radius
+            let at = Vec3f::new(100.0, 0.0, 0.0);
+            let hit = |ent, endpos| Trace {
+                fraction: 0.05,
+                endpos,
+                ent_index: ent,
+                ..Default::default()
+            };
+            gi.queued_traces.borrow_mut().extend([
+                hit(world.number_of(first), at),
+                hit(world.number_of(behind), Vec3f::new(300.0, 0.0, 0.0)),
+                wall_hit(Vec3f::new(2048.0, 0.0, 0.0), "e1u1/wall", 0),
+            ]);
+            bfg_think(&mut world, ball);
+            assert_eq!(world.entities.get(behind).unwrap().game.health, 100);
+            let sent = temp_entities(&gi);
+            assert_eq!(sent, [TE_BLOOD, TE_LASER_SPARKS, TE_BFG_LASER], "one spark");
+            assert_eq!(gi.vectors.borrow().last(), Some(&at), "beam ends there");
+        }
+    }
+
+    #[test]
+    fn a_launcher_grenade_starts_unrotated_whatever_the_aim() {
+        // C fire_grenade never sets s.angles; only the spin turns it.
+        let (mut world, owner, _) = shooter();
+        world.fire_grenade(owner, Vec3f::ZERO, Vec3f::Y, 120, 600, 2.5, 160.0);
+        let gren = world.find_by_classname(None, "grenade").unwrap();
+        let g = world.entities.get(gren).unwrap();
+        assert_eq!(g.state.angles, Vec3f::ZERO);
+        assert_eq!(g.clipmask, MASK_SHOT);
+        assert_eq!(
+            g.state.modelindex,
+            world.gi.model_index("models/objects/grenade/tris.md2")
+        );
+    }
+
+    #[test]
+    fn vectoangles_truncates_from_double_like_c() {
+        // C atan2 and the degree conversion are double; in f32 these
+        // directions truncate one degree off. Expected values are C's
+        // (int)(atan2(y, x) * 180 / M_PI), plus 360 when negative.
+        let unit = |degrees: f64| {
+            let r = degrees.to_radians();
+            (r.cos() as f32, r.sin() as f32)
+        };
+        for (degrees, yaw) in [(-177.0, 184.0), (-170.0, 191.0)] {
+            let (x, y) = unit(degrees);
+            assert_eq!(vectoangles(Vec3f::new(x, y, 0.0)).y, yaw, "{degrees}");
+        }
+        // Pitch: atan2(z, forward) with forward = 0.99939, C -1 (359).
+        let (x, z) = unit(-178.0);
+        assert_eq!(vectoangles(Vec3f::new(x, 0.0, z)).x, -359.0);
     }
 
     #[test]
@@ -2313,13 +2425,14 @@ mod tests {
     }
 
     #[test]
-    fn projectile_timeout_frees_entity() {
+    fn a_bolt_that_outlives_its_flight_frees_itself() {
         let mut world = test_world();
-        let ent = world.spawn().unwrap();
-
-        projectile_timeout(&mut world, ent);
-
-        assert!(!world.entities.get(ent).is_some_and(|e| e.in_use));
+        let owner = world.spawn().unwrap();
+        world.fire_blaster(owner, Vec3f::ZERO, Vec3f::X, 10, 1000, EF_BLASTER, false);
+        let bolt = world.find_by_classname(None, "bolt").unwrap();
+        let think = world.entities.get(bolt).unwrap().think.unwrap();
+        think(&mut world, bolt);
+        assert!(!world.entities.get(bolt).is_some_and(|e| e.in_use));
     }
 
     fn target_at(world: &mut GameWorld, origin: Vec3f, health: i32) -> EntityKey {
