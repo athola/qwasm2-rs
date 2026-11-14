@@ -65,9 +65,9 @@ fn bundle(pkg_dir: &Path, dist_dir: &Path) -> Result<PathBuf> {
     let html = generate_html(&patched_js);
 
     // Write output
-    fs::create_dir_all(dist_dir)?;
+    fs::create_dir_all(dist_dir).with_context(|| format!("creating {}", dist_dir.display()))?;
     let output_path = dist_dir.join("qwasm2.html");
-    fs::write(&output_path, &html)?;
+    fs::write(&output_path, &html).with_context(|| format!("writing {}", output_path.display()))?;
 
     let html_size = html.len();
     println!(
@@ -469,6 +469,45 @@ mod tests {
         assert!(html.contains("await start_game('canvas', pakUrl);"));
     }
 
+    fn pkg_with_glue(dir: &Path) -> PathBuf {
+        let pkg = dir.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("q2_wasm.js"), GLUE).unwrap();
+        fs::write(pkg.join("q2_wasm_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        pkg
+    }
+
+    #[test]
+    fn bundle_names_the_dist_dir_it_cannot_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = pkg_with_glue(dir.path());
+        let dist = dir.path().join("dist");
+        fs::write(&dist, "a file, not a directory").unwrap();
+
+        let err = format!("{:#}", bundle(&pkg, &dist).unwrap_err());
+
+        assert!(
+            err.contains(&format!("creating {}", dist.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn bundle_names_the_html_it_cannot_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = pkg_with_glue(dir.path());
+        let dist = dir.path().join("dist");
+        let html = dist.join("qwasm2.html");
+        fs::create_dir_all(&html).unwrap();
+
+        let err = format!("{:#}", bundle(&pkg, &dist).unwrap_err());
+
+        assert!(
+            err.contains(&format!("writing {}", html.display())),
+            "{err}"
+        );
+    }
+
     #[test]
     fn bundle_without_wasm_pack_output_says_how_to_build_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -513,10 +552,9 @@ mod tests {
         // Hidden by default, the log would otherwise swallow the error.
         let html = generate_html("");
         let catch = html
-            .split("}} catch (e) {{")
+            .split("} catch (e) {")
             .nth(1)
-            .or_else(|| html.split("} catch (e) {").nth(1));
-        let catch = catch.expect("startup catch block");
+            .expect("startup catch block");
         assert!(
             catch.contains(
                 "document.getElementById('status-container').classList.remove('hidden');"
