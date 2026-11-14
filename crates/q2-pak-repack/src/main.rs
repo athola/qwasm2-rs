@@ -415,15 +415,8 @@ mod tests {
 
         let out = repack(&src, None).unwrap();
 
-        let entries = parse_dir(&out);
-        for (name, offset, size) in entries {
-            let data = &out[offset as usize..offset as usize + size as usize];
-            if name == "maps/base1.bsp" {
-                assert_eq!(data, bsp_bytes);
-            } else if name == "sound/boom.wav" {
-                assert_eq!(data, wav_bytes);
-            }
-        }
+        // make_pak already packs tightly, so a faithful repack reproduces it.
+        assert_eq!(out, src);
     }
 
     #[test]
