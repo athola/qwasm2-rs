@@ -137,8 +137,8 @@ effects, and the deathmatch rules end matches through C's intermission.
   the deathmatch rules never end a browser match; other cvars the game
   reads, such as `cl_gun` and `g_commanderbody_nogod`, go through
   `GameImport::cvar`, which `LocalGame::set_cvar` fills. Player footsteps play
-  (`g_footsteps` 1); `g_monsterfootsteps` stays off (its C default), so
-  monster footsteps are silent.
+  (`g_footsteps` 1); monster footsteps read `g_monsterfootsteps`, which
+  defaults to 0 as in C, so they are silent unless it is set.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
@@ -172,7 +172,7 @@ effects, and the deathmatch rules end matches through C's intermission.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
   refused), savegames (#15; a dead single player's press sends
   `menu_loadgame`, which nothing handles), the inventory layout and its
-  refresh (`InventoryMessage`), the `fov`/`spectator` userinfo, the
+  refresh (`InventoryMessage`), the `fov`/`spectator` userinfo and `ClientUserinfoChanged`'s `Info_Validate` check, the
   spectator and chase-camera stats, `SP_FixCoopSpots`, falling damage
   (`P_FallingDamage`), the dead view turning to the killer
   (`LookAtKiller`), and coop's per-cube tracking (`pers.power_cubes`), so

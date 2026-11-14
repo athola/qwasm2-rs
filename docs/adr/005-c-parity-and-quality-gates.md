@@ -73,7 +73,7 @@ Parity work is measurable: a byte or bit difference is a failing test rather
 than a judgement call. The cost is that some cleanups C would not do are off
 the table without an ADR note, and toolchain upgrades are explicit changes
 that can bring their own lint fixes. Findings that were too large for the
-review pass are tracked as issues: entity numbering and SlotMap world links
-(#9, #31), map loading and spawn reset (#11), a complete `GameImport` (#18,
+review pass are tracked as issues (entity numbering and SlotMap world links,
+#9 and #31, are since closed): map loading and spawn reset (#11), a complete `GameImport` (#18,
 #10), client opcodes, prediction and stufftext (#19, #6, #7), and the rest of the
 renderer (#20).

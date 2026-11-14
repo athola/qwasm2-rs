@@ -72,7 +72,7 @@ dependencies yet.
 |-------|-------|
 | 0 Scaffolding | Done |
 | 1 Common layer | Done: types, cvars, commands, net_msg, filesystem, collision, pmove, netchan |
-| 2 Game logic | Core done, see ADR-003; gaps #15 and #17 |
+| 2 Game logic | Core done, see ADR-003; gaps #15, #17, #32, #34, #36, #41, #42 and #43 |
 | 3 Server | Map loading, SV_Trace, entity links and the 10 Hz game frame done; client messages and baselines open (#10) |
 | 4 Client | Protocol 34 delta parsing done; prediction, interpolation, view open (#19) |
 | 5 Renderer | World textured and lightmapped with sky, warp and translucency; brush entities, MD2 models and 2D pics render; light styles and texture animation run; the first-person gun, muzzle-flash dynamic lights and the view blend draw; particles, beams and sprites draw the client's temp entities and effects |

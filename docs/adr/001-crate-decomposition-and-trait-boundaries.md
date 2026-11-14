@@ -62,7 +62,7 @@ Four trait interfaces enforce the key abstraction boundaries:
 ### Dependency DAG
 
 Dependencies flow strictly downward; no circular dependencies are permitted.
-Layers, lowest first, with the workspace edges `cargo metadata` reports:
+Layers, lowest first, with the workspace edges each member's Cargo.toml declares:
 
 ```
 Foundation   q2-shared       -> (none)
@@ -102,9 +102,14 @@ yet implemented.
 - Unsafe code is contained to q2-render (`src/gl3`, each block with a
   `// SAFETY` comment); the audit header in `q2-render/src/lib.rs` holds the
   block count. Clippy denies undocumented unsafe blocks workspace-wide.
+  The workspace denies rustc's `unsafe_code` lint (`[workspace.lints.rust]`)
+  and q2-render allows it at its crate root; the lint also catches
+  `#[no_mangle]`, `#[export_name]` and `#[link_section]`, which carry no
+  `unsafe` keyword.
 - `crates/q2-shared/tests/workspace_invariants.rs` fails `make test` on a
-  dependency edge outside the DAG above, `unsafe` outside q2-render, or a
-  `static mut`.
+  dependency edge outside the DAG above (read from the root `members` and
+  each member's Cargo.toml), `unsafe` outside q2-render, a `static mut`, or
+  a q2-render header count that differs from its `unsafe` blocks.
 
 **Negative:**
 - q2-common is a large crate (~12,000 LOC including tests) aggregating
