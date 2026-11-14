@@ -2111,6 +2111,20 @@ mod tests {
     }
 
     #[test]
+    fn check_jump_in_the_air_does_not_jump() {
+        // waterlevel 1 is not swimming: C's swim-up needs waterlevel >= 2.
+        for waterlevel in [0, 1] {
+            let (mut pm, mut pml) = jump_ready();
+            pm.ground_entity = None;
+            pm.waterlevel = waterlevel;
+            pml.velocity.z = -40.0;
+            pm_check_jump(&mut pm, &mut pml);
+            assert_eq!(pml.velocity.z, -40.0, "waterlevel {waterlevel}");
+            assert_eq!(pm.s.pm_flags & PMF_JUMP_HELD, 0);
+        }
+    }
+
+    #[test]
     fn check_jump_raises_vertical_speed_to_at_least_270() {
         for (vz, expected) in [(-100.0, 270.0), (50.0, 320.0)] {
             let (mut pm, mut pml) = jump_ready();
