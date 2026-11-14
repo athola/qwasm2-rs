@@ -436,6 +436,8 @@ pub struct GameEntityData {
     pub random: f32,
     pub count: i32,
     pub style: i32,
+    /// The map's `sounds` key (C `edict_t.sounds`); target_splash's colour.
+    pub sounds: i32,
     pub item: Option<usize>, // index into the item table
     pub gravity: f32,        // per-entity gravity multiplier
     pub watertype: i32,
@@ -470,6 +472,11 @@ pub struct Entity {
     pub solid: Solid,
     pub svflags: u32,
     pub linkcount: i32,
+    /// Whether the server holds the entity in an area node (C
+    /// `area.prev != NULL`): set by `link_entity` unless SOLID_NOT, which
+    /// C SV_LinkEdict counts in `linkcount` but never area-links, and
+    /// cleared by `unlink_entity`. Movers only push area-linked entities.
+    pub area_linked: bool,
 
     pub mins: Vec3f,
     pub maxs: Vec3f,
@@ -520,6 +527,7 @@ impl Default for Entity {
             solid: Solid::Not,
             svflags: 0,
             linkcount: 0,
+            area_linked: false,
             mins: Vec3f::ZERO,
             maxs: Vec3f::ZERO,
             absmin: Vec3f::ZERO,
@@ -578,6 +586,9 @@ pub struct EntityStorage {
     max_clients: usize,
     /// `level.time`, for G_Spawn's "freed more than 0.5 s ago" reuse rule.
     level_time: f32,
+    /// C `gi.dprintf` text from spawn functions, which only see the
+    /// storage; `GameWorld::call_spawn` prints it.
+    dprints: Vec<String>,
 }
 
 /// C G_FindFreeEdict policies.
@@ -597,7 +608,19 @@ impl EntityStorage {
             numbers: vec![None; max_entities],
             max_clients: 0,
             level_time: 0.0,
+            dprints: Vec::new(),
         }
+    }
+
+    /// C `gi.dprintf` from a spawn function: held until `call_spawn`
+    /// prints it.
+    pub fn dprintf(&mut self, text: String) {
+        self.dprints.push(text);
+    }
+
+    /// The spawn-function text `dprintf` held, oldest first.
+    pub(crate) fn take_dprints(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.dprints)
     }
 
     /// Reserve numbers `1..=max_clients` for client entities.

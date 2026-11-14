@@ -194,36 +194,36 @@ pub static SPAWNS: &[SpawnEntry] = &[
     ("func_wall", misc_func::sp_func_wall, None, None, false),
     ("func_object", misc_func::sp_func_object, None, Some(misc_func::finish_func_object), false),
     ("func_timer", func::sp_func_timer, None, Some(func::start_func_timer), false),
-    ("func_explosive", func::sp_func_explosive, None, None, false),
+    ("func_explosive", func::sp_func_explosive, None, Some(func::finish_func_explosive), false),
     ("func_killbox", func::sp_func_killbox, None, None, false),
 
     ("trigger_always", triggers::sp_trigger_always, None, Some(finish_trigger), false),
     ("trigger_once", triggers::sp_trigger_once, None, Some(finish_trigger), false),
     ("trigger_multiple", triggers::sp_trigger_multiple, None, Some(finish_trigger), false),
     ("trigger_relay", triggers::sp_trigger_relay, None, None, false),
-    ("trigger_push", triggers::sp_trigger_push, None, None, false),
-    ("trigger_hurt", triggers::sp_trigger_hurt, None, None, false),
+    ("trigger_push", triggers::sp_trigger_push, None, Some(triggers::finish_trigger_push), false),
+    ("trigger_hurt", triggers::sp_trigger_hurt, None, Some(triggers::finish_trigger_hurt), false),
     ("trigger_key", triggers::sp_trigger_key, None, Some(finish_trigger), false),
     ("trigger_counter", triggers::sp_trigger_counter, None, None, false),
     ("trigger_elevator", func::sp_trigger_elevator, None, None, false),
     ("trigger_gravity", triggers::sp_trigger_gravity, None, None, false),
     ("trigger_monsterjump", triggers::sp_trigger_monsterjump, None, None, false),
 
-    ("target_temp_entity", targets::sp_target_generic, None, None, false),
+    ("target_temp_entity", targets::sp_target_temp_entity, None, None, false),
     ("target_speaker", targets::sp_target_speaker, None, Some(GameWorld::finish_target_speaker), false),
     ("target_explosion", targets::sp_target_explosion, None, None, false),
     ("target_changelevel", targets::sp_target_changelevel, None, Some(targets::finish_target_changelevel), false),
     ("target_secret", targets::sp_target_secret, None, Some(targets::finish_found_target), false),
     ("target_goal", targets::sp_target_goal, None, Some(targets::finish_found_target), false),
-    ("target_splash", targets::sp_target_generic, None, None, false),
-    ("target_spawner", targets::sp_target_generic, None, None, false),
-    ("target_blaster", targets::sp_target_generic, None, None, false),
-    ("target_crosslevel_trigger", targets::sp_target_generic, None, None, false),
-    ("target_crosslevel_target", targets::sp_target_generic, None, None, false),
+    ("target_splash", targets::sp_target_splash, None, None, false),
+    ("target_spawner", targets::sp_target_spawner, None, Some(targets::finish_target_spawner), false),
+    ("target_blaster", targets::sp_target_blaster, None, Some(targets::finish_target_blaster), false),
+    ("target_crosslevel_trigger", targets::sp_target_crosslevel_trigger, None, None, false),
+    ("target_crosslevel_target", targets::sp_target_in_finish, None, Some(targets::finish_target_crosslevel_target), false),
     ("target_laser", targets::sp_target_laser, None, Some(targets::finish_target_laser), false),
-    ("target_help", targets::sp_target_generic, None, Some(targets::finish_target_help), false),
-    ("target_lightramp", targets::sp_target_generic, None, None, false),
-    ("target_earthquake", targets::sp_target_generic, None, None, false),
+    ("target_help", targets::sp_target_in_finish, None, Some(targets::finish_target_help), false),
+    ("target_lightramp", targets::sp_target_in_finish, None, Some(targets::finish_target_lightramp), false),
+    ("target_earthquake", targets::sp_target_earthquake, None, Some(targets::finish_target_earthquake), false),
     ("target_character", misc_func::sp_target_character, None, None, false),
     ("target_string", misc_func::sp_target_string, None, None, false),
 
@@ -348,13 +348,74 @@ pub(crate) fn scan_vector(s: &str) -> q2_shared::types::Vec3f {
     q2_shared::types::Vec3f::from_array(v)
 }
 
+/// The keys C ED_ParseField accepts from a map: `fields[]` in
+/// game/savegame/tables/fields.h without the FFL_NOSPAWN ones, including
+/// the spawn-temp (FFL_SPAWNTEMP) keys and the ignored `light`.
+const SPAWN_KEYS: [&str; 47] = [
+    "classname",
+    "model",
+    "spawnflags",
+    "speed",
+    "accel",
+    "decel",
+    "target",
+    "targetname",
+    "pathtarget",
+    "deathtarget",
+    "killtarget",
+    "combattarget",
+    "message",
+    "team",
+    "wait",
+    "delay",
+    "random",
+    "move_origin",
+    "move_angles",
+    "style",
+    "count",
+    "health",
+    "sounds",
+    "light",
+    "dmg",
+    "mass",
+    "volume",
+    "attenuation",
+    "map",
+    "origin",
+    "angles",
+    "angle",
+    "lip",
+    "distance",
+    "height",
+    "noise",
+    "pausetime",
+    "item",
+    "gravity",
+    "sky",
+    "skyrotate",
+    "skyaxis",
+    "minyaw",
+    "maxyaw",
+    "minpitch",
+    "maxpitch",
+    "nextmap",
+];
+
+/// Keys of an entity-string block that C would report with "%s is not a
+/// field": not in `SPAWN_KEYS` (compared ignoring case) and not a `_`
+/// comment key, which C ED_ParseEdict drops first.
+pub fn unknown_spawn_keys(fields: &HashMap<String, String>) -> impl Iterator<Item = &str> {
+    fields.keys().map(String::as_str).filter(|key| {
+        !key.starts_with('_') && !SPAWN_KEYS.iter().any(|k| k.eq_ignore_ascii_case(key))
+    })
+}
+
 /// Set the generic entity fields from an entity-string block, as C
 /// ED_ParseEdict does for every entity before its spawn function runs.
 /// The block is a `HashMap`, so when it has both `angle` and `angles` which
 /// one wins is unspecified (C: the later key in the file); keeping file
 /// order would change `SpawnFn`'s signature across every spawn module.
-/// Fields this port has no slot for yet (`sounds`, the spawn-temp keys)
-/// are left to the spawn functions.
+/// The spawn-temp keys have no slot and are left to the spawn functions.
 pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<String, String>) {
     use q2_common::cvar::parse_value as strtod;
     for (key, value) in fields {
@@ -381,6 +442,7 @@ pub fn apply_spawn_fields(ent: &mut crate::entity::Entity, fields: &HashMap<Stri
             "move_origin" => g.move_origin = scan_vector(value),
             "move_angles" => g.move_angles = scan_vector(value),
             "style" => g.style = strtol(value),
+            "sounds" => g.sounds = strtol(value),
             "count" => g.count = strtol(value),
             "health" => g.health = strtol(value),
             "dmg" => g.dmg = strtol(value),

@@ -58,9 +58,7 @@ fn teleporter_touch(
     };
 
     // Unlink to make sure it can't possibly interfere with KillBox.
-    if let Some(number) = world.number_of(other_key) {
-        world.gi.unlink_entity(number);
-    }
+    world.unlink_entity(other_key);
     let Some(other) = world.entities.get_mut(other_key) else {
         return;
     };
@@ -714,7 +712,7 @@ pub fn sp_misc_teleporter(
         return;
     };
     if ent.game.target.is_empty() {
-        tracing::debug!("teleporter without a target");
+        storage.dprintf("teleporter without a target.\n".to_string());
         storage.soft_free(key);
         return;
     }
@@ -765,7 +763,11 @@ pub fn sp_path_corner(
         return;
     };
     if ent.game.targetname.is_empty() {
-        tracing::debug!("path_corner with no targetname at {:?}", ent.state.origin);
+        let warning = format!(
+            "path_corner with no targetname at {}\n",
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }

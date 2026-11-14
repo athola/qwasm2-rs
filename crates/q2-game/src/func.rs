@@ -5,8 +5,8 @@
 //! func_conveyor, func_timer, func_explosive and func_killbox. These
 //! entities use `MoveInfo` for smooth acceleration/deceleration.
 //!
-//! Not ported yet: func_wall/func_object spawnflags. Sound registration
-//! and door message touches are set by the `finish_*` functions, which
+//! func_wall, func_object and func_clock (g_misc.c) are in `misc_func`.
+//! Sound registration and door message touches are set by the `finish_*` functions, which
 //! `SPAWNS` runs after the spawn functions.
 //!
 //! # Movement pattern
@@ -179,10 +179,10 @@ pub fn move_calc(world: &mut GameWorld, key: EntityKey, dest: Vec3f, endfunc: En
 
 /// C `FRAMETIME`, the double 0.1: the float expressions it appears in
 /// are evaluated in double and rounded to float once.
-const FRAMETIME_C: f64 = 0.1;
+pub(crate) const FRAMETIME_C: f64 = 0.1;
 
 /// C `level.time + seconds`, where `seconds` is a double expression.
-fn time_plus(time: f32, seconds: f64) -> f32 {
+pub(crate) fn time_plus(time: f32, seconds: f64) -> f32 {
     (f64::from(time) + seconds) as f32
 }
 
@@ -520,7 +520,8 @@ pub fn touch_plat_center(
 
 /// Crush something that is neither a monster nor a client (C nukes it with
 /// an explosion if 100000 damage did not remove it). Returns `true` if
-/// `other` was such an entity. Shared head of C plat_blocked/door_blocked.
+/// `other` was such an entity. Shared head of C plat_blocked,
+/// door_blocked, train_blocked and door_secret_blocked.
 fn crush_non_living(world: &mut GameWorld, self_key: EntityKey, other: EntityKey) -> bool {
     let Some(o) = world.entities.get(other) else {
         return true;
@@ -542,10 +543,11 @@ fn crush_non_living(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         DamageFlags::empty(),
         MeansOfDeath::Crush,
     );
-    // If it's still there, nuke it (C BecomeExplosion1; the explosion
-    // effect is not ported).
-    if world.entities.is_live(other) {
-        world.free_entity(other);
+    // If it's still there, nuke it, at its box centre for entities whose
+    // origin is not near the model.
+    if let Some(o) = world.entities.get_mut(other).filter(|o| o.in_use) {
+        o.state.origin = o.absmin + o.size * 0.5;
+        crate::misc::become_explosion1(world, other);
     }
     true
 }
@@ -1536,7 +1538,8 @@ pub fn train_next(world: &mut GameWorld, key: EntityKey) {
         let Some(c) = world.entities.get(corner) else {
             return;
         };
-        let (c_origin, c_target, c_flags, c_wait) = (
+        let (c_class, c_origin, c_target, c_flags, c_wait) = (
+            c.game.classname.clone(),
             c.state.origin,
             c.game.target.clone(),
             c.game.spawnflags,
@@ -1551,7 +1554,8 @@ pub fn train_next(world: &mut GameWorld, key: EntityKey) {
         if c_flags & PATH_CORNER_TELEPORT != 0 {
             if !first {
                 world.gi.dprintf(&format!(
-                    "connected teleport path_corners, see path_corner at {c_origin:?}\n"
+                    "connected teleport path_corners, see {c_class} at {}\n",
+                    crate::ai::vtos(c_origin)
                 ));
                 return;
             }
@@ -2102,11 +2106,13 @@ pub fn sp_func_door_rotating(
         movedir = -movedir;
     }
     let mut distance = spawn_temp(fields, "distance");
+    let mut warning = None;
     if distance == 0.0 {
-        tracing::debug!(
-            "func_door_rotating at {:?} with no distance set",
-            ent.state.origin
-        );
+        warning = Some(format!(
+            "{} at {} with no distance set\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        ));
         distance = 90.0;
     }
     let mut pos1 = ent.state.angles;
@@ -2174,6 +2180,9 @@ pub fn sp_func_door_rotating(
     } else {
         Some(think_spawn_door_trigger)
     };
+    if let Some(warning) = warning {
+        storage.dprintf(warning);
+    }
 }
 
 /// A movable water brush: a door that only opens when targeted, toggles
@@ -2261,7 +2270,11 @@ pub fn sp_func_train(
     ent.use_fn = Some(train_use);
 
     if ent.game.target.is_empty() {
-        tracing::debug!("func_train without a target at {:?}", ent.absmin);
+        let warning = format!(
+            "func_train without a target at {}\n",
+            crate::ai::vtos(ent.absmin)
+        );
+        storage.dprintf(warning);
     } else {
         // Start trains on the second frame, to make sure their targets
         // have had a chance to spawn.
@@ -2454,14 +2467,35 @@ pub fn sp_func_timer(
     }
     ent.use_fn = Some(func_timer_use);
     ent.think = Some(func_timer_think);
+    ent.svflags = q2_shared::constants::SVF_NOCLIENT;
     if ent.game.random >= ent.game.wait {
         ent.game.random = (f64::from(ent.game.wait) - FRAMETIME_C) as f32;
-        tracing::debug!("func_timer at {:?} has random >= wait", ent.state.origin);
+        let warning = format!(
+            "func_timer at {} has random >= wait\n",
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
     }
-    ent.svflags = q2_shared::constants::SVF_NOCLIENT;
 }
 
-/// C ref: `SP_func_explosive` (single player).
+/// The `GameWorld` half of C SP_func_explosive: removed in deathmatch,
+/// otherwise the debris models are registered. C does both before its
+/// setmodel, where `call_spawn` has already set the brush model, so the
+/// brush's `*n` index comes before the debris here.
+pub fn finish_func_explosive(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    world.gi.model_index("models/objects/debris1/tris.md2");
+    world.gi.model_index("models/objects/debris2/tris.md2");
+}
+
+/// C ref: `SP_func_explosive`; `finish_func_explosive` does the rest.
 pub fn sp_func_explosive(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -2510,28 +2544,16 @@ pub fn sp_func_killbox(
     }
 }
 
-/// func_areaportal (see `sp_func_areaportal`): C SP_func_areaportal
+/// C ref: `SP_func_areaportal` (g_misc.c): it always starts closed, and
 /// never sets a solid (a solid portal brush would close every doorway it
 /// sits in).
-pub fn sp_func_nonsolid(
-    storage: &mut EntityStorage,
-    key: EntityKey,
-    fields: &HashMap<String, String>,
-) {
-    if let Some(ent) = storage.get_mut(key) {
-        ent.game.classname = fields.get("classname").cloned().unwrap_or_default();
-        ent.state.modelindex = 0; // C never calls setmodel: nothing to draw
-    }
-}
-
-/// C ref: `SP_func_areaportal` (g_misc.c): it always starts closed.
 pub fn sp_func_areaportal(
     storage: &mut EntityStorage,
     key: EntityKey,
-    fields: &HashMap<String, String>,
+    _fields: &HashMap<String, String>,
 ) {
-    sp_func_nonsolid(storage, key, fields);
     if let Some(ent) = storage.get_mut(key) {
+        ent.state.modelindex = 0; // C never calls setmodel: nothing to draw
         ent.use_fn = Some(use_areaportal);
         ent.game.count = 0;
     }
@@ -3063,6 +3085,32 @@ mod tests {
     }
 
     #[test]
+    fn deathmatch_removes_func_explosive() {
+        // C SP_func_explosive: "auto-remove for deathmatch".
+        let (mut world, _) = test_world_recording();
+        world.game.deathmatch = true;
+        world.init_game();
+        world.spawn_entities(
+            "test",
+            r#"{ "classname" "worldspawn" } { "classname" "func_explosive" "model" "*1" }"#,
+            "",
+        );
+        assert!(world.find_by_classname(None, "func_explosive").is_none());
+    }
+
+    #[test]
+    fn func_explosive_precaches_both_debris_models_at_spawn() {
+        let (_, gi) = spawned_gi(r#"{ "classname" "func_explosive" "model" "*1" }"#);
+        let models = gi.models.borrow();
+        let at = |name: &str| models.iter().position(|m| m == name);
+        let (one, two) = (
+            at("models/objects/debris1/tris.md2"),
+            at("models/objects/debris2/tris.md2"),
+        );
+        assert!(one.is_some() && one < two, "{models:?}");
+    }
+
+    #[test]
     fn func_explosive_dies_with_damage() {
         let mut world = test_world();
 
@@ -3490,6 +3538,7 @@ mod tests {
         {
             let e = world.entities.get_mut(rider).unwrap();
             e.game.movetype = MoveType::Step;
+            e.solid = Solid::Bbox; // movers skip SOLID_NOT entities
             e.game.ground_entity = Some(plat);
             e.state.origin = Vec3f::new(32.0, 32.0, 32.0);
         }
@@ -3517,6 +3566,7 @@ mod tests {
         world.link_entity(plat);
         let rider = world.spawn().unwrap();
         world.entities.get_mut(rider).unwrap().game.movetype = MoveType::Step;
+        world.entities.get_mut(rider).unwrap().solid = Solid::Bbox;
         world.entities.get_mut(rider).unwrap().game.ground_entity = Some(plat);
         world.link_entity(rider);
         // The rider is stuck both at the pushed and at its old position.
@@ -3561,6 +3611,28 @@ mod tests {
         let item = world.spawn().unwrap();
         door_blocked(&mut world, door, item);
         assert!(!world.entities.is_live(item));
+    }
+
+    #[test]
+    fn an_uncrushable_blocker_explodes_at_its_box_centre() {
+        // C door_blocked: VectorMA(absmin, 0.5, size, s.origin), then
+        // BecomeExplosion1.
+        let (mut world, gi) = spawned_gi("{ \"classname\" \"func_door\" \"model\" \"*1\" }");
+        let door = by_class(&world, "func_door");
+        let blocker = world.spawn().unwrap();
+        {
+            let e = world.entities.get_mut(blocker).unwrap();
+            e.absmin = Vec3f::new(100.0, 0.0, 0.0);
+            e.size = Vec3f::new(10.0, 20.0, 30.0);
+        }
+        let (writes, vectors) = (gi.writes.borrow().len(), gi.vectors.borrow().len());
+        door_blocked(&mut world, door, blocker);
+        assert!(!world.entities.is_live(blocker));
+        assert_eq!(gi.writes.borrow()[writes..], [3, TE_EXPLOSION1]);
+        assert_eq!(
+            gi.vectors.borrow()[vectors..],
+            [Vec3f::new(105.0, 10.0, 15.0)]
+        );
     }
 
     #[test]
@@ -4250,6 +4322,19 @@ mod tests {
         let e = world.entities.get(train).unwrap();
         assert_eq!(e.state.origin, at_corner(Vec3f::new(900.0, 0.0, 0.0)));
         assert_eq!(e.velocity, Vec3f::ZERO);
+    }
+
+    #[test]
+    fn connected_teleport_corners_name_the_second_corner_in_c_form() {
+        let (mut world, gi) = spawned_gi(concat!(
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p1\" \"target\" \"p2\" \"origin\" \"100 0 0\" }\n",
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p2\" \"target\" \"p3\" \"origin\" \"900 0 0\" \"spawnflags\" \"1\" }\n",
+            "{ \"classname\" \"path_corner\" \"targetname\" \"p3\" \"target\" \"p1\" \"origin\" \"900 100 0\" \"spawnflags\" \"1\" }\n",
+            "{ \"classname\" \"func_train\" \"model\" \"*3\" \"target\" \"p1\" }",
+        ));
+        run_for(&mut world, 1.0);
+        let warning = "connected teleport path_corners, see path_corner at (900 100 0)\n";
+        assert!(gi.dprints.borrow().iter().any(|d| d == warning));
     }
 
     #[test]

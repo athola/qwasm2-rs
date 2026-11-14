@@ -266,9 +266,7 @@ impl GameWorld {
         let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
             return;
         };
-        if let Ok(n) = usize::try_from(number) {
-            self.gi.unlink_entity(n);
-        }
+        self.unlink_entity(key);
         // C G_FreeEdict: client edicts, and in coop or deathmatch the body
         // queue after them, are never freed. C always has `bodyque` edicts
         // there in those modes; checking the classname keeps entities
@@ -285,6 +283,17 @@ impl GameWorld {
         }
         self.entities.set_level_time(self.level.time);
         self.entities.soft_free(key);
+    }
+
+    /// Take the entity out of the server's world. C ref: `gi.unlinkentity`.
+    pub fn unlink_entity(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        ent.area_linked = false;
+        if let Ok(n) = usize::try_from(ent.state.number) {
+            self.gi.unlink_entity(n);
+        }
     }
 
     /// Recompute the link fields and hand the entity to the server.
@@ -335,6 +344,7 @@ impl GameWorld {
             ent.state.old_origin = ent.state.origin;
         }
         ent.linkcount += 1;
+        ent.area_linked = ent.solid != Solid::Not;
 
         let owner = ent.owner;
         let link = EntityLink {
@@ -512,10 +522,10 @@ impl GameWorld {
 
     /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
     /// one survived, `true` once the box is clear; no caller reads it.
-    /// C ref: `KillBox` (g_utils.c). C's SV_Trace reports the world when
+    /// C ref: `KillBox` (g_utils.c). C SV_Trace names the world when
     /// nothing is hit, so C's loop ends by "damaging" the solid world and
-    /// returns false every time; here `world_trace`'s "world only on a hit"
-    /// (ADR-005) makes a clear box return true. The telefrags are the same.
+    /// returns false every time; here entity 0 counts as a clear box and
+    /// returns true. The telefrags are the same.
     pub fn kill_box(&mut self, key: EntityKey) -> bool {
         use crate::constants::{DamageFlags, MeansOfDeath};
         loop {
@@ -970,6 +980,22 @@ use crate::traits::AREA_TRIGGERS;
 #[cfg(test)]
 pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 
+/// One message write, with its type, as `MockGameImport::message` keeps
+/// them: the other write lists cannot tell a byte from a short, or show
+/// how bytes and vectors interleave.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Write {
+    Byte(i32),
+    Short(i32),
+    Long(i32),
+    Float(f32),
+    String(String),
+    Position(Vec3f),
+    Dir(Vec3f),
+    Angle(f32),
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
@@ -1026,6 +1052,8 @@ pub struct MockGameImport {
     pub bprints: RefCell<Vec<(i32, String)>>,
     /// Every `write_byte` and `write_short` value, in order.
     pub writes: RefCell<Vec<i32>>,
+    /// Every write of any type, in order.
+    pub message: RefCell<Vec<Write>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
     /// Every `write_position` and `write_dir`, in order.
@@ -1174,22 +1202,33 @@ impl GameImport for MockGameImport {
     }
     fn write_byte(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Byte(c));
     }
     fn write_short(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Short(c));
     }
-    fn write_long(&self, _: i32) {}
-    fn write_float(&self, _: f32) {}
+    fn write_long(&self, c: i32) {
+        self.message.borrow_mut().push(Write::Long(c));
+    }
+    fn write_float(&self, f: f32) {
+        self.message.borrow_mut().push(Write::Float(f));
+    }
     fn write_string(&self, s: &str) {
         self.strings.borrow_mut().push(s.to_string());
+        self.message.borrow_mut().push(Write::String(s.to_string()));
     }
     fn write_position(&self, pos: Vec3f) {
         self.vectors.borrow_mut().push(pos);
+        self.message.borrow_mut().push(Write::Position(pos));
     }
     fn write_dir(&self, dir: Vec3f) {
         self.vectors.borrow_mut().push(dir);
+        self.message.borrow_mut().push(Write::Dir(dir));
     }
-    fn write_angle(&self, _: f32) {}
+    fn write_angle(&self, a: f32) {
+        self.message.borrow_mut().push(Write::Angle(a));
+    }
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));
     }
@@ -1240,7 +1279,7 @@ impl GameWorld {
     }
 
     /// The body queue, configstrings, images, sounds and models C
-    /// SP_worldspawn sets up. `sv_gravity` and `snd_fry` are not ported.
+    /// SP_worldspawn sets up. `sv_gravity` is not ported (see `add_gravity`).
     pub(crate) fn worldspawn_configstrings(
         &mut self,
         _key: EntityKey,
@@ -1456,6 +1495,9 @@ impl GameWorld {
             self.set_model(key, model);
         }
         sfn(&mut self.entities, key, fields);
+        for text in self.entities.take_dprints() {
+            self.gi.dprintf(&text);
+        }
         if !self.entities.is_live(key) {
             return; // The spawn function removed it (info_null, bad keys).
         }
@@ -1481,6 +1523,14 @@ impl GameWorld {
         self.link_entity(key);
     }
 
+    /// C `FindItemByClassname`, which compares with Q_stricmp, where
+    /// ED_CallSpawn's item lookup (`find_item`) uses strcmp.
+    pub(crate) fn find_item_by_classname(&self, classname: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(classname))
+    }
+
     /// The item a monster drops on death, from its `item` key. C ref:
     /// `monster_start` (g_monster.c), which reads `st.item`.
     pub(crate) fn monster_start_item(
@@ -1492,13 +1542,7 @@ impl GameWorld {
         let Some(name) = fields.get("item") else {
             return;
         };
-        // C FindItemByClassname compares with Q_stricmp, where
-        // ED_CallSpawn's item lookup (find_item) uses strcmp.
-        let found = self
-            .items
-            .iter()
-            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(name));
-        match found {
+        match self.find_item_by_classname(name) {
             Some(item) => {
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.item = Some(item);
@@ -1653,6 +1697,11 @@ impl GameWorld {
                 continue;
             };
             crate::spawn::apply_spawn_fields(ent, fields);
+            // C ED_ParseField; the block is a HashMap, so several unknown
+            // keys print in an unspecified order where C uses file order.
+            for unknown in crate::spawn::unknown_spawn_keys(fields) {
+                self.gi.dprintf(&format!("{unknown} is not a field\n"));
+            }
 
             // Yet another map hack.
             if mapname.eq_ignore_ascii_case("command")
@@ -3521,5 +3570,113 @@ mod tests {
         let freed = radius_target(&mut world, Vec3f::ZERO, Solid::Bbox);
         world.free_entity(freed);
         assert_eq!(world.find_radius(None, Vec3f::ZERO, 1000.0), None);
+    }
+
+    #[test]
+    fn spawn_warnings_reach_dprintf_in_c_form() {
+        // Each C SP_* below warns with gi.dprintf, vectors through vtos.
+        let cases = [
+            (
+                r#""classname" "func_wall" "model" "*1" "spawnflags" "4""#,
+                "func_wall START_ON without TOGGLE\n",
+            ),
+            (
+                r#""classname" "func_clock" "origin" "1 2 3""#,
+                "func_clock with no target at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_clock" "target" "d" "spawnflags" "2" "origin" "1 2 3""#,
+                "func_clock with no count at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "misc_strogg_ship" "origin" "1 2 3""#,
+                "misc_strogg_ship without a target at (0 0 0)\n",
+            ),
+            (
+                r#""classname" "misc_teleporter""#,
+                "teleporter without a target.\n",
+            ),
+            (
+                r#""classname" "path_corner" "origin" "1 2 3""#,
+                "path_corner with no targetname at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_train" "model" "*1""#,
+                "func_train without a target at (-1 -1 -1)\n",
+            ),
+            (
+                r#""classname" "func_timer" "random" "2" "origin" "1 2 3""#,
+                "func_timer at (1 2 3) has random >= wait\n",
+            ),
+            (
+                r#""classname" "trigger_gravity" "model" "*1" "origin" "1 2 3""#,
+                "trigger_gravity without gravity set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_changelevel" "origin" "1 2 3""#,
+                "target_changelevel with no map at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_speaker" "origin" "1 2 3""#,
+                "target_speaker with no noise set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "origin" "1 2 3""#,
+                "no key item for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "foo" "origin" "1 2 3""#,
+                "item foo not found for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "key_blue_key" "origin" "1 2 3""#,
+                "trigger_key at (1 2 3) has no target\n",
+            ),
+            (
+                // C prints mins + size / 2 before its setmodel, while both
+                // are still zero.
+                r#""classname" "trigger_once" "model" "*1" "spawnflags" "1" "origin" "1 2 3""#,
+                "fixed TRIGGERED flag on trigger_once at (0 0 0)\n",
+            ),
+        ];
+        for (keys, warning) in cases {
+            let (mut world, gi) = test_world_recording();
+            gi.inline_bounds
+                .borrow_mut()
+                .insert("*1".into(), (Vec3f::ZERO, Vec3f::splat(16.0)));
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                &format!("{{ \"classname\" \"worldspawn\" }}\n{{ {keys} }}"),
+                "",
+            );
+            let dprints = gi.dprints.borrow();
+            assert!(dprints.iter().any(|d| d == warning), "{keys}: {dprints:?}");
+        }
+    }
+
+    #[test]
+    fn spawn_parsing_names_unknown_keys_and_door_rotating_without_distance() {
+        // C ED_ParseField prints unknown keys, skipping spawn-temp and
+        // F_IGNORE ones; ED_ParseEdict drops `_` keys before it.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" }
+               { "classname" "func_door_rotating" "origin" "1 2 3" "foo" "1" }
+               { "classname" "info_null" "LIP" "1" "light" "200" "_color" "1 0 0" "sounds" "2" "nextmap" "x" }
+               { "classname" "info_null" "enemy" "1" }"#,
+            "",
+        );
+        let dprints = gi.dprints.borrow();
+        let fields: Vec<&String> = dprints
+            .iter()
+            .filter(|d| d.ends_with(" is not a field\n"))
+            .collect();
+        assert_eq!(fields, ["foo is not a field\n", "enemy is not a field\n"]);
+        assert!(
+            dprints.contains(&"func_door_rotating at (1 2 3) with no distance set\n".to_string())
+        );
     }
 }

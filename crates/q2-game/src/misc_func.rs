@@ -70,8 +70,8 @@ pub fn sp_func_wall(storage: &mut EntityStorage, key: EntityKey, _: &HashMap<Str
 
     // It must be TRIGGER_SPAWN, and START_ON implies TOGGLE.
     ent.game.spawnflags |= WALL_TRIGGER_SPAWN;
-    if sf & WALL_START_ON != 0 && sf & WALL_TOGGLE == 0 {
-        tracing::debug!("func_wall START_ON without TOGGLE");
+    let fix_toggle = sf & WALL_START_ON != 0 && sf & WALL_TOGGLE == 0;
+    if fix_toggle {
         ent.game.spawnflags |= WALL_TOGGLE;
     }
     ent.use_fn = Some(func_wall_use);
@@ -80,6 +80,9 @@ pub fn sp_func_wall(storage: &mut EntityStorage, key: EntityKey, _: &HashMap<Str
     } else {
         ent.solid = Solid::Not;
         ent.svflags |= SVF_NOCLIENT;
+    }
+    if fix_toggle {
+        storage.dprintf("func_wall START_ON without TOGGLE\n".to_string());
     }
 }
 
@@ -423,12 +426,22 @@ pub fn sp_func_clock(storage: &mut EntityStorage, key: EntityKey, _: &HashMap<St
     };
     let sf = ent.game.spawnflags;
     if ent.game.target.is_empty() {
-        tracing::debug!("func_clock with no target at {:?}", ent.state.origin);
+        let warning = format!(
+            "{} with no target at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }
     if sf & CLOCK_TIMER_DOWN != 0 && ent.game.count == 0 {
-        tracing::debug!("func_clock with no count at {:?}", ent.state.origin);
+        let warning = format!(
+            "{} with no count at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(ent.state.origin)
+        );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }
@@ -733,11 +746,14 @@ mod tests {
 
     #[test]
     fn func_clock_needs_a_target_and_a_timer_down_needs_a_count() {
-        let (world, _) = spawned(
-            r#"{ "classname" "func_clock" }
+        let (world, gi) = spawned(
+            r#"{ "classname" "func_clock" "origin" "1 2 3" }
                { "classname" "func_clock" "target" "display" "spawnflags" "2" }"#,
         );
         assert!(world.find_by_classname(None, "func_clock").is_none());
+        let dprints = gi.dprints.borrow();
+        assert!(dprints.contains(&"func_clock with no target at (1 2 3)\n".to_string()));
+        assert!(dprints.contains(&"func_clock with no count at (0 0 0)\n".to_string()));
     }
 
     #[test]
