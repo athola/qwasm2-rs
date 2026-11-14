@@ -289,12 +289,12 @@ impl Effects {
         light.radius = radius;
         light.minlight = 32.0;
         light.die = time;
-        if let Some(smoke) = monster_flash_smoke(flash, entnum) {
-            self.flash_particles.push((origin, smoke));
-        }
         let Some(def) = monster_flash(flash) else {
             return Vec::new();
         };
+        if let Some(smoke) = def.smoke.particles(entnum) {
+            self.flash_particles.push((origin, smoke));
+        }
         let light = self.alloc_dlight(entnum, time);
         light.color = def.color;
         if def.plasma {
@@ -302,10 +302,10 @@ impl Effects {
             light.die = time + 200.0;
         }
         let (name, attenuation) = match def.sound {
+            // The tank machineguns' sound is started by
+            // `FlashParticles::TankMachinegun`, after the sparks.
             FlashSoundName::None => return Vec::new(),
             FlashSoundName::Named(name, attenuation) => (name.to_string(), attenuation),
-            // Started by `FlashParticles::TankMachinegun`, after the sparks.
-            FlashSoundName::TankMachinegun => return Vec::new(),
         };
         vec![NamedSound::on(entnum, CHAN_WEAPON, &name, attenuation)]
     }
@@ -367,118 +367,40 @@ impl Effects {
 enum FlashSoundName {
     None,
     Named(&'static str, f32),
-    /// `tank/tnkatk2a.wav` .. `e`, at random, picked by
-    /// `FlashParticles::TankMachinegun`.
+}
+
+/// A monster flash's particles, before its entity is known.
+#[derive(Debug, Clone, Copy)]
+enum FlashSmoke {
+    None,
+    SparksAndSmoke,
+    /// The sparks and smoke, then `tank/tnkatk2a.wav` .. `e` at random.
     TankMachinegun,
+    Smoke,
+}
+
+impl FlashSmoke {
+    fn particles(self, entnum: i32) -> Option<FlashParticles> {
+        match self {
+            FlashSmoke::None => None,
+            FlashSmoke::SparksAndSmoke => Some(FlashParticles::SparksAndSmoke),
+            FlashSmoke::TankMachinegun => Some(FlashParticles::TankMachinegun(entnum)),
+            FlashSmoke::Smoke => Some(FlashParticles::Smoke),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 struct MonsterFlash {
     color: [f32; 3],
     sound: FlashSoundName,
+    smoke: FlashSmoke,
     /// The widow's plasma beam: a bigger light that lasts 200 ms.
     plasma: bool,
 }
 
-/// C `CL_AddMuzzleFlash2`'s switch, as data.
-/// The base game's machineguns spark and smoke; the soldier's shotgun
-/// only smokes. `entnum` is the monster, for the tank's sound.
-fn monster_flash_smoke(flash: i32, entnum: i32) -> Option<FlashParticles> {
-    match flash {
-        MZ2_INFANTRY_MACHINEGUN_1
-        | MZ2_INFANTRY_MACHINEGUN_2
-        | MZ2_INFANTRY_MACHINEGUN_3
-        | MZ2_INFANTRY_MACHINEGUN_4
-        | MZ2_INFANTRY_MACHINEGUN_5
-        | MZ2_INFANTRY_MACHINEGUN_6
-        | MZ2_INFANTRY_MACHINEGUN_7
-        | MZ2_INFANTRY_MACHINEGUN_8
-        | MZ2_INFANTRY_MACHINEGUN_9
-        | MZ2_INFANTRY_MACHINEGUN_10
-        | MZ2_INFANTRY_MACHINEGUN_11
-        | MZ2_INFANTRY_MACHINEGUN_12
-        | MZ2_INFANTRY_MACHINEGUN_13
-        | MZ2_SOLDIER_MACHINEGUN_1
-        | MZ2_SOLDIER_MACHINEGUN_2
-        | MZ2_SOLDIER_MACHINEGUN_3
-        | MZ2_SOLDIER_MACHINEGUN_4
-        | MZ2_SOLDIER_MACHINEGUN_5
-        | MZ2_SOLDIER_MACHINEGUN_6
-        | MZ2_SOLDIER_MACHINEGUN_7
-        | MZ2_SOLDIER_MACHINEGUN_8
-        | MZ2_GUNNER_MACHINEGUN_1
-        | MZ2_GUNNER_MACHINEGUN_2
-        | MZ2_GUNNER_MACHINEGUN_3
-        | MZ2_GUNNER_MACHINEGUN_4
-        | MZ2_GUNNER_MACHINEGUN_5
-        | MZ2_GUNNER_MACHINEGUN_6
-        | MZ2_GUNNER_MACHINEGUN_7
-        | MZ2_GUNNER_MACHINEGUN_8
-        | MZ2_ACTOR_MACHINEGUN_1
-        | MZ2_SUPERTANK_MACHINEGUN_1
-        | MZ2_SUPERTANK_MACHINEGUN_2
-        | MZ2_SUPERTANK_MACHINEGUN_3
-        | MZ2_SUPERTANK_MACHINEGUN_4
-        | MZ2_SUPERTANK_MACHINEGUN_5
-        | MZ2_SUPERTANK_MACHINEGUN_6
-        | MZ2_TURRET_MACHINEGUN
-        | MZ2_BOSS2_MACHINEGUN_L1
-        | MZ2_BOSS2_MACHINEGUN_L2
-        | MZ2_BOSS2_MACHINEGUN_L3
-        | MZ2_BOSS2_MACHINEGUN_L4
-        | MZ2_BOSS2_MACHINEGUN_L5
-        | MZ2_CARRIER_MACHINEGUN_L1
-        | MZ2_CARRIER_MACHINEGUN_L2
-        | MZ2_JORG_MACHINEGUN_L1
-        | MZ2_JORG_MACHINEGUN_L2
-        | MZ2_JORG_MACHINEGUN_L3
-        | MZ2_JORG_MACHINEGUN_L4
-        | MZ2_JORG_MACHINEGUN_L5
-        | MZ2_JORG_MACHINEGUN_L6
-        | MZ2_JORG_MACHINEGUN_R1
-        | MZ2_JORG_MACHINEGUN_R2
-        | MZ2_JORG_MACHINEGUN_R3
-        | MZ2_JORG_MACHINEGUN_R4
-        | MZ2_JORG_MACHINEGUN_R5
-        | MZ2_JORG_MACHINEGUN_R6
-        | MZ2_BOSS2_MACHINEGUN_R1
-        | MZ2_BOSS2_MACHINEGUN_R2
-        | MZ2_BOSS2_MACHINEGUN_R3
-        | MZ2_BOSS2_MACHINEGUN_R4
-        | MZ2_BOSS2_MACHINEGUN_R5
-        | MZ2_CARRIER_MACHINEGUN_R1
-        | MZ2_CARRIER_MACHINEGUN_R2 => Some(FlashParticles::SparksAndSmoke),
-        MZ2_TANK_MACHINEGUN_1
-        | MZ2_TANK_MACHINEGUN_2
-        | MZ2_TANK_MACHINEGUN_3
-        | MZ2_TANK_MACHINEGUN_4
-        | MZ2_TANK_MACHINEGUN_5
-        | MZ2_TANK_MACHINEGUN_6
-        | MZ2_TANK_MACHINEGUN_7
-        | MZ2_TANK_MACHINEGUN_8
-        | MZ2_TANK_MACHINEGUN_9
-        | MZ2_TANK_MACHINEGUN_10
-        | MZ2_TANK_MACHINEGUN_11
-        | MZ2_TANK_MACHINEGUN_12
-        | MZ2_TANK_MACHINEGUN_13
-        | MZ2_TANK_MACHINEGUN_14
-        | MZ2_TANK_MACHINEGUN_15
-        | MZ2_TANK_MACHINEGUN_16
-        | MZ2_TANK_MACHINEGUN_17
-        | MZ2_TANK_MACHINEGUN_18
-        | MZ2_TANK_MACHINEGUN_19 => Some(FlashParticles::TankMachinegun(entnum)),
-        MZ2_SOLDIER_SHOTGUN_1
-        | MZ2_SOLDIER_SHOTGUN_2
-        | MZ2_SOLDIER_SHOTGUN_3
-        | MZ2_SOLDIER_SHOTGUN_4
-        | MZ2_SOLDIER_SHOTGUN_5
-        | MZ2_SOLDIER_SHOTGUN_6
-        | MZ2_SOLDIER_SHOTGUN_7
-        | MZ2_SOLDIER_SHOTGUN_8 => Some(FlashParticles::Smoke),
-        _ => None,
-    }
-}
-
+/// C `CL_AddMuzzleFlash2`'s switch, as data. The base game's machineguns
+/// spark and smoke; the soldier's shotgun only smokes.
 fn monster_flash(flash: i32) -> Option<MonsterFlash> {
     use FlashSoundName as FlashSound;
     match flash {
@@ -497,6 +419,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_INFANTRY_MACHINEGUN_13 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("infantry/infatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_SOLDIER_MACHINEGUN_1
@@ -509,6 +432,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_SOLDIER_MACHINEGUN_8 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("soldier/solatck3.wav", ATTN_NORM),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_GUNNER_MACHINEGUN_1
@@ -521,6 +445,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_GUNNER_MACHINEGUN_8 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("gunner/gunatck2.wav", ATTN_NORM),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_ACTOR_MACHINEGUN_1
@@ -533,6 +458,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_TURRET_MACHINEGUN => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("infantry/infatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_BOSS2_MACHINEGUN_L1
@@ -544,6 +470,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_CARRIER_MACHINEGUN_L2 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("infantry/infatck1.wav", ATTN_NONE),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_SOLDIER_BLASTER_1
@@ -557,26 +484,31 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_TURRET_BLASTER => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("soldier/solatck2.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_FLYER_BLASTER_1 | MZ2_FLYER_BLASTER_2 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("flyer/flyatck3.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_MEDIC_BLASTER_1 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("medic/medatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_HOVER_BLASTER_1 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("hover/hovatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_FLOAT_BLASTER_1 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("floater/fltatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_SOLDIER_SHOTGUN_1
@@ -589,11 +521,13 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_SOLDIER_SHOTGUN_8 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("soldier/solatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::Smoke,
             plasma: false,
         }),
         MZ2_TANK_BLASTER_1 | MZ2_TANK_BLASTER_2 | MZ2_TANK_BLASTER_3 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("tank/tnkatck3.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_TANK_MACHINEGUN_1
@@ -616,17 +550,20 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_TANK_MACHINEGUN_18
         | MZ2_TANK_MACHINEGUN_19 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
-            sound: FlashSound::TankMachinegun,
+            sound: FlashSound::None,
+            smoke: FlashSmoke::TankMachinegun,
             plasma: false,
         }),
         MZ2_CHICK_ROCKET_1 | MZ2_TURRET_ROCKET => Some(MonsterFlash {
             color: [1.0, 0.5, 0.2],
             sound: FlashSound::Named("chick/chkatck2.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_TANK_ROCKET_1 | MZ2_TANK_ROCKET_2 | MZ2_TANK_ROCKET_3 => Some(MonsterFlash {
             color: [1.0, 0.5, 0.2],
             sound: FlashSound::Named("tank/tnkatck1.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_SUPERTANK_ROCKET_1
@@ -639,22 +576,26 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_CARRIER_ROCKET_1 => Some(MonsterFlash {
             color: [1.0, 0.5, 0.2],
             sound: FlashSound::Named("tank/rocket.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_GUNNER_GRENADE_1 | MZ2_GUNNER_GRENADE_2 | MZ2_GUNNER_GRENADE_3
         | MZ2_GUNNER_GRENADE_4 => Some(MonsterFlash {
             color: [1.0, 0.5, 0.0],
             sound: FlashSound::Named("gunner/gunatck3.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_GLADIATOR_RAILGUN_1 | MZ2_CARRIER_RAILGUN | MZ2_WIDOW_RAIL => Some(MonsterFlash {
             color: [0.5, 0.5, 1.0],
             sound: FlashSound::None,
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_MAKRON_BFG => Some(MonsterFlash {
             color: [0.5, 1.0, 0.5],
             sound: FlashSound::None,
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_MAKRON_BLASTER_1
@@ -676,6 +617,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_MAKRON_BLASTER_17 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("makron/blaster.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_JORG_MACHINEGUN_L1
@@ -686,6 +628,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_JORG_MACHINEGUN_L6 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::Named("boss3/xfire.wav", ATTN_NORM),
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_JORG_MACHINEGUN_R1
@@ -696,11 +639,13 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_JORG_MACHINEGUN_R6 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::None,
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_JORG_BFG_1 => Some(MonsterFlash {
             color: [0.5, 1.0, 0.5],
             sound: FlashSound::None,
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_BOSS2_MACHINEGUN_R1
@@ -712,6 +657,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_CARRIER_MACHINEGUN_R2 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::None,
+            smoke: FlashSmoke::SparksAndSmoke,
             plasma: false,
         }),
         MZ2_STALKER_BLASTER
@@ -755,11 +701,13 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_WIDOW_RUN_8 => Some(MonsterFlash {
             color: [0.0, 1.0, 0.0],
             sound: FlashSound::Named("tank/tnkatck3.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_WIDOW_DISRUPTOR => Some(MonsterFlash {
             color: [-1.0, -1.0, -1.0],
             sound: FlashSound::Named("weapons/disint2.wav", ATTN_NORM),
+            smoke: FlashSmoke::None,
             plasma: false,
         }),
         MZ2_WIDOW_PLASMABEAM
@@ -781,6 +729,7 @@ fn monster_flash(flash: i32) -> Option<MonsterFlash> {
         | MZ2_WIDOW2_BEAM_SWEEP_11 => Some(MonsterFlash {
             color: [1.0, 1.0, 0.0],
             sound: FlashSound::None,
+            smoke: FlashSmoke::None,
             plasma: true,
         }),
         _ => None,
