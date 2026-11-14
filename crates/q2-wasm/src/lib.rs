@@ -533,26 +533,26 @@ impl Engine {
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
-        let rng = &mut self.rng;
-        q2_client::entities::pick_beam_colours(&mut views, &mut || xorshift(rng));
-        let mut entities = render_entities(&views, &self.models);
-        let gun = self
-            .frames
-            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
-        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
-        // C CL_AddPacketEntities' trails, then CL_AddTEnts and
-        // CL_AddParticles; C cl.playernum + 1 is the local player.
+        // C CL_AddPacketEntities' beam colours and trails, then CL_AddTEnts
+        // and CL_AddParticles; C cl.playernum + 1 is the local player.
         let player = q2_server::local::LOCAL_PLAYER as i32;
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
-        let mut lights = self.trails.run(
+        let mut lights = packet_entity_effects(
+            &mut self.trails,
             &mut self.fx,
             &self.frames.current,
+            &mut views,
             lerpfrac,
             player,
             cl_time,
             &mut randk,
         );
+        let mut entities = render_entities(&views, &self.models);
+        let gun = self
+            .frames
+            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
+        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
         let view = q2_client::fx::FxView::new(
             player,
             vieworg,
@@ -651,6 +651,33 @@ fn frame_output(
         messages: local.take_messages(),
         level,
     }
+}
+
+/// The random draws of C `CL_AddPacketEntities`, in its one loop over the
+/// frame's entities: each entity's `RF_BEAM` colour, then its lights and
+/// trail (`EntityTrails::run`), before the next entity's. Returns the
+/// lights.
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(clippy::too_many_arguments)]
+fn packet_entity_effects(
+    trails: &mut q2_client::fx::EntityTrails,
+    fx: &mut q2_client::fx::ClientFx,
+    current: &[q2_shared::types::EntityState],
+    views: &mut [q2_client::entities::EntityView],
+    lerpfrac: f32,
+    player: i32,
+    time: i32,
+    randk: &mut impl FnMut() -> u32,
+) -> Vec<q2_client::fx::FxLight> {
+    let mut lights = Vec::new();
+    for s in current {
+        for view in views.iter_mut().filter(|v| v.number == s.number) {
+            q2_client::entities::pick_beam_colours(std::slice::from_mut(view), randk);
+        }
+        let entity = std::slice::from_ref(s);
+        lights.extend(trails.run(fx, entity, lerpfrac, player, time, randk));
+    }
+    lights
 }
 
 /// Microseconds since the last frame for the server and client clocks (C
@@ -2184,6 +2211,57 @@ mod tests {
                 "{requested}"
             );
         }
+    }
+
+    #[test]
+    fn a_beam_colour_is_drawn_after_the_trails_of_lower_numbered_entities() {
+        // C CL_AddPacketEntities: one loop, the beam colour and the trail
+        // of each entity in turn.
+        use q2_shared::constants::{EF_ROCKET, RF_BEAM};
+        use q2_shared::types::{EntityState, Vec3f};
+        let rocket = EntityState {
+            number: 20,
+            modelindex: 3,
+            effects: EF_ROCKET,
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let laser = EntityState {
+            number: 40,
+            modelindex: 1,
+            renderfx: RF_BEAM,
+            skinnum: 0x4433_2211,
+            ..Default::default()
+        };
+        // randk is 0 on the first draw and 1 after: the laser's colour
+        // says whether the rocket trail drew first.
+        let run = |current: &[EntityState]| {
+            let mut trails = q2_client::fx::EntityTrails::default();
+            trails.server_frame(current, &[]);
+            let mut views = q2_client::entities::entity_views("", current, &[], 1.0, 0, 0);
+            let mut draws = 0;
+            let mut randk = || {
+                draws += 1;
+                u32::from(draws > 1)
+            };
+            let mut fx = q2_client::fx::ClientFx::default();
+            packet_entity_effects(
+                &mut trails,
+                &mut fx,
+                current,
+                &mut views,
+                1.0,
+                1,
+                0,
+                &mut randk,
+            );
+            (views, draws)
+        };
+        let (_, rocket_draws) = run(std::slice::from_ref(&rocket));
+        assert!(rocket_draws > 0, "the rocket trail draws randk");
+        let (views, _) = run(&[rocket, laser]);
+        let beam = views.iter().find(|v| v.number == 40).expect("laser view");
+        assert_eq!(beam.skinnum, 0x22, "skinnum >> (1 % 4 * 8)");
     }
 
     /// The client state `LevelClient` borrows, owned for a test.
