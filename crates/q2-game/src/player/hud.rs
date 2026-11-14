@@ -62,7 +62,6 @@ impl GameWorld {
             .find(|&(until, _)| until > framenum)
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
-        let power_icon = self.gi.image_index("i_powershield");
         // Help icon blinks on new help; else, centre-handed or with a wide
         // view, the weapon icon unless cl_gun 2 (C's default) draws the
         // gun anyway.
@@ -91,6 +90,13 @@ impl GameWorld {
             let icon = self.items[i].icon;
             (self.gi.image_index(icon), i)
         });
+        // Flash between power armor and other armor icon.
+        let show_power = power_armor != POWER_ARMOR_NONE && (armor.is_none() || framenum & 8 != 0);
+        let power_icon = if show_power {
+            self.gi.image_index("i_powershield")
+        } else {
+            0
+        };
         let selected = self.client(key).map_or(-1, |c| c.pers.selected_item);
         let selected_icon = usize::try_from(selected)
             .ok()
@@ -109,8 +115,6 @@ impl GameWorld {
         let ammo_count = client.pers.inventory[client.ammo_index];
         stats[STAT_AMMO_ICON] = ammo_icon as i16;
         stats[STAT_AMMO] = if ammo_icon == 0 { 0 } else { ammo_count as i16 };
-        // Flash between power armor and other armor icon.
-        let show_power = power_armor != POWER_ARMOR_NONE && (armor.is_none() || framenum & 8 != 0);
         match armor {
             _ if show_power => {
                 stats[STAT_ARMOR_ICON] = power_icon as i16;
@@ -450,6 +454,15 @@ mod tests {
         world.begin_client(key);
         world.level.framenum = 100;
         (world, key, gi)
+    }
+
+    #[test]
+    fn the_power_shield_icon_is_only_registered_when_it_shows() {
+        // C G_SetStats calls gi.imageindex("i_powershield") only in the
+        // branch that shows power armor; SV_FindIndex registers on first ask.
+        let (mut world, key, gi) = armed_player();
+        world.update_player_stats(key);
+        assert!(!gi.images.borrow().iter().any(|i| i == "i_powershield"));
     }
 
     #[test]
