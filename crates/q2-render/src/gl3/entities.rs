@@ -16,6 +16,7 @@ use q2_render_api::{DLight, RefDef, RenderEntity};
 use q2_shared::constants::{
     MAX_LIGHTSTYLES, RF_BEAM, RF_TRANSLUCENT, RF_VIEWERMODEL, RF_WEAPONMODEL,
 };
+use q2_shared::error::{Q2Error, Q2Result};
 
 use super::alias::{
     build_corners, clamp_frames, clamp_frames_independently, cull_alias, entity_skin,
@@ -61,7 +62,7 @@ const UI_ATTRIBUTES: [Attribute; 3] = [(0, 2, 0), (1, 2, 2), (2, 4, 4)];
 
 /// Every step is attempted; if any fails, the objects the others made are
 /// freed before the first error is returned, so a retried `init` leaks none.
-pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
+pub fn create_extra(gl: &glow::Context) -> Q2Result<ExtraGpu> {
     let alias = compile_alias_program(gl);
     let ui = compile_ui_program(gl);
     let alias_stream = create_stream_buffer(gl, ALIAS_VERTEX_FLOATS, &ALIAS_ATTRIBUTES);
@@ -95,7 +96,7 @@ pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
         }),
         (alias, ui, alias_stream, ui_stream, white, notexture) => {
             let mut first_error = None;
-            let mut note = |error: String| {
+            let mut note = |error: Q2Error| {
                 first_error.get_or_insert(error);
             };
             for program in [alias.map(|(p, _)| p), ui.map(|(p, _)| p)] {
@@ -120,7 +121,7 @@ pub fn create_extra(gl: &glow::Context) -> Result<ExtraGpu, String> {
                     Err(error) => note(error),
                 }
             }
-            Err(first_error.unwrap_or_default())
+            Err(first_error.unwrap_or_else(|| Q2Error::Drop("create_extra failed".into())))
         }
     }
 }
@@ -147,9 +148,9 @@ pub fn load_alias_model(
     palette: Option<&Palette>,
     images: &mut ImageStore,
     name: &str,
+    bytes: &[u8],
 ) -> Option<AliasModel> {
-    let bytes = loader(name)?;
-    let md2 = match load_md2(&bytes) {
+    let md2 = match load_md2(bytes) {
         Ok(md2) => md2,
         Err(error) => {
             tracing::warn!("GL3: bad model {name}: {error:?}");
@@ -633,15 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_corrupt_md2_registers_no_model() {
-        let loader: FileLoader = Box::new(|name| match name {
-            "bad.md2" => Some(b"IDP2 not a model".to_vec()),
-            _ => None,
-        });
+    fn a_corrupt_md2_registers_no_model() {
+        // A missing file never gets here: register_model reads it first.
+        let loader: FileLoader = Box::new(|_| None);
         let mut images = ImageStore::default();
-        for name in ["bad.md2", "gone.md2"] {
-            assert!(load_alias_model(None, &loader, None, &mut images, name).is_none());
-        }
+        let bytes = b"IDP2 not a model";
+        assert!(load_alias_model(None, &loader, None, &mut images, "bad.md2", bytes).is_none());
     }
 
     fn sprite() -> Model<&'static str> {

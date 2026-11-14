@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use glow::HasContext;
+use q2_shared::error::{Q2Error, Q2Result};
 
 use crate::bsp::BspTexInfo;
 use crate::files::palette::Palette;
@@ -157,12 +158,14 @@ fn rgba_len(width: usize, height: usize) -> Option<usize> {
 
 /// GL's size for a `width` x `height` upload of `len` bytes, refused when
 /// either side overflows a GLsizei or `len` is not exactly RGBA8 pixels.
-fn upload_size(width: usize, height: usize, len: usize) -> Result<(i32, i32), String> {
+fn upload_size(width: usize, height: usize, len: usize) -> Q2Result<(i32, i32)> {
     let (Ok(gl_width), Ok(gl_height)) = (i32::try_from(width), i32::try_from(height)) else {
-        return Err("texture too large".into());
+        return Err(Q2Error::Drop("texture too large".into()));
     };
     if rgba_len(width, height) != Some(len) {
-        return Err(format!("{len} bytes for a {width}x{height} texture"));
+        return Err(Q2Error::Drop(format!(
+            "{len} bytes for a {width}x{height} texture"
+        )));
     }
     Ok((gl_width, gl_height))
 }
@@ -174,13 +177,13 @@ pub fn upload_rgba(
     height: usize,
     rgba: &[u8],
     sampling: &Sampling,
-) -> Result<glow::Texture, String> {
+) -> Q2Result<glow::Texture> {
     let (gl_width, gl_height) = upload_size(width, height, rgba.len())?;
     // SAFETY: the texture is created on `gl` and bound before the parameter
     // and upload calls; `rgba` is a live slice of exactly `width * height * 4`
     // bytes (checked above) that outlives the `tex_image_2d` call.
     unsafe {
-        let texture = gl.create_texture()?;
+        let texture = gl.create_texture().map_err(Q2Error::Drop)?;
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, sampling.wrap as i32);
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, sampling.wrap as i32);
@@ -261,20 +264,28 @@ mod tests {
         assert_eq!(rgba_len(usize::MAX / 4 + 1, 1), None);
     }
 
+    /// The message of a `Q2Error::Drop`; any other result fails the test.
+    fn drop_message<T: std::fmt::Debug>(result: Q2Result<T>) -> String {
+        match result {
+            Err(Q2Error::Drop(message)) => message,
+            other => panic!("expected Q2Error::Drop, got {other:?}"),
+        }
+    }
+
     #[test]
     fn an_upload_needs_exactly_four_bytes_per_pixel_and_glsizei_sides() {
-        assert_eq!(upload_size(3, 2, 24), Ok((3, 2)));
+        assert_eq!(upload_size(3, 2, 24).unwrap(), (3, 2));
         assert_eq!(
-            upload_size(3, 2, 23),
-            Err("23 bytes for a 3x2 texture".into())
+            drop_message(upload_size(3, 2, 23)),
+            "23 bytes for a 3x2 texture"
         );
-        assert!(upload_size(3, 2, 25).is_err());
+        drop_message(upload_size(3, 2, 25));
         let too_wide = i32::MAX as usize + 1;
         assert_eq!(
-            upload_size(too_wide, 1, too_wide * 4),
-            Err("texture too large".into())
+            drop_message(upload_size(too_wide, 1, too_wide * 4)),
+            "texture too large"
         );
-        assert!(upload_size(1, too_wide, too_wide * 4).is_err());
+        drop_message(upload_size(1, too_wide, too_wide * 4));
     }
 
     #[test]

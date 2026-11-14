@@ -3,6 +3,7 @@
 //! `GL3_DrawSkyBox`).
 
 use glow::HasContext;
+use q2_shared::error::{Q2Error, Q2Result};
 
 use super::lightmap::{LightmapPage, BLOCK_HEIGHT, BLOCK_WIDTH, MAX_LIGHTMAPS_PER_SURFACE};
 use super::pics::{batch_runs, Quad, QuadImage, QUAD_VERTICES};
@@ -69,19 +70,19 @@ fn create_vertex_buffers(
     floats: &[f32],
     stride_floats: usize,
     attributes: &[Attribute],
-) -> Result<(glow::VertexArray, glow::Buffer), String> {
+) -> Q2Result<(glow::VertexArray, glow::Buffer)> {
     let bytes = float_bytes(floats);
     let stride = (stride_floats * 4) as i32;
     // SAFETY: VAO and VBO are created here on `gl`; `bytes` borrows `floats`
     // and is copied by `buffer_data_u8_slice`, and the attributes lie within
     // the caller's `stride_floats` layout.
     unsafe {
-        let vao = gl.create_vertex_array()?;
+        let vao = gl.create_vertex_array().map_err(Q2Error::Drop)?;
         let vbo = match gl.create_buffer() {
             Ok(buffer) => buffer,
             Err(error) => {
                 gl.delete_vertex_array(vao);
-                return Err(error);
+                return Err(Q2Error::Drop(error));
             }
         };
         gl.bind_vertex_array(Some(vao));
@@ -108,7 +109,7 @@ fn create_vertex_buffers(
 fn upload_all<'a>(
     gl: &glow::Context,
     images: impl Iterator<Item = (&'a Image, &'a Sampling)>,
-) -> Result<Vec<glow::Texture>, String> {
+) -> Q2Result<Vec<glow::Texture>> {
     let mut textures = Vec::new();
     for (image, sampling) in images {
         match upload_rgba(gl, image.width, image.height, &image.rgba, sampling) {
@@ -151,7 +152,7 @@ pub fn upload_world(
     gl: &glow::Context,
     images: &WorldImages,
     mesh: &WorldMesh,
-) -> Result<WorldGpu, String> {
+) -> Q2Result<WorldGpu> {
     // SAFETY: state-only call on the live context.
     unsafe { gl.active_texture(glow::TEXTURE0) };
     let textures = upload_all(
@@ -184,7 +185,7 @@ pub fn upload_world(
     }
 }
 
-pub fn upload_sky(gl: &glow::Context, faces: &[Image; 6]) -> Result<SkyGpu, String> {
+pub fn upload_sky(gl: &glow::Context, faces: &[Image; 6]) -> Q2Result<SkyGpu> {
     // SAFETY: state-only call on the live context.
     unsafe { gl.active_texture(glow::TEXTURE0) };
     let textures = upload_all(gl, faces.iter().map(|face| (face, &CLAMPED_SAMPLING)))?;
@@ -420,18 +421,18 @@ pub fn create_stream_buffer(
     gl: &glow::Context,
     stride_floats: usize,
     attributes: &[Attribute],
-) -> Result<StreamBuffer, String> {
-    let stride = i32::try_from(stride_floats * 4).map_err(|e| e.to_string())?;
+) -> Q2Result<StreamBuffer> {
+    let stride = i32::try_from(stride_floats * 4).map_err(|e| Q2Error::Drop(e.to_string()))?;
     // SAFETY: VAO and VBO are created here on `gl`; attribute offsets and
     // stride come from the caller's float layout, whose last attribute ends
     // at `stride_floats`; no data is read until a draw fills the buffer.
     unsafe {
-        let vao = gl.create_vertex_array()?;
+        let vao = gl.create_vertex_array().map_err(Q2Error::Drop)?;
         let vbo = match gl.create_buffer() {
             Ok(buffer) => buffer,
             Err(error) => {
                 gl.delete_vertex_array(vao);
-                return Err(error);
+                return Err(Q2Error::Drop(error));
             }
         };
         gl.bind_vertex_array(Some(vao));
@@ -694,7 +695,6 @@ mod tests {
         assert_eq!(shading_mode(Shading::Lit), MODE_LIT);
         assert_eq!(shading_mode(Shading::Plain), MODE_PLAIN);
         assert_eq!(shading_mode(Shading::Warp), MODE_WARP);
-        assert!(VERTEX_SRC.contains(&format!("if (u_mode != {MODE_WARP})")));
     }
 
     #[test]

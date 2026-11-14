@@ -11,6 +11,7 @@
 //! - [`model`]: model handle registry; [`light`]: light under a point
 //! - [`entity`]: entity matrices; [`alias`]: MD2 frame interpolation and shading
 //! - [`images`] / [`pics`]: pic and skin cache, 2D quads and font cells
+//! - [`fx`]: particle, beam and sprite vertices and their draws
 //! - [`shader`] / [`draw`] / [`entities`]: the GL programs and draw loops
 //!
 //! MD2 frames are interpolated on the CPU every draw, as C does, and streamed
@@ -61,7 +62,9 @@ use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use crate::bsp::BspData;
+use crate::files::md2::MD2_IDENT;
 use crate::files::palette::Palette;
+use crate::files::sp2::SP2_IDENT;
 use alias::AliasModel;
 use draw::{draw_batches, draw_ui, BatchDraw, BatchFilter, SkyGpu, UiTarget, WorldGpu};
 use entities::{
@@ -301,7 +304,7 @@ impl Renderer for Gl3Renderer {
         self.height = height;
 
         let (prog, uniforms) = shader::compile_world_program(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to compile world shaders: {e}")))?;
+            .map_err(in_step("Failed to compile world shaders"))?;
 
         // SAFETY: `prog` and any previous program were created by this same
         // `gl` context in `compile_world_program`, and `old` is no longer
@@ -314,13 +317,12 @@ impl Renderer for Gl3Renderer {
         }
         self.uniforms = Some(uniforms);
 
-        let extra = create_extra(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to set up entity and 2D drawing: {e}")))?;
+        let extra = create_extra(gl).map_err(in_step("Failed to set up entity and 2D drawing"))?;
         if let Some(old) = self.extra.replace(extra) {
             free_extra(gl, old);
         }
-        let effects = fx::create_fx(gl)
-            .map_err(|e| Q2Error::Drop(format!("Failed to set up particles and sprites: {e}")))?;
+        let effects =
+            fx::create_fx(gl).map_err(in_step("Failed to set up particles and sprites"))?;
         if let Some(old) = self.fx.replace(effects) {
             fx::free_fx(gl, old);
         }
@@ -397,11 +399,15 @@ impl Renderer for Gl3Renderer {
         Ok(())
     }
 
-    /// `*n` is inline submodel `n` of the loaded BSP; `*.md2` and `*.sp2`
-    /// are loaded through the file loader with their skins or frame
-    /// images. Anything else, or a failure,
-    /// returns `ModelHandle::NONE` (logged once per name). A model found
-    /// again has its skins marked as used, like C `Mod_ReLoadSkins`.
+    /// `*n` is inline submodel `n` of the loaded BSP. Any other name is
+    /// read through the file loader, and its first four bytes pick the
+    /// loader as in C `Mod_ForName`: `IDP2` is an MD2 with its skins, `IDS2`
+    /// a sprite with its frame images. A missing file, a bad one, or any
+    /// other magic returns `ModelHandle::NONE` (logged once per name). C
+    /// also loads `IBSP` files here, which returns the world for the map
+    /// name `CL_PrepRefresh` registers as `CS_MODELS + 1`, and drops on an
+    /// unknown magic. A model found again has its skins marked as used,
+    /// like C `Mod_ReLoadSkins`.
     fn register_model(&mut self, name: &str) -> ModelHandle {
         if name.starts_with('*') {
             return self.models.register_inline(name, self.model_count);
@@ -410,13 +416,14 @@ impl Renderer for Gl3Renderer {
         let images = &mut self.images;
         let loader = &self.file_loader;
         let handle = self.models.register(name, || {
-            let lower = name.to_ascii_lowercase();
-            if lower.ends_with(".md2") {
-                entities::load_alias_model(gl, loader, palette, images, name).map(Model::Alias)
-            } else if lower.ends_with(".sp2") {
-                fx::load_sprite_model(gl, loader, palette, images, name).map(Model::Sprite)
-            } else {
-                None
+            let bytes = loader(name)?;
+            let magic = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
+            match magic {
+                MD2_MAGIC => entities::load_alias_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Alias),
+                SP2_IDENT => fx::load_sprite_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Sprite),
+                _ => None,
             }
         });
         let used: Vec<usize> = match self.models.get(handle) {
@@ -910,6 +917,18 @@ fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16]
     m
 }
 
+/// Prefix a `Q2Error::Drop` from an init step with the step's name. The
+/// message is prefixed directly so Display does not print "drop:" twice.
+fn in_step(step: &'static str) -> impl FnOnce(Q2Error) -> Q2Error {
+    move |error| match error {
+        Q2Error::Drop(message) => Q2Error::Drop(format!("{step}: {message}")),
+        other => other,
+    }
+}
+
+/// `MD2_IDENT` as the unsigned word C `Mod_ForName` switches on.
+const MD2_MAGIC: u32 = MD2_IDENT as u32;
+
 /// C `gl3_identityMat4`.
 const IDENTITY_MAT4: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -988,6 +1007,18 @@ mod tests {
     fn init_fails_without_context() {
         let mut r = Gl3Renderer::headless(no_files());
         assert!(r.init(800, 600).is_err());
+    }
+
+    #[test]
+    fn an_init_step_error_names_the_step_once_and_stays_a_drop() {
+        let error = in_step("Failed to compile world shaders")(Q2Error::Drop(
+            "VS compile error: bad".into(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "drop: Failed to compile world shaders: VS compile error: bad"
+        );
+        assert!(matches!(in_step("x")(Q2Error::Quit), Q2Error::Quit));
     }
 
     #[test]
@@ -1682,6 +1713,24 @@ mod tests {
     }
 
     #[test]
+    fn the_file_magic_picks_the_loader_not_the_name_like_c_mod_forname() {
+        let mut r = Gl3Renderer::headless(Box::new(|path| match path {
+            "x.md2" => Some(synthetic_sp2(&[("a.pcx", 8, 8)])),
+            "x.sp2" => Some(synthetic_md2("skin.pcx")),
+            "x.bin" => Some(synthetic_md2("skin.pcx")),
+            "junk.md2" => Some(b"JUNKJUNK".to_vec()),
+            _ => None,
+        }));
+        let sprite = r.register_model("x.md2");
+        assert!(matches!(r.models.get(sprite), Some(Model::Sprite(_))));
+        let alias = r.register_model("x.sp2");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        let alias = r.register_model("x.bin");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        assert_eq!(r.register_model("junk.md2"), ModelHandle::NONE);
+    }
+
+    #[test]
     fn the_world_is_drawn_untransformed_by_area_with_textures_at_2_fps_like_c() {
         let fd = RefDef {
             time: 3.7,
@@ -1700,8 +1749,11 @@ mod tests {
         assert_eq!(draw.areabits, Some(&[0b10u8][..]));
     }
 
+    // Only the setter: the gun draw reads `hand` through EntityScene, which
+    // needs a GL context; gun_view_projection and gun_cull_face are tested
+    // above.
     #[test]
-    fn set_hand_keeps_the_cvar_for_the_gun_draw() {
+    fn set_hand_stores_the_cvar_starting_at_c_default_0() {
         let mut r = Gl3Renderer::headless(no_files());
         assert_eq!(r.hand, 0);
         r.set_hand(1);
