@@ -197,9 +197,9 @@ impl LocalGame {
 
     /// The sounds the game started before the server frames run since the
     /// last call (C `svc_sound` messages, sent by `SV_SendClientMessages`
-    /// after each game frame). The local client hears them all; C's PHS
-    /// culling and reliable routing only decide which network client is
-    /// sent one.
+    /// after each game frame). The local client hears them all, where C's
+    /// `SV_StartSound` culls by the PHS and client state for the local
+    /// client as well (ADR-003 "Sound routing").
     pub fn take_sounds(&mut self) -> Vec<crate::game_iface::SoundEvent> {
         std::mem::take(&mut self.sent_sounds)
     }

@@ -84,8 +84,10 @@ struct GiInner {
 
 /// One sound the game started: what C `SV_StartSound` writes as an
 /// `svc_sound` message, with volume, attenuation and offset at the byte
-/// precision the message carries. The PHS and reliable routing of that
-/// message is a network concern; the one local client hears every sound.
+/// precision the message carries. C multicasts it to the PHS (or
+/// reliably), culling by PHS, area and `cs_spawned` for a listen
+/// server's own client too; here the local client hears every sound, a
+/// deviation listed under ADR-003 "Sound routing".
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoundEvent {
     /// Entity number the sound plays on (for channel overrides).
