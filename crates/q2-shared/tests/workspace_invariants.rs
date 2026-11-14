@@ -292,8 +292,9 @@ fn code_only(src: &str) -> String {
             blank(&mut out, '"');
             i += 1;
         } else if c == '\'' && next == Some('\\') {
-            // Escaped char literal: '\n', '\'', '\u{..}'.
-            let len = chars[i + 2..].iter().position(|&q| q == '\'').unwrap() + 3;
+            // Escaped char literal: '\n', '\'', '\\', '\u{..}'. The closing
+            // quote is the first one after the escaped character.
+            let len = chars[i + 3..].iter().position(|&q| q == '\'').unwrap() + 4;
             out.push_str(&" ".repeat(len));
             i += len;
         } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
@@ -425,9 +426,19 @@ fn unsafe_scan_ignores_comments_strings_and_lint_names() {
 let s = "unsafe { }";
 let r = r#"unsafe "quoted" { }"#;
 let c = '"';
+let q = '\''; let s = "unsafe";
+let b = '\\'; let s = "unsafe";
 #![deny(unsafe_code)]
 "##;
     assert!(unsafe_violations("q2-game", src).is_empty());
+}
+
+#[test]
+fn code_only_blanks_a_whole_escaped_char_literal() {
+    for lit in [r"'\''", r"'\\'", r"'\n'", r"'\u{7f}'"] {
+        let code = code_only(&format!("{lit}x"));
+        assert_eq!(code, format!("{}x", " ".repeat(lit.len())), "{lit}");
+    }
 }
 
 #[test]
