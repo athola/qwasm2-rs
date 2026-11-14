@@ -341,10 +341,27 @@ impl ServerGameImport {
         message.write_byte(q2_shared::protocol::SvcOp::Print as i32);
         message.write_byte(level);
         message.write_string(msg);
+        self.queue(&message);
+    }
+
+    /// Queue `message` for the clients' next frame.
+    fn queue(&self, message: &NetMsg) {
         self.inner
             .borrow_mut()
             .messages
             .push(message.data().to_vec());
+    }
+
+    /// Queue the message the game wrote (`msg_buf`) if it is `delivered`
+    /// and not empty, and clear it either way (the end of `multicast` and
+    /// `unicast`).
+    fn flush_msg_buf(&self, delivered: bool) {
+        let mut inner = self.inner.borrow_mut();
+        if delivered && !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     /// The messages the game multicast since the last call, in order.
@@ -562,10 +579,7 @@ impl GameImport for ServerGameImport {
         let mut message = NetMsg::new();
         message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
         message.write_string(msg);
-        self.inner
-            .borrow_mut()
-            .messages
-            .push(message.data().to_vec());
+        self.queue(&message);
     }
 
     // -- sound ---------------------------------------------------------------
@@ -959,12 +973,7 @@ impl GameImport for ServerGameImport {
             };
             in_game && phs.is_none_or(|phs| self.client_in_mask(slot + 1, origin, phs))
         });
-        let mut inner = self.inner.borrow_mut();
-        if sent && !inner.msg_buf.is_empty() {
-            let message = inner.msg_buf.data().to_vec();
-            inner.messages.push(message);
-        }
-        inner.msg_buf.clear();
+        self.flush_msg_buf(sent);
     }
 
     /// C PF_Unicast: the message goes to client `ent_idx`, and nowhere for
@@ -973,12 +982,7 @@ impl GameImport for ServerGameImport {
     /// here the buffer is cleared either way.
     fn unicast(&self, ent_idx: usize, _reliable: bool) {
         let is_client = self.is_client(ent_idx);
-        let mut inner = self.inner.borrow_mut();
-        if is_client && !inner.msg_buf.is_empty() {
-            let message = inner.msg_buf.data().to_vec();
-            inner.messages.push(message);
-        }
-        inner.msg_buf.clear();
+        self.flush_msg_buf(is_client);
     }
 
     // -- command args --------------------------------------------------------
