@@ -114,6 +114,29 @@ test.describe('Qwasm2 with the demo pak', () => {
     }));
     // The static server's favicon 404 is the only expected error.
     expect(errors.filter(e => !e.url.endsWith('/favicon.ico'))).toEqual([]);
+
+    // A frame that only cleared, or never drew, leaves the middle of the view
+    // one colour; the demo map's start view has thousands. Hide the DOM
+    // overlays so only the canvas is sampled, and stay clear of the 2D status
+    // bar at the bottom.
+    await page.addStyleTag({ content: '#game-container > :not(canvas) { visibility: hidden !important; }' });
+    const shot = await page.locator('#canvas').screenshot();
+    const colours = await page.evaluate(async png => {
+      const img = new Image();
+      img.src = `data:image/png;base64,${png}`;
+      await img.decode();
+      const scratch = document.createElement('canvas');
+      scratch.width = img.width;
+      scratch.height = img.height;
+      const ctx = scratch.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const x = Math.floor(img.width / 4), y = Math.floor(img.height / 5);
+      const px = ctx.getImageData(x, y, img.width / 2, img.height * 2 / 5).data;
+      const seen = new Set<number>();
+      for (let i = 0; i < px.length; i += 4) seen.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
+      return seen.size;
+    }, shot.toString('base64'));
+    expect(colours).toBeGreaterThan(64);
   });
 
   test('CP-5: Gamma starts from ?gamma= and F8/F7 step it', async ({ page }) => {
