@@ -158,8 +158,8 @@ impl GameWorld {
 
 impl GameWorld {
     /// Publish the player's name and skin for scoreboards and other
-    /// players (C `ClientUserinfoChanged`'s `CS_PLAYERSKINS`; its fov,
-    /// hand and spectator parts are not ported).
+    /// players (C `ClientUserinfoChanged`'s `CS_PLAYERSKINS`; what else
+    /// of it is ported is listed on `client_userinfo_changed`).
     pub fn player_skin_configstring(&mut self, key: EntityKey) {
         let (Some(number), Some(client)) = (self.number_of(key), self.client(key)) else {
             return;

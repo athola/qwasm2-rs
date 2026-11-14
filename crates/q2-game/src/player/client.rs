@@ -946,7 +946,10 @@ const SAVED_FLAGS: EntityFlags = EntityFlags::GODMODE
     .union(EntityFlags::POWER_ARMOR);
 
 /// Keep the userinfo and take the player's name and handedness from it.
-/// The skin and fov parts are not ported. C ref: `ClientUserinfoChanged`.
+/// C ref: `ClientUserinfoChanged` (player/client.c). Its `CS_PLAYERSKINS`
+/// string is built by `GameWorld::player_skin_configstring`. Not ported
+/// (ADR-003): the `Info_Validate` check, `spectator`, and `fov` with
+/// `DF_FIXED_FOV`.
 fn client_userinfo_changed(pers: &mut ClientPersistent, userinfo: &str) {
     pers.netname = extract_info_value(userinfo, "name").unwrap_or_else(|| "player".to_string());
     if let Some(hand) = extract_info_value(userinfo, "hand").filter(|h| !h.is_empty()) {
