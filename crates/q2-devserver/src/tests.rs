@@ -249,18 +249,12 @@ async fn other_gamedata_files_are_served_from_gamedata() {
 }
 
 #[tokio::test]
-async fn dist_files_carry_their_mime_type() {
-    // Browsers refuse WebAssembly.instantiateStreaming without application/wasm.
+async fn the_bundled_page_is_served_as_html() {
+    // The bundle inlines the wasm, so qwasm2.html is the only dist file a browser loads.
     let root = fixture_root(None);
-    std::fs::write(root.path().join("dist/q2_wasm_bg.wasm"), b"\0asm").unwrap();
-    for (uri, mime) in [
-        ("/qwasm2.html", "text/html"),
-        ("/q2_wasm_bg.wasm", "application/wasm"),
-    ] {
-        let resp = get(root.path(), uri, &[]).await;
-        let content_type = resp.headers()[header::CONTENT_TYPE].to_str().unwrap();
-        assert!(content_type.starts_with(mime), "{uri}: {content_type}");
-    }
+    let resp = get(root.path(), "/qwasm2.html", &[]).await;
+    let content_type = resp.headers()[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(content_type.starts_with("text/html"), "{content_type}");
 }
 
 #[tokio::test]
