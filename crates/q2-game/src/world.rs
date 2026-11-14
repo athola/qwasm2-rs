@@ -1718,8 +1718,8 @@ impl GameWorld {
             }
 
             // Remove things (except the world) from other skill levels or
-            // deathmatch. Coop filters like single player: C has its
-            // SPAWNFLAG_NOT_COOP test commented out.
+            // deathmatch. C SpawnEntities has no coop branch: coop filters
+            // by skill like single player and clears SPAWNFLAG_NOT_COOP.
             if classname != "worldspawn" {
                 let skill_flag = match self.game.skill {
                     0 => SPAWNFLAG_NOT_EASY,
@@ -3461,7 +3461,8 @@ mod tests {
 
     #[test]
     fn coop_filters_by_skill_and_keeps_not_coop_entities_like_c() {
-        // C G_SpawnEntities has the SPAWNFLAG_NOT_COOP test commented out.
+        // C SpawnEntities has no coop branch: it filters by skill and
+        // clears SPAWNFLAG_NOT_COOP (g_spawn.c).
         let mut world = test_world();
         world.init_game();
         world.game.coop = true;

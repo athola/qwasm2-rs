@@ -3157,7 +3157,7 @@ mod tests {
     fn chat_is_greeted_with_the_talk_sound_on_the_local_player() {
         // C S_StartLocalSound: `S_StartSound(NULL, cl.playernum + 1, 0, sfx,
         // 1, 1, 0)`, attenuation 1 on the listener's own entity, which
-        // S_Spatialize plays at full volume.
+        // SDL_Spatialize and AL_Spatialize play at full volume.
         let talk = talk_sound();
         assert_eq!(
             (talk.name.as_str(), talk.entnum, talk.attenuation),

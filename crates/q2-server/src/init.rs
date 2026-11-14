@@ -217,7 +217,7 @@ impl Server {
 
 impl ServerStatic {
     /// Put an in-process client in the first free slot and into the game:
-    /// C `SV_DirectConnect` (slot `Connected` once `ClientConnect`
+    /// C `SVC_DirectConnect` (slot `Connected` once `ClientConnect`
     /// accepts) then `SV_Begin_f` (`ClientBegin`, slot `Spawned`).
     /// `userinfo` is what C's connect packet carries (the client's
     /// `CVAR_USERINFO` cvars). Returns the client's entity number. A
@@ -539,7 +539,7 @@ mod tests {
         svs.begin_connected_clients(&mut game);
 
         // C: the client answers "reconnect" with `new` and `begin` over the
-        // same netchan; SV_DirectConnect (ClientConnect) does not run again.
+        // same netchan; SVC_DirectConnect (ClientConnect) does not run again.
         assert_eq!(game.connects, connects);
         assert_eq!(game.begun, [1, 2]);
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Spawned);

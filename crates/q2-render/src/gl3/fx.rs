@@ -254,7 +254,8 @@ void main() {
 "#;
 
 // Sprites (C `fragmentSrc3Dsprite`/`SpriteAlpha`, alpha-tested when
-// opaque) and beams (C `fragmentSrc3DcolorOnly`, over a white texel).
+// opaque) and beams (C `fragmentSrc3Dcolor`, the `si3DcolorOnly` program,
+// over a white texel).
 pub const FX_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;

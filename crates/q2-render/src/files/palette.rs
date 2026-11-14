@@ -1,4 +1,4 @@
-//! 256-colour palette from `pics/colormap.pcx` (C `R_GetPalette` / `GetPCXPalette`).
+//! 256-colour palette from `pics/colormap.pcx` (C `GetPCXPalette`, files/pcx.c).
 
 use super::{malformed, slice_at};
 use q2_common::error::Q2Result;

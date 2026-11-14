@@ -133,7 +133,7 @@ pub struct Gl3Renderer {
 
 impl Gl3Renderer {
     /// C `R_Init`: the platform supplies the GL context and `FS_LoadFile`.
-    /// The palette is read here, like C `GL3_InitImages`; without it world
+    /// The palette is read here, as C `GL3_Init` does; without it world
     /// textures show as notexture.
     pub fn new(gl: glow::Context, file_loader: FileLoader) -> Self {
         Self::with_context(Some(gl), file_loader)
@@ -193,8 +193,8 @@ impl Gl3Renderer {
     }
 
     /// Build the world from a parsed BSP: geometry, textures and lightmaps
-    /// onto the GPU (C `Mod_LoadBrushModel` plus `GL3_BuildPolygonFromSurface`
-    /// and lightmap creation).
+    /// onto the GPU (C `Mod_LoadBrushModel` plus
+    /// `GL3_LM_BuildPolygonFromSurface` and lightmap creation).
     fn load_world(&mut self, bsp: &BspData) {
         // Entity lighting and `*n` validation need no GL context.
         self.light = Some(LightTree::from_bsp(bsp));
@@ -950,7 +950,7 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 /// The 2D quad colour that draws `fd.blend` as C does. Dry, C
 /// `GL3_Draw_Flash` (fragmentSrc2Dcolor) scales by intensity2D and applies
 /// gamma, as the 2D shader here does, so the blend is passed as is. With
-/// `RDF_UNDERWATER` and a world, C `GL3_SetupGL` binds the post-process FBO
+/// `RDF_UNDERWATER` and a world, C `SetupGL` binds the post-process FBO
 /// (`gl3_usefbo` defaults to 1) and `GL3_DrawFrameBufferObject`
 /// (fragmentSrc2Dpostprocess) mixes `v_blend` with neither, so the rgb is
 /// pre-divided by [`shader::INTENSITY_2D`] and raised to `vid_gamma` to
@@ -2034,7 +2034,7 @@ mod tests {
         for (got, want) in got.iter().zip([0.25 / 1.5, 0.09 / 1.5, 0.04 / 1.5, 0.4]) {
             assert!((got - want).abs() < 1e-6, "{got:?}");
         }
-        // No FBO without a world (C GL3_SetupGL): the dry flash, unscaled.
+        // No FBO without a world (C SetupGL): the dry flash, unscaled.
         let no_world = RefDef {
             rdflags: q2_shared::constants::RDF_UNDERWATER | q2_shared::constants::RDF_NOWORLDMODEL,
             ..water.clone()

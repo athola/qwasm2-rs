@@ -26,7 +26,7 @@ pub struct Image {
     pub is_lava: bool,
 }
 
-/// Read the 256-colour palette used by every `.wal` (C `GL3_GetPalette`).
+/// Read the 256-colour palette used by every `.wal` (C `GetPCXPalette`, files/pcx.c).
 pub fn load_palette(loader: &FileLoader) -> Option<Palette> {
     let bytes = loader(PALETTE_PATH)?;
     match Palette::from_pcx(&bytes) {

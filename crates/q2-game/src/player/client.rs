@@ -1430,7 +1430,7 @@ mod tests {
         world.ensure_player_start();
         world.begin_client(key);
         let e = world.entities.get(key).unwrap();
-        // ChangeWeapon then raises the blaster: C ShowGun puts its weapmodel
+        // ChangeWeapon then raises the blaster: it puts the weapmodel
         // (1) in the skin's high byte and plays FRAME_pain301 (62).
         assert_eq!(
             (e.state.effects, e.state.skinnum, e.state.frame),
