@@ -1089,10 +1089,8 @@ mod tests {
         ] {
             fx.muzzle_flash2(&soldier, flash, 0.0, &mut rng(&[0]));
         }
-        assert!(fx
-            .take_particles()
-            .iter()
-            .all(|&(_, kind)| kind == FlashParticles::SparksAndSmoke));
+        let kinds: Vec<_> = fx.take_particles().into_iter().map(|(_, k)| k).collect();
+        assert_eq!(kinds, [FlashParticles::SparksAndSmoke; 3]);
     }
 
     #[test]
@@ -1137,130 +1135,167 @@ mod tests {
         const YELLOW: [f32; 3] = [1.0, 1.0, 0.0];
         const ROCKET: [f32; 3] = [1.0, 0.5, 0.2];
         const BFG: [f32; 3] = [0.5, 1.0, 0.5];
+        const SS: Option<FlashParticles> = Some(FlashParticles::SparksAndSmoke);
+        const SMOKE: Option<FlashParticles> = Some(FlashParticles::Smoke);
         // C ref: CL_AddMuzzleFlash2's switch; the first and last case of
         // each group, so a case dropped from either end shows.
-        // Flashes, light colour, and sound with its attenuation.
-        type Group = (&'static [i32], [f32; 3], Option<(&'static str, f32)>);
+        // Flashes, light colour, sound with its attenuation, and the
+        // particles (C CL_ParticleEffect and CL_SmokeAndFlash).
+        type Group = (
+            &'static [i32],
+            [f32; 3],
+            Option<(&'static str, f32)>,
+            Option<FlashParticles>,
+        );
         let groups: &[Group] = &[
             (
                 &[MZ2_INFANTRY_MACHINEGUN_1, MZ2_INFANTRY_MACHINEGUN_13],
                 YELLOW,
                 Some(("infantry/infatck1.wav", ATTN_NORM)),
+                SS,
             ),
             (
                 &[MZ2_SOLDIER_MACHINEGUN_1, MZ2_SOLDIER_MACHINEGUN_8],
                 YELLOW,
                 Some(("soldier/solatck3.wav", ATTN_NORM)),
+                SS,
             ),
             (
                 &[MZ2_GUNNER_MACHINEGUN_1, MZ2_GUNNER_MACHINEGUN_8],
                 YELLOW,
                 Some(("gunner/gunatck2.wav", ATTN_NORM)),
+                SS,
             ),
             (
                 &[MZ2_ACTOR_MACHINEGUN_1, MZ2_TURRET_MACHINEGUN],
                 YELLOW,
                 Some(("infantry/infatck1.wav", ATTN_NORM)),
+                SS,
             ),
             (
                 &[MZ2_BOSS2_MACHINEGUN_L1, MZ2_CARRIER_MACHINEGUN_L2],
                 YELLOW,
                 Some(("infantry/infatck1.wav", ATTN_NONE)),
+                SS,
             ),
             (
                 &[MZ2_SOLDIER_BLASTER_1, MZ2_TURRET_BLASTER],
                 YELLOW,
                 Some(("soldier/solatck2.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_FLYER_BLASTER_1, MZ2_FLYER_BLASTER_2],
                 YELLOW,
                 Some(("flyer/flyatck3.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_MEDIC_BLASTER_1],
                 YELLOW,
                 Some(("medic/medatck1.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_HOVER_BLASTER_1],
                 YELLOW,
                 Some(("hover/hovatck1.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_FLOAT_BLASTER_1],
                 YELLOW,
                 Some(("floater/fltatck1.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_SOLDIER_SHOTGUN_1, MZ2_SOLDIER_SHOTGUN_8],
                 YELLOW,
                 Some(("soldier/solatck1.wav", ATTN_NORM)),
+                SMOKE,
             ),
             (
                 &[MZ2_TANK_BLASTER_1, MZ2_TANK_BLASTER_3],
                 YELLOW,
                 Some(("tank/tnkatck3.wav", ATTN_NORM)),
+                None,
+            ),
+            (
+                &[MZ2_TANK_MACHINEGUN_1, MZ2_TANK_MACHINEGUN_19],
+                YELLOW,
+                None,
+                Some(FlashParticles::TankMachinegun(7)),
             ),
             (
                 &[MZ2_CHICK_ROCKET_1, MZ2_TURRET_ROCKET],
                 ROCKET,
                 Some(("chick/chkatck2.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_TANK_ROCKET_1, MZ2_TANK_ROCKET_3],
                 ROCKET,
                 Some(("tank/tnkatck1.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_SUPERTANK_ROCKET_1, MZ2_CARRIER_ROCKET_1],
                 ROCKET,
                 Some(("tank/rocket.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_GUNNER_GRENADE_1, MZ2_GUNNER_GRENADE_4],
                 [1.0, 0.5, 0.0],
                 Some(("gunner/gunatck3.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_GLADIATOR_RAILGUN_1, MZ2_WIDOW_RAIL],
                 [0.5, 0.5, 1.0],
                 None,
+                None,
             ),
-            (&[MZ2_MAKRON_BFG], BFG, None),
+            (&[MZ2_MAKRON_BFG], BFG, None, None),
             (
                 &[MZ2_MAKRON_BLASTER_1, MZ2_MAKRON_BLASTER_17],
                 YELLOW,
                 Some(("makron/blaster.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_JORG_MACHINEGUN_L1, MZ2_JORG_MACHINEGUN_L6],
                 YELLOW,
                 Some(("boss3/xfire.wav", ATTN_NORM)),
+                SS,
             ),
             (
                 &[MZ2_JORG_MACHINEGUN_R1, MZ2_JORG_MACHINEGUN_R6],
                 YELLOW,
                 None,
+                SS,
             ),
-            (&[MZ2_JORG_BFG_1], BFG, None),
+            (&[MZ2_JORG_BFG_1], BFG, None, None),
             (
                 &[MZ2_BOSS2_MACHINEGUN_R1, MZ2_CARRIER_MACHINEGUN_R2],
                 YELLOW,
                 None,
+                SS,
             ),
             (
                 &[MZ2_STALKER_BLASTER, MZ2_WIDOW_RUN_8],
                 [0.0, 1.0, 0.0],
                 Some(("tank/tnkatck3.wav", ATTN_NORM)),
+                None,
             ),
             (
                 &[MZ2_WIDOW_DISRUPTOR],
                 [-1.0, -1.0, -1.0],
                 Some(("weapons/disint2.wav", ATTN_NORM)),
+                None,
             ),
         ];
-        for &(flashes, color, sound) in groups {
+        for &(flashes, color, sound, particles) in groups {
             for &flash in flashes {
                 let mut fx = Effects::default();
                 let sounds = fx.muzzle_flash2(&player_at(7, 0.0), flash, 0.0, &mut rng(&[0]));
@@ -1275,6 +1310,8 @@ mod tests {
                     .into_iter()
                     .collect();
                 assert_eq!(heard, want, "{flash}");
+                let queued: Vec<_> = fx.take_particles().into_iter().map(|(_, p)| p).collect();
+                assert_eq!(queued, particles.into_iter().collect::<Vec<_>>(), "{flash}");
             }
         }
     }
