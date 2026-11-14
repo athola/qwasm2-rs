@@ -166,8 +166,8 @@ impl GameWorld {
         let skin = crate::player::client::extract_info_value(&client.pers.userinfo, "skin")
             .unwrap_or_default();
         let index = q2_shared::constants::CS_PLAYERSKINS + number - 1;
-        let value = format!("{}\\{skin}", client.pers.netname);
-        self.gi.configstring(index as i32, &value);
+        let player_skin = format!("{}\\{skin}", client.pers.netname);
+        self.gi.configstring(index as i32, &player_skin);
     }
 
     /// Write the scoreboard layout for `key`: up to twelve players by

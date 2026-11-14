@@ -356,14 +356,14 @@ pub fn execute_layout(program: &str, input: &LayoutInput) -> Vec<HudDraw> {
             "client" => {
                 x = (input.width / 2 - 160).wrapping_add(strtol(arg(&mut toks)));
                 y = (input.height / 2 - 120).wrapping_add(strtol(arg(&mut toks)));
-                let value = strtol(arg(&mut toks));
+                let client = strtol(arg(&mut toks));
                 let (score, ping, time) = (
                     strtol(arg(&mut toks)),
                     strtol(arg(&mut toks)),
                     strtol(arg(&mut toks)),
                 );
                 // C drops the connection for a bad client number.
-                let Some(index) = usize::try_from(value).ok().filter(|&v| v < MAX_CLIENTS) else {
+                let Some(index) = usize::try_from(client).ok().filter(|&v| v < MAX_CLIENTS) else {
                     continue;
                 };
                 let (name, icon) = client_info(

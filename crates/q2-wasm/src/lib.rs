@@ -1351,8 +1351,8 @@ fn game_from_query(search: &str) -> &str {
 /// slider range; `None` keeps the default.
 #[cfg(any(target_arch = "wasm32", test))]
 fn vid_gamma_from_query(search: &str) -> Option<f32> {
-    let value = query_value(search, "gamma")?;
-    let vid_gamma = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
+    let raw_gamma = query_value(search, "gamma")?;
+    let vid_gamma = raw_gamma.parse::<f32>().ok().filter(|v| v.is_finite())?;
     Some(vid_gamma.clamp(VID_GAMMA_MIN, VID_GAMMA_MAX))
 }
 
