@@ -398,7 +398,8 @@ impl GameWorld {
         };
         ent.state.origin = origin;
         for i in 0..3 {
-            client.ps.pmove.origin[i] = (origin[i] * 8.0) as i16;
+            // Through i32 so an overflowing short wraps as in C.
+            client.ps.pmove.origin[i] = (origin[i] * 8.0) as i32 as i16;
         }
         client.ps.viewangles = angles;
         client.ps.pmove.pm_type = PmType::Freeze;
@@ -787,6 +788,16 @@ mod tests {
         world.client_mut(key).unwrap().ps.rdflags = RDF_UNDERWATER | RDF_NOWORLDMODEL;
         world.move_client_to_intermission(key);
         assert_eq!(world.client(key).unwrap().ps.rdflags, RDF_NOWORLDMODEL);
+    }
+
+    #[test]
+    fn the_intermission_origin_wraps_into_a_short_like_c() {
+        // C MoveClientToIntermission assigns origin * 8 to a short, so
+        // 4096 * 8 = 32768 wraps to -32768 instead of saturating.
+        let (mut world, key, _) = armed_player();
+        world.level.intermission_origin = Vec3f::new(4096.0, 0.0, 0.0);
+        world.move_client_to_intermission(key);
+        assert_eq!(world.client(key).unwrap().ps.pmove.origin[0], -32768);
     }
 
     #[test]
