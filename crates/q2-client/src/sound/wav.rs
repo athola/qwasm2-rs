@@ -113,7 +113,12 @@ pub fn wav_info(name: &str, wav: &[u8]) -> Q2Result<WavInfo> {
         // own comment: not a proper parse, but it works with cooledit.
         if let Some(list) = find_next_chunk(wav, end, &mut last, b"LIST") {
             if list + 32 <= end && wav.get(list + 28..list + 32) == Some(b"mark") {
-                samples = loopstart + le_i32(wav, list + 24).unwrap_or(0);
+                let length = le_i32(wav, list + 24).unwrap_or(0);
+                // C's int sum overflows here; no data chunk is that long.
+                let Some(loop_end) = loopstart.checked_add(length) else {
+                    return bad("bad loop length");
+                };
+                samples = loop_end;
             }
         }
     }
@@ -302,6 +307,17 @@ pub(crate) mod tests {
             (b"fmt ", fmt(1, 11025, 16)),
             (b"cue ", cue(1)),
             (b"LIST", mark_list(9)),
+            (b"data", pcm16(&[1, 2])),
+        ]);
+        assert!(wav_info("a.wav", &wav).is_err());
+    }
+
+    #[test]
+    fn a_loop_end_past_i32_max_is_an_error_not_a_panic() {
+        let wav = riff(&[
+            (b"fmt ", fmt(1, 11025, 16)),
+            (b"cue ", cue(i32::MAX)),
+            (b"LIST", mark_list(1)),
             (b"data", pcm16(&[1, 2])),
         ]);
         assert!(wav_info("a.wav", &wav).is_err());
