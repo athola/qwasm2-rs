@@ -197,9 +197,9 @@ impl LocalGame {
 
     /// The sounds the game started before the server frames run since the
     /// last call (C `svc_sound` messages, sent by `SV_SendClientMessages`
-    /// after each game frame). The local client hears them all; C's PHS
-    /// culling and reliable routing only decide which network client is
-    /// sent one.
+    /// after each game frame). The local client hears them all, where C's
+    /// `SV_StartSound` culls by the PHS and client state for the local
+    /// client as well (ADR-003 "Sound routing").
     pub fn take_sounds(&mut self) -> Vec<crate::game_iface::SoundEvent> {
         std::mem::take(&mut self.sent_sounds)
     }
@@ -422,6 +422,29 @@ mod tests {
             .change_map(&MapRequest::parse("victory.pcx"), &[])
             .expect("a picture level loads");
         assert!(local.take_messages().is_empty());
+        assert!(local.take_sounds().is_empty());
+    }
+
+    #[test]
+    fn messages_queued_since_the_last_frame_are_dropped_by_a_map_change() {
+        // A print or sound queued between game frames is still in the
+        // import at the map change; C's client would parse it against the
+        // old level before CL_ClearState, so the new level never sees it.
+        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.frame(100_000);
+        local.take_messages();
+        local.take_sounds();
+        local.client_command("use Shotgun");
+        local.gi.sound(Some(LOCAL_PLAYER), 0, 1, 1.0, 1.0, 0.0);
+        local
+            .change_map(&MapRequest::parse("victory.pcx"), &[])
+            .expect("a picture level loads");
+        local.frame(100_000);
+        local.frame(100_000);
+        let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"Out of item: Shotgun\n\0");
+        assert!(!local.take_messages().contains(&print));
         assert!(local.take_sounds().is_empty());
     }
 

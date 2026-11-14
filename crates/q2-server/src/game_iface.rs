@@ -84,8 +84,10 @@ struct GiInner {
 
 /// One sound the game started: what C `SV_StartSound` writes as an
 /// `svc_sound` message, with volume, attenuation and offset at the byte
-/// precision the message carries. The PHS and reliable routing of that
-/// message is a network concern; the one local client hears every sound.
+/// precision the message carries. C multicasts it to the PHS (or
+/// reliably), culling by PHS, area and `cs_spawned` for a listen
+/// server's own client too; here the local client hears every sound, a
+/// deviation listed under ADR-003 "Sound routing".
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoundEvent {
     /// Entity number the sound plays on (for channel overrides).
@@ -341,10 +343,27 @@ impl ServerGameImport {
         message.write_byte(q2_shared::protocol::SvcOp::Print as i32);
         message.write_byte(level);
         message.write_string(msg);
+        self.queue(&message);
+    }
+
+    /// Queue `message` for the clients' next frame.
+    fn queue(&self, message: &NetMsg) {
         self.inner
             .borrow_mut()
             .messages
             .push(message.data().to_vec());
+    }
+
+    /// Queue the message the game wrote (`msg_buf`) if it is `delivered`
+    /// and not empty, and clear it either way (the end of `multicast` and
+    /// `unicast`).
+    fn flush_msg_buf(&self, delivered: bool) {
+        let mut inner = self.inner.borrow_mut();
+        if delivered && !inner.msg_buf.is_empty() {
+            let message = inner.msg_buf.data().to_vec();
+            inner.messages.push(message);
+        }
+        inner.msg_buf.clear();
     }
 
     /// The messages the game multicast since the last call, in order.
@@ -513,6 +532,11 @@ impl Default for ServerGameImport {
 // GameImport impl
 // ---------------------------------------------------------------------------
 
+/// The `tracing` target of the game's console prints (C `PF_dprintf`, and
+/// `PF_cprintf` to no entity), which C always shows: both call
+/// `Com_Printf`, not the developer-only `Com_DPrintf`.
+pub const GAME_PRINT_TARGET: &str = "game";
+
 impl GameImport for ServerGameImport {
     // -- printing ------------------------------------------------------------
 
@@ -527,7 +551,7 @@ impl GameImport for ServerGameImport {
     }
 
     fn dprintf(&self, msg: &str) {
-        tracing::debug!("[dprintf] {}", msg.trim_end());
+        tracing::info!(target: GAME_PRINT_TARGET, "{}", msg.trim_end());
     }
 
     /// C PF_cprintf: to a client as `svc_print`, or the console for none.
@@ -535,10 +559,11 @@ impl GameImport for ServerGameImport {
     /// `1..=maxclients`; the trait cannot fail, so the print is logged as
     /// an error and dropped.
     fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str) {
-        tracing::debug!(ent = ?ent_idx, "[cprintf] {}", msg.trim_end());
         let Some(ent) = ent_idx else {
+            tracing::info!(target: GAME_PRINT_TARGET, "{}", msg.trim_end());
             return;
         };
+        tracing::debug!(ent, "[cprintf] {}", msg.trim_end());
         if self.is_client(ent) {
             self.queue_print(printlevel, msg);
         } else {
@@ -556,10 +581,7 @@ impl GameImport for ServerGameImport {
         let mut message = NetMsg::new();
         message.write_byte(q2_shared::protocol::SvcOp::CenterPrint as i32);
         message.write_string(msg);
-        self.inner
-            .borrow_mut()
-            .messages
-            .push(message.data().to_vec());
+        self.queue(&message);
     }
 
     // -- sound ---------------------------------------------------------------
@@ -953,12 +975,7 @@ impl GameImport for ServerGameImport {
             };
             in_game && phs.is_none_or(|phs| self.client_in_mask(slot + 1, origin, phs))
         });
-        let mut inner = self.inner.borrow_mut();
-        if sent && !inner.msg_buf.is_empty() {
-            let message = inner.msg_buf.data().to_vec();
-            inner.messages.push(message);
-        }
-        inner.msg_buf.clear();
+        self.flush_msg_buf(sent);
     }
 
     /// C PF_Unicast: the message goes to client `ent_idx`, and nowhere for
@@ -967,12 +984,7 @@ impl GameImport for ServerGameImport {
     /// here the buffer is cleared either way.
     fn unicast(&self, ent_idx: usize, _reliable: bool) {
         let is_client = self.is_client(ent_idx);
-        let mut inner = self.inner.borrow_mut();
-        if is_client && !inner.msg_buf.is_empty() {
-            let message = inner.msg_buf.data().to_vec();
-            inner.messages.push(message);
-        }
-        inner.msg_buf.clear();
+        self.flush_msg_buf(is_client);
     }
 
     // -- command args --------------------------------------------------------
@@ -1285,6 +1297,51 @@ mod tests {
         gi.add_command_string("echo hi\n");
         assert_eq!(gi.take_commands(), "gamemap \"base2\"\necho hi\n");
         assert_eq!(gi.take_commands(), "");
+    }
+
+    /// The `target level: message` of each event `run` logs at INFO or
+    /// above.
+    fn logged(run: impl FnOnce()) -> Vec<String> {
+        use std::sync::{Arc, Mutex};
+        struct Shared(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Shared {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log lock").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let writer = out.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || Shared(writer.clone()))
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let text = String::from_utf8(out.lock().expect("log lock").clone()).expect("utf-8");
+        text.lines().map(|line| line.trim().to_string()).collect()
+    }
+
+    #[test]
+    fn dprintf_and_a_console_cprintf_log_at_info_under_the_game_target() {
+        // C PF_dprintf and PF_cprintf with no entity call Com_Printf, which
+        // always reaches the console (not Com_DPrintf).
+        let gi = ServerGameImport::new();
+        let lines = logged(|| {
+            gi.dprintf("teleporter without a target\n");
+            gi.cprintf(None, q2_shared::constants::PRINT_HIGH, "console line\n");
+        });
+        assert_eq!(
+            lines,
+            [
+                format!("INFO {GAME_PRINT_TARGET}: teleporter without a target"),
+                format!("INFO {GAME_PRINT_TARGET}: console line"),
+            ]
+        );
     }
 
     #[test]

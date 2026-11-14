@@ -75,6 +75,9 @@ struct Engine {
     fx: q2_client::fx::ClientFx,
     /// Each entity's trail state (C `centity_t`).
     trails: q2_client::fx::EntityTrails,
+    /// The last state received for each entity number (C
+    /// `cl_entities[].current`), which muzzle flashes read.
+    last_states: std::collections::HashMap<i32, q2_shared::types::EntityState>,
     /// The client's random numbers (C `randk`) for flash sizes and sounds.
     rng: u32,
     /// Printed lines, the centre print and the server layout.
@@ -88,6 +91,9 @@ struct Engine {
     cl_gun: f32,
     /// The keys legend (F4, C `menu_keys`, or the page's Keys button).
     show_legend: bool,
+    /// A level change failed: C's ERR_DROP ends the server, so no more
+    /// frames run and the page shows the error.
+    dropped: bool,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -117,12 +123,14 @@ impl Engine {
             effects: q2_client::effects::Effects::default(),
             fx: q2_client::fx::ClientFx::default(),
             trails: q2_client::fx::EntityTrails::default(),
+            last_states: std::collections::HashMap::new(),
             rng: 0x1234_5678,
             text: q2_client::notify::ServerText::default(),
             game: String::new(),
             hand: 0,
             cl_gun: 2.0,
             show_legend: false,
+            dropped: false,
         };
         engine.register_sounds();
         engine
@@ -167,7 +175,8 @@ impl Engine {
         // C cl.frame.servertime.
         let servertime = self.frames.serverframe().unwrap_or(0).wrapping_mul(100);
         let current = &self.frames.current;
-        let entity = |n: i32| current.iter().find(|s| s.number == n).cloned();
+        let last_states = &self.last_states;
+        let entity = |n: i32| flash_state(last_states, n);
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
         let mut fx_sounds = Vec::new();
@@ -306,6 +315,7 @@ impl Engine {
             .receive(framenum, self.local.entity_states(), ps);
         self.trails
             .server_frame(&self.frames.current, &self.frames.previous);
+        remember_states(&mut self.last_states, &self.frames.current);
         let local = &self.local;
         let renderer = &mut self.renderer;
         self.models.sync(
@@ -319,56 +329,31 @@ impl Engine {
         true
     }
 
-    /// Follow a level exit (C `gamemap`): the server loads the next level
-    /// into the same game, then the client starts from a clear state (C
-    /// `CL_ClearState` on the reconnect, which stops all sounds) and, for a
-    /// game map, registers its sounds and preps the renderer (C
-    /// `CL_RegisterSounds`, `CL_PrepRefresh`). `sounds`, the old map's last
-    /// frame of sounds, go with the old map: their indices name its
-    /// `CS_SOUNDS`. The client is cleared before the renderer is prepped,
-    /// so a failed prep does not leave the old map's sounds and frames.
-    fn change_map(
+    /// Finish a level exit `frame_output` followed: for a game map,
+    /// register its sounds and prep the renderer (C `CL_RegisterSounds`,
+    /// `CL_PrepRefresh`). The client was cleared first, so a failed prep
+    /// does not leave the old map's sounds and frames.
+    fn prep_level(
         &mut self,
-        level: &str,
-        sounds: &mut Vec<q2_server::game_iface::SoundEvent>,
+        request: &q2_server::init::MapRequest,
     ) -> q2_common::error::Q2Result<()> {
-        use q2_server::init::{LevelKind, MapRequest};
-        let request = MapRequest::parse(level);
-        log(&format!("Level exit to {level}"));
-        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
-        // level with no map or player, which `tick` draws (C
-        // SCR_PlayCinematic). There is no cinematic or demo playback:
-        // LocalGame refuses one, or skips it to its next server.
-        let bsp = match request.kind {
-            LevelKind::Game => self.fs.load_file(&format!("maps/{}.bsp", request.map))?,
-            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Vec::new(),
-        };
-        self.local.change_map(&request, &bsp)?;
-        if matches!(request.kind, LevelKind::Cinematic | LevelKind::Demo) {
-            log(&format!("{}: skipped, no cinematic playback", request.map));
-            return Ok(());
+        use q2_server::init::LevelKind;
+        match request.kind {
+            LevelKind::Cinematic | LevelKind::Demo => {
+                log(&format!("{}: skipped, no cinematic playback", request.map));
+            }
+            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map)),
+            LevelKind::Game => {
+                self.register_sounds();
+                let local = &self.local;
+                prep_refresh(
+                    self.renderer.as_mut(),
+                    |i| local.configstring(i),
+                    &mut self.models,
+                )?;
+                log(&format!("Map: maps/{}.bsp loaded", request.map));
+            }
         }
-        // C CL_ClearState -> S_StopAllSounds.
-        self.sound.stop_all();
-        sounds.clear();
-        self.frames = q2_client::frame::FrameHistory::default();
-        self.effects.clear();
-        self.fx.clear();
-        self.trails = q2_client::fx::EntityTrails::default();
-        self.text.layout.clear();
-        self.input.view_angles = q2_shared::types::Vec3f::ZERO;
-        if request.kind == LevelKind::Pic {
-            log(&format!("Picture: pics/{} shown", request.map));
-            return Ok(());
-        }
-        self.register_sounds();
-        let local = &self.local;
-        prep_refresh(
-            self.renderer.as_mut(),
-            |i| local.configstring(i),
-            &mut self.models,
-        )?;
-        log(&format!("Map: maps/{}.bsp loaded", request.map));
         Ok(())
     }
 
@@ -417,6 +402,9 @@ impl Engine {
     /// to the local player (C ClientThink), advance the server (game frames
     /// at 10 Hz) and the client clock, and render from the player's eye.
     fn tick(&mut self, timestamp: f64, input: &q2_platform::wasm::input::WasmInputState) {
+        if self.dropped {
+            return;
+        }
         let elapsed_us = elapsed_microseconds(timestamp, self.last_time);
         let dt = frame_dt_seconds(timestamp, self.last_time);
         self.last_time = timestamp;
@@ -459,15 +447,29 @@ impl Engine {
         // The server and the client clock run on the real elapsed time; only
         // the movement command is capped.
         self.local.frame(elapsed_us);
-        let mut sounds = self.local.take_sounds();
-        if let Some(level) = self.local.take_map_change() {
-            if let Err(e) = self.change_map(&level, &mut sounds) {
-                console::error_1(&q2err_to_js(e));
+        let fs = &self.fs;
+        let mut client = LevelClient {
+            sound: &mut self.sound,
+            frames: &mut self.frames,
+            effects: &mut self.effects,
+            fx: &mut self.fx,
+            trails: &mut self.trails,
+            last_states: &mut self.last_states,
+            text: &mut self.text,
+            view_angles: &mut self.input.view_angles,
+        };
+        let output = frame_output(&mut self.local, &mut client, |path| fs.load_file(path));
+        let (sounds, messages) = (output.sounds, output.messages);
+        if let Some((level, change)) = output.level {
+            log(&format!("Level exit to {level}"));
+            if let Err(e) = change.and_then(|request| self.prep_level(&request)) {
+                // C CM_LoadMap and SV_Map raise ERR_DROP: the server ends
+                // and the console shows why.
+                report_error(&level_change_error(&level, &e));
+                self.dropped = true;
+                return;
             }
         }
-        // Taken after the map change, which drops the old level's messages
-        // (C CL_ClearState): none run against the new level's frame.
-        let messages = self.local.take_messages();
         self.frames.advance(elapsed_us);
         let new_frame = self.sync_frame();
         let (flash_sounds, fx_sounds) = self.run_effects(&messages, dt, new_frame);
@@ -549,26 +551,25 @@ impl Engine {
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
-        let rng = &mut self.rng;
-        q2_client::entities::pick_beam_colours(&mut views, &mut || xorshift(rng));
-        let mut entities = render_entities(&views, &self.models);
-        let gun = self
-            .frames
-            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
-        entities.extend(gun.and_then(|gun| gun_entity(&gun, &self.models)));
-        // C CL_AddPacketEntities' trails, then CL_AddTEnts and
-        // CL_AddParticles; C cl.playernum + 1 is the local player.
+        // C CL_AddPacketEntities' beam colours and trails, then CL_AddTEnts
+        // and CL_AddParticles; C cl.playernum + 1 is the local player.
         let player = q2_server::local::LOCAL_PLAYER as i32;
         let rng = &mut self.rng;
         let mut randk = || xorshift(rng);
-        let mut lights = self.trails.run(
+        let mut lights = packet_entity_effects(
+            &mut self.trails,
             &mut self.fx,
             &self.frames.current,
+            &mut views,
             lerpfrac,
             player,
             cl_time,
             &mut randk,
         );
+        let gun = self
+            .frames
+            .view_weapon(vieworg, viewangles, lerpfrac, self.cl_gun);
+        let gun = gun.and_then(|gun| gun_entity(&gun, &self.models));
         let view = q2_client::fx::FxView::new(
             player,
             vieworg,
@@ -576,9 +577,8 @@ impl Engine {
             self.frames.gun_offsets(),
             self.hand,
         );
-        let mut effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
-        effects.entities.extend(power_screens(&views));
-        entities.extend(fx_render_entities(&effects.entities, &self.models));
+        let effects = self.fx.frame_view(cl_time, lerpfrac, &view, &mut randk);
+        let entities = frame_entities(gun, &views, &effects.entities, &self.models);
         lights.extend(effects.lights);
         self.renderer.begin_frame(self.view.width, self.view.height);
         let dlights = frame_dlights(&lights, &self.effects);
@@ -587,6 +587,116 @@ impl Engine {
         self.draw_hud(&stats);
         self.renderer.end_frame();
     }
+}
+
+/// The client state a level change starts over (C `CL_ClearState`).
+#[cfg(any(target_arch = "wasm32", test))]
+struct LevelClient<'a> {
+    sound: &'a mut q2_client::sound::SoundSystem,
+    frames: &'a mut q2_client::frame::FrameHistory,
+    effects: &'a mut q2_client::effects::Effects,
+    fx: &'a mut q2_client::fx::ClientFx,
+    trails: &'a mut q2_client::fx::EntityTrails,
+    last_states: &'a mut std::collections::HashMap<i32, q2_shared::types::EntityState>,
+    text: &'a mut q2_client::notify::ServerText,
+    view_angles: &'a mut q2_shared::types::Vec3f,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl LevelClient<'_> {
+    /// C `CL_ClearState` on the reconnect, which stops all sounds
+    /// (`S_StopAllSounds`).
+    fn clear(&mut self) {
+        self.sound.stop_all();
+        *self.frames = q2_client::frame::FrameHistory::default();
+        self.effects.clear();
+        self.fx.clear();
+        *self.trails = q2_client::fx::EntityTrails::default();
+        // C memsets cl_entities.
+        self.last_states.clear();
+        self.text.layout.clear();
+        // C CL_PrepRefresh -> Con_ClearNotify.
+        self.text.clear_notify();
+        *self.view_angles = q2_shared::types::Vec3f::ZERO;
+    }
+}
+
+/// What a server frame hands the client: its sounds and messages, and the
+/// level exit it asked for with the outcome of following it.
+#[cfg(any(target_arch = "wasm32", test))]
+struct FrameOutput {
+    sounds: Vec<q2_server::game_iface::SoundEvent>,
+    messages: Vec<Vec<u8>>,
+    level: Option<(
+        String,
+        q2_common::error::Q2Result<q2_server::init::MapRequest>,
+    )>,
+}
+
+/// Take a server frame's output and follow a level exit (C `gamemap`) in
+/// between. The server loads the next level into the same game
+/// (`load_file` reads its BSP), then the client starts from a clear state.
+/// The sounds, taken before the change, go with the old map: their indices
+/// name its `CS_SOUNDS`. The messages are taken after it, which drops the
+/// old level's (C `CL_ClearState`): none run against the new level's
+/// frame. A skipped cinematic keeps the running map and its client state.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_output(
+    local: &mut q2_server::local::LocalGame,
+    client: &mut LevelClient<'_>,
+    load_file: impl FnOnce(&str) -> q2_common::error::Q2Result<Vec<u8>>,
+) -> FrameOutput {
+    use q2_server::init::{LevelKind, MapRequest};
+    let mut sounds = local.take_sounds();
+    let level = local.take_map_change().map(|level| {
+        let request = MapRequest::parse(&level);
+        // Only a game map has a BSP. demo2 exits to victory.pcx, a picture
+        // level with no map or player, which `tick` draws (C
+        // SCR_PlayCinematic). There is no cinematic or demo playback:
+        // LocalGame refuses one, or skips it to its next server.
+        let change = match request.kind {
+            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map)),
+            LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Ok(Vec::new()),
+        }
+        .and_then(|bsp| local.change_map(&request, &bsp));
+        if change.is_ok() && matches!(request.kind, LevelKind::Game | LevelKind::Pic) {
+            client.clear();
+            sounds.clear();
+        }
+        (level, change.map(|()| request))
+    });
+    FrameOutput {
+        sounds,
+        messages: local.take_messages(),
+        level,
+    }
+}
+
+/// The random draws of C `CL_AddPacketEntities`, in its one loop over the
+/// frame's entities: each entity's `RF_BEAM` colour, then its lights and
+/// trail (`EntityTrails::run`), before the next entity's. Returns the
+/// lights.
+#[cfg(any(target_arch = "wasm32", test))]
+#[allow(clippy::too_many_arguments)]
+fn packet_entity_effects(
+    trails: &mut q2_client::fx::EntityTrails,
+    fx: &mut q2_client::fx::ClientFx,
+    current: &[q2_shared::types::EntityState],
+    views: &mut [q2_client::entities::EntityView],
+    lerpfrac: f32,
+    player: i32,
+    time: i32,
+    randk: &mut impl FnMut() -> u32,
+) -> Vec<q2_client::fx::FxLight> {
+    let mut lights = Vec::new();
+    for s in current {
+        for view in views.iter_mut().filter(|v| v.number == s.number) {
+            q2_client::entities::pick_beam_colours(std::slice::from_mut(view), randk);
+        }
+        let entity = std::slice::from_ref(s);
+        lights.extend(trails.run(fx, entity, lerpfrac, player, time, randk));
+    }
+    lights
 }
 
 /// Microseconds since the last frame for the server and client clocks (C
@@ -866,6 +976,45 @@ fn power_screens(views: &[q2_client::entities::EntityView]) -> Vec<q2_client::fx
         .collect()
 }
 
+/// C `MAX_ENTITIES` (client/vid/header/ref.h): `V_AddEntity` drops the
+/// rest of a frame's entities.
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_ENTITIES: usize = 128;
+
+/// The frame's refresh entities in the order C adds them (`V_AddEntity`),
+/// at most `MAX_ENTITIES`: the view weapon (`CL_CalcViewValues`), each
+/// packet entity's models and then its power screen
+/// (`CL_AddPacketEntities`), then the effects' models (`CL_AddTEnts`). C
+/// never adds the viewer's own model, which the renderer leaves out too.
+#[cfg(any(target_arch = "wasm32", test))]
+fn frame_entities(
+    gun: Option<q2_render_api::RenderEntity>,
+    views: &[q2_client::entities::EntityView],
+    fx_entities: &[q2_client::fx::FxEntity],
+    models: &ModelTable,
+) -> Vec<q2_render_api::RenderEntity> {
+    use q2_shared::constants::RF_VIEWERMODEL;
+    let mut entities: Vec<_> = gun.into_iter().collect();
+    let mut screens = Vec::new();
+    for (i, view) in views.iter().enumerate() {
+        if view.flags & RF_VIEWERMODEL == 0 {
+            entities.extend(render_entities(std::slice::from_ref(view), models));
+            screens.extend(power_screens(std::slice::from_ref(view)));
+        }
+        // An entity's views (model, shell, linked models) are adjacent.
+        if views
+            .get(i + 1)
+            .is_none_or(|next| next.number != view.number)
+        {
+            entities.extend(fx_render_entities(&screens, models));
+            screens.clear();
+        }
+    }
+    entities.extend(fx_render_entities(fx_entities, models));
+    entities.truncate(MAX_ENTITIES);
+    entities
+}
+
 /// C `V_AddParticle` for each live particle.
 #[cfg(any(target_arch = "wasm32", test))]
 fn fx_particles(particles: &[q2_client::particles::DrawParticle]) -> Vec<q2_render_api::Particle> {
@@ -914,6 +1063,35 @@ fn run_effect_messages(
         }
     }
     (sounds, fx_sounds)
+}
+
+/// Keep `current`, a new server frame's entities, as the last state of
+/// each (C `CL_ParseDelta` into `cl_entities[].current`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn remember_states(
+    last_states: &mut std::collections::HashMap<i32, q2_shared::types::EntityState>,
+    current: &[q2_shared::types::EntityState],
+) {
+    last_states.extend(current.iter().map(|s| (s.number, s.clone())));
+}
+
+/// The state a muzzle flash for entity `number` is drawn at (C
+/// `cl_entities[number].current`): the last one received, kept after the
+/// entity leaves the frame, or C's zeroed state for one never seen.
+#[cfg(any(target_arch = "wasm32", test))]
+fn flash_state(
+    last_states: &std::collections::HashMap<i32, q2_shared::types::EntityState>,
+    number: i32,
+) -> Option<q2_shared::types::EntityState> {
+    Some(
+        last_states
+            .get(&number)
+            .cloned()
+            .unwrap_or_else(|| q2_shared::types::EntityState {
+                number,
+                ..Default::default()
+            }),
+    )
 }
 
 /// The frame's dynamic lights in C `V_RenderView` order: the trail and
@@ -1128,11 +1306,12 @@ fn hand_from_query(search: &str) -> i32 {
         .unwrap_or(0)
 }
 
-/// The local client's userinfo: C sends its `CVAR_USERINFO` cvars, of
-/// which this port has only `hand`.
+/// The local client's userinfo: the `CVAR_USERINFO` cvars the game reads,
+/// at C's defaults (cl_main.c: name "unnamed", skin "male/grunt", gender
+/// "male"), and `hand` from the page.
 #[cfg(any(target_arch = "wasm32", test))]
 fn local_userinfo(hand: i32) -> String {
-    format!("\\hand\\{hand}")
+    format!("\\name\\unnamed\\skin\\male/grunt\\gender\\male\\hand\\{hand}")
 }
 
 /// C cvar `cl_gun` from `?cl_gun=`, as text for the game; C's default 2.
@@ -1694,7 +1873,7 @@ fn run_engine(mut engine: Engine, map_name: &str) -> Result<(), JsValue> {
 
     q2_platform::wasm::game_loop::start_game_loop(
         frame_callback,
-        Box::new(|msg| log(&format!("Game loop stopped: {msg}"))),
+        Box::new(|msg| report_error(&format!("ERROR: game loop stopped: {msg}"))),
     )
     .map_err(q2err_to_js)?;
 
@@ -1728,6 +1907,41 @@ async fn fetch_array_buffer(url: &str) -> Result<js_sys::Uint8Array, JsValue> {
     Ok(js_sys::Uint8Array::new(&array_buffer))
 }
 
+/// The page's status line for a level change that failed with `err`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn level_change_error(level: &str, err: &q2_common::Q2Error) -> String {
+    format!("ERROR: level change to {level}: {err}")
+}
+
+/// Show `msg` the way the page's startup catch does: `console.error`, a
+/// `fail` line in the status console, and the console un-hidden so it is
+/// seen. Used from the panic hook, so nothing here may panic.
+#[cfg(target_arch = "wasm32")]
+fn report_error(msg: &str) {
+    console::error_1(&format!("[qwasm2-rs] {msg}").into());
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if let Some(container) = document.get_element_by_id("status-container") {
+        if let Err(e) = container.class_list().remove_1("hidden") {
+            console::error_1(&e);
+        }
+    }
+    let Some(status) = document.get_element_by_id("status") else {
+        return;
+    };
+    let line = match document.create_element("span") {
+        Ok(line) => line,
+        Err(e) => return console::error_1(&e),
+    };
+    line.set_class_name("fail");
+    // textContent: the text can carry pak-derived strings.
+    line.set_text_content(Some(&format!("{msg}\n")));
+    if let Err(e) = status.append_child(&line) {
+        console::error_1(&e);
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn log(msg: &str) {
     console::log_1(&format!("[qwasm2-rs] {}", msg).into());
@@ -1752,6 +1966,9 @@ fn log(msg: &str) {
 fn console_error_panic_hook_setup() {
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("[qwasm2-rs PANIC] {}", info);
+        #[cfg(target_arch = "wasm32")]
+        report_error(&msg);
+        #[cfg(not(target_arch = "wasm32"))]
         web_sys::console::error_1(&msg.into());
     }));
 }
@@ -2122,12 +2339,241 @@ mod tests {
     }
 
     #[test]
+    fn a_beam_colour_is_drawn_after_the_trails_of_lower_numbered_entities() {
+        // C CL_AddPacketEntities: one loop, the beam colour and the trail
+        // of each entity in turn.
+        use q2_shared::constants::{EF_ROCKET, RF_BEAM};
+        use q2_shared::types::{EntityState, Vec3f};
+        let rocket = EntityState {
+            number: 20,
+            modelindex: 3,
+            effects: EF_ROCKET,
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let laser = EntityState {
+            number: 40,
+            modelindex: 1,
+            renderfx: RF_BEAM,
+            skinnum: 0x4433_2211,
+            ..Default::default()
+        };
+        // randk is 0 on the first draw and 1 after: the laser's colour
+        // says whether the rocket trail drew first.
+        let run = |current: &[EntityState]| {
+            let mut trails = q2_client::fx::EntityTrails::default();
+            trails.server_frame(current, &[]);
+            let mut views = q2_client::entities::entity_views("", current, &[], 1.0, 0, 0);
+            let mut draws = 0;
+            let mut randk = || {
+                draws += 1;
+                u32::from(draws > 1)
+            };
+            let mut fx = q2_client::fx::ClientFx::default();
+            packet_entity_effects(
+                &mut trails,
+                &mut fx,
+                current,
+                &mut views,
+                1.0,
+                1,
+                0,
+                &mut randk,
+            );
+            (views, draws)
+        };
+        let (_, rocket_draws) = run(std::slice::from_ref(&rocket));
+        assert!(rocket_draws > 0, "the rocket trail draws randk");
+        let (views, _) = run(&[rocket, laser]);
+        let beam = views.iter().find(|v| v.number == 40).expect("laser view");
+        assert_eq!(beam.skinnum, 0x22, "skinnum >> (1 % 4 * 8)");
+    }
+
+    /// The client state `LevelClient` borrows, owned for a test.
+    #[derive(Default)]
+    struct TestClient {
+        frames: q2_client::frame::FrameHistory,
+        effects: q2_client::effects::Effects,
+        fx: q2_client::fx::ClientFx,
+        trails: q2_client::fx::EntityTrails,
+        last_states: std::collections::HashMap<i32, q2_shared::types::EntityState>,
+        text: q2_client::notify::ServerText,
+        view_angles: q2_shared::types::Vec3f,
+    }
+
+    /// Run `frame_output` on `local` with `client`, reading no files.
+    fn run_frame_output(
+        local: &mut q2_server::local::LocalGame,
+        client: &mut TestClient,
+    ) -> FrameOutput {
+        let mut sound = q2_client::sound::SoundSystem::new(1);
+        let mut level = LevelClient {
+            sound: &mut sound,
+            frames: &mut client.frames,
+            effects: &mut client.effects,
+            fx: &mut client.fx,
+            trails: &mut client.trails,
+            last_states: &mut client.last_states,
+            text: &mut client.text,
+            view_angles: &mut client.view_angles,
+        };
+        frame_output(local, &mut level, |path| {
+            Err(q2_common::Q2Error::Drop(format!("{path}: no file")))
+        })
+    }
+
+    /// A local game whose last server frame both sent a print and asked
+    /// for a level exit to `level`, and a client that has a frame.
+    fn test_rocket() -> q2_shared::types::EntityState {
+        q2_shared::types::EntityState {
+            number: 20,
+            modelindex: 3,
+            effects: q2_shared::constants::EF_ROCKET,
+            ..Default::default()
+        }
+    }
+
+    /// The effects' models `fx` draws now (explosions and the like).
+    fn fx_entities(fx: &mut q2_client::fx::ClientFx) -> Vec<q2_client::fx::FxEntity> {
+        let view = q2_client::fx::FxView::default();
+        fx.frame_view(1000, 1.0, &view, &mut || 0).entities
+    }
+
+    /// The lights `client`'s trails give `test_rocket`: none once its
+    /// trail state is gone.
+    fn rocket_lights(client: &mut TestClient) -> Vec<q2_client::fx::FxLight> {
+        let rocket = test_rocket();
+        client.trails.run(
+            &mut client.fx,
+            std::slice::from_ref(&rocket),
+            1.0,
+            1,
+            1000,
+            &mut || 0,
+        )
+    }
+
+    fn frame_with_a_print_and_a_level_exit(
+        level: &str,
+    ) -> (q2_server::local::LocalGame, TestClient) {
+        let mut local = q2_server::local::LocalGame::start("empty", &[]).expect("empty map loads");
+        local.frame(100_000);
+        local.frame(100_000);
+        let mut client = TestClient::default();
+        let (_, ps) = local.player().expect("player in game");
+        let ps = ps.clone();
+        client.frames.receive(local.framenum(), Vec::new(), &ps);
+        remember_states(&mut client.last_states, &local.entity_states());
+        client.view_angles = q2_shared::types::Vec3f::new(10.0, 20.0, 0.0);
+        client.text.layout = "xv 0".into();
+        // Printed late in a long level: C times it on cls.realtime, which
+        // a level change does not restart.
+        let mut center = vec![q2_shared::protocol::SvcOp::CenterPrint as u8];
+        center.extend_from_slice(b"centre\0");
+        client.text.message(&center, 600_000, 40);
+        let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
+        print.extend_from_slice(b"late\n\0");
+        client.text.message(&print, 600_000, 40);
+        // A muzzle flash light, an explosion and a rocket's trail state.
+        let mut flash = q2_common::net_msg::NetMsg::new();
+        flash.write_byte(q2_shared::protocol::SvcOp::MuzzleFlash as i32);
+        flash.write_short(1);
+        flash.write_byte(q2_shared::constants::MZ_SHOTGUN);
+        let mut tent = q2_common::net_msg::NetMsg::new();
+        tent.write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
+        tent.write_byte(q2_shared::constants::TE_EXPLOSION1);
+        tent.write_position(q2_shared::types::Vec3f::ONE);
+        run_effect_messages(
+            &mut client.effects,
+            &mut client.fx,
+            &[flash.data().to_vec(), tent.data().to_vec()],
+            |n| flash_state(&client.last_states, n),
+            1000,
+            1000,
+            &mut || 0,
+        );
+        client
+            .trails
+            .server_frame(std::slice::from_ref(&test_rocket()), &[]);
+        assert!(client.effects.dlights().next().is_some());
+        assert!(!fx_entities(&mut client.fx).is_empty());
+        assert!(!rocket_lights(&mut client).is_empty());
+        // A skipped cinematic hands its next server to take_map_change.
+        local
+            .change_map(
+                &q2_server::init::MapRequest::parse(&format!("intro.cin+{level}")),
+                &[],
+            )
+            .expect("the cinematic is skipped");
+        local.client_command("use Shotgun");
+        local.frame(100_000);
+        (local, client)
+    }
+
+    #[test]
+    fn a_level_exit_drops_the_old_levels_messages_and_clears_the_client() {
+        // C's client parses the old level's last messages against the old
+        // level, then CL_ClearState: nothing runs against the new level.
+        let (mut local, mut client) = frame_with_a_print_and_a_level_exit("victory.pcx");
+        let output = run_frame_output(&mut local, &mut client);
+        let (level, change) = output.level.expect("the level exit is followed");
+        assert_eq!(level, "victory.pcx");
+        assert!(change.is_ok());
+        assert_eq!(local.picture(), Some("victory.pcx"));
+        assert!(output.messages.is_empty(), "{:?}", output.messages);
+        assert!(output.sounds.is_empty());
+        assert_eq!(client.frames.serverframe(), None);
+        assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
+        assert!(client.last_states.is_empty());
+        assert!(client.effects.dlights().next().is_none());
+        assert!(fx_entities(&mut client.fx).is_empty());
+        assert!(rocket_lights(&mut client).is_empty());
+        assert!(client.text.layout.is_empty());
+        // C CL_PrepRefresh -> Con_ClearNotify: the old lines are gone on
+        // the new level's restarted clock.
+        assert!(client.text.draws(320, 240, 500).is_empty());
+    }
+
+    #[test]
+    fn a_failed_level_exit_keeps_the_running_levels_messages_and_client() {
+        // The next map's BSP cannot be read: the old level keeps running.
+        let (mut local, mut client) = frame_with_a_print_and_a_level_exit("base2");
+        let output = run_frame_output(&mut local, &mut client);
+        let (level, change) = output.level.expect("the level exit is taken");
+        assert_eq!(level, "base2");
+        assert!(change.is_err());
+        assert_eq!(output.messages.len(), 1);
+        assert!(client.frames.serverframe().is_some());
+    }
+
+    #[test]
+    fn the_local_userinfo_carries_c_cvar_defaults_and_the_hand() {
+        // C cl_main.c: name "unnamed", skin "male/grunt" and gender "male"
+        // are CVAR_USERINFO, so a single player is "unnamed" to the game.
+        assert_eq!(
+            local_userinfo(1),
+            "\\name\\unnamed\\skin\\male/grunt\\gender\\male\\hand\\1"
+        );
+        let mut local =
+            q2_server::local::LocalGame::start_with_userinfo("empty", &[], &local_userinfo(0))
+                .expect("empty map loads");
+        // The first game frame, which publishes the configstrings.
+        local.frame(100_000);
+        local.frame(100_000);
+        // C ClientUserinfoChanged: CS_PLAYERSKINS is "name\\skin", which
+        // the obituaries also print ("unnamed died.").
+        assert_eq!(
+            local.configstring(q2_shared::constants::CS_PLAYERSKINS),
+            "unnamed\\male/grunt"
+        );
+    }
+
+    #[test]
     fn hand_and_game_come_from_the_query_with_c_defaults() {
         assert_eq!(hand_from_query("?hand=1"), 1);
         assert_eq!(hand_from_query("?hand=2"), 2);
         assert_eq!(hand_from_query("?hand=left"), 0);
         assert_eq!(hand_from_query(""), 0);
-        assert_eq!(local_userinfo(1), "\\hand\\1");
         assert_eq!(game_from_query("?game=rogue"), "rogue");
         // C cl_gun: 0 no gun, 1 none in a wide view, 2 (default) always.
         assert_eq!(cl_gun_from_query("?cl_gun=0"), "0");
@@ -2241,6 +2687,88 @@ mod tests {
             ..gun
         };
         assert!(gun_entity(&unknown, &table).is_none());
+    }
+
+    #[test]
+    fn the_frame_keeps_c_max_entities_in_c_order_and_power_screens_with_their_entity() {
+        // C V_AddEntity drops entities past MAX_ENTITIES (128). C adds the
+        // view weapon (CL_CalcViewValues), then each packet entity with its
+        // power screen (CL_AddPacketEntities), then the temp entities.
+        use q2_client::entities::EntityView;
+        use q2_client::fx::{FxEntity, MOD_EXPLODE, MOD_POWERSCREEN};
+        use q2_shared::constants::{CS_MODELS, EF_POWERSCREEN, RF_VIEWERMODEL};
+        let mut table = ModelTable::default();
+        table.sync(
+            |i| {
+                if i == CS_MODELS + 2 {
+                    "models/a/tris.md2"
+                } else {
+                    ""
+                }
+            },
+            |_| q2_render_api::ModelHandle::new(7),
+        );
+        table.register_fx(|name| match name {
+            MOD_POWERSCREEN => q2_render_api::ModelHandle::new(8),
+            MOD_EXPLODE => q2_render_api::ModelHandle::new(9),
+            _ => q2_render_api::ModelHandle::NONE,
+        });
+        let view = |number| EntityView {
+            number,
+            effects: 0,
+            modelindex: 2,
+            frame: 0,
+            oldframe: 0,
+            backlerp: 0.0,
+            origin: q2_shared::types::Vec3f::ZERO,
+            oldorigin: q2_shared::types::Vec3f::ZERO,
+            angles: q2_shared::types::Vec3f::ZERO,
+            skinnum: 0,
+            flags: 0,
+            alpha: 1.0,
+        };
+        let gun = q2_render_api::RenderEntity {
+            model: q2_render_api::ModelHandle::new(6),
+            ..Default::default()
+        };
+        let explosion = FxEntity {
+            model: Some(MOD_EXPLODE),
+            ..FxEntity::default()
+        };
+        let screened = [
+            EntityView {
+                effects: EF_POWERSCREEN,
+                ..view(2)
+            },
+            EntityView {
+                modelindex: 2,
+                effects: 0,
+                ..view(2)
+            },
+            view(3),
+        ];
+        let models = |ents: &[q2_render_api::RenderEntity]| -> Vec<i32> {
+            ents.iter().map(|e| e.model.raw()).collect()
+        };
+        let ents = frame_entities(
+            Some(gun.clone()),
+            &screened,
+            std::slice::from_ref(&explosion),
+            &table,
+        );
+        assert_eq!(models(&ents), [6, 7, 7, 8, 7, 9]);
+
+        // C never adds the viewer's own model; past 128 the rest is lost.
+        let mut crowd = vec![EntityView {
+            flags: RF_VIEWERMODEL,
+            ..view(1)
+        }];
+        crowd.extend((2..132).map(view));
+        let ents = frame_entities(Some(gun), &crowd, &[explosion], &table);
+        assert_eq!(ents.len(), 128);
+        assert_eq!(ents[0].model.raw(), 6, "the view weapon is first");
+        assert!(ents.iter().all(|e| e.model.raw() != 9), "no explosion");
+        assert!(ents.iter().all(|e| e.flags & RF_VIEWERMODEL == 0));
     }
 
     #[test]
@@ -2426,6 +2954,67 @@ mod tests {
         assert!(!flash_sounds.is_empty() && !fx_sounds.is_empty());
         let radii: Vec<f32> = effects.dlights().map(|l| l.radius).collect();
         assert_eq!(radii, [150.0, 203.0], "tracker light, then the flash");
+    }
+
+    #[test]
+    fn a_flash_for_an_entity_not_in_the_frame_uses_its_last_state_like_c() {
+        // C CL_AddMuzzleFlash reads cl_entities[i].current: the last state
+        // received, kept after the entity leaves the frame, and zeroed for
+        // one never seen. The light, randk draw and sound always happen.
+        use q2_common::net_msg::NetMsg;
+        use q2_shared::constants::MZ_SHOTGUN;
+        use q2_shared::protocol::SvcOp;
+        use q2_shared::types::{EntityState, Vec3f};
+        let monster = EntityState {
+            number: 5,
+            origin: Vec3f::new(100.0, 0.0, 0.0),
+            ..Default::default()
+        };
+        let mut last_states = std::collections::HashMap::new();
+        remember_states(&mut last_states, std::slice::from_ref(&monster));
+        remember_states(&mut last_states, &[]);
+        let flash = |number| {
+            let mut flash = NetMsg::new();
+            flash.write_byte(SvcOp::MuzzleFlash as i32);
+            flash.write_short(number);
+            flash.write_byte(MZ_SHOTGUN);
+            flash.data().to_vec()
+        };
+        let mut effects = q2_client::effects::Effects::default();
+        let mut fx = q2_client::fx::ClientFx::default();
+        let mut draws = 0;
+        let (sounds, _) = run_effect_messages(
+            &mut effects,
+            &mut fx,
+            &[flash(5), flash(9)],
+            |n| flash_state(&last_states, n),
+            1000,
+            1000,
+            &mut || {
+                draws += 1;
+                0
+            },
+        );
+        // C MZ_SHOTGUN: the shot, then the reload 0.1 s later.
+        assert_eq!(sounds.len(), 4, "both flashes sound");
+        assert_eq!(draws, 2, "one randk draw per flash");
+        // C: 18 forward and 16 right of the origin, angles zero.
+        let origins: Vec<Vec3f> = effects.dlights().map(|l| l.origin).collect();
+        assert_eq!(
+            origins,
+            [Vec3f::new(118.0, -16.0, 0.0), Vec3f::new(18.0, -16.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn a_failed_level_change_is_an_error_line_naming_the_level() {
+        // The page's startup catch writes "ERROR: <e>"; C's console shows
+        // CM_LoadMap's ERR_DROP text.
+        let err = q2_common::Q2Error::Drop("maps/base2.bsp: not found".into());
+        assert_eq!(
+            level_change_error("base2", &err),
+            "ERROR: level change to base2: drop: maps/base2.bsp: not found"
+        );
     }
 
     #[test]

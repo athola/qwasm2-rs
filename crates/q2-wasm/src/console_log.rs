@@ -2,9 +2,11 @@
 //!
 //! Where C raises `ERR_DROP`/`ERR_FATAL` the server and game log a
 //! `tracing` error and carry on; without a subscriber the browser build
-//! would drop those lines. Errors and warnings are shown; info and debug
-//! stand in for C's developer prints (`Com_DPrintf`), which C only shows
-//! with `developer` set.
+//! would drop those lines. Errors and warnings are shown, and so are the
+//! game's console prints (`GAME_PRINT_TARGET` at info: C `PF_dprintf`
+//! and `PF_cprintf` to no entity, which call `Com_Printf`). Other info and
+//! debug lines stand in for C's developer prints (`Com_DPrintf`), which C
+//! only shows with `developer` set.
 
 use std::io;
 
@@ -67,23 +69,29 @@ impl<S> LineSink<S> {
     }
 }
 
-/// A subscriber that formats each warning or error as one line for
-/// `sink`. No timestamps: `SystemTime::now` panics on
-/// wasm32-unknown-unknown, and the console stamps lines itself.
+/// A subscriber that formats each warning or error, and each game
+/// console print, as one line for `sink`. No timestamps:
+/// `SystemTime::now` panics on wasm32-unknown-unknown, and the console
+/// stamps lines itself.
 pub(crate) fn console_subscriber<S>(sink: S) -> impl Subscriber + Send + Sync + 'static
 where
     S: Fn(Level, &str) + Send + Sync + 'static,
 {
+    use tracing_subscriber::layer::SubscriberExt;
+    let shown = tracing_subscriber::filter::Targets::new()
+        .with_default(Level::WARN)
+        .with_target(q2_server::game_iface::GAME_PRINT_TARGET, Level::INFO);
     tracing_subscriber::fmt()
         .with_writer(LineSink(sink))
-        .with_max_level(Level::WARN)
+        .with_max_level(Level::INFO)
         .with_ansi(false)
         .without_time()
         .finish()
+        .with(shown)
 }
 
 /// The browser console sink: errors to `console.error`, warnings to
-/// `console.warn`.
+/// `console.warn`, the game's prints to `console.log`.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn browser_console(level: Level, line: &str) {
     let line = wasm_bindgen::JsValue::from_str(line);
@@ -132,11 +140,28 @@ mod tests {
     }
 
     #[test]
-    fn info_and_debug_are_left_out_like_c_developer_prints() {
+    fn the_games_console_prints_reach_the_sink_at_info() {
+        // C PF_dprintf: Com_Printf, shown whether or not `developer` is set.
+        let (lines, sink) = recording();
+        tracing::subscriber::with_default(console_subscriber(sink), || {
+            tracing::info!(
+                target: q2_server::game_iface::GAME_PRINT_TARGET,
+                "teleporter without a target"
+            );
+        });
+        let lines = lines.lock().expect("lines lock");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, Level::INFO);
+        assert!(lines[0].1.contains("teleporter without a target"));
+    }
+
+    #[test]
+    fn other_info_and_debug_are_left_out_like_c_developer_prints() {
         let (lines, sink) = recording();
         tracing::subscriber::with_default(console_subscriber(sink), || {
             tracing::info!("loaded");
-            tracing::debug!("teleporter without a target");
+            tracing::debug!("[centerprintf] hello");
+            tracing::debug!(target: q2_server::game_iface::GAME_PRINT_TARGET, "debug");
         });
         assert!(lines.lock().expect("lines lock").is_empty());
     }

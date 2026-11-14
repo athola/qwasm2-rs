@@ -21,6 +21,7 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "Document",
+    "DomTokenList",
     "Element",
     "HtmlCanvasElement",
     "HtmlElement",
