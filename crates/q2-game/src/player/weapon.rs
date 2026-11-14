@@ -465,9 +465,7 @@ pub fn weapon_generic(
             if pause_frames.contains(&client.ps.gunframe) && world.random_u32() & 15 != 0 {
                 return;
             }
-            if let Some(client) = world.client_mut(key) {
-                client.ps.gunframe += 1;
-            }
+            step_gunframe(world, key);
             return;
         }
         client.latched_buttons &= !BUTTON_ATTACK;
@@ -501,8 +499,8 @@ pub fn weapon_generic(
                     .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
             }
             fire(world, key);
-        } else if let Some(client) = world.client_mut(key) {
-            client.ps.gunframe += 1;
+        } else {
+            step_gunframe(world, key);
         }
         if let Some(client) = world.client_mut(key) {
             if client.ps.gunframe == idle_first + 1 {
@@ -525,17 +523,14 @@ pub fn blaster_fire(
 ) {
     let (quad, silenced) = world.shot_modifiers(key);
     let damage = if quad { damage * 4 } else { damage };
-    let viewheight = world.entities.get(key).map_or(0.0, |e| e.game.viewheight);
+    let viewheight = viewheight(world, key);
     let offset = [
         24.0 + g_offset.x,
         8.0 + g_offset.y,
         viewheight - 8.0 + g_offset.z,
     ];
     let (start, forward, _) = world.shot_source(key, offset);
-    if let Some(client) = world.client_mut(key) {
-        client.kick_origin = forward * -2.0;
-        client.kick_angles.x = -1.0;
-    }
+    kick(world, key, forward, 2.0, -1.0);
     world.fire_blaster(key, start, forward, damage, 1000, effect, hyper);
     let flash = if hyper { MZ_HYPERBLASTER } else { MZ_BLASTER };
     world.player_muzzle_flash(key, flash | silenced);
@@ -546,9 +541,7 @@ pub fn blaster_fire(
 pub fn weapon_blaster_fire(world: &mut GameWorld, key: EntityKey) {
     let damage = if world.game.deathmatch { 15 } else { 10 };
     blaster_fire(world, key, Vec3f::ZERO, damage, false, EF_BLASTER);
-    if let Some(client) = world.client_mut(key) {
-        client.ps.gunframe += 1;
-    }
+    step_gunframe(world, key);
 }
 
 /// C ref: `Weapon_Blaster` (player/weapon.c).
