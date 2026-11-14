@@ -1279,7 +1279,7 @@ impl GameWorld {
     }
 
     /// The body queue, configstrings, images, sounds and models C
-    /// SP_worldspawn sets up. `sv_gravity` and `snd_fry` are not ported.
+    /// SP_worldspawn sets up. `sv_gravity` is not ported (see `add_gravity`).
     pub(crate) fn worldspawn_configstrings(
         &mut self,
         _key: EntityKey,
