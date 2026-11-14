@@ -364,6 +364,30 @@ fn unsafe_only_in_q2_render() {
     );
 }
 
+/// ADR-001 points readers to the unsafe audit in q2-render's lib.rs header,
+/// so its "Total unsafe blocks: N" must match the `unsafe` tokens in the code.
+#[test]
+fn q2_render_header_states_its_unsafe_block_count() {
+    let counted: usize = rust_sources()
+        .into_iter()
+        .filter(|(krate, _)| krate == UNSAFE_CRATE)
+        .map(|(_, path)| word_lines(&code_only(&fs::read_to_string(path).unwrap()), "unsafe").len())
+        .sum();
+    let lib = crates_dir().join(UNSAFE_CRATE).join("src/lib.rs");
+    let stated: usize = fs::read_to_string(&lib)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("//! - Total unsafe blocks: "))
+        .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+        .expect("q2-render lib.rs states \"Total unsafe blocks: N\"");
+    assert_eq!(
+        counted,
+        stated,
+        "{} states {stated} unsafe blocks; the code has {counted}",
+        shown(&lib)
+    );
+}
+
 /// 1-based lines declaring a `static mut`, comments and strings ignored.
 fn static_mut_lines(src: &str) -> Vec<usize> {
     code_only(src)
