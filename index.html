@@ -10,6 +10,8 @@
 <meta property="og:title" content="qwasm2-rs: Quake 2 engine in Rust and WebAssembly">
 <meta property="og:description" content="A rewrite of the Quake 2 engine in Rust, running in the browser on WebAssembly, WebGL 2 and WebAudio.">
 <meta property="og:url" content="https://athola.github.io/qwasm2-rs/">
+<meta property="og:image" content="https://athola.github.io/qwasm2-rs/hero.jpg">
+<meta name="theme-color" content="#151916">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -21,58 +23,128 @@
   "license": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"
 }
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;800&family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #f7f6f3; --fg: #1d1c1a; --muted: #5d5a54; --rule: #dedad2;
-    --accent: #8a3b12; --code-bg: #ece9e2;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161514; --fg: #ebe8e2; --muted: #a29d94; --rule: #34312d;
-      --accent: #e08a5a; --code-bg: #24221f;
-    }
+    --bunker: #151916;      /* base: green-black steel */
+    --plate: #222a25;       /* raised panels, code */
+    --oxide: #4d6450;       /* oxidized green: primary action */
+    --oxide-lit: #5f7a62;
+    --rust: #5a3a24;        /* rules, borders */
+    --bone: #dcd7c9;        /* text */
+    --ash: #a19f93;         /* secondary text */
+    --amber: #e0921f;       /* emergency light: focus and hover only */
+    --stencil: "Big Shoulders Stencil Display", "Arial Narrow", sans-serif;
+    --body: "Montserrat", system-ui, sans-serif;
+    /* Film grain, generated: no image request. */
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .86 0 0 0 0 .84 0 0 0 0 .79 0 0 0 .09 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   * { box-sizing: border-box; }
+  html { background: var(--bunker); }
   body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; color: var(--bone); background: var(--bunker) var(--grain);
+    font: 400 1.0625rem/1.65 var(--body);
+    -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 44rem; margin: 0 auto; padding: 3rem 16px 4rem; }
-  h1 { font-size: 2.2rem; line-height: 1.15; margin: 0 0 .5rem; letter-spacing: -.01em; }
-  h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
-  .lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; }
-  a { color: var(--accent); }
-  .button {
-    display: inline-block; padding: .6rem 1.1rem; border: 2px solid var(--accent);
-    border-radius: 6px; text-decoration: none; font-weight: 600;
+  a { color: var(--bone); text-decoration-color: var(--oxide-lit); text-underline-offset: .2em; }
+  a:hover { color: var(--amber); text-decoration-color: var(--amber); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+
+  /* Hero: a frame rendered by the engine itself, under the stencil mark. */
+  .hero {
+    position: relative; min-height: min(92vh, 860px);
+    display: grid; place-items: center; text-align: center;
+    padding: 6rem 16px 5rem; overflow: hidden; isolation: isolate;
   }
-  .button:hover, .button:focus-visible { background: var(--accent); color: var(--bg); }
+  .hero::before {
+    content: ""; position: absolute; inset: 0; z-index: -2;
+    background: url("hero.jpg") center 40% / cover no-repeat;
+    filter: saturate(1.05) brightness(.82);
+  }
+  .hero::after {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background:
+      var(--grain),
+      radial-gradient(ellipse at 50% 42%, rgba(21,25,22,.35) 0 25%, rgba(21,25,22,.6) 80%),
+      linear-gradient(to bottom, transparent 55%, var(--bunker) 99%);
+  }
+  .mark {
+    margin: 0; font: 800 clamp(4.2rem, 15vw, 10.5rem)/.82 var(--stencil);
+    letter-spacing: .01em; text-transform: uppercase; color: var(--bone);
+    text-shadow: 0 0 .5em rgba(224,146,31,.18), 0 .06em 0 rgba(0,0,0,.6);
+    animation: power-on 1.6s steps(1, end) both;
+  }
+  @keyframes power-on {
+    0% { opacity: 0; } 12% { opacity: .85; } 18% { opacity: .1; }
+    30% { opacity: 1; } 36% { opacity: .35; } 46%, 100% { opacity: 1; }
+  }
+  .tagline {
+    max-width: 34rem; margin: 1.6rem auto 2.2rem;
+    font-size: clamp(1.05rem, 2.4vw, 1.3rem); font-weight: 500; color: var(--bone);
+  }
+  .actions { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; justify-content: center; }
+  .btn {
+    display: inline-block; min-width: 13rem; padding: 1.05rem 1.8rem;
+    font: 600 .9rem/1 var(--body); letter-spacing: .14em; text-transform: uppercase;
+    text-decoration: none; color: var(--bone); border: 1px solid var(--bone);
+  }
+  .btn:hover { color: var(--bunker); background: var(--bone); }
+  .btn.primary { background: var(--oxide); border-color: var(--oxide); }
+  .btn.primary:hover { background: var(--oxide-lit); border-color: var(--oxide-lit); color: var(--bone); }
+  .fineprint { max-width: 32rem; margin: 1.5rem auto 0; font-size: .85rem; color: var(--ash); }
+
+  /* Below the fold: one quiet column, left aligned. */
+  main { max-width: 42rem; margin: 0 auto; padding: 1rem 16px 5rem; }
+  h2 {
+    margin: 3.2rem 0 1rem; padding-top: 1.4rem; border-top: 1px solid var(--rust);
+    font: 700 clamp(1.9rem, 5vw, 2.5rem)/1 var(--stencil); text-transform: uppercase;
+    letter-spacing: .02em;
+  }
+  p, li { color: var(--bone); }
+  .quiet { color: var(--ash); }
+  ul { padding-left: 1.1rem; }
+  li { margin: .35rem 0; }
+  li::marker { color: var(--amber); }
   code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
-  pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
-  ul { padding-left: 1.2rem; }
-  li { margin: .3rem 0; }
-  .note { color: var(--muted); font-size: .95rem; }
-  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+  pre {
+    background: var(--plate); padding: 1.1rem 1.2rem; overflow-x: auto;
+    border-left: 3px solid var(--oxide);
+  }
+  footer {
+    max-width: 42rem; margin: 0 auto; padding: 2rem 16px 3rem;
+    border-top: 1px solid var(--rust); color: var(--ash); font-size: .85rem;
+  }
+  footer a { color: var(--ash); }
+
+  @media (prefers-reduced-motion: reduce) { .mark { animation: none; } }
+  @media (max-width: 480px) { .btn { min-width: 100%; } }
 </style>
 </head>
 <body>
-<main>
-  <h1>qwasm2-rs</h1>
-  <p class="lead">A rewrite of the Quake 2 engine in Rust that runs in the
-  browser on WebAssembly, WebGL 2 and WebAudio. It is a port of the C of
-  <a href="https://github.com/GMH-Code/Qwasm2">Qwasm2</a> (yquake2), checked
-  against that source.</p>
-  <p><a class="button" href="play/">Play the demo in your browser</a>
-  &nbsp; <a href="https://github.com/athola/qwasm2-rs">Source on GitHub</a></p>
-  <p class="note">The demo plays the first levels of the Quake II demo
-  (about 50 MB to download, WebGL 2 required). Click the game to capture
-  the mouse; WASD moves, the mouse aims and fires, 1-0 choose weapons.
-  Its game data is id Software's unmodified demo <code>pak0.pak</code>,
-  served under the <a href="play/license.txt">Quake II demo license</a>.</p>
+<header class="hero">
+  <div>
+    <h1 class="mark">qwasm2-rs</h1>
+    <p class="tagline">The Quake II engine, rewritten in Rust and running in
+    your browser on WebAssembly, WebGL 2 and WebAudio.</p>
+    <div class="actions">
+      <a class="btn primary" href="play/">Play the demo</a>
+      <a class="btn" href="https://github.com/athola/qwasm2-rs">View the source</a>
+    </div>
+    <p class="fineprint">Starting the demo downloads about 50 MB: id
+    Software's unmodified demo <code>pak0.pak</code>, under the
+    <a href="play/license.txt">Quake II demo license</a>. Needs WebGL 2.
+    Click the game to capture the mouse; WASD moves, the mouse aims and
+    fires, the number keys choose weapons.</p>
+  </div>
+</header>
 
+<main>
   <h2>What runs today</h2>
-  <p>Alpha. The browser loads a map from real Quake 2 game data into an
-  in-process server running the game logic. Expect breaking changes.</p>
+  <p class="quiet">Alpha. The browser loads a map from real Quake II game
+  data into an in-process server running the game logic. Expect breaking
+  changes.</p>
   <ul>
     <li>All 20 monster types sight, hear, chase, attack and die as in C.</li>
     <li>Every weapon fires, with the first-person gun, muzzle flashes and gunfire sounds.</li>
@@ -87,24 +159,30 @@
 cd qwasm2-rs
 make play</code></pre>
   <p><code>make play</code> builds the WebAssembly module, downloads the free
-  Quake 2 demo data if it is missing, and serves the game at
+  Quake II demo data if it is missing, and serves the game at
   <code>http://127.0.0.1:8080/qwasm2.html</code>. The repository README lists
   the prerequisites and the page's URL settings.</p>
 
-  <h2>How it is built</h2>
+  <h2>How it's built</h2>
   <p>A 14-crate Cargo workspace with a strict dependency graph. Rust traits
   (<code>Renderer</code>, <code>GameImport</code>, <code>GameExport</code>,
   <code>PakReader</code>) replace the C function-pointer tables. The network
   protocol is C protocol 34, byte for byte, and physics follows C's float
-  and double precision so client prediction can match the server. The
-  design records are in the repository's
+  and double precision so client prediction can match the server. It is a
+  port of the C of <a href="https://github.com/GMH-Code/Qwasm2">Qwasm2</a>
+  (Yamagi Quake II), checked against that source; the design records are
+  in the repository's
   <a href="https://github.com/athola/qwasm2-rs/tree/main/docs/adr">ADRs</a>.</p>
-
-  <footer>Licensed GPL-2.0-or-later, like the C it ports (id Software's
-  Quake II, Yamagi Quake II and Qwasm2). The Quake II demo data is Copyright id Software, distributed under
-  its own <a href="play/license.txt">license</a>.
-  Quake is a trademark of id Software; this project is not affiliated with
-  id Software.</footer>
 </main>
+
+<footer>
+  <p>Licensed GPL-2.0-or-later, like the C it ports (id Software's Quake II,
+  Yamagi Quake II and Qwasm2). The Quake II demo data is Copyright id
+  Software, distributed under its own <a href="play/license.txt">license</a>.
+  Quake is a trademark of id Software; this project is not affiliated with,
+  endorsed by, or connected to id Software, Bethesda Softworks or ZeniMax
+  Media. The image above is a frame rendered by qwasm2-rs from the demo's
+  first map.</p>
+</footer>
 </body>
 </html>
