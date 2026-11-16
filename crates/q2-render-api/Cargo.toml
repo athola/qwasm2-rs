@@ -1,7 +1,9 @@
 [package]
 name = "q2-render-api"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 q2-shared = { path = "../q2-shared" }

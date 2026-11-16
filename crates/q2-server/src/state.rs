@@ -26,6 +26,9 @@ pub enum ServerState {
     Loading,
     /// Actively running.
     Game,
+    /// Showing a `.pcx` level such as `victory.pcx` (C `ss_pic`): no map,
+    /// no player in the game, but game frames still run.
+    Pic,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,18 +122,16 @@ pub struct Server {
     pub state: ServerState,
     /// Map name (e.g. `"base1"`).
     pub name: String,
-    /// Precached model paths.
-    pub models: Vec<String>,
     /// Configstrings indexed by the CS_* offsets from `q2-shared`.
     pub configstrings: Vec<String>,
     /// Entity baselines for delta compression.
     pub baselines: Vec<EntityState>,
     /// Frame counter, incremented each server frame.
     pub framenum: i32,
-    /// Current server time in seconds.
-    pub time: f32,
-    /// Duration of one server frame in seconds.
-    pub frametime: f32,
+    /// Game time in milliseconds of the last game frame (`framenum * 100`),
+    /// or the time the next frame is due right after a map load. Integer
+    /// milliseconds like C `sv.time`, so it never drifts.
+    pub time: u32,
 }
 
 impl Default for Server {
@@ -138,12 +139,10 @@ impl Default for Server {
         Self {
             state: ServerState::Dead,
             name: String::new(),
-            models: Vec::new(),
             configstrings: Vec::new(),
             baselines: Vec::new(),
             framenum: 0,
-            time: 0.0,
-            frametime: 0.0,
+            time: 0,
         }
     }
 }
@@ -156,30 +155,19 @@ impl Default for Server {
 ///
 /// Corresponds to `server_static_t` in the C reference. Challenge tracking,
 /// demo recording, and network entity ring-buffer fields are omitted for now.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ServerStatic {
     /// `true` once `SV_InitGame` has completed.
     pub initialized: bool,
-    /// Wall-clock time in seconds (always increasing).
-    pub realtime: f32,
+    /// Wall-clock time in milliseconds, clamped to stay within one game
+    /// frame of `Server::time` (C `svs.realtime`).
+    pub realtime: u32,
     /// The map command string (e.g. `"*intro.cin+base1"`).
     pub mapcmd: String,
     /// Per-slot client data; length == `max_clients`.
     pub clients: Vec<ServerClient>,
     /// Maximum number of client slots.
     pub max_clients: usize,
-}
-
-impl Default for ServerStatic {
-    fn default() -> Self {
-        Self {
-            initialized: false,
-            realtime: 0.0,
-            mapcmd: String::new(),
-            clients: Vec::new(),
-            max_clients: 0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,85 +179,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn server_state_field_assignment() {
-        let mut sv = Server::default();
-        assert_eq!(sv.state, ServerState::Dead);
-
-        sv.state = ServerState::Loading;
-        sv.name = "base1".to_string();
-        assert_eq!(sv.state, ServerState::Loading);
-        assert_eq!(sv.name, "base1");
-
-        sv.state = ServerState::Game;
-        sv.framenum = 1;
-        sv.time = 0.1;
-        assert_eq!(sv.state, ServerState::Game);
-        assert_eq!(sv.framenum, 1);
-    }
-
-    #[test]
-    fn client_state_lifecycle() {
-        let mut cl = ServerClient::default();
-        assert_eq!(cl.state, ClientState::Free);
-
-        // Client connects
-        cl.state = ClientState::Connected;
-        cl.name = "Player1".into();
-        cl.userinfo = r"name\Player1\skin\male/grunt".into();
-        assert_eq!(cl.state, ClientState::Connected);
-
-        // Client spawns into game
-        cl.state = ClientState::Spawned;
-        cl.edict_num = 1;
-        cl.command_msec = 1800;
-        assert_eq!(cl.state, ClientState::Spawned);
-        assert_eq!(cl.edict_num, 1);
-
-        // Client disconnects
-        cl.state = ClientState::Free;
-        assert_eq!(cl.state, ClientState::Free);
-    }
-
-    #[test]
-    fn server_static_client_allocation() {
-        let mut svs = ServerStatic::default();
-        assert!(!svs.initialized);
-
-        svs.max_clients = 4;
-        svs.clients = (0..4).map(|_| ServerClient::default()).collect();
-        svs.initialized = true;
-
-        assert!(svs.initialized);
-        assert_eq!(svs.clients.len(), 4);
-        assert!(svs.clients.iter().all(|c| c.state == ClientState::Free));
-    }
-
-    #[test]
-    fn server_client_default_rate() {
+    fn defaults_are_a_dead_server_and_free_clients_at_c_rate() {
+        assert_eq!(Server::default().state, ServerState::Dead);
+        assert!(!ServerStatic::default().initialized);
         let cl = ServerClient::default();
+        assert_eq!(cl.state, ClientState::Free);
+        // C SV_UserinfoChanged's default rate; no frame acknowledged yet.
         assert_eq!(cl.rate, 5000);
         assert_eq!(cl.last_frame, -1);
     }
 
     #[test]
-    fn server_frame_accumulation() {
-        let mut sv = Server::default();
-        sv.state = ServerState::Game;
-        sv.frametime = 0.1;
-
-        for _ in 0..10 {
-            sv.framenum += 1;
-            sv.time += sv.frametime;
-        }
-
-        assert_eq!(sv.framenum, 10);
-        assert!((sv.time - 1.0).abs() < 1e-5);
-    }
-
-    #[test]
     fn server_configstrings_and_baselines() {
-        let mut sv = Server::default();
-        sv.configstrings = vec![String::new(); 64];
+        let mut sv = Server {
+            configstrings: vec![String::new(); 64],
+            ..Default::default()
+        };
         sv.configstrings[0] = "base1".into();
         sv.configstrings[1] = "models/world.bsp".into();
 

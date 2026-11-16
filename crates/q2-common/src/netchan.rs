@@ -10,7 +10,7 @@
 //!  1 bit   does this message contain a reliable payload
 //! 31 bits  acknowledge sequence
 //!  1 bit   acknowledge receipt of even/odd reliable message
-//! 16 bits  qport
+//! 16 bits  qport (client -> server packets only)
 //! ```
 
 use crate::net_msg::NetMsg;
@@ -21,13 +21,30 @@ const MAX_MSGLEN: usize = q2_shared::constants::MAX_MSGLEN;
 /// Bit 31 — used as the reliable flag in sequence words.
 const SEQUENCE_RELIABLE_BIT: u32 = 1 << 31;
 
+/// Size of the reliable staging and send buffers. C declares
+/// `message_buf[MAX_MSGLEN - 16]` so reliable data plus the packet header
+/// always fits in one datagram.
+const MAX_RELIABLE_LEN: usize = MAX_MSGLEN - 16;
+
+/// Which end of the connection a channel belongs to (C `netsrc_t`). Only
+/// client -> server packets carry the qport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetSrc {
+    Client,
+    Server,
+}
+
 /// Network channel for reliable/unreliable message delivery.
 ///
 /// Each side of a connection maintains one `NetChan`. Unreliable data is sent
 /// every frame; reliable data is queued and retransmitted until acknowledged.
 pub struct NetChan {
-    /// Set on unrecoverable errors (e.g. message overflow).
+    /// Set on unrecoverable errors (e.g. message overflow). The owner must
+    /// drop the connection, as the C callers do.
     pub fatal_error: bool,
+
+    /// Which side of the connection this channel serves.
+    pub sock: NetSrc,
 
     // --- Sequencing ---
     /// Next outgoing sequence number (starts at 1, incremented each transmit).
@@ -46,9 +63,8 @@ pub struct NetChan {
     /// Used to decide if a retransmit is needed.
     pub last_reliable_sequence: u32,
     /// Reliable message buffer (data waiting to be sent / retransmitted).
+    /// Non-empty while a reliable awaits acknowledgment (C `reliable_length`).
     pub reliable_buf: NetMsg,
-    /// `true` while we have reliable data in `reliable_buf` awaiting acknowledgment.
-    pub reliable_pending: bool,
     // --- Incoming reliable tracking ---
     /// Toggles each time a reliable message is received from the remote side.
     pub incoming_reliable_sequence: u32,
@@ -65,7 +81,8 @@ pub struct NetChan {
     pub dropped: u32,
 
     // --- QPort ---
-    /// QPort value written into outgoing packet headers for NAT disambiguation.
+    /// QPort value written into client -> server packet headers for NAT
+    /// disambiguation.
     pub qport: u16,
 }
 
@@ -74,19 +91,19 @@ impl NetChan {
     ///
     /// Mirrors `Netchan_Setup` from the C source: outgoing_sequence starts at 1,
     /// incoming_sequence starts at 0.
-    pub fn new(qport: u16) -> Self {
+    pub fn new(sock: NetSrc, qport: u16) -> Self {
         Self {
             fatal_error: false,
+            sock,
             outgoing_sequence: 1,
             incoming_sequence: 0,
             incoming_acknowledged: 0,
             reliable_sequence: 0,
             last_reliable_sequence: 0,
-            reliable_buf: NetMsg::new(),
-            reliable_pending: false,
+            reliable_buf: NetMsg::with_max_size(MAX_RELIABLE_LEN),
             incoming_reliable_sequence: 0,
             incoming_reliable_acknowledged: 0,
-            message_buf: NetMsg::new(),
+            message_buf: NetMsg::with_max_size(MAX_RELIABLE_LEN),
             dropped: 0,
             qport,
         }
@@ -95,27 +112,19 @@ impl NetChan {
     /// Returns `true` if a new reliable message can be queued.
     ///
     /// A reliable message can only be queued when the previous one has been
-    /// acknowledged (i.e. `reliable_pending` is `false` and `reliable_buf`
-    /// is empty).
+    /// acknowledged, i.e. `reliable_buf` is empty (C `Netchan_CanReliable`).
     pub fn can_reliable(&self) -> bool {
-        !self.reliable_pending && self.reliable_buf.is_empty()
+        self.reliable_buf.is_empty()
     }
 
     /// Queue a reliable message for the next transmit.
     ///
     /// The data is staged in an internal buffer and will be promoted to
     /// `reliable_buf` on the next call to `transmit` when the previous
-    /// reliable has been acknowledged.
+    /// reliable has been acknowledged. Staging more than the buffer holds
+    /// discards it and makes the next `transmit` set `fatal_error`, as C
+    /// does: dropping reliable data silently would desync the client.
     pub fn queue_reliable(&mut self, data: &[u8]) {
-        if self.message_buf.len() + data.len() > MAX_MSGLEN {
-            tracing::warn!(
-                "Netchan: reliable message overflow ({} + {} > {})",
-                self.message_buf.len(),
-                data.len(),
-                MAX_MSGLEN,
-            );
-            return;
-        }
         self.message_buf.write_data(data);
     }
 
@@ -147,8 +156,16 @@ impl NetChan {
     /// This is the Rust equivalent of `Netchan_Transmit`. A zero-length `data`
     /// slice is valid — it still generates a packet and handles reliable state.
     ///
-    /// Returns the raw bytes of the assembled packet ready for sending.
+    /// Returns the raw bytes of the assembled packet ready for sending, or an
+    /// empty vector (and sets `fatal_error`) if the reliable staging buffer
+    /// overflowed.
     pub fn transmit(&mut self, data: &[u8]) -> Vec<u8> {
+        if self.message_buf.is_overflowed() {
+            self.fatal_error = true;
+            tracing::warn!("Netchan: outgoing reliable message overflow");
+            return Vec::new();
+        }
+
         let send_reliable = self.need_reliable();
 
         // Promote staged data to reliable buffer if possible.
@@ -158,7 +175,6 @@ impl NetChan {
             self.message_buf.clear();
             // Toggle the reliable sequence bit.
             self.reliable_sequence ^= 1;
-            self.reliable_pending = true;
         }
 
         // Build packet header.
@@ -166,7 +182,11 @@ impl NetChan {
 
         // Word 1: sequence | reliable-flag in bit 31.
         let w1 = (self.outgoing_sequence & !SEQUENCE_RELIABLE_BIT)
-            | if send_reliable { SEQUENCE_RELIABLE_BIT } else { 0 };
+            | if send_reliable {
+                SEQUENCE_RELIABLE_BIT
+            } else {
+                0
+            };
 
         // Word 2: incoming_sequence | incoming_reliable_sequence in bit 31.
         let w2 = (self.incoming_sequence & !SEQUENCE_RELIABLE_BIT)
@@ -177,8 +197,10 @@ impl NetChan {
         send.write_long(w1 as i32);
         send.write_long(w2 as i32);
 
-        // QPort.
-        send.write_short(self.qport as i32);
+        // QPort: only clients send it.
+        if self.sock == NetSrc::Client {
+            send.write_short(i32::from(self.qport));
+        }
 
         // Append reliable data if we're sending it.
         if send_reliable {
@@ -186,9 +208,12 @@ impl NetChan {
             self.last_reliable_sequence = self.outgoing_sequence;
         }
 
-        // Append unreliable data if there's room.
-        if MAX_MSGLEN - send.len() >= data.len() {
+        // Append unreliable data if there's room. The header plus at most
+        // MAX_RELIABLE_LEN reliable bytes always leaves send.len() < MAX_MSGLEN.
+        if send.len() + data.len() <= MAX_MSGLEN {
             send.write_data(data);
+        } else {
+            tracing::debug!("Netchan_Transmit: dumped unreliable");
         }
 
         send.data().to_vec()
@@ -197,9 +222,13 @@ impl NetChan {
     /// Process an incoming packet. Updates acknowledgment state and returns
     /// the payload bytes if the packet is valid (not stale/duplicate).
     ///
-    /// Returns `None` if the packet is out-of-order or a duplicate.
+    /// Returns `None` if the packet is out-of-order, a duplicate, shorter
+    /// than the header, or an out-of-band packet (sequence -1).
     ///
-    /// Mirrors `Netchan_Process` from the C source.
+    /// Mirrors `Netchan_Process` from the C source. The runt and out-of-band
+    /// checks live in the C callers (`CL_ReadPackets` "Runt packet",
+    /// `SV_ReadPackets`); they are done here so a garbage datagram can never
+    /// poison `incoming_sequence`.
     pub fn process(&mut self, packet: &[u8]) -> Option<Vec<u8>> {
         let mut msg = NetMsg::from_bytes(packet);
         msg.begin_reading();
@@ -207,8 +236,17 @@ impl NetChan {
         let raw_sequence = msg.read_long() as u32;
         let raw_sequence_ack = msg.read_long() as u32;
 
-        // Read (and discard) the qport.
-        let _qport = msg.read_short();
+        // Only servers receive the qport.
+        if self.sock == NetSrc::Server {
+            let _qport = msg.read_short();
+        }
+
+        if msg.is_overflowed() {
+            return None; // runt packet
+        }
+        if raw_sequence == u32::MAX {
+            return None; // connectionless packet, not for the channel
+        }
 
         // Extract the reliable flags from bit 31.
         let reliable_message = (raw_sequence & SEQUENCE_RELIABLE_BIT) != 0;
@@ -229,7 +267,6 @@ impl NetChan {
         // clear the reliable buffer.
         if reliable_ack == self.reliable_sequence {
             self.reliable_buf.clear();
-            self.reliable_pending = false;
         }
 
         // Update incoming state.
@@ -267,8 +304,8 @@ mod tests {
     // 1. basic_transmit_receive
     #[test]
     fn basic_transmit_receive() {
-        let mut a = NetChan::new(27500);
-        let mut b = NetChan::new(27501);
+        let mut a = NetChan::new(NetSrc::Client, 27500);
+        let mut b = NetChan::new(NetSrc::Server, 27501);
 
         let payload = b"hello world";
         let received = send(&mut a, &mut b, payload);
@@ -280,8 +317,8 @@ mod tests {
     // 2. sequence_numbers_increment
     #[test]
     fn sequence_numbers_increment() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         assert_eq!(a.outgoing_sequence, 1);
 
@@ -298,8 +335,8 @@ mod tests {
     // 3. reliable_delivery
     #[test]
     fn reliable_delivery() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         // Queue reliable data on A.
         let reliable_data = b"important";
@@ -316,14 +353,13 @@ mod tests {
         assert!(payload.ends_with(b"unreliable"));
 
         // A is still waiting for acknowledgment.
-        assert!(a.reliable_pending);
+        assert!(!a.can_reliable());
 
         // Now B sends an ack back to A (transmit from B, process at A).
         let packet_b_to_a = b.transmit(b"");
         a.process(&packet_b_to_a);
 
         // A should have cleared the reliable state.
-        assert!(!a.reliable_pending);
         assert!(a.reliable_buf.is_empty());
         assert!(a.can_reliable());
     }
@@ -331,8 +367,8 @@ mod tests {
     // 4. reliable_retransmit
     #[test]
     fn reliable_retransmit() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         // Do one normal exchange so acks are in sync.
         let pkt = a.transmit(b"setup");
@@ -392,10 +428,7 @@ mod tests {
             peek.begin_reading();
             let w1 = peek.read_long() as u32;
             let has_reliable = (w1 & SEQUENCE_RELIABLE_BIT) != 0;
-            assert!(
-                has_reliable,
-                "retransmit should carry reliable flag again"
-            );
+            assert!(has_reliable, "retransmit should carry reliable flag again");
         }
 
         // Now deliver the retransmit to B. B should get the reliable data.
@@ -408,8 +441,8 @@ mod tests {
     // 5. out_of_order_rejected
     #[test]
     fn out_of_order_rejected() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         // Send two packets from A to B.
         let pkt1 = a.transmit(b"first");
@@ -427,8 +460,8 @@ mod tests {
     // Additional: duplicate rejection
     #[test]
     fn duplicate_rejected() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         let pkt = a.transmit(b"data");
 
@@ -443,8 +476,8 @@ mod tests {
     // Additional: dropped packet count
     #[test]
     fn dropped_count_tracked() {
-        let mut a = NetChan::new(100);
-        let mut b = NetChan::new(200);
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
 
         // Send 3 packets, only deliver the 3rd.
         let _pkt1 = a.transmit(b"one");
@@ -458,7 +491,7 @@ mod tests {
     // Additional: qport is written into packet header
     #[test]
     fn qport_in_header() {
-        let mut a = NetChan::new(12345);
+        let mut a = NetChan::new(NetSrc::Client, 12345);
 
         let pkt = a.transmit(b"test");
 
@@ -474,18 +507,141 @@ mod tests {
     // Additional: can_reliable returns true initially
     #[test]
     fn can_reliable_initially() {
-        let chan = NetChan::new(100);
+        let chan = NetChan::new(NetSrc::Client, 100);
         assert!(chan.can_reliable());
     }
 
     #[test]
     fn can_reliable_true_while_staging_not_promoted() {
-        let mut chan = NetChan::new(100);
+        let mut chan = NetChan::new(NetSrc::Client, 100);
         chan.queue_reliable(b"stuff");
         // Data is staged in message_buf but not yet promoted to reliable_buf.
-        // can_reliable checks reliable_pending and reliable_buf, both clear,
-        // so it returns true — matching the C code which allows writing more
+        // can_reliable checks only reliable_buf, which is clear, so it
+        // returns true — matching the C code which allows writing more
         // into &chan->message at any time.
         assert!(chan.can_reliable(), "can still add more to staging buffer");
+    }
+
+    // --- C-1: runt / out-of-band packets ---
+
+    /// Feed a valid client->server packet so we can check the channel still
+    /// accepts traffic after a rejected one.
+    fn assert_still_accepts(server: &mut NetChan) {
+        let mut client = NetChan::new(NetSrc::Client, 7);
+        let pkt = client.transmit(b"ok");
+        assert_eq!(server.process(&pkt), Some(b"ok".to_vec()));
+    }
+
+    #[test]
+    fn process_rejects_empty_packet_and_keeps_sequence() {
+        let mut server = NetChan::new(NetSrc::Server, 0);
+        assert!(server.process(&[]).is_none());
+        assert_eq!(server.incoming_sequence, 0);
+        assert_still_accepts(&mut server);
+    }
+
+    #[test]
+    fn server_process_rejects_packet_shorter_than_header_with_qport() {
+        // Server-side header is 4 + 4 + 2 (qport) bytes; 9 bytes is a runt.
+        let mut server = NetChan::new(NetSrc::Server, 0);
+        let mut runt = vec![0u8; 9];
+        runt[0] = 5; // sequence 5, would be accepted if not length-checked
+        assert!(server.process(&runt).is_none());
+        assert_eq!(server.incoming_sequence, 0);
+        assert_still_accepts(&mut server);
+    }
+
+    #[test]
+    fn client_process_rejects_packet_shorter_than_8_bytes() {
+        let mut client = NetChan::new(NetSrc::Client, 0);
+        assert!(client.process(&[1, 0, 0, 0, 0, 0, 0]).is_none());
+        assert_eq!(client.incoming_sequence, 0);
+    }
+
+    #[test]
+    fn process_rejects_out_of_band_sequence() {
+        // -1 as the first long marks a connectionless packet (C
+        // Netchan_OutOfBand); it must never be treated as sequence 0x7fffffff.
+        let mut server = NetChan::new(NetSrc::Server, 0);
+        let mut oob = (-1i32).to_le_bytes().to_vec();
+        oob.extend_from_slice(b"getchallenge");
+        assert!(server.process(&oob).is_none());
+        assert_eq!(server.incoming_sequence, 0);
+        assert_still_accepts(&mut server);
+    }
+
+    // --- C-2 / C-3: reliable staging limit and overflow ---
+
+    #[test]
+    fn transmit_with_full_reliable_never_exceeds_max_msglen() {
+        // C stages reliable data in message_buf[MAX_MSGLEN - 16].
+        let mut chan = NetChan::new(NetSrc::Client, 1);
+        chan.queue_reliable(&[0xAA; MAX_MSGLEN - 16]);
+        let pkt = chan.transmit(&[0xBB; 64]);
+        assert!(!chan.fatal_error);
+        assert!(pkt.len() <= MAX_MSGLEN, "packet {} bytes", pkt.len());
+        // Header (10) + full reliable; the unreliable part does not fit.
+        assert_eq!(pkt.len(), 10 + MAX_MSGLEN - 16);
+    }
+
+    #[test]
+    fn second_reliable_after_ack_toggles_the_reliable_bit_back_and_arrives() {
+        let mut a = NetChan::new(NetSrc::Client, 100);
+        let mut b = NetChan::new(NetSrc::Server, 200);
+
+        a.queue_reliable(b"first");
+        assert_eq!(send(&mut a, &mut b, b"").unwrap(), b"first");
+        assert_eq!((a.reliable_sequence, b.incoming_reliable_sequence), (1, 1));
+        a.process(&b.transmit(b"")).unwrap();
+        assert!(a.can_reliable());
+
+        a.queue_reliable(b"second");
+        assert_eq!(send(&mut a, &mut b, b"u").unwrap(), b"secondu");
+        assert_eq!((a.reliable_sequence, b.incoming_reliable_sequence), (0, 0));
+        a.process(&b.transmit(b"")).unwrap();
+        assert!(a.can_reliable());
+        // Nothing staged: the next packet carries no reliable flag or data.
+        let pkt = a.transmit(b"");
+        assert_eq!(pkt.len(), 10);
+        assert_eq!(pkt[3] & 0x80, 0);
+    }
+
+    #[test]
+    fn queue_reliable_past_staging_limit_sets_fatal_error_on_transmit() {
+        let mut chan = NetChan::new(NetSrc::Client, 1);
+        chan.queue_reliable(&[1; 1000]);
+        chan.queue_reliable(&[2; 1000]);
+        let pkt = chan.transmit(b"x");
+        assert!(
+            chan.fatal_error,
+            "overflow must be fatal, as in Netchan_Transmit"
+        );
+        assert!(pkt.is_empty(), "no packet is sent after a fatal overflow");
+    }
+
+    #[test]
+    fn queue_reliable_of_staging_limit_plus_one_is_fatal() {
+        let mut chan = NetChan::new(NetSrc::Client, 1);
+        chan.queue_reliable(&[0; MAX_MSGLEN - 15]);
+        assert!(chan.transmit(b"").is_empty());
+        assert!(chan.fatal_error);
+    }
+
+    // --- C-4: qport only travels client -> server ---
+
+    #[test]
+    fn client_header_has_qport_server_header_does_not() {
+        let mut client = NetChan::new(NetSrc::Client, 0x1234);
+        let mut server = NetChan::new(NetSrc::Server, 0x1234);
+        assert_eq!(client.transmit(b"").len(), 10);
+        assert_eq!(server.transmit(b"").len(), 8);
+    }
+
+    #[test]
+    fn server_to_client_payload_starts_after_8_byte_header() {
+        let mut client = NetChan::new(NetSrc::Client, 1);
+        let mut server = NetChan::new(NetSrc::Server, 1);
+        let pkt = server.transmit(&[0x0C, 0x22]);
+        assert_eq!(client.process(&pkt), Some(vec![0x0C, 0x22]));
     }
 }

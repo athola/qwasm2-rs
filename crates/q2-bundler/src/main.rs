@@ -4,17 +4,24 @@
 //!   wasm-pack build --target web --release crates/q2-wasm
 //!   cargo run -p q2-bundler
 //!
-//! Output: dist/qwasm2.html (single file, works when opened or served)
+//! Output: dist/qwasm2.html (single file; serve it with q2-devserver, since the
+//! page fetches `/gamedata/baseq2/pak0-web.pak` from the same origin)
 
-use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{ensure, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() -> Result<()> {
-    let pkg_dir = Path::new("crates/q2-wasm/pkg");
-    let dist_dir = Path::new("dist");
+    // Resolve from the repo root so the bundler works from any directory.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    bundle(&root.join("crates/q2-wasm/pkg"), &root.join("dist"))?;
+    println!("Done! Serve it with `make devserver` (the page fetches the pak from /gamedata/).");
+    Ok(())
+}
 
+/// Read the wasm-pack output in `pkg_dir` and write `dist_dir/qwasm2.html`.
+fn bundle(pkg_dir: &Path, dist_dir: &Path) -> Result<PathBuf> {
     // Find the JS glue file
     let js_path = pkg_dir.join("q2_wasm.js");
     let wasm_path = pkg_dir.join("q2_wasm_bg.wasm");
@@ -29,41 +36,52 @@ fn main() -> Result<()> {
     }
 
     // Read files
-    let js_glue = fs::read_to_string(&js_path)
-        .with_context(|| format!("reading {}", js_path.display()))?;
-    let wasm_bytes = fs::read(&wasm_path)
-        .with_context(|| format!("reading {}", wasm_path.display()))?;
+    let js_glue =
+        fs::read_to_string(&js_path).with_context(|| format!("reading {}", js_path.display()))?;
+    let wasm_bytes =
+        fs::read(&wasm_path).with_context(|| format!("reading {}", wasm_path.display()))?;
 
     let wasm_size = wasm_bytes.len();
     let wasm_base64 = BASE64.encode(&wasm_bytes);
 
-    println!("WASM binary: {} bytes ({:.1} KB)", wasm_size, wasm_size as f64 / 1024.0);
-    println!("Base64 encoded: {} bytes ({:.1} KB)", wasm_base64.len(), wasm_base64.len() as f64 / 1024.0);
+    println!(
+        "WASM binary: {} bytes ({:.1} KB)",
+        wasm_size,
+        wasm_size as f64 / 1024.0
+    );
+    println!(
+        "Base64 encoded: {} bytes ({:.1} KB)",
+        wasm_base64.len(),
+        wasm_base64.len() as f64 / 1024.0
+    );
 
     // Patch the JS glue to load WASM from base64 instead of fetch
     // The wasm-pack generated JS has a function like:
     //   async function __wbg_load(module, imports) { ... }
     // and an init function that calls fetch(). We replace the fetch with base64 decode.
-    let patched_js = patch_js_glue(&js_glue, &wasm_base64);
+    let patched_js = patch_js_glue(&js_glue, &wasm_base64)?;
 
     // Generate single HTML
     let html = generate_html(&patched_js);
 
     // Write output
-    fs::create_dir_all(dist_dir)?;
+    fs::create_dir_all(dist_dir).with_context(|| format!("creating {}", dist_dir.display()))?;
     let output_path = dist_dir.join("qwasm2.html");
-    fs::write(&output_path, &html)?;
+    fs::write(&output_path, &html).with_context(|| format!("writing {}", output_path.display()))?;
 
     let html_size = html.len();
-    println!("Output: {} ({:.1} KB)", output_path.display(), html_size as f64 / 1024.0);
-    println!("Done! Open dist/qwasm2.html in a browser.");
+    println!(
+        "Output: {} ({:.1} KB)",
+        output_path.display(),
+        html_size as f64 / 1024.0
+    );
 
-    Ok(())
+    Ok(output_path)
 }
 
 /// Patch the wasm-pack JS glue to load WASM from an inlined base64 string
 /// instead of fetching a separate .wasm file.
-fn patch_js_glue(js: &str, wasm_base64: &str) -> String {
+fn patch_js_glue(js: &str, wasm_base64: &str) -> Result<String> {
     // The wasm-pack --target web output has an `init` function that accepts
     // an optional input (URL or Module). We inject the base64 decode at the top
     // and modify the init to use it.
@@ -89,48 +107,68 @@ function __q2_decode_wasm() {{
         wasm_base64
     );
 
-    // Strip `export` keywords — can't use them in inline <script type="module">
-    // "export function foo()" → "function foo()"
-    // "export { initSync, __wbg_init as default };" → "const init = __wbg_init;"
-    //
-    // NOTE: This export stripping is tightly coupled to wasm-pack's current JS
-    // output format. If wasm-pack changes its codegen, this will silently break.
-    // Consider using a regex or AST-based approach for robustness.
-    let stripped = js
+    // Inline <script type="module"> code cannot import sibling files, and
+    // `init` must be a plain binding for the page script below. Each rewrite
+    // is tied to wasm-bindgen's current output, so each must match exactly
+    // once: a codegen change fails the build here instead of producing a page
+    // that fetches a missing .wasm. (An AST-based rewrite is tracked in #2.)
+    if let Some(line) = js.lines().find(|l| l.trim_start().starts_with("import ")) {
+        anyhow::bail!("wasm-bindgen glue has a module import the bundler cannot inline: {line}");
+    }
+
+    let patched = js
         .replace("export function ", "function ")
         .replace("export async function ", "async function ");
-
-    // Handle the final export line: "export { initSync, __wbg_init as default };"
-    // We need `init` to be available as a variable name in the inline script
-    let stripped = if stripped.contains("__wbg_init as default") {
-        stripped
-            .replace(
-                "export { initSync, __wbg_init as default };",
-                "const init = __wbg_init;"
-            )
-            // Also handle variations in the export syntax
-            .replace(
-                "export { initSync }",
-                ""
-            )
-    } else {
-        stripped
-    };
-
-    // Replace the fetch call to use our inlined WASM
-    let patched = if stripped.contains("import.meta.url") {
-        stripped.replace(
+    let patched = replace_once(
+        &patched,
+        &["export { initSync, __wbg_init as default };"],
+        "const init = __wbg_init;",
+    )?;
+    let patched = replace_once(
+        &patched,
+        &[
             "new URL('q2_wasm_bg.wasm', import.meta.url)",
-            "__q2_decode_wasm()"
-        ).replace(
             r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
-            "__q2_decode_wasm()"
-        )
-    } else {
-        stripped
-    };
+        ],
+        "__q2_decode_wasm()",
+    )?;
+    // Exposes the raw wasm exports to importers; nothing imports this page.
+    let patched = patched.replace("export { wasm as __wasm }", "");
 
-    format!("{}{}", decoder, patched)
+    ensure!(
+        !patched.contains("import.meta.url"),
+        "wasm-bindgen glue still references import.meta.url after patching"
+    );
+    if let Some(line) = patched.lines().find(|l| l.starts_with("export ")) {
+        anyhow::bail!("unhandled export in wasm-bindgen glue: {line}");
+    }
+    // The glue goes verbatim into an inline <script>, where `</script` ends
+    // the element and `<!--` can switch the parser into escaped text.
+    let lower = patched.to_ascii_lowercase();
+    ensure!(
+        !lower.contains("</script") && !lower.contains("<!--"),
+        "wasm-bindgen glue contains `</script` or `<!--`, which an inline <script> cannot hold"
+    );
+
+    Ok(format!("{}{}", decoder, patched))
+}
+
+/// Replace the single occurrence of any of `patterns` (alternative spellings
+/// of one construct) with `with`; zero or several matches is an error.
+fn replace_once(src: &str, patterns: &[&str], with: &str) -> Result<String> {
+    let found: Vec<&str> = patterns
+        .iter()
+        .copied()
+        .filter(|p| src.contains(p))
+        .collect();
+    let count: usize = found.iter().map(|p| src.matches(p).count()).sum();
+    ensure!(
+        count == 1,
+        "expected exactly one `{}` in wasm-bindgen glue, found {count}; \
+         the wasm-pack output format changed",
+        patterns[0]
+    );
+    Ok(src.replacen(found[0], with, 1))
 }
 
 fn generate_html(inlined_js: &str) -> String {
@@ -182,21 +220,43 @@ fn generate_html(inlined_js: &str) -> String {
     font-size: 12px; color: #888; z-index: 10;
     pointer-events: none;
   }}
+  #crosshair {{
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px; height: 14px;
+    pointer-events: none; z-index: 15;
+  }}
+  #crosshair::before, #crosshair::after {{
+    content: ''; position: absolute;
+    background: rgba(255, 255, 255, 0.9);
+    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }}
+  #crosshair::before {{ left: 0; top: calc(50% - 1px); width: 100%; height: 2px; }}
+  #crosshair::after  {{ top: 0; left: calc(50% - 1px); width: 2px; height: 100%; }}
   #click-prompt {{
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
     font-size: 18px; color: #e94560;
     z-index: 20; text-align: center;
+    pointer-events: none;
   }}
   #click-prompt.hidden {{ display: none; }}
+  #legend-button {{
+    position: absolute; top: 8px; right: 12px; z-index: 20;
+    background: rgba(0, 0, 0, 0.6); color: #aaa; border: 1px solid #444;
+    padding: 2px 8px; font-size: 11px; font-family: inherit; cursor: pointer;
+  }}
+  #legend-button:hover {{ background: #444; color: #fff; }}
 </style>
 </head>
 <body>
 <div id="game-container">
   <canvas id="canvas"></canvas>
+  <div id="crosshair"></div>
   <div id="hud"></div>
-  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console</span></div>
-  <div id="status-container">
+  <div id="click-prompt">Click to play<br><span style="font-size:12px;color:#888">WASD move &middot; Mouse look &middot; Space jump &middot; Esc release &middot; ` console &middot; F4 keys</span></div>
+  <button id="legend-button" onclick="document.dispatchEvent(new Event('qwasm2-legend')); this.blur()">Keys (F4)</button>
+  <div id="status-container" class="hidden">
     <div id="status-toolbar">
       <button onclick="copyLog()">Copy to clipboard</button>
       <button onclick="saveLog()">Save to file</button>
@@ -239,12 +299,16 @@ document.addEventListener('keydown', (e) => {{
 // Log utilities
 window.copyLog = function() {{
   const text = document.getElementById('status').innerText;
-  navigator.clipboard.writeText(text).then(() => {{
-    const btn = document.querySelector('#status-toolbar button');
-    const orig = btn.textContent;
-    btn.textContent = 'Copied!';
+  const btn = document.querySelector('#status-toolbar button');
+  const orig = btn.textContent;
+  const flash = (label) => {{
+    btn.textContent = label;
     setTimeout(() => btn.textContent = orig, 1000);
-  }});
+  }};
+  // writeText rejects when the page is unfocused or clipboard access is denied.
+  navigator.clipboard.writeText(text).then(
+    () => flash('Copied!'),
+    (err) => {{ console.error('copy log failed:', err); flash('Copy failed'); }});
 }};
 
 window.saveLog = function() {{
@@ -269,14 +333,22 @@ try {{
   // Populate Playwright test hooks after WASM init succeeds
   document.getElementById('wasm-loaded').textContent = 'true';
   document.getElementById('self-test-result').textContent = self_test();
+  document.getElementById('engine-version').textContent = engine_version();
 
   // Determine pak URL — if served by devserver, fetch from /gamedata/
-  const pakUrl = '/gamedata/baseq2/pak0.pak';
+  const pakUrl = '/gamedata/baseq2/pak0-web.pak';
 
   await start_game('canvas', pakUrl);
 }} catch (e) {{
+  // textContent: error text can carry pak-derived strings; never parse it as HTML.
+  const line = document.createElement('span');
+  line.className = 'fail';
+  line.textContent = 'ERROR: ' + e;
+  // The console starts hidden; show it so the error is seen.
+  document.getElementById('status-container').classList.remove('hidden');
   const statusEl = document.getElementById('status');
-  statusEl.innerHTML += '<span class="fail">ERROR: ' + e + '</span>\n';
+  statusEl.appendChild(line);
+  statusEl.appendChild(document.createTextNode('\n'));
   console.error('[qwasm2-rs]', e);
 }}
 </script>
@@ -285,8 +357,219 @@ try {{
 <div id="test-hooks" style="display:none">
   <span id="wasm-loaded">false</span>
   <span id="self-test-result"></span>
+  <span id="engine-version"></span>
 </div>
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trimmed wasm-pack 0.14.0 / wasm-bindgen 0.2.114 `--target web` output.
+    const GLUE: &str = include_str!("../fixtures/wasm_bindgen_glue.js");
+
+    #[test]
+    fn patch_inlines_wasm_and_exposes_init() {
+        let patched = patch_js_glue(GLUE, "QUJD").unwrap();
+        assert!(patched.contains(r#"const __q2_wasm_base64 = "QUJD";"#));
+        assert!(patched.contains("module_or_path = __q2_decode_wasm();"));
+        assert!(patched.contains("const init = __wbg_init;"));
+        assert!(!patched.contains("import.meta.url"));
+        assert!(!patched.lines().any(|l| l.starts_with("export ")));
+    }
+
+    #[test]
+    fn patch_accepts_double_quoted_wasm_url() {
+        let glue = GLUE.replace(
+            "new URL('q2_wasm_bg.wasm', import.meta.url)",
+            r#"new URL("q2_wasm_bg.wasm", import.meta.url)"#,
+        );
+        assert!(patch_js_glue(&glue, "").is_ok());
+    }
+
+    #[test]
+    fn patch_fails_when_wasm_url_format_changes() {
+        let glue = GLUE.replace(
+            "new URL('q2_wasm_bg.wasm', import.meta.url)",
+            "new URL('renamed_bg.wasm', import.meta.url)",
+        );
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("q2_wasm_bg.wasm"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_default_export_changes() {
+        let glue = GLUE.replace(
+            "export { initSync, __wbg_init as default };",
+            "export { __wbg_init as default, initSync };",
+        );
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("__wbg_init as default"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_glue_would_end_or_escape_the_inline_script() {
+        for snippet in [
+            "const s = '</script>';",
+            "const s = '</SCRIPT ';",
+            "// <!--",
+        ] {
+            let glue = format!("{GLUE}\n{snippet}\n");
+            let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+            assert!(err.contains("inline <script>"), "{snippet}: {err}");
+        }
+    }
+
+    #[test]
+    fn patch_fails_on_module_imports() {
+        let glue = format!("import {{ helper }} from './snippets/x.js';\n{GLUE}");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("import"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_wasm_url_appears_twice() {
+        let glue = format!("{GLUE}\nconst again = new URL('q2_wasm_bg.wasm', import.meta.url);\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("found 2"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_when_import_meta_url_is_left_over() {
+        let glue = format!("{GLUE}\nconst base = import.meta.url;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("import.meta.url"), "{err}");
+    }
+
+    #[test]
+    fn patch_fails_on_an_unhandled_export() {
+        let glue = format!("{GLUE}\nexport const extra = 1;\n");
+        let err = patch_js_glue(&glue, "").unwrap_err().to_string();
+        assert!(err.contains("export const extra"), "{err}");
+    }
+
+    #[test]
+    fn bundle_inlines_the_wasm_bytes_into_dist_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("q2_wasm.js"), GLUE).unwrap();
+        let wasm = b"\0asm\x01\0\0\0";
+        fs::write(pkg.join("q2_wasm_bg.wasm"), wasm).unwrap();
+
+        let out = bundle(&pkg, &dir.path().join("dist")).unwrap();
+
+        assert_eq!(out, dir.path().join("dist/qwasm2.html"));
+        let html = fs::read_to_string(&out).unwrap();
+        let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
+        assert!(html.contains(&inlined));
+        assert!(html.contains("await start_game('canvas', pakUrl);"));
+    }
+
+    fn pkg_with_glue(dir: &Path) -> PathBuf {
+        let pkg = dir.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("q2_wasm.js"), GLUE).unwrap();
+        fs::write(pkg.join("q2_wasm_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        pkg
+    }
+
+    #[test]
+    fn bundle_names_the_dist_dir_it_cannot_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = pkg_with_glue(dir.path());
+        let dist = dir.path().join("dist");
+        fs::write(&dist, "a file, not a directory").unwrap();
+
+        let err = format!("{:#}", bundle(&pkg, &dist).unwrap_err());
+
+        assert!(
+            err.contains(&format!("creating {}", dist.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn bundle_names_the_html_it_cannot_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = pkg_with_glue(dir.path());
+        let dist = dir.path().join("dist");
+        let html = dist.join("qwasm2.html");
+        fs::create_dir_all(&html).unwrap();
+
+        let err = format!("{:#}", bundle(&pkg, &dist).unwrap_err());
+
+        assert!(
+            err.contains(&format!("writing {}", html.display())),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn bundle_without_wasm_pack_output_says_how_to_build_it() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("q2_wasm.js"), GLUE).unwrap();
+        let err = bundle(dir.path(), &dir.path().join("dist"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("wasm-pack build"), "{err}");
+        assert!(!dir.path().join("dist").exists(), "nothing written");
+    }
+
+    #[test]
+    fn click_prompt_lets_clicks_through_to_the_canvas() {
+        // The prompt sits over the canvas centre; clicks on its text must
+        // still reach the canvas to lock the pointer and start audio.
+        let html = generate_html("");
+        let rule = html
+            .split("#click-prompt {")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("click-prompt rule");
+        assert!(rule.contains("pointer-events: none"), "{rule}");
+    }
+
+    #[test]
+    fn the_console_starts_hidden_and_backquote_toggles_it() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<div id="status-container" class="hidden">"#));
+        assert!(html.contains("if (e.code === 'Backquote')"));
+    }
+
+    #[test]
+    fn the_keys_button_asks_the_game_for_its_legend() {
+        let html = generate_html("");
+        assert!(html.contains(r#"<button id="legend-button""#));
+        assert!(html.contains("new Event('qwasm2-legend')"));
+        assert!(html.contains("F4 keys"), "the click prompt names the key");
+    }
+
+    #[test]
+    fn a_startup_error_opens_the_console() {
+        // Hidden by default, the log would otherwise swallow the error.
+        let html = generate_html("");
+        let catch = html
+            .split("} catch (e) {")
+            .nth(1)
+            .expect("startup catch block");
+        assert!(
+            catch.contains(
+                "document.getElementById('status-container').classList.remove('hidden');"
+            ),
+            "{catch}"
+        );
+    }
+
+    #[test]
+    fn page_error_path_does_not_inject_html() {
+        let html = generate_html("");
+        assert!(
+            !html.contains("innerHTML +="),
+            "error text must not be parsed as HTML"
+        );
+        assert!(html.contains("line.textContent = 'ERROR: ' + e;"));
+    }
 }

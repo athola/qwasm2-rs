@@ -1,3 +1,4 @@
+use crate::constants::MAX_STATS;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -122,7 +123,7 @@ pub struct PlayerState {
     pub blend: [f32; 4],
     pub fov: f32,
     pub rdflags: i32,
-    pub stats: [i16; 32],
+    pub stats: [i16; MAX_STATS],
 }
 
 impl Default for PlayerState {
@@ -139,7 +140,7 @@ impl Default for PlayerState {
             blend: [0.0; 4],
             fov: 0.0,
             rdflags: 0,
-            stats: [0; 32],
+            stats: [0; MAX_STATS],
         }
     }
 }
@@ -247,6 +248,10 @@ pub enum Multicast {
     All,
     PHS,
     PVS,
+    /// Reliable variants (C `MULTICAST_*_R`), same order as shared.h.
+    AllR,
+    PHSR,
+    PVSR,
 }
 
 // ---------------------------------------------------------------------------
@@ -258,18 +263,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vec3f_is_glam_vec3() {
-        let v = Vec3f::new(1.0, 2.0, 3.0);
-        assert_eq!(v.x, 1.0);
-        assert_eq!(v.y, 2.0);
-        assert_eq!(v.z, 3.0);
-    }
-
-    #[test]
-    fn vec3f_addition() {
-        let a = Vec3f::new(1.0, 2.0, 3.0);
-        let b = Vec3f::new(4.0, 5.0, 6.0);
-        assert_eq!(a + b, Vec3f::new(5.0, 7.0, 9.0));
+    fn multicast_variants_follow_c_multicast_t_order() {
+        let order = [
+            Multicast::All,
+            Multicast::PHS,
+            Multicast::PVS,
+            Multicast::AllR,
+            Multicast::PHSR,
+            Multicast::PVSR,
+        ];
+        for (c_value, variant) in order.into_iter().enumerate() {
+            assert_eq!(variant as usize, c_value);
+        }
     }
 
     #[test]
@@ -285,7 +290,7 @@ mod tests {
         let ps = PlayerState::default();
         assert_eq!(ps.pmove.pm_type, PmType::Normal);
         assert_eq!(ps.fov, 0.0);
-        assert_eq!(ps.stats.len(), 32);
+        assert_eq!(ps.stats.len(), MAX_STATS);
     }
 
     #[test]
@@ -334,8 +339,8 @@ mod tests {
             modelindex: 7,
             ..Default::default()
         };
-        let bytes = bincode::serialize(&es).unwrap();
-        let es2: EntityState = bincode::deserialize(&bytes).unwrap();
+        let text = serde_json::to_string(&es).unwrap();
+        let es2: EntityState = serde_json::from_str(&text).unwrap();
         assert_eq!(es2.number, 42);
         assert_eq!(es2.origin, Vec3f::new(100.0, 200.0, 300.0));
     }

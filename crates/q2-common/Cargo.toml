@@ -1,16 +1,17 @@
 [package]
 name = "q2-common"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 q2-shared = { path = "../q2-shared" }
 bitflags = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

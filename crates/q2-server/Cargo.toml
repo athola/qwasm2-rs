@@ -1,13 +1,18 @@
 [package]
 name = "q2-server"
-version = "0.1.1"
-edition = "2021"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 q2-shared = { path = "../q2-shared" }
 q2-common = { path = "../q2-common" }
 q2-game = { path = "../q2-game" }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

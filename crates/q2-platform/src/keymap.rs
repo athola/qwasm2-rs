@@ -3,7 +3,12 @@
 //! Maps browser KeyboardEvent.code values to Q2 key indices matching
 //! the default.cfg bindings from pak0.pak.
 
-/// Q2 special key codes (matching the C engine's K_* constants)
+/// Q2 special key codes. The arrows through `K_END` follow id's original
+/// Quake 2 numbering (`K_UPARROW` = 128); `K_PAUSE` is this port's own
+/// value. The Qwasm2 reference renumbers them (keyboard.h puts `K_COMMAND`,
+/// `K_CAPSLOCK`, `K_POWER` and `K_PAUSE` first, so its `K_UPARROW` is 132).
+/// Only this engine's tables use the numbers, which matters only once
+/// bindings or configs are loaded by key number.
 pub const K_TAB: u8 = 9;
 pub const K_ENTER: u8 = 13;
 pub const K_ESCAPE: u8 = 27;
@@ -162,40 +167,47 @@ mod tests {
         assert_eq!(key_code_to_q2("KeyA"), Some(b'a'));
         assert_eq!(key_code_to_q2("KeyS"), Some(b's'));
         assert_eq!(key_code_to_q2("KeyD"), Some(b'd'));
+
         // Movement keys from default.cfg
-        assert_eq!(key_code_to_q2("KeyC"), Some(b'c'));  // +movedown
-        assert_eq!(key_code_to_q2("Space"), Some(K_SPACE));  // +moveup
-        assert_eq!(key_code_to_q2("KeyZ"), Some(b'z'));  // +lookdown
+        assert_eq!(key_code_to_q2("KeyC"), Some(b'c')); // +movedown
+        assert_eq!(key_code_to_q2("Space"), Some(K_SPACE)); // +moveup
+        assert_eq!(key_code_to_q2("KeyZ"), Some(b'z')); // +lookdown
+
         // Modifiers
-        assert_eq!(key_code_to_q2("ControlLeft"), Some(K_CTRL));  // +attack
-        assert_eq!(key_code_to_q2("ShiftLeft"), Some(K_SHIFT));  // +speed
-        assert_eq!(key_code_to_q2("AltLeft"), Some(K_ALT));  // +strafe
+        assert_eq!(key_code_to_q2("ControlLeft"), Some(K_CTRL)); // +attack
+        assert_eq!(key_code_to_q2("ShiftLeft"), Some(K_SHIFT)); // +speed
+        assert_eq!(key_code_to_q2("AltLeft"), Some(K_ALT)); // +strafe
+
         // Arrows
-        assert_eq!(key_code_to_q2("ArrowUp"), Some(K_UPARROW));  // +forward
-        assert_eq!(key_code_to_q2("ArrowDown"), Some(K_DOWNARROW));  // +back
-        assert_eq!(key_code_to_q2("ArrowLeft"), Some(K_LEFTARROW));  // +left
-        assert_eq!(key_code_to_q2("ArrowRight"), Some(K_RIGHTARROW));  // +right
+        assert_eq!(key_code_to_q2("ArrowUp"), Some(K_UPARROW)); // +forward
+        assert_eq!(key_code_to_q2("ArrowDown"), Some(K_DOWNARROW)); // +back
+        assert_eq!(key_code_to_q2("ArrowLeft"), Some(K_LEFTARROW)); // +left
+        assert_eq!(key_code_to_q2("ArrowRight"), Some(K_RIGHTARROW)); // +right
+
         // Special
         assert_eq!(key_code_to_q2("Escape"), Some(K_ESCAPE));
         assert_eq!(key_code_to_q2("Backquote"), Some(b'`'));
-        assert_eq!(key_code_to_q2("Tab"), Some(K_TAB));  // inven
+        assert_eq!(key_code_to_q2("Tab"), Some(K_TAB)); // inven
+
         // Weapons
         assert_eq!(key_code_to_q2("Digit1"), Some(b'1'));
         assert_eq!(key_code_to_q2("Digit9"), Some(b'9'));
+
         // Punctuation
-        assert_eq!(key_code_to_q2("Comma"), Some(b','));  // +moveleft
-        assert_eq!(key_code_to_q2("Period"), Some(b'.'));  // +moveright
-        assert_eq!(key_code_to_q2("BracketLeft"), Some(b'['));  // invprev
-        assert_eq!(key_code_to_q2("BracketRight"), Some(b']'));  // invnext
+        assert_eq!(key_code_to_q2("Comma"), Some(b',')); // +moveleft
+        assert_eq!(key_code_to_q2("Period"), Some(b'.')); // +moveright
+        assert_eq!(key_code_to_q2("BracketLeft"), Some(b'[')); // invprev
+        assert_eq!(key_code_to_q2("BracketRight"), Some(b']')); // invnext
+
         // Unknown
         assert_eq!(key_code_to_q2("UnknownKey"), None);
     }
 
     #[test]
     fn mouse_button_mapping() {
-        assert_eq!(mouse_button_to_q2(0), Some(K_MOUSE1));  // +attack
-        assert_eq!(mouse_button_to_q2(1), Some(K_MOUSE3));  // +forward
-        assert_eq!(mouse_button_to_q2(2), Some(K_MOUSE2));  // +strafe
+        assert_eq!(mouse_button_to_q2(0), Some(K_MOUSE1)); // +attack
+        assert_eq!(mouse_button_to_q2(1), Some(K_MOUSE3)); // +forward
+        assert_eq!(mouse_button_to_q2(2), Some(K_MOUSE2)); // +strafe
         assert_eq!(mouse_button_to_q2(5), None);
     }
 }

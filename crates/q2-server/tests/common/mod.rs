@@ -1,0 +1,70 @@
+//! Shared fixtures for the server integration tests. The synthetic maps
+//! live in `bsp.rs`, which the crate's own unit tests include as well.
+
+#![allow(dead_code)] // each test binary uses a different subset
+
+mod bsp;
+pub use bsp::*;
+
+/// `gamedata/baseq2/pak0.pak`'s demo1 map, or `None` when the game data is
+/// not installed (the case in CI). A test that returns early on `None`
+/// passes without checking anything, so the skip is printed to keep it
+/// visible in `cargo test -- --nocapture` and in failure output.
+pub fn demo1_bsp() -> Option<Vec<u8>> {
+    stock_bsp("demo1")
+}
+
+/// `maps/<name>.bsp` from `gamedata/baseq2/pak0.pak`, or `None` (printing
+/// the skip) when the game data is not installed, as for `demo1_bsp`.
+pub fn stock_bsp(name: &str) -> Option<Vec<u8>> {
+    let pak = concat!(env!("CARGO_MANIFEST_DIR"), "/../../gamedata/baseq2");
+    let mut fs = q2_common::filesystem::FileSystem::new("baseq2");
+    let map = fs
+        .add_game_directory(std::path::Path::new(pak))
+        .ok()
+        .and_then(|_| fs.load_file(&format!("maps/{name}.bsp")).ok());
+    if map.is_none() {
+        eprintln!("SKIPPED: gamedata/baseq2/pak0.pak not installed; {name} test checks nothing");
+    }
+    map
+}
+
+/// A server and the concrete `GameWorld` it runs, with one client in the
+/// game, for tests that inspect game state `LocalGame` keeps behind
+/// `GameExport`. `frame` and `think` drive it as `LocalGame` does.
+pub struct ServerWorld {
+    pub sv: q2_server::state::Server,
+    pub svs: q2_server::state::ServerStatic,
+    pub gi: std::rc::Rc<q2_server::ServerGameImport>,
+    pub game: q2_game::world::GameWorld,
+}
+
+impl ServerWorld {
+    /// `bsp` loaded as `maps/<name>.bsp` with the client at its player start.
+    pub fn start(name: &str, bsp: &[u8]) -> Self {
+        use q2_game::traits::GameExport;
+        let gi = std::rc::Rc::new(q2_server::ServerGameImport::new());
+        let mut game = q2_game::world::GameWorld::new(gi.clone(), q2_shared::constants::MAX_EDICTS);
+        game.set_max_clients(1);
+        game.init();
+        let mut svs = q2_server::state::ServerStatic::default();
+        svs.init_game(1);
+        let mut sv = q2_server::state::Server::default();
+        sv.map(&mut svs, name, bsp, "", &gi, &mut game)
+            .expect("map loads");
+        svs.connect_local_client(&mut game, "")
+            .expect("client accepted");
+        Self { sv, svs, gi, game }
+    }
+
+    pub fn think(&mut self, cmd: &q2_shared::types::UserCmd) {
+        use q2_game::traits::GameExport;
+        self.game.client_think(1, cmd);
+    }
+
+    pub fn frame(&mut self, frametime_us: u32) {
+        self.sv
+            .frame(&mut self.svs, frametime_us, &mut self.game, &self.gi)
+            .unwrap();
+    }
+}

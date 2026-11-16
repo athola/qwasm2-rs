@@ -1,0 +1,769 @@
+//! GPU objects for the world and sky box, and the draw loops that use them
+//! (C `GL3_DrawWorld`, `DrawTextureChains`, `GL3_DrawAlphaSurfaces`,
+//! `GL3_DrawSkyBox`).
+
+use glow::HasContext;
+use q2_shared::error::{Q2Error, Q2Result};
+
+use super::lightmap::{LightmapPage, BLOCK_HEIGHT, BLOCK_WIDTH, MAX_LIGHTMAPS_PER_SURFACE};
+use super::pics::{batch_runs, Quad, QuadImage, QUAD_VERTICES};
+use super::shader::{
+    AliasUniforms, UiUniforms, WorldUniforms, MODE_LIT, MODE_PLAIN, MODE_SKY, MODE_WARP,
+};
+use super::sky::{sky_box_vertices, SKY_TEX_ORDER, VERTEX_FLOATS as SKY_VERTEX_FLOATS};
+use super::texture::{upload_rgba, Image, Sampling, WorldImages, CLAMPED_SAMPLING, WORLD_SAMPLING};
+use super::world::{Batch, Shading, Translucency, WorldMesh, VERTEX_FLOATS};
+use super::IDENTITY_MAT4;
+
+/// Uploaded world model: vertex buffer, textures and the draw list.
+pub struct WorldGpu {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    batches: Vec<Batch>,
+    /// Batches of inline model `*n` at index `n - 1`.
+    submodels: Vec<Vec<Batch>>,
+    textures: Vec<glow::Texture>,
+    /// Parallel to `textures`; lava is drawn at full brightness, water at half.
+    is_lava: Vec<bool>,
+    /// Layer `n` of page `p` at `p * MAX_LIGHTMAPS_PER_SURFACE + n`.
+    lightmaps: Vec<glow::Texture>,
+}
+
+/// Six sky faces in file-suffix order plus the box geometry.
+pub struct SkyGpu {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    faces: Vec<glow::Texture>,
+}
+
+/// World vertex attributes: position, texture uv, lightmap uv, styles,
+/// normal.
+const WORLD_ATTRIBUTES: [Attribute; 5] = [(0, 3, 0), (1, 2, 3), (2, 2, 5), (3, 4, 7), (4, 3, 11)];
+/// Sky vertices stop after the lightmap uv the sky never reads.
+const SKY_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 2, 5)];
+
+/// The bytes of `floats` as GL reads them (native byte order), without a
+/// copy: MD2 and 2D vertices are re-uploaded every draw, and converting them
+/// float by float dominated the browser frame time.
+fn float_bytes(floats: &[f32]) -> &[u8] {
+    bytemuck::cast_slice(floats)
+}
+
+/// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
+/// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
+/// WebGL canvas (alpha, premultiplied) would show the page through it.
+pub(super) fn set_alpha_blend(gl: &glow::Context) {
+    // SAFETY: state-only call on the live context `gl`.
+    unsafe {
+        gl.blend_func_separate(
+            glow::SRC_ALPHA,
+            glow::ONE_MINUS_SRC_ALPHA,
+            glow::ONE,
+            glow::ONE_MINUS_SRC_ALPHA,
+        );
+    }
+}
+
+/// Create a VAO/VBO for `stride_floats`-float vertices.
+fn create_vertex_buffers(
+    gl: &glow::Context,
+    floats: &[f32],
+    stride_floats: usize,
+    attributes: &[Attribute],
+) -> Q2Result<(glow::VertexArray, glow::Buffer)> {
+    let bytes = float_bytes(floats);
+    let stride = (stride_floats * 4) as i32;
+    // SAFETY: VAO and VBO are created here on `gl`; `bytes` borrows `floats`
+    // and is copied by `buffer_data_u8_slice`, and the attributes lie within
+    // the caller's `stride_floats` layout.
+    unsafe {
+        let vao = gl.create_vertex_array().map_err(Q2Error::Drop)?;
+        let vbo = match gl.create_buffer() {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                gl.delete_vertex_array(vao);
+                return Err(Q2Error::Drop(error));
+            }
+        };
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+        for &(location, components, offset) in attributes {
+            gl.enable_vertex_attrib_array(location);
+            gl.vertex_attrib_pointer_f32(
+                location,
+                components,
+                glow::FLOAT,
+                false,
+                stride,
+                (offset * 4) as i32,
+            );
+        }
+        gl.bind_vertex_array(None);
+        gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        Ok((vao, vbo))
+    }
+}
+
+/// Upload textures one by one; on failure free what was created.
+fn upload_all<'a>(
+    gl: &glow::Context,
+    images: impl Iterator<Item = (&'a Image, &'a Sampling)>,
+) -> Q2Result<Vec<glow::Texture>> {
+    let mut textures = Vec::new();
+    for (image, sampling) in images {
+        match upload_rgba(gl, image.width, image.height, &image.rgba, sampling) {
+            Ok(texture) => textures.push(texture),
+            Err(error) => {
+                delete_textures(gl, &textures);
+                return Err(error);
+            }
+        }
+    }
+    Ok(textures)
+}
+
+fn delete_textures(gl: &glow::Context, textures: &[glow::Texture]) {
+    // SAFETY: every handle was created by `upload_rgba` on this same `gl`
+    // and the caller drops its copy of the list after this call.
+    unsafe {
+        for &texture in textures {
+            gl.delete_texture(texture);
+        }
+    }
+}
+
+/// Every layer of every page as one image, layer `n` of page `p` at
+/// `p * MAX_LIGHTMAPS_PER_SURFACE + n` (see `lightmap_layers`).
+fn lightmap_images(pages: &[LightmapPage]) -> Vec<Image> {
+    pages
+        .iter()
+        .flat_map(|page| &page.layers)
+        .map(|layer| Image {
+            width: BLOCK_WIDTH,
+            height: BLOCK_HEIGHT,
+            rgba: layer.clone(),
+            is_lava: false,
+        })
+        .collect()
+}
+
+pub fn upload_world(
+    gl: &glow::Context,
+    images: &WorldImages,
+    mesh: &WorldMesh,
+) -> Q2Result<WorldGpu> {
+    // SAFETY: state-only call on the live context.
+    unsafe { gl.active_texture(glow::TEXTURE0) };
+    let textures = upload_all(
+        gl,
+        images.images.iter().map(|image| (image, &WORLD_SAMPLING)),
+    )?;
+    let page_images = lightmap_images(&mesh.lightmaps.pages);
+    let lightmaps = match upload_all(gl, page_images.iter().map(|page| (page, &CLAMPED_SAMPLING))) {
+        Ok(pages) => pages,
+        Err(error) => {
+            delete_textures(gl, &textures);
+            return Err(error);
+        }
+    };
+    match create_vertex_buffers(gl, &mesh.vertices, VERTEX_FLOATS, &WORLD_ATTRIBUTES) {
+        Ok((vao, vbo)) => Ok(WorldGpu {
+            vao,
+            vbo,
+            batches: mesh.batches.clone(),
+            submodels: mesh.submodels.clone(),
+            is_lava: images.images.iter().map(|image| image.is_lava).collect(),
+            textures,
+            lightmaps,
+        }),
+        Err(error) => {
+            delete_textures(gl, &textures);
+            delete_textures(gl, &lightmaps);
+            Err(error)
+        }
+    }
+}
+
+pub fn upload_sky(gl: &glow::Context, faces: &[Image; 6]) -> Q2Result<SkyGpu> {
+    // SAFETY: state-only call on the live context.
+    unsafe { gl.active_texture(glow::TEXTURE0) };
+    let textures = upload_all(gl, faces.iter().map(|face| (face, &CLAMPED_SAMPLING)))?;
+    match create_vertex_buffers(gl, &sky_box_vertices(), SKY_VERTEX_FLOATS, &SKY_ATTRIBUTES) {
+        Ok((vao, vbo)) => Ok(SkyGpu {
+            vao,
+            vbo,
+            faces: textures,
+        }),
+        Err(error) => {
+            delete_textures(gl, &textures);
+            Err(error)
+        }
+    }
+}
+
+pub fn free_world(gl: &glow::Context, world: WorldGpu) {
+    delete_textures(gl, &world.textures);
+    delete_textures(gl, &world.lightmaps);
+    // SAFETY: `vao` and `vbo` were created on this `gl` by upload_world and
+    // `world` is consumed, so neither handle is used again.
+    unsafe {
+        gl.delete_vertex_array(world.vao);
+        gl.delete_buffer(world.vbo);
+    }
+}
+
+pub fn free_sky(gl: &glow::Context, sky: SkyGpu) {
+    delete_textures(gl, &sky.faces);
+    // SAFETY: `vao` and `vbo` were created on this `gl` by upload_sky and
+    // `sky` is consumed, so neither handle is used again.
+    unsafe {
+        gl.delete_vertex_array(sky.vao);
+        gl.delete_buffer(sky.vbo);
+    }
+}
+
+/// Texture scroll for a batch (C `GL3_EmitWaterPolys` / `GL3_DrawGLFlowingPoly`
+/// via the `scroll` uniform). `-64` replaces an exact `0` like C does.
+pub fn batch_scroll(shading: Shading, flowing: bool, time: f32) -> f32 {
+    let period_fraction = match (shading, flowing) {
+        (Shading::Warp, true) => time * 0.5,
+        (Shading::Warp, false) => return 0.0,
+        (_, true) => time / 40.0,
+        (_, false) => return 0.0,
+    };
+    let scroll = -64.0 * (period_fraction - period_fraction.trunc());
+    if scroll == 0.0 {
+        -64.0
+    } else {
+        scroll
+    }
+}
+
+/// Draw the six sky faces around the eye; `view_proj` must exclude translation.
+pub fn draw_sky(gl: &glow::Context, uniforms: &WorldUniforms, sky: &SkyGpu, view_proj: &[f32; 16]) {
+    // SAFETY: `sky.vao` and the face textures were created on `gl` and are
+    // owned by `sky`; uniform locations belong to the currently bound program.
+    unsafe {
+        gl.disable(glow::DEPTH_TEST);
+        gl.disable(glow::CULL_FACE);
+        gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, &IDENTITY_MAT4);
+        gl.uniform_1_i32(uniforms.mode.as_ref(), MODE_SKY);
+        gl.uniform_1_f32(uniforms.scroll.as_ref(), 0.0);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_vertex_array(Some(sky.vao));
+        for (face, &image_index) in SKY_TEX_ORDER.iter().enumerate() {
+            gl.bind_texture(glow::TEXTURE_2D, sky.faces.get(image_index).copied());
+            gl.draw_arrays(glow::TRIANGLES, (face * 6) as i32, 6);
+        }
+        gl.bind_vertex_array(None);
+        gl.enable(glow::DEPTH_TEST);
+        gl.enable(glow::CULL_FACE);
+    }
+}
+
+/// Which batches of a model a draw call covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchFilter {
+    Opaque,
+    Translucent,
+}
+
+impl BatchFilter {
+    fn includes(self, translucency: Translucency) -> bool {
+        match self {
+            BatchFilter::Opaque => translucency == Translucency::Opaque,
+            BatchFilter::Translucent => translucency != Translucency::Opaque,
+        }
+    }
+}
+
+/// One world or brush-entity draw.
+pub struct BatchDraw<'a> {
+    pub view_proj: &'a [f32; 16],
+    /// Model to world (C `transModel`): identity for the world.
+    pub model: &'a [f32; 16],
+    pub time: f32,
+    /// Texture animation frame (C `R_TextureAnimation`).
+    pub frame: i32,
+    pub filter: BatchFilter,
+    /// An `RF_TRANSLUCENT` brush entity: every batch blends, none writes depth.
+    pub translucent_entity: bool,
+    /// The view's area bits (see `Batch::in_visible_area`); `None` for
+    /// brush entities, which the server already culls by area.
+    pub areabits: Option<&'a [u8]>,
+}
+
+impl WorldGpu {
+    /// Batches of model `model` (0 is the world, `n` is `*n`).
+    pub fn model_batches(&self, model: usize) -> Option<&[Batch]> {
+        match model {
+            0 => Some(&self.batches),
+            n => self.submodels.get(n - 1).map(Vec::as_slice),
+        }
+    }
+}
+
+/// Whether a batch is drawn blended and without depth writes: translucent
+/// faces always, and every face of an `RF_TRANSLUCENT` brush entity (C
+/// `R_DrawInlineBModel` enables blending inside the translucent entity pass,
+/// which runs under `glDepthMask(0)`; opaque faces keep alpha 1).
+fn batch_blends(translucency: Translucency, translucent_entity: bool) -> bool {
+    translucent_entity || translucency != Translucency::Opaque
+}
+
+/// The world shader's `u_mode` for a batch.
+fn shading_mode(shading: Shading) -> i32 {
+    match shading {
+        Shading::Lit => MODE_LIT,
+        Shading::Plain => MODE_PLAIN,
+        Shading::Warp => MODE_WARP,
+    }
+}
+
+/// Warp brightness on top of intensity: lava full, water and slime half.
+/// C ref: gl3_warp.c `GL3_EmitWaterPolys` (`lightScale`).
+fn turb_light(lava: bool) -> f32 {
+    if lava {
+        1.0
+    } else {
+        0.5
+    }
+}
+
+/// Indices into `WorldGpu::lightmaps` of a page's layers, bound to units
+/// 1.. in layer order (`upload_world` stores layer `n` of page `p` at
+/// `p * MAX_LIGHTMAPS_PER_SURFACE + n`).
+fn lightmap_layers(page: usize) -> std::ops::Range<usize> {
+    let first = page * MAX_LIGHTMAPS_PER_SURFACE;
+    first..first + MAX_LIGHTMAPS_PER_SURFACE
+}
+
+/// Draw the selected batches of one model. Translucent batches blend and
+/// write no depth. `batches` must come from `world`.
+pub fn draw_batches(
+    gl: &glow::Context,
+    uniforms: &WorldUniforms,
+    world: &WorldGpu,
+    batches: &[Batch],
+    draw: &BatchDraw,
+) {
+    // SAFETY: `world.vao`, textures and lightmap pages were created on `gl`
+    // and are owned by `world`; batch ranges were produced together with the
+    // vertex buffer by `build_world_mesh`; uniform locations belong to the
+    // currently bound program.
+    unsafe {
+        gl.uniform_matrix_4_f32_slice(uniforms.view_proj.as_ref(), false, draw.view_proj);
+        gl.uniform_matrix_4_f32_slice(uniforms.model.as_ref(), false, draw.model);
+        gl.uniform_1_f32(uniforms.time.as_ref(), draw.time);
+        gl.bind_vertex_array(Some(world.vao));
+        let (mut blending, mut writing_depth) = (false, true);
+        for batch in batches.iter().filter(|batch| {
+            draw.filter.includes(batch.translucency) && batch.in_visible_area(draw.areabits)
+        }) {
+            let blend = batch_blends(batch.translucency, draw.translucent_entity);
+            if blend != blending {
+                if blend {
+                    gl.enable(glow::BLEND);
+                    set_alpha_blend(gl);
+                } else {
+                    gl.disable(glow::BLEND);
+                }
+                blending = blend;
+            }
+            // Blended draws never write depth (C draws them under glDepthMask(0)).
+            if writing_depth == blend {
+                gl.depth_mask(!blend);
+                writing_depth = !blend;
+            }
+            gl.uniform_1_i32(uniforms.mode.as_ref(), shading_mode(batch.shading));
+            gl.uniform_1_f32(uniforms.alpha.as_ref(), batch.translucency.alpha());
+            gl.uniform_1_f32(
+                uniforms.scroll.as_ref(),
+                batch_scroll(batch.shading, batch.flowing, draw.time),
+            );
+            let image = batch.image(draw.frame);
+            let lava = world.is_lava.get(image).copied().unwrap_or(false);
+            gl.uniform_1_f32(uniforms.turb_light.as_ref(), turb_light(lava));
+
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, world.textures.get(image).copied());
+            if batch.shading == Shading::Lit {
+                for (unit, layer) in (glow::TEXTURE1..).zip(lightmap_layers(batch.lightmap_page)) {
+                    gl.active_texture(unit);
+                    gl.bind_texture(glow::TEXTURE_2D, world.lightmaps.get(layer).copied());
+                }
+                gl.active_texture(glow::TEXTURE0);
+            }
+            gl.draw_arrays(glow::TRIANGLES, batch.first_vertex, batch.vertex_count);
+        }
+        if blending {
+            gl.disable(glow::BLEND);
+        }
+        if !writing_depth {
+            gl.depth_mask(true);
+        }
+        gl.bind_vertex_array(None);
+    }
+}
+
+/// A VAO/VBO pair refilled every draw (C `GL_STREAM_DRAW` buffers).
+pub struct StreamBuffer {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+}
+
+/// One float attribute of a stream vertex: location, components, float offset.
+pub type Attribute = (u32, i32, usize);
+
+pub fn create_stream_buffer(
+    gl: &glow::Context,
+    stride_floats: usize,
+    attributes: &[Attribute],
+) -> Q2Result<StreamBuffer> {
+    let stride = i32::try_from(stride_floats * 4).map_err(|e| Q2Error::Drop(e.to_string()))?;
+    // SAFETY: VAO and VBO are created here on `gl`; attribute offsets and
+    // stride come from the caller's float layout, whose last attribute ends
+    // at `stride_floats`; no data is read until a draw fills the buffer.
+    unsafe {
+        let vao = gl.create_vertex_array().map_err(Q2Error::Drop)?;
+        let vbo = match gl.create_buffer() {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                gl.delete_vertex_array(vao);
+                return Err(Q2Error::Drop(error));
+            }
+        };
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        for &(location, components, offset) in attributes {
+            gl.enable_vertex_attrib_array(location);
+            gl.vertex_attrib_pointer_f32(
+                location,
+                components,
+                glow::FLOAT,
+                false,
+                stride,
+                i32::try_from(offset * 4).unwrap_or(0),
+            );
+        }
+        gl.bind_vertex_array(None);
+        gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        Ok(StreamBuffer { vao, vbo })
+    }
+}
+
+pub fn free_stream_buffer(gl: &glow::Context, stream: StreamBuffer) {
+    // SAFETY: both objects were created on this `gl` by
+    // `create_stream_buffer` and `stream` is consumed here.
+    unsafe {
+        gl.delete_vertex_array(stream.vao);
+        gl.delete_buffer(stream.vbo);
+    }
+}
+
+/// Replace the stream's contents and leave its VAO bound.
+pub(super) fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f32]) {
+    let bytes = float_bytes(floats);
+    // SAFETY: `stream` objects belong to `gl`; `bytes` borrows `floats` and
+    // `buffer_data_u8_slice` copies it before returning.
+    unsafe {
+        gl.bind_vertex_array(Some(stream.vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(stream.vbo));
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STREAM_DRAW);
+    }
+}
+
+/// One interpolated MD2 draw (the MD2 program is already bound).
+pub struct MeshDraw<'a> {
+    /// Vertices in the MD2 stream layout, three per triangle.
+    pub vertices: &'a [f32],
+    pub vertex_count: i32,
+    pub texture: Option<glow::Texture>,
+    pub mvp: &'a [f32; 16],
+    pub blend: bool,
+    /// Draw the vertex colour alone (colour shells).
+    pub color_only: bool,
+}
+
+/// Draw one MD2 mesh under the world's cull state: MD2 triangles wind like
+/// world faces, and C keeps `GL_FRONT` culling for them too.
+pub fn draw_mesh(
+    gl: &glow::Context,
+    uniforms: &AliasUniforms,
+    stream: &StreamBuffer,
+    draw: &MeshDraw,
+) {
+    fill_stream(gl, stream, draw.vertices);
+    // SAFETY: the texture and the stream belong to `gl`; the stream was just
+    // filled with `vertex_count` vertices in the MD2 layout; the uniform
+    // location belongs to the currently bound MD2 program.
+    unsafe {
+        gl.uniform_matrix_4_f32_slice(uniforms.mvp.as_ref(), false, draw.mvp);
+        gl.uniform_1_i32(uniforms.color_only.as_ref(), i32::from(draw.color_only));
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, draw.texture);
+        if draw.blend {
+            gl.enable(glow::BLEND);
+            set_alpha_blend(gl);
+            gl.depth_mask(false);
+        }
+        gl.draw_arrays(glow::TRIANGLES, 0, draw.vertex_count);
+        if draw.blend {
+            gl.depth_mask(true);
+            gl.disable(glow::BLEND);
+        }
+        gl.bind_vertex_array(None);
+    }
+}
+
+/// Where and how the queued 2D quads are drawn.
+pub struct UiTarget<'a> {
+    pub program: glow::Program,
+    pub uniforms: &'a UiUniforms,
+    pub stream: &'a StreamBuffer,
+    pub ortho: &'a [f32; 16],
+    pub canvas: (i32, i32),
+}
+
+/// Draw the queued 2D quads in order, on top of everything, then restore the
+/// 3D state (depth test and culling on, blending off, no program).
+pub fn draw_ui(
+    gl: &glow::Context,
+    target: &UiTarget,
+    quads: &[Quad],
+    texture_of: impl Fn(QuadImage) -> Option<glow::Texture>,
+) {
+    // SAFETY: `target.program` was linked on `gl`; these are state-only calls.
+    unsafe {
+        gl.viewport(0, 0, target.canvas.0, target.canvas.1);
+        gl.use_program(Some(target.program));
+        gl.uniform_matrix_4_f32_slice(target.uniforms.ortho.as_ref(), false, target.ortho);
+        gl.disable(glow::DEPTH_TEST);
+        gl.disable(glow::CULL_FACE);
+        gl.enable(glow::BLEND);
+        set_alpha_blend(gl);
+        gl.active_texture(glow::TEXTURE0);
+    }
+    let mut floats = Vec::new();
+    for (image, first_vertex, vertex_count) in batch_runs(quads) {
+        let first_quad = first_vertex / QUAD_VERTICES;
+        let run = &quads[first_quad..first_quad + vertex_count / QUAD_VERTICES];
+        floats.clear();
+        floats.extend(run.iter().flat_map(|quad| quad.vertices));
+        fill_stream(gl, target.stream, &floats);
+        // SAFETY: the texture belongs to `gl` (or is unbound); the stream
+        // was just filled with `vertex_count` vertices in the 2D layout.
+        unsafe {
+            gl.bind_texture(glow::TEXTURE_2D, texture_of(image));
+            gl.draw_arrays(
+                glow::TRIANGLES,
+                0,
+                i32::try_from(vertex_count).unwrap_or(i32::MAX),
+            );
+        }
+    }
+    // SAFETY: state-only calls restoring what init set up.
+    unsafe {
+        gl.bind_vertex_array(None);
+        gl.disable(glow::BLEND);
+        gl.enable(glow::CULL_FACE);
+        gl.enable(glow::DEPTH_TEST);
+        gl.use_program(None);
+    }
+}
+
+/// The `(location, components)` of every `layout(location = N) in` of a
+/// vertex shader.
+#[cfg(test)]
+pub(super) fn declared_attributes(vertex_src: &str) -> Vec<(u32, i32)> {
+    vertex_src
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("layout(location = ")?;
+            let (location, rest) = rest.split_once(") in ")?;
+            let components = match rest.split_whitespace().next()? {
+                "float" => 1,
+                "vec2" => 2,
+                "vec3" => 3,
+                "vec4" => 4,
+                other => panic!("attribute type {other}"),
+            };
+            Some((location.parse().ok()?, components))
+        })
+        .collect()
+}
+
+/// `attributes` fill a `stride_floats` vertex end to end, in order, and
+/// each matches a declared input of `vertex_src`; `complete` also requires
+/// every declared input to be fed.
+#[cfg(test)]
+pub(super) fn assert_layout(
+    attributes: &[Attribute],
+    stride_floats: usize,
+    vertex_src: &str,
+    complete: bool,
+) {
+    let declared = declared_attributes(vertex_src);
+    let mut next = 0;
+    for &(location, components, offset) in attributes {
+        assert_eq!(offset, next, "attribute {location} offset");
+        next += usize::try_from(components).unwrap();
+        assert!(
+            declared.contains(&(location, components)),
+            "attribute {location} x{components} not in {declared:?}"
+        );
+    }
+    assert_eq!(next, stride_floats, "attributes end at the stride");
+    let mut fed: Vec<(u32, i32)> = attributes.iter().map(|&(l, c, _)| (l, c)).collect();
+    fed.sort_unstable();
+    fed.dedup_by_key(|&mut (location, _)| location);
+    assert_eq!(fed.len(), attributes.len(), "one attribute per location");
+    if complete {
+        let mut declared = declared;
+        declared.sort_unstable();
+        assert_eq!(fed, declared, "every input is fed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gl3::shader::VERTEX_SRC;
+
+    #[test]
+    fn world_vertices_feed_every_world_shader_input_in_the_mesh_layout() {
+        assert_layout(&WORLD_ATTRIBUTES, VERTEX_FLOATS, VERTEX_SRC, true);
+    }
+
+    #[test]
+    fn sky_vertices_feed_position_and_uvs_of_the_world_shader() {
+        assert_layout(&SKY_ATTRIBUTES, SKY_VERTEX_FLOATS, VERTEX_SRC, false);
+    }
+
+    fn batch(first_vertex: i32) -> Batch {
+        Batch {
+            shading: Shading::Lit,
+            translucency: Translucency::Opaque,
+            frames: vec![0],
+            lightmap_page: 0,
+            flowing: false,
+            first_vertex,
+            vertex_count: 3,
+            areas: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn model_0_is_the_world_and_n_is_inline_model_star_n() {
+        let handle = |n| std::num::NonZeroU32::new(n).unwrap();
+        let world = WorldGpu {
+            vao: glow::NativeVertexArray(handle(1)),
+            vbo: glow::NativeBuffer(handle(2)),
+            batches: vec![batch(0)],
+            submodels: vec![vec![batch(10)], vec![batch(20), batch(23)]],
+            textures: Vec::new(),
+            is_lava: Vec::new(),
+            lightmaps: Vec::new(),
+        };
+        let firsts = |model| {
+            world
+                .model_batches(model)
+                .map(|batches| batches.iter().map(|b| b.first_vertex).collect::<Vec<_>>())
+        };
+        assert_eq!(firsts(0), Some(vec![0]));
+        assert_eq!(firsts(1), Some(vec![10]));
+        assert_eq!(firsts(2), Some(vec![20, 23]));
+        assert_eq!(firsts(3), None);
+    }
+
+    // C draws SURF_TRANS33/66 faces only from the alpha chain, never in
+    // the opaque pass, and the alpha pass draws nothing else.
+    #[test]
+    fn the_opaque_pass_takes_only_opaque_batches_and_the_translucent_pass_the_rest() {
+        assert!(BatchFilter::Opaque.includes(Translucency::Opaque));
+        assert!(!BatchFilter::Translucent.includes(Translucency::Opaque));
+        for translucent in [Translucency::Third, Translucency::TwoThirds] {
+            assert!(!BatchFilter::Opaque.includes(translucent));
+            assert!(BatchFilter::Translucent.includes(translucent));
+        }
+    }
+
+    #[test]
+    fn each_shading_selects_its_world_shader_mode() {
+        assert_eq!(shading_mode(Shading::Lit), MODE_LIT);
+        assert_eq!(shading_mode(Shading::Plain), MODE_PLAIN);
+        assert_eq!(shading_mode(Shading::Warp), MODE_WARP);
+    }
+
+    #[test]
+    fn lava_warps_at_full_brightness_and_other_warps_at_half_like_c() {
+        // C ref: gl3_warp.c `lightScale = is_lava ? 1.0f : 0.5f`.
+        assert_eq!(turb_light(true), 1.0);
+        assert_eq!(turb_light(false), 0.5);
+    }
+
+    #[test]
+    fn a_lit_batch_binds_the_four_layers_of_its_own_page_in_order() {
+        let pages: Vec<LightmapPage> = (0..3u8)
+            .map(|page| LightmapPage {
+                layers: std::array::from_fn(|layer| vec![page * 10 + layer as u8]),
+            })
+            .collect();
+        let images = lightmap_images(&pages);
+        assert_eq!(images.len(), 3 * MAX_LIGHTMAPS_PER_SURFACE);
+        let bound: Vec<u8> = lightmap_layers(2).map(|i| images[i].rgba[0]).collect();
+        assert_eq!(bound, [20, 21, 22, 23]);
+        assert!(images.iter().all(|image| !image.is_lava));
+    }
+
+    #[test]
+    fn float_bytes_are_the_native_bytes_of_each_float_in_order() {
+        let floats = [1.0f32, -2.5, f32::MAX];
+        let expected: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
+        assert_eq!(float_bytes(&floats), expected.as_slice());
+        assert!(float_bytes(&[]).is_empty());
+    }
+
+    #[test]
+    fn translucent_brush_entities_blend_every_batch_like_c() {
+        assert!(!batch_blends(Translucency::Opaque, false));
+        assert!(batch_blends(Translucency::Opaque, true));
+        for translucency in [
+            Translucency::Opaque,
+            Translucency::Third,
+            Translucency::TwoThirds,
+        ] {
+            assert!(batch_blends(translucency, true));
+        }
+        assert!(batch_blends(Translucency::Third, false));
+    }
+
+    #[test]
+    fn non_flowing_surfaces_do_not_scroll() {
+        assert_eq!(batch_scroll(Shading::Lit, false, 12.3), 0.0);
+        assert_eq!(batch_scroll(Shading::Warp, false, 12.3), 0.0);
+    }
+
+    #[test]
+    fn flowing_warp_scrolls_64_units_per_two_seconds() {
+        // time 0.5 -> fraction 0.25 -> -16
+        assert_eq!(batch_scroll(Shading::Warp, true, 0.5), -16.0);
+        // time 3.0 -> 1.5 -> fraction 0.5 -> -32
+        assert_eq!(batch_scroll(Shading::Warp, true, 3.0), -32.0);
+    }
+
+    #[test]
+    fn flowing_lit_uses_the_40_second_period() {
+        // time 10 -> 0.25 -> -16
+        assert_eq!(batch_scroll(Shading::Lit, true, 10.0), -16.0);
+    }
+
+    #[test]
+    fn exact_period_boundary_scrolls_a_full_64_like_c() {
+        assert_eq!(batch_scroll(Shading::Warp, true, 0.0), -64.0);
+        assert_eq!(batch_scroll(Shading::Warp, true, 2.0), -64.0);
+        assert_eq!(batch_scroll(Shading::Plain, true, 40.0), -64.0);
+    }
+}

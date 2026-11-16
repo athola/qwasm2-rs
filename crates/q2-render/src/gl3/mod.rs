@@ -1,410 +1,678 @@
 //! GL3/GLES3 renderer backend using the `glow` crate.
 //!
-//! Renders BSP world geometry as flat-shaded triangles with per-face
-//! colouring derived from the face's plane normal (pseudo-lighting).
+//! Draws the BSP world textured and lightmapped like the C GL3 renderer,
+//! with a sky box behind it, then entities (inline BSP models, MD2s,
+//! `.sp2` sprites and beams), particles and queued 2D draws. Pure logic lives in submodules so it can be tested
+//! without a GL context:
+//! - [`texture`]: `.wal` loading, palette conversion, texture upload
+//! - [`lightmap`]: surface extents and lightmap atlas packing
+//! - [`world`]: face batching of the world and inline models into one buffer
+//! - [`sky`]: sky box geometry and image lookup
+//! - [`model`]: model handle registry; [`light`]: light under a point
+//! - [`entity`]: entity matrices; [`alias`]: MD2 frame interpolation and shading
+//! - [`images`] / [`pics`]: pic and skin cache, 2D quads and font cells
+//! - [`fx`]: particle, beam and sprite vertices and their draws
+//! - [`shader`] / [`draw`] / [`entities`]: the GL programs and draw loops
+//!
+//! MD2 frames are interpolated on the CPU every draw, as C does, and streamed
+//! to one shared buffer; so a registered MD2 owns no GPU buffers, only its
+//! skin textures in the image cache. 2D draws are queued in call order and
+//! drawn by `end_frame` on top of the 3D frame.
+//!
+//! World lightmaps blend up to four light styles each and texture animation
+//! chains cycle, both as in C. MD2 models outside the view frustum are
+//! skipped; the server only sends entities in the player's PVS. World faces
+//! are culled by `RefDef::areabits` as C's leaf marking does: each batch
+//! knows the areas of the non-solid leafs listing its faces and is drawn
+//! when one of them is visible, so areas behind shut doors are not drawn.
+//!
+//! Dynamic lights shade world and brush surfaces as well as MD2s; MD2s
+//! also get `RF_SHELL_*` shells, and the weapon model its own FOV and
+//! `RF_DEPTHHACK` depth range. `RefDef::blend` is drawn as C's screen flash,
+//! mixed as C's post-process pass does when the view is underwater.
+//!
+//! Deferred relative to C: back-to-front sorting of translucent surfaces,
+//! PVS and frustum culling of world surfaces and brush entities (without
+//! area bits the whole world is drawn every frame), subdivision of warp
+//! surfaces (the warp is per-fragment, so it is not needed), the placeholder
+//! for entities without a model (`GL3_DrawNullModel`), entity shadows and
+//! the `flushmap` cvar (the same map is always kept). Of [`RefDef`], `x`/`y`
+//! (the 3D viewport is always at 0, 0), the `RDF_UNDERWATER` water warp
+//! post-process, `RDF_NOWORLDMODEL` (the world is drawn anyway) and
+//! `r_fullbright` are not honoured.
+
+mod alias;
+mod draw;
+mod entities;
+mod entity;
+mod fx;
+mod images;
+mod light;
+mod lightmap;
+mod model;
+mod pics;
+mod shader;
+mod sky;
+mod texture;
+mod world;
 
 use glow::HasContext;
 use q2_render_api::*;
+use q2_shared::error::{Q2Error, Q2Result};
 use q2_shared::types::Vec3f;
 
 use crate::bsp::BspData;
+use crate::files::md2::MD2_IDENT;
+use crate::files::palette::Palette;
+use crate::files::sp2::SP2_IDENT;
+use alias::AliasModel;
+use draw::{draw_batches, draw_ui, BatchDraw, BatchFilter, SkyGpu, UiTarget, WorldGpu};
+use entities::{
+    create_extra, draw_brush_alpha_faces, draw_entities, free_extra, EntityScene, ExtraGpu,
+};
 
-/// Compiled GPU mesh: VAO + vertex count, ready to draw.
-struct GpuMesh {
-    vao: glow::VertexArray,
-    _vbo: glow::Buffer,
-    vertex_count: i32,
+use images::ImageStore;
+use light::LightTree;
+use model::{Model, ModelRegistry};
+use pics::{Quad, QuadImage};
+use shader::WorldUniforms;
+use sky::{DEFAULT_SKY, SKY_SUFFIXES};
+use texture::{load_palette, load_world_images, notexture, FileLoader, Image};
+
+/// Faces culled by the 3D pass. Quake faces wind clockwise seen from their
+/// front and GL's default front face is CCW, so C culls `GL_FRONT`.
+const CULL_FACE: u32 = glow::FRONT;
+
+/// Parameters from the last `set_sky` call.
+struct SkySetting {
+    name: String,
+    rotate: f32,
+    axis: [f32; 3],
 }
 
 /// GL3 renderer state.
 pub struct Gl3Renderer {
+    /// `None` only in headless unit tests.
     gl: Option<glow::Context>,
     width: i32,
     height: i32,
     initialized: bool,
-    /// Shader program for world geometry.
-    world_program: Option<glow::Program>,
-    /// Uploaded world mesh.
-    world_mesh: Option<GpuMesh>,
-    /// Uniform locations.
-    u_view_proj: Option<glow::UniformLocation>,
+    /// Shader program for world and sky.
+    program: Option<glow::Program>,
+    uniforms: Option<WorldUniforms>,
+    world: Option<WorldGpu>,
+    sky: Option<SkyGpu>,
+    sky_setting: SkySetting,
+    /// C `ri.FS_LoadFile`.
+    file_loader: FileLoader,
+    /// `maps/<map>.bsp` of the loaded world (C `mod_known[0].name`).
+    world_name: Option<String>,
+    /// From `pics/colormap.pcx`; needed to convert `.wal` pixels.
+    palette: Option<Palette>,
+    /// MD2 and 2D programs, stream buffers and fallback textures.
+    extra: Option<ExtraGpu>,
+    /// Particle, beam and sprite programs.
+    fx: Option<fx::FxGpu>,
+    /// 2D pics and model skins.
+    images: ImageStore,
+    /// Registered models; handles are valid until the next registration.
+    models: ModelRegistry<AliasModel>,
+    /// Number of models in the loaded BSP (`*n` must be below it).
+    model_count: Option<usize>,
+    /// Lightmap data for lighting entities, from the loaded BSP.
+    light: Option<LightTree>,
+    /// 2D draws since the last `end_frame`.
+    ui_queue: Vec<Quad>,
+    /// 2D coordinate space in pixels: the init size, then the last RefDef size.
+    canvas: (i32, i32),
+    /// C `vid_gamma`; every program's `u_gamma` is `1/vid_gamma`.
+    vid_gamma: f32,
+    /// C cvar `hand`, which the renderer reads too (`gl_lefthand`).
+    hand: i32,
 }
 
 impl Gl3Renderer {
-    pub fn new() -> Self {
+    /// C `R_Init`: the platform supplies the GL context and `FS_LoadFile`.
+    /// The palette is read here, as C `GL3_Init` does; without it world
+    /// textures show as notexture.
+    pub fn new(gl: glow::Context, file_loader: FileLoader) -> Self {
+        Self::with_context(Some(gl), file_loader)
+    }
+
+    /// A renderer without GL, for testing the GL-free logic.
+    #[cfg(test)]
+    fn headless(file_loader: FileLoader) -> Self {
+        Self::with_context(None, file_loader)
+    }
+
+    fn with_context(gl: Option<glow::Context>, file_loader: FileLoader) -> Self {
+        let palette = load_palette(&file_loader);
+        if palette.is_none() {
+            tracing::error!("GL3: no palette, world textures will show as notexture");
+        }
         Self {
-            gl: None,
+            gl,
             width: 0,
             height: 0,
             initialized: false,
-            world_program: None,
-            world_mesh: None,
-            u_view_proj: None,
+            program: None,
+            uniforms: None,
+            world: None,
+            sky: None,
+            sky_setting: SkySetting {
+                name: DEFAULT_SKY.to_string(),
+                rotate: 0.0,
+                axis: [0.0, 0.0, 1.0],
+            },
+            file_loader,
+            world_name: None,
+            palette,
+            extra: None,
+            fx: None,
+            images: ImageStore::default(),
+            models: ModelRegistry::default(),
+            model_count: None,
+            light: None,
+            ui_queue: Vec::new(),
+            canvas: (0, 0),
+            vid_gamma: 1.0,
+            hand: 0,
         }
     }
 
-    /// Provide the glow GL context. Must be called before `init`.
-    pub fn set_gl_context(&mut self, gl: glow::Context) {
-        self.gl = Some(gl);
+    /// C `Mod_Free(&mod_known[0])`: the world's GPU objects, lighting and
+    /// inline models.
+    fn free_world(&mut self) {
+        if let (Some(gl), Some(old)) = (&self.gl, self.world.take()) {
+            draw::free_world(gl, old);
+        }
+        self.world_name = None;
+        self.light = None;
+        self.model_count = None;
+        self.models.clear_brush();
     }
 
-    /// Load BSP world geometry onto the GPU.
-    pub fn load_bsp(&mut self, bsp: &BspData) {
-        let gl = match &self.gl {
-            Some(gl) => gl,
-            None => return,
+    /// Build the world from a parsed BSP: geometry, textures and lightmaps
+    /// onto the GPU (C `Mod_LoadBrushModel` plus
+    /// `GL3_LM_BuildPolygonFromSurface` and lightmap creation).
+    fn load_world(&mut self, bsp: &BspData) {
+        // Entity lighting and `*n` validation need no GL context.
+        self.light = Some(LightTree::from_bsp(bsp));
+        self.model_count = Some(bsp.models.len());
+        let Some(gl) = &self.gl else {
+            return;
         };
-
-        // Build vertex data from BSP faces: position (3f) + color (3f) per vertex
-        let mut verts: Vec<f32> = Vec::new();
-
-        // Only render world model (model 0) faces
-        let (first_face, num_faces) = if let Some(model) = bsp.models.first() {
-            (model.first_face as usize, model.num_faces as usize)
-        } else {
-            (0, bsp.faces.len())
-        };
-
-        let end_face = (first_face + num_faces).min(bsp.faces.len());
-        for face_idx in first_face..end_face {
-            let face = &bsp.faces[face_idx];
-            let num_edges = face.num_edges as usize;
-            if num_edges < 3 {
-                continue;
-            }
-
-            // Skip sky/nodraw surfaces
-            if (face.texinfo_idx as usize) < bsp.texinfo.len() {
-                let ti = &bsp.texinfo[face.texinfo_idx as usize];
-                // SURF_SKY=4, SURF_NODRAW=128
-                if ti.flags & (4 | 128) != 0 {
-                    continue;
-                }
-            }
-
-            // Get the face's plane normal for pseudo-lighting
-            let normal = if (face.plane_idx as usize) < bsp.planes.len() {
-                let plane = &bsp.planes[face.plane_idx as usize];
-                if face.side != 0 {
-                    -plane.normal
-                } else {
-                    plane.normal
-                }
-            } else {
-                Vec3f::new(0.0, 0.0, 1.0)
-            };
-
-            // Compute face color from normal (simple directional light)
-            let light_dir = Vec3f::new(0.5, 0.3, 0.9).normalize();
-            let ndotl = normal.dot(light_dir).max(0.0);
-            let ambient = 0.15;
-            let brightness = ambient + (1.0 - ambient) * ndotl;
-
-            // Vary base color by texinfo index for visual variety
-            let ti_idx = face.texinfo_idx as usize;
-            let (r, g, b) = face_color(ti_idx, brightness);
-
-            // Collect face vertices via surface_edges → edges → vertices
-            let mut face_verts: Vec<Vec3f> = Vec::with_capacity(num_edges);
-            for i in 0..num_edges {
-                let se_idx = (face.first_edge as usize) + i;
-                if se_idx >= bsp.surface_edges.len() {
-                    break;
-                }
-                let se = bsp.surface_edges[se_idx];
-                let vi = if se >= 0 {
-                    let edge_idx = se as usize;
-                    if edge_idx < bsp.edges.len() {
-                        bsp.edges[edge_idx].v[0] as usize
-                    } else {
-                        continue;
-                    }
-                } else {
-                    let edge_idx = (-se) as usize;
-                    if edge_idx < bsp.edges.len() {
-                        bsp.edges[edge_idx].v[1] as usize
-                    } else {
-                        continue;
-                    }
-                };
-
-                if vi < bsp.vertices.len() {
-                    face_verts.push(bsp.vertices[vi].position);
-                }
-            }
-
-            // Fan triangulate: v0, v1, v2, then v0, v2, v3, etc.
-            if face_verts.len() >= 3 {
-                let v0 = face_verts[0];
-                for i in 1..face_verts.len() - 1 {
-                    let v1 = face_verts[i];
-                    let v2 = face_verts[i + 1];
-                    // Triangle: v0, v1, v2
-                    for v in &[v0, v1, v2] {
-                        verts.push(v.x);
-                        verts.push(v.y);
-                        verts.push(v.z);
-                        verts.push(r);
-                        verts.push(g);
-                        verts.push(b);
-                    }
-                }
-            }
+        let images = load_world_images(&bsp.texinfo, &self.file_loader, self.palette.as_ref());
+        let mesh = world::build_world_mesh(bsp, &images);
+        tracing::info!(
+            "GL3: uploading {} triangles, {} textures, {} lightmap pages",
+            mesh.vertices.len() / (world::VERTEX_FLOATS * 3),
+            images.images.len(),
+            mesh.lightmaps.pages.len()
+        );
+        match draw::upload_world(gl, &images, &mesh) {
+            Ok(uploaded) => self.world = Some(uploaded),
+            Err(error) => tracing::error!("GL3: failed to upload world: {error}"),
         }
-
-        let vertex_count = (verts.len() / 6) as i32;
-        tracing::info!("GL3: uploading {} triangles ({} verts)", vertex_count / 3, vertex_count);
-
-        // SAFETY: All glow GL calls require unsafe. `verts` is a live
-        // `Vec<f32>` whose backing allocation is valid for the duration of this
-        // block. `f32` has no padding, and `verts.len() * size_of::<f32>()`
-        // cannot overflow because `Vec` guarantees its allocation fits in
-        // `isize`. The resulting `&[u8]` borrows `verts` immutably and is
-        // consumed by `buffer_data_u8_slice` before `verts` is dropped.
-        unsafe {
-            let vao = match gl.create_vertex_array() {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("GL3: failed to create VAO: {}", e);
-                    return;
-                }
-            };
-            let vbo = match gl.create_buffer() {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("GL3: failed to create VBO: {}", e);
-                    gl.delete_vertex_array(vao);
-                    return;
-                }
-            };
-
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-
-            let bytes: &[u8] = core::slice::from_raw_parts(
-                verts.as_ptr() as *const u8,
-                verts.len() * core::mem::size_of::<f32>(),
-            );
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
-
-            // position: location 0, 3 floats, stride 24, offset 0
-            gl.enable_vertex_attrib_array(0);
-            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, 24, 0);
-
-            // color: location 1, 3 floats, stride 24, offset 12
-            gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_pointer_f32(1, 3, glow::FLOAT, false, 24, 12);
-
-            gl.bind_vertex_array(None);
-            gl.bind_buffer(glow::ARRAY_BUFFER, None);
-
-            self.world_mesh = Some(GpuMesh {
-                vao,
-                _vbo: vbo,
-                vertex_count,
-            });
+        if self.sky.is_none() {
+            self.reload_sky();
         }
     }
 
-    /// Compile the world shader program.
-    fn compile_shaders(gl: &glow::Context) -> Result<glow::Program, String> {
-        // SAFETY: glow shader compilation calls require unsafe.
-        unsafe {
-            let program = gl.create_program().map_err(|e| format!("create_program failed: {e}"))?;
-
-            let vs_src = r#"#version 300 es
-                precision highp float;
-                layout(location = 0) in vec3 a_position;
-                layout(location = 1) in vec3 a_color;
-                uniform mat4 u_view_proj;
-                out vec3 v_color;
-                void main() {
-                    gl_Position = u_view_proj * vec4(a_position, 1.0);
-                    v_color = a_color;
+    /// Load the six faces of the current sky; missing faces use notexture.
+    fn reload_sky(&mut self) {
+        let Some(gl) = &self.gl else {
+            return;
+        };
+        let loader = &self.file_loader;
+        let name = self.sky_setting.name.as_str();
+        let faces: [Image; 6] = SKY_SUFFIXES.map(|suffix| {
+            sky::load_sky_image(loader, name, suffix).unwrap_or_else(|| {
+                tracing::warn!("GL3: can't load sky {name}{suffix}");
+                notexture()
+            })
+        });
+        match draw::upload_sky(gl, &faces) {
+            Ok(uploaded) => {
+                if let Some(old) = self.sky.replace(uploaded) {
+                    draw::free_sky(gl, old);
                 }
-            "#;
-
-            let fs_src = r#"#version 300 es
-                precision mediump float;
-                in vec3 v_color;
-                out vec4 frag_color;
-                void main() {
-                    frag_color = vec4(v_color, 1.0);
-                }
-            "#;
-
-            let vs = gl.create_shader(glow::VERTEX_SHADER)
-                .map_err(|e| format!("create vertex shader failed: {e}"))?;
-            gl.shader_source(vs, vs_src);
-            gl.compile_shader(vs);
-            if !gl.get_shader_compile_status(vs) {
-                let log = gl.get_shader_info_log(vs);
-                gl.delete_shader(vs);
-                let msg = format!("VS compile error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
             }
-
-            let fs = gl.create_shader(glow::FRAGMENT_SHADER)
-                .map_err(|e| {
-                    gl.delete_shader(vs);
-                    format!("create fragment shader failed: {e}")
-                })?;
-            gl.shader_source(fs, fs_src);
-            gl.compile_shader(fs);
-            if !gl.get_shader_compile_status(fs) {
-                let log = gl.get_shader_info_log(fs);
-                gl.delete_shader(fs);
-                gl.delete_shader(vs);
-                let msg = format!("FS compile error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
-            }
-
-            gl.attach_shader(program, vs);
-            gl.attach_shader(program, fs);
-            gl.link_program(program);
-            if !gl.get_program_link_status(program) {
-                let log = gl.get_program_info_log(program);
-                gl.delete_shader(vs);
-                gl.delete_shader(fs);
-                gl.delete_program(program);
-                let msg = format!("Program link error: {}", log);
-                tracing::error!("{}", msg);
-                return Err(msg);
-            }
-
-            gl.delete_shader(vs);
-            gl.delete_shader(fs);
-
-            Ok(program)
+            Err(error) => tracing::error!("GL3: failed to upload sky: {error}"),
         }
+    }
+
+    /// Sky box transform: view without translation, then the sky's own spin.
+    fn sky_view_proj(&self, fd: &RefDef) -> [f32; 16] {
+        let proj = perspective_matrix(fd);
+        let view = view_matrix_at(Vec3f::ZERO, fd.viewangles);
+        let spin = sky::rotation_matrix(fd.time * self.sky_setting.rotate, self.sky_setting.axis);
+        mat4_mul(&mat4_mul(&proj, &view), &spin)
     }
 }
 
-impl Default for Gl3Renderer {
-    fn default() -> Self {
-        Self::new()
+/// One step of a frame's 3D drawing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Sky,
+    OpaqueWorld,
+    /// Beams, brush models, MD2s and sprites in list order.
+    OpaqueEntities,
+    TranslucentEntities,
+    Particles,
+    /// Every SURF_TRANS33/66 face (C `GL3_DrawAlphaSurfaces`): the brush
+    /// entities' first, then the world's, as C prepends the entities'
+    /// faces to the chain the world filled. Brush entities leave these
+    /// faces out of the entity passes.
+    AlphaSurfaces,
+}
+
+/// C `GL3_RenderView`: the world, entities, particles, then the world's
+/// translucent surfaces over them. Deviation: C `GL3_DrawWorld` draws the
+/// sky box after the opaque world, clipped to the visible sky polygons
+/// (gl3_surf.c `GL3_DrawSkyBox`); here the whole box is drawn first with
+/// depth testing off and the world over it (see `sky`), which looks the
+/// same because sky faces are the only holes in the world.
+const FRAME_PASSES: [Pass; 6] = [
+    Pass::Sky,
+    Pass::OpaqueWorld,
+    Pass::OpaqueEntities,
+    Pass::TranslucentEntities,
+    Pass::Particles,
+    Pass::AlphaSurfaces,
+];
+
+impl Drop for Gl3Renderer {
+    /// Release GPU objects even if the caller never called `shutdown`.
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
 impl Renderer for Gl3Renderer {
-    fn init(&mut self, width: i32, height: i32) -> Result<(), String> {
+    fn init(&mut self, width: i32, height: i32) -> Q2Result<()> {
         let gl = match &self.gl {
             Some(gl) => gl,
             None => {
-                return Err("GL3Renderer::init called without a GL context".into());
+                return Err(Q2Error::Drop(
+                    "GL3Renderer::init called without a GL context".into(),
+                ));
             }
         };
 
         self.width = width;
         self.height = height;
 
-        // Compile shaders
-        match Self::compile_shaders(gl) {
-            Ok(prog) => self.world_program = Some(prog),
-            Err(e) => return Err(format!("Failed to compile world shaders: {e}")),
-        }
+        let (prog, uniforms) = shader::compile_world_program(gl)
+            .map_err(in_step("Failed to compile world shaders"))?;
 
-        // Get uniform location
-        if let Some(prog) = &self.world_program {
-            // SAFETY: glow uniform lookup requires unsafe.
-            unsafe {
-                self.u_view_proj = gl.get_uniform_location(*prog, "u_view_proj");
+        // SAFETY: `prog` and any previous program were created by this same
+        // `gl` context in `compile_world_program`, and `old` is no longer
+        // referenced once replaced.
+        unsafe {
+            // A repeated init replaces the program; free the old one.
+            if let Some(old) = self.program.replace(prog) {
+                gl.delete_program(old);
             }
         }
+        self.uniforms = Some(uniforms);
 
-        // SAFETY: glow GL state setup requires unsafe.
+        let extra = create_extra(gl).map_err(in_step("Failed to set up entity and 2D drawing"))?;
+        if let Some(old) = self.extra.replace(extra) {
+            free_extra(gl, old);
+        }
+        let effects =
+            fx::create_fx(gl).map_err(in_step("Failed to set up particles and sprites"))?;
+        if let Some(old) = self.fx.replace(effects) {
+            fx::free_fx(gl, old);
+        }
+        // A repeated init starts the image cache afresh.
+        self.images.free(gl);
+        self.models.clear();
+        self.canvas = (width, height);
+
+        // SAFETY: State-only calls on the live context `gl`; no object
+        // handles are passed.
         unsafe {
             gl.viewport(0, 0, width, height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);
             gl.enable(glow::CULL_FACE);
-            gl.cull_face(glow::BACK);
+            gl.cull_face(CULL_FACE);
         }
 
         self.initialized = true;
+        self.apply_gamma();
         tracing::info!("GL3 renderer initialized ({}x{})", width, height);
         Ok(())
     }
 
     fn shutdown(&mut self) {
         if let Some(gl) = &self.gl {
-            // SAFETY: glow GL deletion calls require unsafe. We delete GPU
-            // objects before clearing state so they are not leaked.
+            if let Some(world) = self.world.take() {
+                draw::free_world(gl, world);
+            }
+            if let Some(sky) = self.sky.take() {
+                draw::free_sky(gl, sky);
+            }
+            if let Some(extra) = self.extra.take() {
+                free_extra(gl, extra);
+            }
+            if let Some(effects) = self.fx.take() {
+                fx::free_fx(gl, effects);
+            }
+            self.images.free(gl);
+            self.models.clear();
+            self.ui_queue.clear();
+            // SAFETY: The program was created on this same `gl` by init and is
+            // taken out of `self` before deletion, so no deleted handle is
+            // used again.
             unsafe {
-                if let Some(mesh) = self.world_mesh.take() {
-                    gl.delete_vertex_array(mesh.vao);
-                    gl.delete_buffer(mesh._vbo);
-                }
-                if let Some(prog) = self.world_program.take() {
+                if let Some(prog) = self.program.take() {
                     gl.delete_program(prog);
                 }
             }
         }
-        self.u_view_proj = None;
+        self.uniforms = None;
         self.initialized = false;
     }
 
-    fn begin_registration(&mut self, _map_name: &str) {}
-    fn register_model(&mut self, _name: &str) -> ModelHandle { ModelHandle::NONE }
-    fn register_image(&mut self, _name: &str, _img_type: ImageType) -> ImageHandle { ImageHandle::NONE }
-    fn end_registration(&mut self) {}
+    /// C `GL3_BeginRegistration`: starts a registration sequence and loads
+    /// `maps/<map_name>.bsp` through the file loader as the world, unless it
+    /// is already the loaded world. Handles stay valid until
+    /// `end_registration`, except inline models of a replaced world.
+    fn begin_registration(&mut self, map_name: &str) -> Q2Result<()> {
+        self.models.begin_sequence();
+        self.images.begin_sequence();
+        let fullname = format!("maps/{map_name}.bsp");
+        if self.world_name.as_deref() == Some(fullname.as_str()) {
+            return Ok(());
+        }
+        self.free_world();
+        // C Mod_ForName(fullname, NULL, true): a missing world is ERR_DROP.
+        let bytes = (self.file_loader)(&fullname).ok_or_else(|| {
+            Q2Error::Drop(format!("GL3 begin_registration: {fullname} not found"))
+        })?;
+        self.load_world(&BspData::load(&bytes)?);
+        self.world_name = Some(fullname);
+        Ok(())
+    }
 
+    /// `*n` is inline submodel `n` of the loaded BSP. Any other name is
+    /// read through the file loader, and its first four bytes pick the
+    /// loader as in C `Mod_ForName`: `IDP2` is an MD2 with its skins, `IDS2`
+    /// a sprite with its frame images. A missing file, a bad one, or any
+    /// other magic returns `ModelHandle::NONE` (logged once per name). C
+    /// also loads `IBSP` files here, which returns the world for the map
+    /// name `CL_PrepRefresh` registers as `CS_MODELS + 1`, and drops on an
+    /// unknown magic. A model found again has its skins marked as used,
+    /// like C `Mod_ReLoadSkins`.
+    fn register_model(&mut self, name: &str) -> ModelHandle {
+        if name.starts_with('*') {
+            return self.models.register_inline(name, self.model_count);
+        }
+        let (gl, palette) = (self.gl.as_ref(), self.palette.as_ref());
+        let images = &mut self.images;
+        let loader = &self.file_loader;
+        let handle = self.models.register(name, || {
+            let bytes = loader(name)?;
+            let magic = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
+            match magic {
+                MD2_MAGIC => entities::load_alias_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Alias),
+                SP2_IDENT => fx::load_sprite_model(gl, loader, palette, images, name, &bytes)
+                    .map(Model::Sprite),
+                _ => None,
+            }
+        });
+        let used: Vec<usize> = match self.models.get(handle) {
+            Some(Model::Alias(model)) => model.skins.iter().flatten().copied().collect(),
+            Some(Model::Sprite(sprite)) => sprite.frames.iter().filter_map(|f| f.image).collect(),
+            _ => Vec::new(),
+        };
+        for image in used {
+            self.images.touch(image);
+        }
+        handle
+    }
+
+    /// `Skin` is C `RegisterSkin` (a path), `Pic` is C `Draw_FindPic` (a
+    /// pic name). C registers no other type; they return `NONE`.
+    fn register_image(&mut self, name: &str, img_type: ImageType) -> ImageHandle {
+        let index = match img_type {
+            ImageType::Skin => self.images.find(
+                self.gl.as_ref(),
+                &self.file_loader,
+                self.palette.as_ref(),
+                name,
+                images::ImageKind::Skin,
+            ),
+            ImageType::Pic => self.find_pic(name),
+            ImageType::Sprite | ImageType::Wall | ImageType::Sky => {
+                tracing::warn!("GL3: register_image of {name} as {img_type:?} is not supported");
+                None
+            }
+        };
+        index.map_or(ImageHandle::NONE, images::image_handle)
+    }
+
+    /// C `GL3_EndRegistration`: frees MD2 models and skins not registered
+    /// since `begin_registration`. Pics and the world stay. C (Yamagi) skips
+    /// the sweep while its fixed model and image tables have room; these
+    /// tables grow, so the sweep always runs, as in id's original.
+    fn end_registration(&mut self) {
+        self.models.free_unused();
+        self.images.free_unused(self.gl.as_ref());
+    }
+
+    /// C `GL3_BeginFrame` ends in `GL3_SetGL2D`: the viewport and the 2D
+    /// ortho cover the whole drawable every frame, so a frame drawing only
+    /// 2D (a picture level) follows a resized canvas.
+    fn begin_frame(&mut self, width: i32, height: i32) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        self.canvas = (width, height);
+        if let Some(gl) = &self.gl {
+            // SAFETY: State-only call on the live context `gl`.
+            unsafe { gl.viewport(0, 0, width, height) };
+        }
+    }
+
+    /// Draw order: `FRAME_PASSES`. 2D draws are queued until `end_frame`.
     fn render_frame(
         &mut self,
         fd: &RefDef,
-        _entities: &[RenderEntity],
-        _dlights: &[DLight],
-        _particles: &[Particle],
+        entities: &[RenderEntity],
+        dlights: &[DLight],
+        particles: &[Particle],
     ) {
+        // C GL3_Draw_Flash after the view: the first 2D draw, so the HUD
+        // goes over it.
+        if fd.blend[3] > 0.0 {
+            self.ui_queue.push(pics::quad(
+                pics::QuadImage::White,
+                (fd.x, fd.y, fd.width, fd.height),
+                [0.0, 0.0, 1.0, 1.0],
+                flash_color(fd, self.vid_gamma),
+            ));
+        }
         let gl = match &self.gl {
             Some(gl) => gl,
             None => return,
         };
+        // Only the 3D viewport follows the refdef; the 2D canvas keeps the
+        // drawable size from `begin_frame`, as C GL3_SetGL2D uses vid.width
+        // and vid.height.
 
-        // SAFETY: glow GL draw calls require unsafe.
+        // SAFETY: State-only calls on the live context `gl`; no object
+        // handles are passed.
         unsafe {
             gl.viewport(0, 0, fd.width, fd.height);
             gl.clear_color(0.05, 0.05, 0.1, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        // Draw world if loaded
-        if let (Some(prog), Some(mesh), Some(u_loc)) =
-            (&self.world_program, &self.world_mesh, &self.u_view_proj)
-        {
-            let vp = build_view_projection(fd);
+        let (Some(program), Some(uniforms)) = (&self.program, &self.uniforms) else {
+            tracing::trace!("GL3: skipping draw, renderer not initialised");
+            return;
+        };
+        // SAFETY: `program` was created on this same `gl` by init and is
+        // still owned by `self`.
+        unsafe { gl.use_program(Some(*program)) };
+        // SAFETY: `uniforms.styles` belongs to the program bound above and
+        // `lightstyles` holds exactly the 64 vec4s the shader declares.
+        unsafe { gl.uniform_4_f32_slice(uniforms.styles.as_ref(), &fd.lightstyles) };
+        let (origins, colors, count) = dlight_uniforms(dlights);
+        // SAFETY: the dlight uniforms belong to the program bound above;
+        // each slice holds the 32 vec4s the shader declares.
+        unsafe {
+            gl.uniform_4_f32_slice(uniforms.dlight_origin.as_ref(), &origins);
+            gl.uniform_4_f32_slice(uniforms.dlight_color.as_ref(), &colors);
+            gl.uniform_1_i32(uniforms.num_dlights.as_ref(), count);
+        }
 
-            // SAFETY: glow draw calls require unsafe.
-            unsafe {
-                gl.use_program(Some(*prog));
-                gl.uniform_matrix_4_f32_slice(Some(u_loc), false, &vp);
-                gl.bind_vertex_array(Some(mesh.vao));
-                gl.draw_arrays(glow::TRIANGLES, 0, mesh.vertex_count);
-                gl.bind_vertex_array(None);
-                gl.use_program(None);
+        let view_proj = build_view_projection(fd);
+        let world_batches = |filter| {
+            if let Some(world) = &self.world {
+                let draw = world_draw(fd, &view_proj, filter);
+                if let Some(batches) = world.model_batches(0) {
+                    draw_batches(gl, uniforms, world, batches, &draw);
+                }
             }
-        } else {
-            tracing::trace!(
-                "GL3: skipping world draw — program={}, mesh={}, uniform={}",
-                self.world_program.is_some(),
-                self.world_mesh.is_some(),
-                self.u_view_proj.is_some(),
-            );
+        };
+        let scene = self.extra.as_ref().map(|extra| EntityScene {
+            gl,
+            world: self.world.as_ref(),
+            world_program: *program,
+            world_uniforms: uniforms,
+            extra,
+            models: &self.models,
+            images: &self.images,
+            light: self.light.as_ref(),
+            refdef: fd,
+            dlights,
+            styles: &fd.lightstyles,
+            frustum: alias::frustum(
+                fd.vieworg.to_array(),
+                fd.viewangles.to_array(),
+                fd.fov_x,
+                fd.fov_y,
+            ),
+            gun_view_proj: gun_view_projection(fd, self.hand),
+            hand: self.hand,
+            view_proj,
+            fx: self.fx.as_ref(),
+            palette: self.palette.as_ref(),
+            view_right_up: fx::view_right_up(fd),
+        });
+
+        for pass in FRAME_PASSES {
+            match pass {
+                Pass::Sky => {
+                    if let Some(sky) = &self.sky {
+                        draw::draw_sky(gl, uniforms, sky, &self.sky_view_proj(fd));
+                    }
+                }
+                Pass::OpaqueWorld => world_batches(BatchFilter::Opaque),
+                Pass::OpaqueEntities | Pass::TranslucentEntities => {
+                    if let Some(scene) = &scene {
+                        draw_entities(scene, entities, pass == Pass::TranslucentEntities);
+                    }
+                }
+                Pass::Particles => {
+                    if let (Some(effects), Some(palette)) = (&self.fx, &self.palette) {
+                        fx::draw_particles(gl, effects, palette, fd, &view_proj, particles);
+                        // SAFETY: `program` was linked on this `gl` by init.
+                        unsafe { gl.use_program(Some(*program)) };
+                    }
+                }
+                Pass::AlphaSurfaces => {
+                    if let Some(scene) = &scene {
+                        draw_brush_alpha_faces(scene, entities);
+                    }
+                    world_batches(BatchFilter::Translucent);
+                }
+            }
+        }
+
+        // SAFETY: Unbinding the program and reading the error flag are
+        // state-only calls.
+        unsafe {
+            gl.use_program(None);
+            // Debug builds surface a failed upload or invalid draw instead
+            // of drawing nothing silently; release skips the sync point.
+            if cfg!(debug_assertions) {
+                let error = gl.get_error();
+                if error != glow::NO_ERROR {
+                    tracing::warn!("GL3: GL error 0x{error:04x} during the frame");
+                }
+            }
         }
     }
 
-    fn set_sky(&mut self, _name: &str, _rotate: f32, _axis: Vec3f) {}
-    fn draw_pic(&mut self, _x: i32, _y: i32, _name: &str) {}
-    fn draw_stretch_pic(&mut self, _x: i32, _y: i32, _w: i32, _h: i32, _name: &str) {}
-    fn draw_char(&mut self, _x: i32, _y: i32, _ch: i32) {}
-    fn draw_fill(&mut self, _x: i32, _y: i32, _w: i32, _h: i32, _color: i32) {}
+    fn set_sky(&mut self, name: &str, rotate: f32, axis: Vec3f) {
+        self.sky_setting = SkySetting {
+            name: if name.is_empty() {
+                DEFAULT_SKY.to_string()
+            } else {
+                name.to_string()
+            },
+            rotate,
+            axis: [axis.x, axis.y, axis.z],
+        };
+        self.reload_sky();
+    }
+    // 2D draws are queued in call order and drawn by `end_frame`, on top of
+    // the 3D frame in canvas pixels (origin top-left), one batch per run of
+    // quads that share a texture.
+    fn draw_pic(&mut self, x: i32, y: i32, name: &str) {
+        if let Some((w, h)) = self.pic_size(name) {
+            self.draw_stretch_pic(x, y, w, h, name);
+        }
+    }
+
+    fn draw_get_pic_size(&mut self, name: &str) -> Option<(i32, i32)> {
+        self.pic_size(name)
+    }
+
+    fn draw_stretch_pic(&mut self, x: i32, y: i32, w: i32, h: i32, name: &str) {
+        if let Some(index) = self.find_pic(name) {
+            self.ui_queue.push(pics::quad(
+                QuadImage::Pic(index),
+                (x, y, w, h),
+                [0.0, 0.0, 1.0, 1.0],
+                [1.0; 4],
+            ));
+        }
+    }
+
+    fn draw_char(&mut self, x: i32, y: i32, ch: i32) {
+        // C skips spaces and characters entirely above the screen.
+        let Some(uv) = pics::char_uv(ch).filter(|_| y > -pics::CHAR_SIZE) else {
+            return;
+        };
+        if let Some(index) = self.find_pic(pics::CONCHARS) {
+            let rect = (x, y, pics::CHAR_SIZE, pics::CHAR_SIZE);
+            self.ui_queue
+                .push(pics::quad(QuadImage::Pic(index), rect, uv, [1.0; 4]));
+        }
+    }
+
+    fn draw_fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: i32) {
+        let palette = self.palette.as_ref();
+        let rgb = |index: u8| palette.map_or([index; 3], |p| p.0[usize::from(index)]);
+        match pics::fill_quad((x, y, w, h), color, rgb) {
+            Some(quad) => self.ui_queue.push(quad),
+            None => tracing::warn!("GL3: draw_fill with bad palette index {color}"),
+        }
+    }
 
     fn clear_screen(&mut self) {
         if let Some(gl) = &self.gl {
-            // SAFETY: glow GL calls require unsafe — clearing the framebuffer.
+            // SAFETY: State-only calls on the live context `gl`; no object
+            // handles are passed.
             unsafe {
                 gl.clear_color(0.0, 0.0, 0.0, 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT);
@@ -412,7 +680,79 @@ impl Renderer for Gl3Renderer {
         }
     }
 
-    fn end_frame(&mut self) {}
+    fn set_gamma(&mut self, vid_gamma: f32) {
+        self.vid_gamma = vid_gamma;
+        self.apply_gamma();
+    }
+
+    fn set_hand(&mut self, hand: i32) {
+        self.hand = hand;
+    }
+
+    fn end_frame(&mut self) {
+        let queue = std::mem::take(&mut self.ui_queue);
+        let (Some(gl), Some(extra)) = (&self.gl, &self.extra) else {
+            return;
+        };
+        if queue.is_empty() {
+            return;
+        }
+        let target = UiTarget {
+            program: extra.ui_program,
+            uniforms: &extra.ui_uniforms,
+            stream: &extra.ui_stream,
+            ortho: &pics::ortho_matrix(self.canvas.0, self.canvas.1),
+            canvas: self.canvas,
+        };
+        let images = &self.images;
+        draw_ui(gl, &target, &queue, |image| match image {
+            QuadImage::White => Some(extra.white),
+            QuadImage::Pic(index) => images.get(index).and_then(|entry| entry.texture),
+        });
+    }
+}
+
+impl Gl3Renderer {
+    /// Set `u_gamma` on every linked program (C `GL3_UpdateUBOCommon` when
+    /// `vid_gamma` is modified). Before `init` there are none; init calls
+    /// this again.
+    fn apply_gamma(&self) {
+        let Some(gl) = &self.gl else {
+            return;
+        };
+        let extra = self.extra.as_ref();
+        let programs = self
+            .program
+            .into_iter()
+            .chain(
+                extra
+                    .into_iter()
+                    .flat_map(|extra| [extra.alias_program, extra.ui_program]),
+            )
+            .chain(self.fx.iter().flat_map(fx::FxGpu::programs));
+        for program in programs {
+            shader::set_gamma(gl, program, self.vid_gamma);
+        }
+    }
+
+    /// Image-store index of the pic `name` resolves to (C `R_FindPic`).
+    fn find_pic(&mut self, name: &str) -> Option<usize> {
+        self.images.find_pic(
+            self.gl.as_ref(),
+            &self.file_loader,
+            self.palette.as_ref(),
+            name,
+        )
+    }
+
+    fn pic_size(&mut self, name: &str) -> Option<(i32, i32)> {
+        let index = self.find_pic(name)?;
+        let entry = self.images.get(index)?;
+        Some((
+            i32::try_from(entry.width).ok()?,
+            i32::try_from(entry.height).ok()?,
+        ))
+    }
 }
 
 /// Build a combined view-projection matrix from RefDef.
@@ -420,6 +760,81 @@ fn build_view_projection(fd: &RefDef) -> [f32; 16] {
     let proj = perspective_matrix(fd);
     let view = view_matrix(fd);
     mat4_mul(&proj, &view)
+}
+
+/// One pass over the world model: untransformed, culled by the view's
+/// area bits, its textures animating at 2 fps (C `GL3_DrawWorld`'s
+/// `ent.frame = (int)(gl3_newrefdef.time * 2)`).
+fn world_draw<'a>(fd: &'a RefDef, view_proj: &'a [f32; 16], filter: BatchFilter) -> BatchDraw<'a> {
+    BatchDraw {
+        view_proj,
+        model: &IDENTITY_MAT4,
+        time: fd.time,
+        frame: (fd.time * 2.0) as i32,
+        filter,
+        translucent_entity: false,
+        areabits: fd.areabits.as_deref(),
+    }
+}
+
+/// C `MAX_DLIGHTS`: the world shader's dynamic light slots.
+const MAX_DLIGHTS: usize = 32;
+
+/// The world shader's dynamic light uniforms (C `GL3_UpdateUBOLights`):
+/// origins as xyz0 and colours as rgb + intensity, 32 vec4s each, and
+/// how many are used. Lights past 32 are dropped.
+fn dlight_uniforms(dlights: &[DLight]) -> (Vec<f32>, Vec<f32>, i32) {
+    let mut origins = vec![0.0; MAX_DLIGHTS * 4];
+    let mut colors = vec![0.0; MAX_DLIGHTS * 4];
+    let used = dlights.iter().take(MAX_DLIGHTS);
+    for (i, light) in used.clone().enumerate() {
+        origins[i * 4..i * 4 + 3].copy_from_slice(&light.origin.to_array());
+        colors[i * 4..i * 4 + 3].copy_from_slice(&light.color.to_array());
+        colors[i * 4 + 3] = light.intensity;
+    }
+    (origins, colors, used.count() as i32)
+}
+
+/// C `r_gunfov`: the gun's own vertical fov, so a wide view does not
+/// stretch it.
+const R_GUNFOV: f32 = 80.0;
+
+/// The view-projection the gun is drawn with: the view's, but with
+/// `R_GUNFOV` as the vertical fov, and for C cvar `hand` 1 mirrored by
+/// negating the projection's x column. C ref: `GL3_DrawAliasModel`'s
+/// `RF_WEAPONMODEL` projection.
+pub(crate) fn gun_view_projection(fd: &RefDef, hand: i32) -> [f32; 16] {
+    let fd = RefDef {
+        fov_y: R_GUNFOV,
+        ..fd.clone()
+    };
+    let mut proj = perspective_matrix(&fd);
+    if hand == 1 {
+        for value in &mut proj[0..4] {
+            *value = -*value;
+        }
+    }
+    mat4_mul(&proj, &view_matrix(&fd))
+}
+
+/// The face culled while drawing the gun: C culls the back of a mirrored
+/// (left-handed) gun and draws none for `hand` 2.
+pub(crate) fn gun_cull_face(hand: i32) -> Option<u32> {
+    match hand {
+        2 => None,
+        1 => Some(glow::BACK),
+        _ => Some(CULL_FACE),
+    }
+}
+
+/// Depth range for an alias draw: `RF_DEPTHHACK` keeps the gun in the
+/// front 30% so it never pokes into walls (C `GL3_DrawAliasModel`).
+pub(crate) fn alias_depth_range(flags: i32) -> (f32, f32) {
+    if flags & q2_shared::constants::RF_DEPTHHACK != 0 {
+        (0.0, 0.3)
+    } else {
+        (0.0, 1.0)
+    }
 }
 
 /// Standard perspective projection matrix.
@@ -433,79 +848,138 @@ fn perspective_matrix(fd: &RefDef) -> [f32; 16] {
     let nf = 1.0 / (near - far);
 
     [
-        f / aspect, 0.0,  0.0,                    0.0,
-        0.0,        f,    0.0,                    0.0,
-        0.0,        0.0,  (far + near) * nf,     -1.0,
-        0.0,        0.0,  2.0 * far * near * nf,  0.0,
+        f / aspect,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        f,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (far + near) * nf,
+        -1.0,
+        0.0,
+        0.0,
+        2.0 * far * near * nf,
+        0.0,
     ]
 }
 
 /// View matrix converting Q2 world coords to OpenGL eye coords.
 /// Q2: +X forward, +Y left, +Z up. OpenGL: -Z forward, +X right, +Y up.
+///
+/// Port of the view setup in gl3_main.c SetupGL (:1467-1487):
+/// `Z_UP_TO_GL * rotAroundAxisXYZ(-roll, -pitch, -yaw) *
+/// translate(-vieworg)`. `viewangles` use the Q2 convention (pitch > 0
+/// looks down).
 fn view_matrix(fd: &RefDef) -> [f32; 16] {
-    let pitch = fd.viewangles.x.to_radians();
-    let yaw = fd.viewangles.y.to_radians();
-
-    let (sp, cp) = (pitch.sin(), pitch.cos());
-    let (sy, cy) = (yaw.sin(), yaw.cos());
-
-    // Basis vectors: eye_right, eye_up, eye_forward
-    let (rx, ry, rz) = (sy, -cy, 0.0f32);
-    let (ux, uy, uz) = (-sp * cy, -sp * sy, cp);
-    let (fx, fy, fz) = (-cp * cy, -cp * sy, -sp);
-
-    let (tx, ty, tz) = (fd.vieworg.x, fd.vieworg.y, fd.vieworg.z);
-
-    [
-        rx,  ux,  fx,  0.0,
-        ry,  uy,  fy,  0.0,
-        rz,  uz,  fz,  0.0,
-        -(rx*tx + ry*ty + rz*tz),
-        -(ux*tx + uy*ty + uz*tz),
-        -(fx*tx + fy*ty + fz*tz),
-        1.0,
-    ]
+    view_matrix_at(fd.vieworg, fd.viewangles)
 }
+
+/// [`view_matrix`] for an explicit eye position and angles; the sky box uses
+/// a zero position so it stays centred on the eye.
+fn view_matrix_at(origin: Vec3f, angles: Vec3f) -> [f32; 16] {
+    // Column-major: first put the Z axis going up.
+    #[rustfmt::skip]
+    const Z_UP_TO_GL: [f32; 16] = [
+         0.0, 0.0, -1.0, 0.0,
+        -1.0, 0.0,  0.0, 0.0,
+         0.0, 1.0,  0.0, 0.0,
+         0.0, 0.0,  0.0, 1.0,
+    ];
+    let rot = rot_around_axis_xyz(-angles.z, -angles.x, -angles.y);
+    let o = origin;
+    #[rustfmt::skip]
+    let translate = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        -o.x, -o.y, -o.z, 1.0,
+    ];
+    mat4_mul(&mat4_mul(&Z_UP_TO_GL, &rot), &translate)
+}
+
+/// Column-major rotation around X, then Y, then Z (degrees); C
+/// `rotAroundAxisXYZ` in gl3_main.c:1304-1325.
+fn rot_around_axis_xyz(around_x: f32, around_y: f32, around_z: f32) -> [f32; 16] {
+    let (sin_a, cos_a) = around_x.to_radians().sin_cos();
+    let (sin_b, cos_b) = around_y.to_radians().sin_cos();
+    let (sin_g, cos_g) = around_z.to_radians().sin_cos();
+    #[rustfmt::skip]
+    let m = [
+        cos_b * cos_g,  sin_a * sin_b * cos_g + cos_a * sin_g, -cos_a * sin_b * cos_g + sin_a * sin_g, 0.0,
+       -cos_b * sin_g, -sin_a * sin_b * sin_g + cos_a * cos_g,  cos_a * sin_b * sin_g + sin_a * cos_g, 0.0,
+        sin_b,         -sin_a * cos_b,                          cos_a * cos_b,                         0.0,
+        0.0,            0.0,                                    0.0,                                   1.0,
+    ];
+    m
+}
+
+/// Prefix a `Q2Error::Drop` from an init step with the step's name. The
+/// message is prefixed directly so Display does not print "drop:" twice.
+fn in_step(step: &'static str) -> impl FnOnce(Q2Error) -> Q2Error {
+    move |error| match error {
+        Q2Error::Drop(message) => Q2Error::Drop(format!("{step}: {message}")),
+        other => other,
+    }
+}
+
+/// `MD2_IDENT` as the unsigned word C `Mod_ForName` switches on.
+const MD2_MAGIC: u32 = MD2_IDENT as u32;
+
+/// C `gl3_identityMat4`.
+const IDENTITY_MAT4: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut r = [0.0f32; 16];
     for i in 0..4 {
         for j in 0..4 {
             r[j * 4 + i] = a[i] * b[j * 4]
-                         + a[4 + i] * b[j * 4 + 1]
-                         + a[8 + i] * b[j * 4 + 2]
-                         + a[12 + i] * b[j * 4 + 3];
+                + a[4 + i] * b[j * 4 + 1]
+                + a[8 + i] * b[j * 4 + 2]
+                + a[12 + i] * b[j * 4 + 3];
         }
     }
     r
 }
 
-/// Knuth multiplicative hash constant (golden ratio * 2^32).
-const KNUTH_HASH: usize = 2654435761;
-
-/// Assign a color to a face based on its texinfo index and lighting.
-fn face_color(texinfo_idx: usize, brightness: f32) -> (f32, f32, f32) {
-    let h = texinfo_idx.wrapping_mul(KNUTH_HASH) & 0xFFFFFF;
-    let base_r = ((h >> 16) & 0xFF) as f32 / 255.0;
-    let base_g = ((h >> 8) & 0xFF) as f32 / 255.0;
-    let base_b = (h & 0xFF) as f32 / 255.0;
-
-    // Desaturate and apply brightness for a more natural look
-    let grey = 0.3 + (base_r + base_g + base_b) / 3.0 * 0.4;
-    let r = (grey * 0.6 + base_r * 0.4) * brightness;
-    let g = (grey * 0.6 + base_g * 0.4) * brightness;
-    let b = (grey * 0.6 + base_b * 0.4) * brightness;
-
-    (r.min(1.0), g.min(1.0), b.min(1.0))
+/// The 2D quad colour that draws `fd.blend` as C does. Dry, C
+/// `GL3_Draw_Flash` (fragmentSrc2Dcolor) scales by intensity2D and applies
+/// gamma, as the 2D shader here does, so the blend is passed as is. With
+/// `RDF_UNDERWATER` and a world, C `SetupGL` binds the post-process FBO
+/// (`gl3_usefbo` defaults to 1) and `GL3_DrawFrameBufferObject`
+/// (fragmentSrc2Dpostprocess) mixes `v_blend` with neither, so the rgb is
+/// pre-divided by [`shader::INTENSITY_2D`] and raised to `vid_gamma` to
+/// cancel the shader's `pow(rgb, 1/vid_gamma)`. The water warp of that pass
+/// is not ported. C ref: `GL3_RenderFrame`.
+fn flash_color(fd: &RefDef, vid_gamma: f32) -> [f32; 4] {
+    let [r, g, b, a] = fd.blend;
+    if fd.rdflags & (q2_shared::constants::RDF_NOWORLDMODEL | q2_shared::constants::RDF_UNDERWATER)
+        != q2_shared::constants::RDF_UNDERWATER
+    {
+        return fd.blend;
+    }
+    let raw = |c: f32| c.powf(vid_gamma) / shader::INTENSITY_2D;
+    [raw(r), raw(g), raw(b), a]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn no_files() -> FileLoader {
+        Box::new(|_| None)
+    }
 
     #[test]
     fn renderer_new_is_uninitialized() {
-        let r = Gl3Renderer::new();
+        let r = Gl3Renderer::headless(no_files());
         assert!(!r.initialized);
         assert_eq!(r.width, 0);
         assert_eq!(r.height, 0);
@@ -514,51 +988,77 @@ mod tests {
     }
 
     #[test]
-    fn init_fails_without_context() {
-        let mut r = Gl3Renderer::new();
+    fn vid_gamma_starts_at_the_effective_c_default_of_one() {
+        // VID_Init registers vid_gamma "1.0" before GL3 asks for "1.2", and
+        // Cvar_Get keeps the first default.
+        assert_eq!(Gl3Renderer::headless(no_files()).vid_gamma, 1.0);
+    }
+
+    #[test]
+    fn set_gamma_before_init_is_kept_for_init_to_apply() {
+        let mut r = Gl3Renderer::headless(no_files());
+        r.set_gamma(1.4);
+        assert_eq!(r.vid_gamma, 1.4);
         assert!(r.init(800, 600).is_err());
+        assert_eq!(r.vid_gamma, 1.4);
+    }
+
+    #[test]
+    fn init_fails_without_context() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert!(r.init(800, 600).is_err());
+    }
+
+    #[test]
+    fn an_init_step_error_names_the_step_once_and_stays_a_drop() {
+        let error = in_step("Failed to compile world shaders")(Q2Error::Drop(
+            "VS compile error: bad".into(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "drop: Failed to compile world shaders: VS compile error: bad"
+        );
+        assert!(matches!(in_step("x")(Q2Error::Quit), Q2Error::Quit));
+    }
+
+    #[test]
+    fn init_without_context_is_recoverable_q2_drop() {
+        // Renderer errors share Q2Error with the engine so the frame loop
+        // and q2err_to_js handle them like any other ERR_DROP.
+        let mut r = Gl3Renderer::headless(no_files());
+        let err = r.init(800, 600).unwrap_err();
+        assert!(matches!(err, q2_shared::error::Q2Error::Drop(_)));
+        assert!(err.is_recoverable());
+    }
+
+    // C GL3_RenderView: GL3_DrawWorld, GL3_DrawEntitiesOnList (opaque, then
+    // RF_TRANSLUCENT), GL3_DrawParticles, then GL3_DrawAlphaSurfaces for
+    // every SURF_TRANS33/66 face, the brush entities' included, so a
+    // monster behind a window is drawn before the glass. The sky comes
+    // first, a deviation from GL3_DrawWorld (sky after the opaque world)
+    // documented on FRAME_PASSES.
+    #[test]
+    fn the_frame_is_drawn_in_c_gl3_renderview_order_with_the_sky_first() {
+        assert_eq!(
+            FRAME_PASSES,
+            [
+                Pass::Sky,
+                Pass::OpaqueWorld,
+                Pass::OpaqueEntities,
+                Pass::TranslucentEntities,
+                Pass::Particles,
+                Pass::AlphaSurfaces,
+            ]
+        );
     }
 
     #[test]
     fn mat4_identity_mul() {
         let id = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         let r = mat4_mul(&id, &id);
         assert_eq!(r, id);
-    }
-
-    #[test]
-    fn face_color_deterministic() {
-        let (r1, g1, b1) = face_color(0, 1.0);
-        let (r2, g2, b2) = face_color(0, 1.0);
-        assert_eq!(r1, r2);
-        assert_eq!(g1, g2);
-        assert_eq!(b1, b2);
-    }
-
-    #[test]
-    fn face_color_in_range() {
-        // All outputs must be in [0.0, 1.0] for any index and brightness
-        for idx in [0, 1, 42, 255, 1000, usize::MAX / 2] {
-            for &brightness in &[0.0, 0.5, 1.0, 2.0] {
-                let (r, g, b) = face_color(idx, brightness);
-                assert!((0.0..=1.0).contains(&r), "r={r} out of range for idx={idx}, brightness={brightness}");
-                assert!((0.0..=1.0).contains(&g), "g={g} out of range for idx={idx}, brightness={brightness}");
-                assert!((0.0..=1.0).contains(&b), "b={b} out of range for idx={idx}, brightness={brightness}");
-            }
-        }
-    }
-
-    #[test]
-    fn face_color_different_indices_differ() {
-        let c0 = face_color(0, 1.0);
-        let c1 = face_color(1, 1.0);
-        // Different texinfo indices should produce different colors
-        assert_ne!(c0, c1);
     }
 
     #[test]
@@ -598,8 +1098,8 @@ mod tests {
     /// Multiply a column-major 4x4 matrix by a vec4, returning vec4.
     fn mat4_mul_vec4(m: &[f32; 16], v: [f32; 4]) -> [f32; 4] {
         [
-            m[0] * v[0] + m[4] * v[1] + m[8]  * v[2] + m[12] * v[3],
-            m[1] * v[0] + m[5] * v[1] + m[9]  * v[2] + m[13] * v[3],
+            m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3],
+            m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3],
             m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3],
             m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3],
         ]
@@ -607,14 +1107,7 @@ mod tests {
 
     #[test]
     fn view_matrix_yaw90_maps_world_to_eye_correctly() {
-        // At yaw=90, pitch=0, player at origin:
-        //   Q2 forward (+X) becomes... let's see what the basis vectors give us.
-        //   yaw=90 => sy=1, cy=0; pitch=0 => sp=0, cp=1
-        //   right  = (sy, -cy, 0) = (1, 0, 0)
-        //   up     = (-sp*cy, -sp*sy, cp) = (0, 0, 1)
-        //   fwd    = (-cp*cy, -cp*sy, -sp) = (0, -1, 0)
-        //
-        // A point at (0, 100, 0) — directly ahead in Q2 when facing +Y (yaw=90)
+        // At yaw=90, pitch=0, player at origin. A point at (0, 100, 0) — directly ahead in Q2 when facing +Y (yaw=90)
         // should map to eye-space (0, 0, -100): forward in OpenGL is -Z.
         let fd = RefDef {
             vieworg: Vec3f::ZERO,
@@ -626,16 +1119,155 @@ mod tests {
 
         // World point directly "ahead" when facing yaw=90 (i.e. +Y direction)
         let ahead = mat4_mul_vec4(&v, [0.0, 100.0, 0.0, 1.0]);
-        assert!(ahead[0].abs() < eps, "ahead eye-x should be 0, got {}", ahead[0]);
-        assert!(ahead[1].abs() < eps, "ahead eye-y should be 0, got {}", ahead[1]);
-        assert!((ahead[2] - (-100.0)).abs() < eps, "ahead eye-z should be -100, got {}", ahead[2]);
+        assert!(
+            ahead[0].abs() < eps,
+            "ahead eye-x should be 0, got {}",
+            ahead[0]
+        );
+        assert!(
+            ahead[1].abs() < eps,
+            "ahead eye-y should be 0, got {}",
+            ahead[1]
+        );
+        assert!(
+            (ahead[2] - (-100.0)).abs() < eps,
+            "ahead eye-z should be -100, got {}",
+            ahead[2]
+        );
 
         // World point at (100, 0, 0) — to the right when facing +Y
         // Should map to eye-space (100, 0, 0): +X is right in OpenGL.
         let right = mat4_mul_vec4(&v, [100.0, 0.0, 0.0, 1.0]);
-        assert!((right[0] - 100.0).abs() < eps, "right eye-x should be 100, got {}", right[0]);
-        assert!(right[1].abs() < eps, "right eye-y should be 0, got {}", right[1]);
-        assert!(right[2].abs() < eps, "right eye-z should be 0, got {}", right[2]);
+        assert!(
+            (right[0] - 100.0).abs() < eps,
+            "right eye-x should be 100, got {}",
+            right[0]
+        );
+        assert!(
+            right[1].abs() < eps,
+            "right eye-y should be 0, got {}",
+            right[1]
+        );
+        assert!(
+            right[2].abs() < eps,
+            "right eye-z should be 0, got {}",
+            right[2]
+        );
+    }
+
+    fn assert_vec3_near(actual: [f32; 4], expected: [f32; 3], what: &str) {
+        for axis in 0..3 {
+            assert!(
+                (actual[axis] - expected[axis]).abs() < 1e-3,
+                "{what}: got {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn view_matrix_positive_pitch_looks_down_like_q2_anglevectors() {
+        // Q2 AngleVectors: forward = (cp*cy, cp*sy, -sp), so pitch > 0 looks
+        // down. That direction must land straight ahead in eye space (-Z).
+        let (pitch, yaw) = (10.0f32, 45.0f32);
+        let fd = RefDef {
+            viewangles: Vec3f::new(pitch, yaw, 0.0),
+            ..Default::default()
+        };
+        let (sp, cp) = pitch.to_radians().sin_cos();
+        let (sy, cy) = yaw.to_radians().sin_cos();
+        let eye = mat4_mul_vec4(&view_matrix(&fd), [cp * cy, cp * sy, -sp, 0.0]);
+        assert_vec3_near(eye, [0.0, 0.0, -1.0], "forward");
+    }
+
+    #[test]
+    fn view_matrix_roll90_maps_world_up_to_eye_left() {
+        // gl3_main.c rotates by -roll: at roll 90 world up (+Z) appears on
+        // the eye's left (-X) and forward (+X) stays straight ahead.
+        let fd = RefDef {
+            viewangles: Vec3f::new(0.0, 0.0, 90.0),
+            ..Default::default()
+        };
+        let v = view_matrix(&fd);
+        assert_vec3_near(
+            mat4_mul_vec4(&v, [0.0, 0.0, 100.0, 1.0]),
+            [-100.0, 0.0, 0.0],
+            "world up",
+        );
+        assert_vec3_near(
+            mat4_mul_vec4(&v, [100.0, 0.0, 0.0, 1.0]),
+            [0.0, 0.0, -100.0],
+            "world forward",
+        );
+    }
+
+    #[test]
+    fn a_left_handed_gun_is_mirrored_across_the_view_like_c_hand_1() {
+        let fd = RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y: 73.74,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        let point = [40.0, 20.0, 10.0, 1.0];
+        let right = mat4_mul_vec4(&gun_view_projection(&fd, 0), point);
+        let left = mat4_mul_vec4(&gun_view_projection(&fd, 1), point);
+        assert!((left[0] + right[0]).abs() < 1e-4, "{left:?} {right:?}");
+        for i in 1..4 {
+            assert!((left[i] - right[i]).abs() < 1e-4);
+        }
+        // Centre-handed draws no gun; left-handed culls the mirrored side.
+        assert_eq!(gun_cull_face(0), Some(CULL_FACE));
+        assert_eq!(gun_cull_face(1), Some(glow::BACK));
+        assert_eq!(gun_cull_face(2), None);
+    }
+
+    #[test]
+    fn the_gun_is_projected_with_r_gunfov_80_whatever_the_view_fov() {
+        let fd = |fov_y: f32| RefDef {
+            width: 800,
+            height: 600,
+            fov_x: 90.0,
+            fov_y,
+            vieworg: Vec3f::new(1.0, 2.0, 3.0),
+            viewangles: Vec3f::new(5.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            gun_view_projection(&fd(73.74), 0),
+            build_view_projection(&fd(80.0))
+        );
+        assert_eq!(
+            gun_view_projection(&fd(100.0), 0),
+            gun_view_projection(&fd(60.0), 0)
+        );
+    }
+
+    #[test]
+    fn dlights_pack_into_origin_and_color_intensity_uniforms_up_to_32() {
+        use q2_render_api::DLight;
+        let light = |x: f32| DLight {
+            origin: Vec3f::new(x, 2.0, 3.0),
+            color: Vec3f::new(1.0, 0.5, 0.0),
+            intensity: 200.0,
+        };
+        let (origins, colors, count) = dlight_uniforms(&[light(1.0), light(9.0)]);
+        assert_eq!(count, 2);
+        assert_eq!(&origins[..8], &[1.0, 2.0, 3.0, 0.0, 9.0, 2.0, 3.0, 0.0]);
+        assert_eq!(&colors[..4], &[1.0, 0.5, 0.0, 200.0]);
+        assert_eq!((origins.len(), colors.len()), (128, 128));
+        let many: Vec<DLight> = (0..40).map(|i| light(i as f32)).collect();
+        assert_eq!(dlight_uniforms(&many).2, 32);
+    }
+
+    #[test]
+    fn depth_hack_squeezes_the_gun_into_the_front_of_the_depth_range() {
+        use q2_shared::constants::{RF_DEPTHHACK, RF_WEAPONMODEL};
+        assert_eq!(alias_depth_range(RF_DEPTHHACK | RF_WEAPONMODEL), (0.0, 0.3));
+        assert_eq!(alias_depth_range(RF_WEAPONMODEL), (0.0, 1.0));
+        assert_eq!(alias_depth_range(0), (0.0, 1.0));
     }
 
     #[test]
@@ -656,36 +1288,889 @@ mod tests {
         }
     }
 
-    #[test]
-    fn load_bsp_no_gl_returns_early() {
-        let mut r = Gl3Renderer::new();
-        // No GL context set — load_bsp should return without panicking
-        let bsp = BspData {
-            vertices: vec![],
-            edges: vec![],
-            surface_edges: vec![],
-            faces: vec![],
-            planes: vec![],
-            texinfo: vec![],
-            models: vec![],
-            entities: String::new(),
-            visibility: vec![],
-            nodes: vec![],
-            lightmap_data: vec![],
-            leafs: vec![],
-            leaf_faces: vec![],
-        };
-        r.load_bsp(&bsp);
-        assert!(r.world_mesh.is_none());
+    /// `files` plus `maps/<name>.bsp` with `models` submodels for each map,
+    /// recording every path asked for.
+    fn with_maps(
+        files: FileLoader,
+        maps: &[(&str, usize)],
+        requests: Rc<RefCell<Vec<String>>>,
+    ) -> FileLoader {
+        let maps: Vec<(String, Vec<u8>)> = maps
+            .iter()
+            .map(|&(name, models)| {
+                (
+                    format!("maps/{name}.bsp"),
+                    crate::bsp::test_bsp_bytes(models),
+                )
+            })
+            .collect();
+        Box::new(move |path| {
+            requests.borrow_mut().push(path.to_string());
+            maps.iter()
+                .find(|(map, _)| map == path)
+                .map(|(_, bytes)| bytes.clone())
+                .or_else(|| files(path))
+        })
+    }
+
+    fn map_renderer(maps: &[(&str, usize)]) -> (Gl3Renderer, Rc<RefCell<Vec<String>>>) {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let loader = with_maps(model_files(), maps, Rc::clone(&requests));
+        (Gl3Renderer::headless(loader), requests)
+    }
+
+    fn map_loads(requests: &RefCell<Vec<String>>, path: &str) -> usize {
+        requests.borrow().iter().filter(|p| *p == path).count()
     }
 
     #[test]
-    fn set_gl_context_stores_context_presence() {
-        let mut r = Gl3Renderer::new();
-        assert!(r.gl.is_none());
-        // We can't create a real glow::Context in unit tests without a
-        // GL backend, but we verify the initial state and that init fails
-        // without one — which implicitly validates set_gl_context's role.
-        assert!(r.init(800, 600).is_err());
+    fn begin_registration_without_a_gl_context_builds_no_gpu_world() {
+        let (mut r, _) = map_renderer(&[("base1", 1)]);
+        r.begin_registration("base1").unwrap();
+        assert!(r.world.is_none());
+        assert!(r.sky.is_none());
+    }
+
+    #[test]
+    fn begin_registration_loads_the_world_from_maps_dir() {
+        // C R_BeginRegistration: Mod_ForName("maps/%s.bsp", crash = true).
+        let (mut r, requests) = map_renderer(&[("base1", 3)]);
+        r.begin_registration("base1").unwrap();
+        assert_eq!(map_loads(&requests, "maps/base1.bsp"), 1);
+        assert_eq!(r.world_name.as_deref(), Some("maps/base1.bsp"));
+        assert_eq!(r.model_count, Some(3));
+        assert!(r.light.is_some());
+    }
+
+    #[test]
+    fn begin_registration_of_a_missing_or_corrupt_map_is_a_recoverable_drop() {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let corrupt: FileLoader = Box::new(|path| (path == "maps/bad.bsp").then(|| vec![1, 2, 3]));
+        let loader = with_maps(corrupt, &[("base1", 3)], Rc::clone(&requests));
+        let mut r = Gl3Renderer::headless(loader);
+        r.begin_registration("base1").unwrap();
+        for map in ["gone", "bad"] {
+            let err = r.begin_registration(map).unwrap_err();
+            assert!(matches!(err, Q2Error::Drop(_)), "{map}: {err:?}");
+            assert!(err.is_recoverable());
+            // C has freed the old world before Mod_ForName fails.
+            assert!(r.world_name.is_none());
+            assert_eq!(r.register_model("*1"), ModelHandle::NONE);
+        }
+        assert_eq!(map_loads(&requests, "maps/gone.bsp"), 1);
+        // A later good map loads again.
+        r.begin_registration("base1").unwrap();
+        assert_ne!(r.register_model("*1"), ModelHandle::NONE);
+    }
+
+    #[test]
+    fn begin_registration_of_a_new_map_replaces_the_world() {
+        let (mut r, _) = map_renderer(&[("base1", 3), ("base2", 2)]);
+        r.begin_registration("base1").unwrap();
+        let two = r.register_model("*2");
+        assert!(matches!(
+            r.models.get(two),
+            Some(Model::Brush { submodel: 2 })
+        ));
+        let sequence = r.models.sequence();
+        r.begin_registration("base2").unwrap();
+        assert_eq!(r.world_name.as_deref(), Some("maps/base2.bsp"));
+        assert_eq!(r.model_count, Some(2));
+        assert!(r.models.get(two).is_none());
+        assert_eq!(r.register_model("*2"), ModelHandle::NONE);
+        assert!(r.models.sequence() > sequence);
+    }
+
+    #[test]
+    fn begin_registration_of_the_same_map_keeps_the_world() {
+        // C frees mod_known[0] only `if (strcmp(mod_known[0].name, fullname))`.
+        let (mut r, requests) = map_renderer(&[("base1", 3)]);
+        r.begin_registration("base1").unwrap();
+        let one = r.register_model("*1");
+        let sequence = r.models.sequence();
+        r.begin_registration("base1").unwrap();
+        assert_eq!(map_loads(&requests, "maps/base1.bsp"), 1);
+        assert!(r.models.get(one).is_some());
+        assert_eq!(r.register_model("*1"), one);
+        assert!(r.models.sequence() > sequence);
+    }
+
+    #[test]
+    fn sky_defaults_to_unit1_until_set() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert_eq!(r.sky_setting.name, "unit1_");
+        r.set_sky("city_", 5.0, Vec3f::new(0.0, 1.0, 0.0));
+        assert_eq!(r.sky_setting.name, "city_");
+        assert_eq!(r.sky_setting.rotate, 5.0);
+        assert_eq!(r.sky_setting.axis, [0.0, 1.0, 0.0]);
+        // An empty name (map without a sky key) restores the default.
+        r.set_sky("", 0.0, Vec3f::ZERO);
+        assert_eq!(r.sky_setting.name, "unit1_");
+    }
+
+    #[test]
+    fn constructor_reads_palette_from_colormap() {
+        let mut pcx = vec![0u8; 200];
+        pcx.extend((0..=255u8).flat_map(|i| [i, 0, 0]));
+        let r = Gl3Renderer::headless(Box::new(move |path| {
+            (path == "pics/colormap.pcx").then(|| pcx.clone())
+        }));
+        assert_eq!(r.palette.as_ref().unwrap().0[7], [7, 0, 0]);
+    }
+
+    #[test]
+    fn missing_colormap_leaves_palette_unset() {
+        let r = Gl3Renderer::headless(no_files());
+        assert!(r.palette.is_none());
+    }
+
+    #[test]
+    fn sky_view_proj_ignores_eye_position() {
+        let r = Gl3Renderer::headless(no_files());
+        let at = |x| RefDef {
+            width: 640,
+            height: 480,
+            fov_y: 90.0,
+            vieworg: Vec3f::new(x, 0.0, 0.0),
+            viewangles: Vec3f::new(0.0, 30.0, 0.0),
+            ..Default::default()
+        };
+        assert_eq!(r.sky_view_proj(&at(0.0)), r.sky_view_proj(&at(500.0)));
+    }
+
+    /// Signed area of a world-space triangle after projection to NDC;
+    /// negative means clockwise on screen.
+    fn ndc_signed_area(view_proj: &[f32; 16], triangle: [[f32; 3]; 3]) -> f32 {
+        let ndc = triangle.map(|p| {
+            let clip = |row: usize| {
+                view_proj[row] * p[0]
+                    + view_proj[4 + row] * p[1]
+                    + view_proj[8 + row] * p[2]
+                    + view_proj[12 + row]
+            };
+            let w = clip(3);
+            [clip(0) / w, clip(1) / w]
+        });
+        let (a, b, c) = (ndc[0], ndc[1], ndc[2]);
+        (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+    }
+
+    #[test]
+    fn front_facing_quake_faces_project_clockwise_so_gl_front_is_culled() {
+        // Quake faces wind clockwise seen from their front: a floor at z = 0
+        // in surfedge order, seen from above, as the mesh fans it.
+        let floor = [[0.0, 0.0, 0.0], [0.0, 64.0, 0.0], [64.0, 64.0, 0.0]];
+        for (vieworg, viewangles) in [
+            (Vec3f::new(32.0, 32.0, 100.0), Vec3f::new(89.0, 0.0, 0.0)),
+            (Vec3f::new(-100.0, 20.0, 50.0), Vec3f::new(20.0, 10.0, 0.0)),
+            (
+                Vec3f::new(30.0, 200.0, 80.0),
+                Vec3f::new(30.0, -100.0, 15.0),
+            ),
+        ] {
+            let fd = RefDef {
+                width: 640,
+                height: 480,
+                fov_y: 90.0,
+                vieworg,
+                viewangles,
+                ..Default::default()
+            };
+            let area = ndc_signed_area(&build_view_projection(&fd), floor);
+            assert!(area < 0.0, "{vieworg:?} {viewangles:?}: area {area}");
+        }
+        // GL's default front face is CCW, so clockwise faces are kept by
+        // culling GL_FRONT, as C's glCullFace(GL_FRONT).
+        assert_eq!(CULL_FACE, glow::FRONT);
+    }
+
+    /// Skips (returns `None`) when `pak0.pak` is not available.
+    fn stock_loader() -> Option<FileLoader> {
+        use q2_common::filesystem::{FileSystem, Pack};
+        let root = std::env::var_os("Q2_GAMEDATA_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gamedata")
+            });
+        let pak_path = root.join("baseq2/pak0.pak");
+        if !pak_path.is_file() {
+            // Visible with `--nocapture` or on failure; CI has no game data.
+            eprintln!("SKIPPED: {} not found", pak_path.display());
+            return None;
+        }
+        let mut filesystem = FileSystem::new("baseq2");
+        filesystem.add_pack(Pack::load(&pak_path).expect("pak0.pak parses"));
+        Some(Box::new(move |path| filesystem.load_file(path).ok()))
+    }
+
+    #[test]
+    fn stock_map_builds_textured_lit_mesh_and_sky() {
+        let Some(loader) = stock_loader() else {
+            return;
+        };
+        let palette = load_palette(&loader).expect("colormap loads");
+        let bsp = BspData::load(&loader("maps/demo1.bsp").expect("demo1 in pak0")).unwrap();
+
+        let images = load_world_images(&bsp.texinfo, &loader, Some(&palette));
+        let missing = images.texinfo_image.iter().filter(|&&i| i == 0).count();
+        assert_eq!(missing, 0, "every demo1 texture resolves to a real .wal");
+
+        // The clockwise-front convention the cull state relies on holds
+        // for the real map: each face's fan winds clockwise about the
+        // face's front normal (summed over the fan, so near-collinear
+        // corners cannot flip the sign).
+        let (mut clockwise, mut counter) = (0, 0);
+        for face in &bsp.faces {
+            let Some(p) = world::face_positions(&bsp, face) else {
+                continue;
+            };
+            let plane = &bsp.planes[usize::from(face.plane_idx)];
+            let sign = if face.side == 0 { 1.0 } else { -1.0 };
+            let corner = |i: usize| Vec3f::new(p[i][0], p[i][1], p[i][2]);
+            let area: Vec3f = (1..p.len() - 1)
+                .map(|k| (corner(k) - corner(0)).cross(corner(k + 1) - corner(0)))
+                .sum();
+            let along_normal = area.dot(plane.normal) * sign;
+            if along_normal < 0.0 {
+                clockwise += 1;
+            } else if along_normal > 0.0 {
+                counter += 1;
+            }
+        }
+        assert!(clockwise > 1000, "{clockwise} clockwise faces");
+        assert_eq!(counter, 0, "{counter} counter-clockwise faces");
+
+        let mesh = world::build_world_mesh(&bsp, &images);
+        assert!(mesh.vertices.len() > 1000 * world::VERTEX_FLOATS);
+        assert!(!mesh.lightmaps.pages.is_empty());
+        // Submodel batches follow the world's in the same buffer.
+        assert_eq!(mesh.submodels.len(), bsp.models.len() - 1);
+        let end = mesh
+            .submodels
+            .iter()
+            .flatten()
+            .chain(&mesh.batches)
+            .map(|b| b.first_vertex + b.vertex_count)
+            .max();
+        assert_eq!(
+            end,
+            i32::try_from(mesh.vertices.len() / world::VERTEX_FLOATS).ok()
+        );
+        assert!(
+            mesh.submodels.iter().any(|batches| !batches.is_empty()),
+            "demo1 has doors or platforms with faces"
+        );
+        // Lightmap UVs of lit faces stay inside the atlas page.
+        let lit_ranges = mesh
+            .batches
+            .iter()
+            .filter(|b| b.shading == world::Shading::Lit);
+        for batch in lit_ranges {
+            let first = batch.first_vertex as usize * world::VERTEX_FLOATS;
+            let count = batch.vertex_count as usize * world::VERTEX_FLOATS;
+            for vertex in mesh.vertices[first..first + count].chunks(world::VERTEX_FLOATS) {
+                assert!((0.0..=1.0).contains(&vertex[5]) && (0.0..=1.0).contains(&vertex[6]));
+            }
+        }
+        // demo1 has switchable or flickering lights: some lit face blends a
+        // style other than 0 into a lightmap layer.
+        assert!(
+            mesh.vertices
+                .chunks(world::VERTEX_FLOATS)
+                .any(|vertex| vertex[7..11].iter().any(|&style| style > 0.0)),
+            "some face carries a non-default light style"
+        );
+
+        for suffix in SKY_SUFFIXES {
+            let face = sky::load_sky_image(&loader, DEFAULT_SKY, suffix).expect("unit1 sky face");
+            assert!(face.width > 0 && face.rgba.len() == face.width * face.height * 4);
+        }
+    }
+
+    #[test]
+    fn demo1_world_behind_its_shut_portal_door_is_not_drawn_from_area_2() {
+        let Some(loader) = stock_loader() else {
+            return;
+        };
+        let bsp = BspData::load(&loader("maps/demo1.bsp").expect("demo1 in pak0")).unwrap();
+        let images = load_world_images(&bsp.texinfo, &loader, None);
+        let mesh = world::build_world_mesh(&bsp, &images);
+        let drawn = |bits: Option<&[u8]>| -> i32 {
+            mesh.batches
+                .iter()
+                .filter(|batch| batch.in_visible_area(bits))
+                .map(|batch| batch.vertex_count)
+                .sum()
+        };
+        let everything = drawn(None);
+        // demo1's door portal joins areas 1 and 2 (CM_WriteAreaBits of
+        // area 2 while it is shut, then open).
+        let shut = drawn(Some(&[0b0100]));
+        let open = drawn(Some(&[0b0110]));
+        assert!(
+            0 < shut && shut < open && open <= everything,
+            "{shut} {open} {everything}"
+        );
+    }
+
+    /// One triangle, one 2x2 skin named `skin`, one frame.
+    fn synthetic_md2(skin: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let header: [i32; 17] = [
+            0x3250_4449, // "IDP2"
+            8,
+            2,  // skin width
+            2,  // skin height
+            52, // frame size: 40 + 3 vertices * 4
+            1,  // skins
+            3,  // xyz
+            3,  // st
+            1,  // triangles
+            0,  // glcmds
+            1,  // frames
+            68, // ofs skins
+            132,
+            144,
+            156,
+            0,
+            208,
+        ];
+        for value in header {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut name = [0u8; 64];
+        name[..skin.len()].copy_from_slice(skin.as_bytes());
+        bytes.extend_from_slice(&name);
+        for st in [[0i16, 0], [2, 0], [0, 2]] {
+            bytes.extend_from_slice(&st[0].to_le_bytes());
+            bytes.extend_from_slice(&st[1].to_le_bytes());
+        }
+        for index in [0u16, 1, 2, 0, 1, 2] {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+        for value in [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0u8; 16]);
+        for vertex in [[0u8, 0, 0, 0], [8, 0, 0, 0], [0, 8, 0, 0]] {
+            bytes.extend_from_slice(&vertex);
+        }
+        assert_eq!(bytes.len(), 208);
+        bytes
+    }
+
+    fn model_files() -> FileLoader {
+        let pcx = images::tiny_pcx();
+        Box::new(move |path| match path {
+            "models/t/tris.md2" => Some(synthetic_md2("models/t/skin.pcx")),
+            "models/t/skin.pcx" | "pics/num_0.pcx" | "pics/conchars.pcx" => Some(pcx.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn register_model_loads_an_md2_with_its_skin_once() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let handle = r.register_model("models/t/tris.md2");
+        assert_ne!(handle, ModelHandle::NONE);
+        assert_eq!(r.register_model("models/t/tris.md2"), handle);
+        let Some(Model::Alias(model)) = r.models.get(handle) else {
+            panic!("expected an MD2 model");
+        };
+        assert_eq!(model.corners.len(), 3);
+        // Skin 0 resolved through the image store to the 2x2 PCX.
+        let skin = model.skins[0].expect("skin loaded");
+        assert_eq!(r.images.get(skin).unwrap().width, 2);
+    }
+
+    #[test]
+    fn register_model_rejects_missing_and_unsupported_names() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert_eq!(r.register_model("models/t/tris.md2"), ModelHandle::NONE);
+        let mut r = Gl3Renderer::headless(model_files());
+        assert_eq!(r.register_model("models/t/gone.md2"), ModelHandle::NONE);
+        assert_eq!(r.register_model("sprites/s_explod.sp2"), ModelHandle::NONE);
+        assert_eq!(r.register_model(""), ModelHandle::NONE);
+        // A model whose skin is absent still registers; the skin slot is empty.
+        let mut r = Gl3Renderer::headless(Box::new(|path| {
+            (path == "m.md2").then(|| synthetic_md2("missing.pcx"))
+        }));
+        let handle = r.register_model("m.md2");
+        let Some(Model::Alias(model)) = r.models.get(handle) else {
+            panic!("expected an MD2 model");
+        };
+        assert_eq!(model.skins, vec![None]);
+    }
+
+    #[test]
+    fn a_short_name_loads_like_any_other_when_the_file_exists() {
+        // C Mod_ForName has no length rule: the file load decides.
+        let mut r = Gl3Renderer::headless(Box::new(|path| {
+            (path == ".md2").then(|| synthetic_md2("skin.pcx"))
+        }));
+        let handle = r.register_model(".md2");
+        assert!(matches!(r.models.get(handle), Some(Model::Alias(_))));
+    }
+
+    #[test]
+    fn the_file_magic_picks_the_loader_not_the_name_like_c_mod_forname() {
+        let mut r = Gl3Renderer::headless(Box::new(|path| match path {
+            "x.md2" => Some(synthetic_sp2(&[("a.pcx", 8, 8)])),
+            "x.sp2" => Some(synthetic_md2("skin.pcx")),
+            "x.bin" => Some(synthetic_md2("skin.pcx")),
+            "junk.md2" => Some(b"JUNKJUNK".to_vec()),
+            _ => None,
+        }));
+        let sprite = r.register_model("x.md2");
+        assert!(matches!(r.models.get(sprite), Some(Model::Sprite(_))));
+        let alias = r.register_model("x.sp2");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        let alias = r.register_model("x.bin");
+        assert!(matches!(r.models.get(alias), Some(Model::Alias(_))));
+        assert_eq!(r.register_model("junk.md2"), ModelHandle::NONE);
+    }
+
+    #[test]
+    fn the_world_is_drawn_untransformed_by_area_with_textures_at_2_fps_like_c() {
+        let fd = RefDef {
+            time: 3.7,
+            areabits: Some(vec![0b10]),
+            ..Default::default()
+        };
+        let view_proj = build_view_projection(&fd);
+        let draw = world_draw(&fd, &view_proj, BatchFilter::Translucent);
+        // C GL3_DrawWorld: ent.frame = (int)(time * 2).
+        assert_eq!(draw.frame, 7);
+        assert_eq!(draw.time, 3.7);
+        assert_eq!(draw.model, &IDENTITY_MAT4);
+        assert!(std::ptr::eq(draw.view_proj, &view_proj));
+        assert_eq!(draw.filter, BatchFilter::Translucent);
+        assert!(!draw.translucent_entity);
+        assert_eq!(draw.areabits, Some(&[0b10u8][..]));
+    }
+
+    // Only the setter: the gun draw reads `hand` through EntityScene, which
+    // needs a GL context; gun_view_projection and gun_cull_face are tested
+    // above.
+    #[test]
+    fn set_hand_stores_the_cvar_starting_at_c_default_0() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert_eq!(r.hand, 0);
+        r.set_hand(1);
+        assert_eq!(r.hand, 1);
+        r.set_hand(2);
+        assert_eq!(r.hand, 2);
+    }
+
+    /// "IDS2" with one frame per `(name, width, height)`, hung from its centre.
+    fn synthetic_sp2(frames: &[(&str, i32, i32)]) -> Vec<u8> {
+        let mut bytes = b"IDS2".to_vec();
+        bytes.extend_from_slice(&2i32.to_le_bytes());
+        bytes.extend_from_slice(&(frames.len() as i32).to_le_bytes());
+        for &(name, width, height) in frames {
+            for value in [width, height, width / 2, height / 2] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let mut field = [0u8; 64];
+            field[..name.len()].copy_from_slice(name.as_bytes());
+            bytes.extend_from_slice(&field);
+        }
+        bytes
+    }
+
+    #[test]
+    fn register_model_loads_an_sp2_with_each_frames_image_like_c_mod_loadsp2() {
+        let pcx = images::tiny_pcx();
+        let mut r = Gl3Renderer::headless(Box::new(move |path| match path {
+            "sprites/s.sp2" => Some(synthetic_sp2(&[
+                ("sprites/a.pcx", 32, 16),
+                ("sprites/gone.pcx", 8, 8),
+            ])),
+            "sprites/a.pcx" => Some(pcx.clone()),
+            _ => None,
+        }));
+        let handle = r.register_model("sprites/s.sp2");
+        assert_ne!(handle, ModelHandle::NONE);
+        assert_eq!(r.register_model("sprites/s.sp2"), handle);
+        let Some(Model::Sprite(sprite)) = r.models.get(handle) else {
+            panic!("expected a sprite");
+        };
+        assert_eq!(sprite.frames.len(), 2);
+        assert_eq!(
+            sprite.frames[0].size,
+            fx::SpriteFrameSize {
+                width: 32,
+                height: 16,
+                origin_x: 16,
+                origin_y: 8
+            }
+        );
+        let image = sprite.frames[0].image.expect("frame image loaded");
+        assert_eq!(r.images.get(image).unwrap().width, 2);
+        // A frame whose image is missing stays empty and draws as notexture.
+        assert_eq!(sprite.frames[1].image, None);
+        // Registered again this sequence, its images survive the sweep.
+        r.models.begin_sequence();
+        r.images.begin_sequence();
+        r.register_model("sprites/s.sp2");
+        r.end_registration();
+        assert!(r.images.get(image).is_some());
+    }
+
+    #[test]
+    fn inline_models_are_valid_only_for_the_loaded_bsp() {
+        let (mut r, _) = map_renderer(&[("base1", 3), ("base2", 2)]);
+        assert_eq!(r.register_model("*1"), ModelHandle::NONE);
+        r.begin_registration("base1").unwrap();
+        let two = r.register_model("*2");
+        assert!(matches!(
+            r.models.get(two),
+            Some(Model::Brush { submodel: 2 })
+        ));
+        assert_eq!(r.register_model("*3"), ModelHandle::NONE);
+        assert_eq!(r.register_model("*0"), ModelHandle::NONE);
+
+        // A new map drops inline models but keeps MD2s until the sweep.
+        let md2 = r.register_model("models/t/tris.md2");
+        r.begin_registration("base2").unwrap();
+        assert!(r.models.get(two).is_none());
+        assert!(r.models.get(md2).is_some());
+        assert_eq!(r.register_model("*2"), ModelHandle::NONE);
+    }
+
+    #[test]
+    fn end_registration_frees_models_not_registered_since_begin() {
+        // C GL3_EndRegistration frees every model whose registration_sequence
+        // is old, and GL3_FreeUnusedImages every image but pics.
+        let (mut r, _) = map_renderer(&[("base1", 2)]);
+        r.begin_registration("base1").unwrap();
+        let md2 = r.register_model("models/t/tris.md2");
+        let brush = r.register_model("*1");
+        let Some(Model::Alias(model)) = r.models.get(md2) else {
+            panic!("expected an MD2 model");
+        };
+        let skin = model.skins[0].unwrap();
+        let pic = r.find_pic("num_0").unwrap();
+        r.begin_registration("base1").unwrap();
+        // Handles survive begin_registration, as in C.
+        assert!(r.models.get(md2).is_some());
+        r.end_registration();
+        assert!(r.models.get(md2).is_none());
+        assert!(r.images.get(skin).is_none());
+        assert!(r.images.get(pic).is_some());
+        // Inline models live as long as the world.
+        assert!(r.models.get(brush).is_some());
+    }
+
+    #[test]
+    fn re_registered_models_keep_their_skins_through_end_registration() {
+        let (mut r, _) = map_renderer(&[("base1", 1)]);
+        r.begin_registration("base1").unwrap();
+        let md2 = r.register_model("models/t/tris.md2");
+        r.begin_registration("base1").unwrap();
+        // C Mod_ReLoadSkins touches the skins of a model found again.
+        assert_eq!(r.register_model("models/t/tris.md2"), md2);
+        r.end_registration();
+        let Some(Model::Alias(model)) = r.models.get(md2) else {
+            panic!("MD2 kept");
+        };
+        assert!(r.images.get(model.skins[0].unwrap()).is_some());
+    }
+
+    #[test]
+    fn register_image_returns_handles_for_skins_and_pics() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let skin = r.register_image("models/t/skin.pcx", ImageType::Skin);
+        assert_ne!(skin, ImageHandle::NONE);
+        assert_eq!(r.register_image("models/t/skin.pcx", ImageType::Skin), skin);
+        let index = images::handle_index(skin).unwrap();
+        assert_eq!(r.images.get(index).unwrap().width, 2);
+        // Pics resolve like draw names (C RegisterPic / Draw_FindPic).
+        let pic = r.register_image("num_0", ImageType::Pic);
+        assert_eq!(images::handle_index(pic), r.find_pic("num_0"));
+        assert_eq!(
+            r.register_image("nope.pcx", ImageType::Skin),
+            ImageHandle::NONE
+        );
+        assert_eq!(r.register_image("nope", ImageType::Pic), ImageHandle::NONE);
+        // C exports no registration for walls, sprites or skies.
+        assert_eq!(
+            r.register_image("models/t/skin.pcx", ImageType::Wall),
+            ImageHandle::NONE
+        );
+    }
+
+    #[test]
+    fn registered_skin_untouched_since_begin_is_freed_by_end_registration() {
+        let (mut r, _) = map_renderer(&[("base1", 1)]);
+        r.begin_registration("base1").unwrap();
+        let kept = r.register_image("pics/num_0.pcx", ImageType::Skin);
+        let dropped = r.register_image("models/t/skin.pcx", ImageType::Skin);
+        r.begin_registration("base1").unwrap();
+        assert_eq!(r.register_image("pics/num_0.pcx", ImageType::Skin), kept);
+        r.end_registration();
+        assert!(r.images.get(images::handle_index(kept).unwrap()).is_some());
+        assert!(r
+            .images
+            .get(images::handle_index(dropped).unwrap())
+            .is_none());
+    }
+
+    #[test]
+    fn pic_size_comes_from_the_resolved_pcx_and_misses_are_none() {
+        let mut r = Gl3Renderer::headless(no_files());
+        assert_eq!(r.draw_get_pic_size("num_0"), None, "no files");
+        let mut r = Gl3Renderer::headless(model_files());
+        assert_eq!(r.draw_get_pic_size("num_0"), Some((2, 2)));
+        assert_eq!(r.draw_get_pic_size("pics/num_0.pcx"), Some((2, 2)));
+        assert_eq!(r.draw_get_pic_size("nope"), None);
+    }
+
+    #[test]
+    fn two_d_draws_queue_in_call_order_with_c_geometry() {
+        let mut r = Gl3Renderer::headless(model_files());
+        r.draw_fill(1, 2, 3, 4, 7);
+        r.draw_pic(10, 20, "num_0");
+        r.draw_stretch_pic(0, 0, 64, 32, "num_0");
+        r.draw_char(8, 16, i32::from(b'A'));
+        assert_eq!(r.ui_queue.len(), 4);
+        assert_eq!(r.ui_queue[0].image, QuadImage::White);
+        // draw_pic uses the pic's own 2x2 size: top-left (10,20), bottom-right (12,22).
+        assert_eq!(&r.ui_queue[1].vertices[0..2], &[10.0, 20.0]);
+        assert_eq!(&r.ui_queue[1].vertices[40..42], &[12.0, 22.0]);
+        assert_eq!(&r.ui_queue[2].vertices[40..42], &[64.0, 32.0]);
+        // 'A' is cell (1, 4) of the 16x16 font, drawn 8x8 pixels.
+        assert_eq!(&r.ui_queue[3].vertices[2..4], &[0.0625, 0.25]);
+        assert_eq!(&r.ui_queue[3].vertices[40..42], &[16.0, 24.0]);
+    }
+
+    #[test]
+    fn begin_frame_sizes_the_2d_canvas_to_the_drawable_like_c_set_gl2d() {
+        let mut r = Gl3Renderer::headless(no_files());
+        r.begin_frame(1280, 720);
+        assert_eq!(r.canvas, (1280, 720));
+        // An empty drawable keeps the last usable size.
+        r.begin_frame(0, 720);
+        assert_eq!(r.canvas, (1280, 720));
+    }
+
+    #[test]
+    fn spaces_offscreen_chars_missing_pics_and_bad_fills_queue_nothing() {
+        let mut r = Gl3Renderer::headless(model_files());
+        r.draw_char(0, 0, 32);
+        r.draw_char(0, -8, i32::from(b'A'));
+        r.draw_pic(0, 0, "nope");
+        r.draw_stretch_pic(0, 0, 4, 4, "nope");
+        r.draw_fill(0, 0, 4, 4, 300);
+        assert!(r.ui_queue.is_empty());
+        r.draw_char(0, -7, i32::from(b'A'));
+        assert_eq!(r.ui_queue.len(), 1);
+    }
+
+    #[test]
+    fn a_view_blend_is_queued_as_a_full_view_flash_under_the_hud() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let fd = RefDef {
+            width: 100,
+            height: 50,
+            blend: [0.6, 0.3, 0.0, 0.5],
+            ..Default::default()
+        };
+        r.render_frame(&fd, &[], &[], &[]);
+        assert_eq!(r.ui_queue.len(), 1);
+        let flash = &r.ui_queue[0];
+        assert_eq!(flash.image, pics::QuadImage::White);
+        // Queued unscaled: the 2D shader applies INTENSITY_2D, as C
+        // GL3_Draw_Flash's fragmentSrc2Dcolor does (`color.rgb * intensity2D`).
+        let color = &flash.vertices[4..8];
+        for (got, want) in color.iter().zip([0.6, 0.3, 0.0, 0.5]) {
+            assert!((got - want).abs() < 1e-6, "{color:?}");
+        }
+        assert_eq!((flash.vertices[0], flash.vertices[1]), (0.0, 0.0));
+        let right_bottom = &flash.vertices[5 * 8..5 * 8 + 2];
+        assert_eq!(right_bottom, &[100.0, 50.0]);
+
+        r.ui_queue.clear();
+        r.render_frame(
+            &RefDef {
+                width: 100,
+                height: 50,
+                ..Default::default()
+            },
+            &[],
+            &[],
+            &[],
+        );
+        assert!(r.ui_queue.is_empty(), "no alpha, no flash");
+    }
+
+    /// The colour queued for the full-view flash of `fd`.
+    fn queued_flash_color(r: &mut Gl3Renderer, fd: &RefDef) -> [f32; 4] {
+        r.ui_queue.clear();
+        r.render_frame(fd, &[], &[], &[]);
+        assert_eq!(r.ui_queue.len(), 1);
+        r.ui_queue[0].vertices[4..8].try_into().unwrap()
+    }
+
+    #[test]
+    fn an_underwater_view_blend_is_mixed_without_intensity_2d_or_gamma() {
+        let mut r = Gl3Renderer::headless(model_files());
+        let water = RefDef {
+            width: 100,
+            height: 50,
+            blend: [0.5, 0.3, 0.2, 0.4],
+            rdflags: q2_shared::constants::RDF_UNDERWATER,
+            ..Default::default()
+        };
+        // C GL3_DrawFrameBufferObject mixes v_blend as given; the 2D shader
+        // multiplies by INTENSITY_2D, so the queued rgb is pre-divided.
+        let got = queued_flash_color(&mut r, &water);
+        for (got, want) in got.iter().zip([0.5 / 1.5, 0.3 / 1.5, 0.2 / 1.5, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
+        // ... and the 2D shader's pow(rgb, 1/vid_gamma) is cancelled too.
+        r.set_gamma(2.0);
+        let got = queued_flash_color(&mut r, &water);
+        for (got, want) in got.iter().zip([0.25 / 1.5, 0.09 / 1.5, 0.04 / 1.5, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
+        // No FBO without a world (C SetupGL): the dry flash, unscaled.
+        let no_world = RefDef {
+            rdflags: q2_shared::constants::RDF_UNDERWATER | q2_shared::constants::RDF_NOWORLDMODEL,
+            ..water.clone()
+        };
+        let got = queued_flash_color(&mut r, &no_world);
+        for (got, want) in got.iter().zip([0.5, 0.3, 0.2, 0.4]) {
+            assert!((got - want).abs() < 1e-6, "{got:?}");
+        }
+    }
+
+    #[test]
+    fn end_frame_without_a_gl_context_still_drops_the_queue() {
+        let mut r = Gl3Renderer::headless(model_files());
+        r.draw_fill(0, 0, 4, 4, 1);
+        r.end_frame();
+        assert!(r.ui_queue.is_empty());
+    }
+
+    #[test]
+    fn light_level_is_150_even_where_the_lightmap_is_dark_like_c_gl3() {
+        // C GL3_SetLightLevel calls GL3_LightPoint(NULL, vieworg, ...), and
+        // GL3_LightPoint answers 1.0 for a NULL entity before reading the
+        // lightmap, so r_lightlevel is 150 * 1.0 wherever the view is.
+        let Some(loader) = stock_loader() else {
+            return;
+        };
+        let bsp = BspData::load(&loader("maps/demo1.bsp").expect("demo1 in pak0")).unwrap();
+        let tree = LightTree::from_bsp(&bsp);
+        let mut r = Gl3Renderer::headless(loader);
+        r.begin_registration("demo1").unwrap();
+        let world = &bsp.models[0];
+        let dark = (0..40 * 40)
+            .map(|i| {
+                let x = world.mins.x + (world.maxs.x - world.mins.x) * (i % 40) as f32 / 39.0;
+                let y = world.mins.y + (world.maxs.y - world.mins.y) * (i / 40) as f32 / 39.0;
+                [x, y, world.maxs.z - 1.0]
+            })
+            .find(|&p| {
+                let c = tree.light_point(p, &[1.0; q2_shared::constants::MAX_LIGHTSTYLES], &[]);
+                c.iter().all(|&v| v < 0.1)
+            })
+            .expect("demo1 has a dark spot");
+        let fd = RefDef {
+            vieworg: Vec3f::from_array(dark),
+            ..RefDef::default()
+        };
+        r.render_frame(&fd, &[], &[], &[]);
+        assert_eq!(r.light_level(), 150.0);
+    }
+
+    #[test]
+    fn stock_models_pics_and_lighting_load_from_pak0() {
+        let Some(loader) = stock_loader() else {
+            return;
+        };
+        let bsp = BspData::load(&loader("maps/demo1.bsp").expect("demo1 in pak0")).unwrap();
+        let mut r = Gl3Renderer::headless(loader);
+        r.begin_registration("demo1")
+            .expect("demo1 loads by its short name");
+
+        let explosion = r.register_model("sprites/s_explod.sp2");
+        let Some(Model::Sprite(sprite)) = r.models.get(explosion) else {
+            panic!("s_explod registers as a sprite");
+        };
+        assert!(!sprite.frames.is_empty());
+        assert!(sprite.frames.iter().all(|frame| frame.image.is_some()));
+        let soldier = r.register_model("models/monsters/soldier/tris.md2");
+        let Some(Model::Alias(model)) = r.models.get(soldier) else {
+            panic!("soldier registers as an MD2 model");
+        };
+        assert!(model.skins[0].is_some(), "soldier skin resolves to a PCX");
+        let entity = RenderEntity {
+            model: soldier,
+            frame: 1,
+            oldframe: 0,
+            backlerp: 0.5,
+            ..Default::default()
+        };
+        let stream = alias::entity_vertices(model, &entity, || [0.5; 3], 0.0).unwrap();
+        assert_eq!(
+            stream.len(),
+            model.corners.len() * alias::ALIAS_VERTEX_FLOATS
+        );
+        assert!(stream.iter().all(|value| value.is_finite()));
+
+        // MD2 triangles wind like world faces (clockwise about the outward
+        // vertex normals), so the world's cull state also suits them.
+        let frame = &model.md2.frames[0];
+        let (mut clockwise, mut counter) = (0, 0);
+        for triangle in &model.md2.triangles {
+            let corner = |k: usize| frame.vertex_position(usize::from(triangle.vertex[k]));
+            let normal = |k: usize| {
+                let index = frame.verts[usize::from(triangle.vertex[k])].normal_index;
+                let [x, y, z] = crate::files::md2::VERTEX_NORMALS[usize::from(index)];
+                Vec3f::new(x, y, z)
+            };
+            let winding = (corner(1) - corner(0)).cross(corner(2) - corner(0));
+            let outward = normal(0) + normal(1) + normal(2);
+            match winding.dot(outward) {
+                d if d < 0.0 => clockwise += 1,
+                d if d > 0.0 => counter += 1,
+                _ => {}
+            }
+        }
+        assert!(
+            clockwise > 20 * counter,
+            "{clockwise} clockwise, {counter} counter-clockwise soldier triangles"
+        );
+
+        assert_eq!(r.draw_get_pic_size("conchars"), Some((128, 128)));
+        assert!(r.draw_get_pic_size("num_0").is_some());
+
+        // Inline doors and platforms are in demo1's model lump.
+        assert!(bsp.models.len() > 1);
+        let last = format!("*{}", bsp.models.len() - 1);
+        assert_ne!(r.register_model(&last), ModelHandle::NONE);
+
+        // Sample the lightmap on a grid dropped from the top of the world:
+        // lit floors give neither black nor fullbright everywhere.
+        let tree = LightTree::from_bsp(&bsp);
+        let world = &bsp.models[0];
+        let mut colors = Vec::new();
+        for ix in 0..40 {
+            for iy in 0..40 {
+                let x = world.mins.x + (world.maxs.x - world.mins.x) * ix as f32 / 39.0;
+                let y = world.mins.y + (world.maxs.y - world.mins.y) * iy as f32 / 39.0;
+                colors.push(tree.light_point(
+                    [x, y, world.maxs.z - 1.0],
+                    &[1.0; q2_shared::constants::MAX_LIGHTSTYLES],
+                    &[],
+                ));
+            }
+        }
+        assert!(
+            colors.iter().any(|c| *c != [0.0; 3] && *c != [1.0; 3]),
+            "some grid point lands on a lit lightmap texel"
+        );
     }
 }
