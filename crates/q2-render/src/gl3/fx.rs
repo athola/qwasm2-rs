@@ -18,7 +18,7 @@ use super::texture::FileLoader;
 use crate::files::{palette::Palette, sp2::load_sp2};
 
 /// Floats per particle vertex: position(3), point size, distance to the
-/// eye, colour(4) (C `part_vtx`).
+/// eye, color(4) (C `part_vtx`).
 pub const PARTICLE_FLOATS: usize = 9;
 /// Floats per beam or sprite vertex: position(3), uv(2).
 pub const FX_FLOATS: usize = 5;
@@ -35,7 +35,7 @@ const BEAM_INTENSITY: f32 = 1.0;
 
 /// Particle vertices for one draw: each at its origin, sized for a view
 /// `height` pixels tall, with its distance from the eye and its palette
-/// colour. C ref: `GL3_DrawParticles`.
+/// color. C ref: `GL3_DrawParticles`.
 pub fn particle_vertices(
     particles: &[Particle],
     vieworg: Vec3f,
@@ -116,7 +116,7 @@ pub fn beam_vertices(e: &RenderEntity) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// A beam's colour: its `skinnum` palette entry at its alpha.
+/// A beam's color: its `skinnum` palette entry at its alpha.
 pub fn beam_color(e: &RenderEntity, palette: &Palette) -> [f32; 4] {
     let [r, g, b] = palette.0[(e.skinnum & 0xff) as usize];
     [
@@ -473,7 +473,7 @@ fn sprite_texture(
         .unwrap_or(notexture)
 }
 
-/// How a beam is shaded: palette colour, blended, no intensity.
+/// How a beam is shaded: palette color, blended, no intensity.
 /// C ref: `GL3_DrawBeam`, `fragmentSrc3Dcolor`.
 fn beam_style(entity: &RenderEntity, palette: &Palette) -> FxStyle {
     FxStyle {
@@ -551,7 +551,7 @@ struct FxStyle {
     alpha_test: bool,
     blend: bool,
     depth_write: bool,
-    /// Colour scale before gamma.
+    /// Color scale before gamma.
     intensity: f32,
 }
 
@@ -626,18 +626,18 @@ mod tests {
         assert_layout(&FX_ATTRIBUTES, FX_FLOATS, FX_VERTEX_SRC, true);
     }
 
-    fn grey_palette() -> Palette {
+    fn gray_palette() -> Palette {
         Palette(std::array::from_fn(|i| [i as u8, i as u8, 255 - i as u8]))
     }
 
     #[test]
-    fn particles_grow_with_the_view_height_and_carry_their_distance_and_colour() {
+    fn particles_grow_with_the_view_height_and_carry_their_distance_and_color() {
         let particles = [Particle {
             origin: Vec3f::new(100.0, 0.0, 0.0),
             color: 0xe8,
             alpha: 0.5,
         }];
-        let v = particle_vertices(&particles, Vec3f::ZERO, 960, &grey_palette());
+        let v = particle_vertices(&particles, Vec3f::ZERO, 960, &gray_palette());
         assert_eq!(v.len(), PARTICLE_FLOATS);
         assert_eq!(&v[..3], &[100.0, 0.0, 0.0]);
         assert_eq!(v[3], 80.0, "40 at 480 tall, scaled");
@@ -646,13 +646,13 @@ mod tests {
     }
 
     #[test]
-    fn a_particle_colour_is_the_palette_entry_of_its_low_byte() {
+    fn a_particle_color_is_the_palette_entry_of_its_low_byte() {
         let particles = [Particle {
             origin: Vec3f::ZERO,
             color: 0x1e8,
             alpha: 1.0,
         }];
-        let v = particle_vertices(&particles, Vec3f::X, 480, &grey_palette());
+        let v = particle_vertices(&particles, Vec3f::X, 480, &gray_palette());
         assert_eq!(&v[5..8], &[232.0 / 255.0, 232.0 / 255.0, 23.0 / 255.0]);
     }
 
@@ -722,9 +722,9 @@ mod tests {
     }
 
     #[test]
-    fn a_beam_takes_its_colour_from_the_palette_and_its_alpha() {
+    fn a_beam_takes_its_color_from_the_palette_and_its_alpha() {
         assert_eq!(
-            beam_color(&beam(Vec3f::ZERO, Vec3f::Z, 4), &grey_palette()),
+            beam_color(&beam(Vec3f::ZERO, Vec3f::Z, 4), &gray_palette()),
             [208.0 / 255.0, 208.0 / 255.0, 47.0 / 255.0, 0.3]
         );
     }
@@ -762,7 +762,7 @@ mod tests {
         let sprite = RenderEntity::default();
         assert_eq!(sprite_style(&sprite, false).intensity, 1.5);
         let beam = beam(Vec3f::ZERO, Vec3f::Z, 4);
-        assert_eq!(beam_style(&beam, &grey_palette()).intensity, 1.0);
+        assert_eq!(beam_style(&beam, &gray_palette()).intensity, 1.0);
     }
 
     #[test]
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn a_beam_blends_without_writing_depth() {
-        let style = beam_style(&beam(Vec3f::ZERO, Vec3f::Z, 4), &grey_palette());
+        let style = beam_style(&beam(Vec3f::ZERO, Vec3f::Z, 4), &gray_palette());
         assert!(style.blend && !style.depth_write);
     }
 

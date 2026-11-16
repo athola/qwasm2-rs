@@ -274,7 +274,7 @@ impl GameWorld {
     }
 
     /// C `P_ProjectSource`: `offset` from the player's origin, its right
-    /// part mirrored for a left hand and dropped for a centre one.
+    /// part mirrored for a left hand and dropped for a center one.
     fn player_project_source(
         &self,
         key: EntityKey,

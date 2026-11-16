@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn click_prompt_lets_clicks_through_to_the_canvas() {
-        // The prompt sits over the canvas centre; clicks on its text must
+        // The prompt sits over the canvas center; clicks on its text must
         // still reach the canvas to lock the pointer and start audio.
         let html = generate_html("");
         let rule = html

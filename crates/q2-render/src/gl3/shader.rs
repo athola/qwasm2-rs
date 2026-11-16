@@ -2,7 +2,7 @@
 //! `fragmentSrc3Dwater`, `fragmentSrc3D`, `fragmentSrc3Dsky`, merged behind a
 //! `u_mode` switch so one program serves every world draw).
 //!
-//! Colour constants are the C cvar defaults: `gl3_intensity` 1.5 and
+//! Color constants are the C cvar defaults: `gl3_intensity` 1.5 and
 //! `gl3_overbrightbits` 1.3. Gamma is the `u_gamma` uniform, `1/vid_gamma`
 //! (applied as `pow(c, u_gamma)`), so it can change at run time like C's.
 //! Lightmap layer `n` is scaled by the brightness of the face's `n`th light
@@ -86,7 +86,7 @@ in vec4 v_style_scales;
 in vec3 v_world_pos;
 in vec3 v_normal;
 out vec4 o_color;
-// Dynamic lights (C uniLights): xyz origin; rgb colour, a intensity.
+// Dynamic lights (C uniLights): xyz origin; rgb color, a intensity.
 uniform vec4 u_dlight_origin[32];
 uniform vec4 u_dlight_color[32];
 uniform int u_num_dlights;
@@ -297,7 +297,7 @@ fn world_uniforms(
     }
 }
 
-// C `vertexSrcAlias` / `fragmentSrcAlias`: vertex colour carries the shade
+// C `vertexSrcAlias` / `fragmentSrcAlias`: vertex color carries the shade
 // and alpha, scaled by overbrightbits; the fragment clamps it to 1.5.
 pub(super) const ALIAS_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
@@ -326,7 +326,7 @@ uniform int u_color_only;
 const float INTENSITY = 1.5;
 void main() {
     if (u_color_only != 0) {
-        // C fragmentSrcAliasColor: colour shells.
+        // C fragmentSrcAliasColor: color shells.
         o_color = vec4(pow(v_color.rgb, vec3(u_gamma)), v_color.a);
         return;
     }
@@ -362,7 +362,7 @@ fn alias_uniforms(
 }
 
 // C `vertexSrc2D` / `fragmentSrc2D` / `fragmentSrc2Dcolor` in one program:
-// fills sample a white texel, so colour is always texel * vertex colour.
+// fills sample a white texel, so color is always texel * vertex color.
 pub(super) const UI_VERTEX_SRC: &str = r#"#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_position;
@@ -486,7 +486,7 @@ mod tests {
             .collect()
     }
 
-    // A misspelt name gets no location and its uniform silently keeps 0.
+    // A misspelled name gets no location and its uniform silently keeps 0.
     #[test]
     fn every_program_looks_up_each_of_its_uniforms_by_its_declared_name() {
         let world = [VERTEX_SRC, FRAGMENT_SRC];
@@ -644,8 +644,8 @@ mod tests {
     }
 
     #[test]
-    fn colour_only_alias_draws_skip_the_texture_and_intensity_like_c() {
-        // C fragmentSrcAliasColor: the vertex colour through gamma.
+    fn color_only_alias_draws_skip_the_texture_and_intensity_like_c() {
+        // C fragmentSrcAliasColor: the vertex color through gamma.
         assert!(ALIAS_FRAGMENT_SRC.contains("uniform int u_color_only;"));
         assert!(ALIAS_FRAGMENT_SRC.contains("if (u_color_only != 0) {"));
     }

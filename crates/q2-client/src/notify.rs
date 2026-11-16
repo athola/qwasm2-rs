@@ -1,5 +1,5 @@
 //! Text the server sends: printed lines shown briefly at the top of the
-//! screen, the centred message, and the server layout (scoreboard, help
+//! screen, the centered message, and the server layout (scoreboard, help
 //! computer). C ref: the `svc_print` and `svc_layout` cases of
 //! `CL_ParseServerMessage` (client/cl_parse.c), `Con_Print`/`Con_DrawNotify` (client/cl_console.c)
 //! and `SCR_CenterPrint`/`SCR_DrawCenterString` (client/cl_screen.c), at
@@ -17,24 +17,24 @@ use crate::layout::{draw_bytes, wire_bytes, HudDraw};
 const NUM_CON_TIMES: usize = 4;
 /// How long a printed line shows (C `con_notifytime` 3 s).
 const CON_NOTIFYTIME_MS: i32 = 3000;
-/// How long a centre print shows (C `scr_centertime` 2.5 s).
+/// How long a center print shows (C `scr_centertime` 2.5 s).
 const SCR_CENTERTIME_MS: i32 = 2500;
-/// Characters per centre-print line (C `SCR_DrawCenterString`).
+/// Characters per center-print line (C `SCR_DrawCenterString`).
 const CENTER_LINE: usize = 40;
 
-/// The server's text for the HUD: recent printed lines, the centre
+/// The server's text for the HUD: recent printed lines, the center
 /// print and the layout.
 #[derive(Debug, Clone, Default)]
 pub struct ServerText {
     /// The last few console lines with when each started (bit 7 of a
-    /// byte selects the alternate colour), newest last.
+    /// byte selects the alternate color), newest last.
     lines: VecDeque<(Vec<u8>, i32)>,
     /// Whether the newest line is still being printed.
     line_open: bool,
     /// A `\r` was printed and the next character replaces the newest line
     /// (C `Con_Print`'s static `cr`).
     carriage_return: bool,
-    /// The centre print's lines as wire bytes, at most 40 each.
+    /// The center print's lines as wire bytes, at most 40 each.
     center: Vec<Vec<u8>>,
     center_until: i32,
     /// The last `svc_layout` (C `cl.layout`), drawn while `STAT_LAYOUTS`
@@ -43,7 +43,7 @@ pub struct ServerText {
 }
 
 impl ServerText {
-    /// Take a print, centre print or layout message at `now` ms, wrapping
+    /// Take a print, center print or layout message at `now` ms, wrapping
     /// printed text at `linewidth` characters (C `con.linewidth`). True
     /// when it was chat, which C greets with `misc/talk.wav`.
     pub fn message(&mut self, bytes: &[u8], now: i32, linewidth: usize) -> bool {
@@ -75,7 +75,7 @@ impl ServerText {
     }
 
     /// C `Con_Print`: words wrap whole unless longer than a line. A first
-    /// byte of 1 or 2 is dropped and colours the whole print; `\r` makes
+    /// byte of 1 or 2 is dropped and colors the whole print; `\r` makes
     /// the next character, in this print or a later one, start the line
     /// over.
     fn con_print(&mut self, text: &[u8], ormask: u8, now: i32, linewidth: usize) {
@@ -133,7 +133,7 @@ impl ServerText {
             .map_or(0, |(l, _)| l.len())
     }
 
-    /// C `SCR_CenterPrint`: show `text` centred and clear the notify
+    /// C `SCR_CenterPrint`: show `text` centered and clear the notify
     /// lines (C `Con_ClearNotify`). One entry per `'\n'`-separated line,
     /// so the count is C's `scr_center_lines`; C `SCR_DrawCenterString`
     /// draws at most 40 characters of each and skips the rest.
@@ -148,7 +148,7 @@ impl ServerText {
     }
 
     /// C `Con_ClearNotify`, which `CL_PrepRefresh` runs for a new level:
-    /// the notify lines are dropped and the open one is closed. The centre
+    /// the notify lines are dropped and the open one is closed. The center
     /// print goes too. C counts it down on real time, so one printed just
     /// before a level change has run out during the load; here it is timed
     /// on `cl.time`, which a level change restarts at 0.
@@ -160,7 +160,7 @@ impl ServerText {
     }
 
     /// The notify lines (C `Con_DrawNotify`, one character in from the
-    /// left, down from the top) and the centre print (C
+    /// left, down from the top) and the center print (C
     /// `SCR_DrawCenterString`: from 35% down for up to four lines, else
     /// from 48).
     pub fn draws(&self, width: i32, height: i32, now: i32) -> Vec<HudDraw> {
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_plays_the_talk_sound_and_shows_in_the_alternate_colour() {
+    fn chat_plays_the_talk_sound_and_shows_in_the_alternate_color() {
         let mut text = ServerText::default();
         assert!(!text.message(&print(PRINT_HIGH, "x\n"), 0, 80));
         assert!(text.message(&print(PRINT_CHAT, "Bob: hi\n"), 0, 80));
@@ -283,13 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn a_centre_print_shows_centred_for_two_and_a_half_seconds() {
+    fn a_center_print_shows_centered_for_two_and_a_half_seconds() {
         let mut text = ServerText::default();
         text.message(&print(PRINT_HIGH, "old\n"), 0, 80);
         text.message(&center("The door is locked\nUse the key"), 0, 80);
         let draws = text.draws(640, 480, 100);
         let r = rows(&draws);
-        // Notify lines are cleared; two centred lines from 35% down.
+        // Notify lines are cleared; two centered lines from 35% down.
         assert_eq!(r.len(), 2);
         assert_eq!(r[0], (168, "The door is locked".to_string()));
         assert_eq!(r[1], (176, "Use the key".to_string()));
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn a_centre_print_line_is_cut_at_40_characters() {
+    fn a_center_print_line_is_cut_at_40_characters() {
         let mut text = ServerText::default();
         let long = "x".repeat(60);
         text.message(&center(&format!("{long}\na\nb\nc")), 0, 80);
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn the_centre_print_row_is_35_percent_in_double() {
+    fn the_center_print_row_is_35_percent_in_double() {
         let mut text = ServerText::default();
         text.message(&center("hi"), 0, 80);
         // C `viddef.height * 0.35` is a double: 251.99... at 720, not the
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leading_control_byte_one_or_two_colours_the_whole_print() {
+    fn a_leading_control_byte_one_or_two_colors_the_whole_print() {
         // C Con_Print: `txt[0] == 1 || txt[0] == 2` sets mask 128 and
         // skips that byte.
         for lead in ["\u{1}", "\u{2}"] {
@@ -407,18 +407,18 @@ mod tests {
             text.message(&print(PRINT_HIGH, &format!("{lead}hi\n")), 0, 80);
             assert_eq!(line_bytes(&text), [vec![b'h' | 0x80, b'i' | 0x80]]);
         }
-        // Only the first byte switches colour.
+        // Only the first byte switches color.
         let mut text = ServerText::default();
         text.message(&print(PRINT_HIGH, "a\u{1}\n"), 0, 80);
         assert_eq!(line_bytes(&text), [vec![b'a', 1]]);
     }
 
     #[test]
-    fn clear_notify_drops_the_lines_and_the_centre_print_before_a_clock_restart() {
+    fn clear_notify_drops_the_lines_and_the_center_print_before_a_clock_restart() {
         // C CL_PrepRefresh -> Con_ClearNotify at a level change, where the
         // port's cl.time starts over at 0.
         let mut text = ServerText::default();
-        text.message(&center("centre"), 600_000, 40);
+        text.message(&center("center"), 600_000, 40);
         text.message(&print(PRINT_HIGH, "late\n"), 600_000, 40);
         text.message(&print(PRINT_HIGH, "open"), 600_000, 40);
         assert!(!text.draws(320, 240, 500).is_empty());
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_centre_print_starts_near_the_top() {
+    fn a_long_center_print_starts_near_the_top() {
         let mut text = ServerText::default();
         text.message(&center("1\n2\n3\n4\n5"), 0, 80);
         assert_eq!(rows(&text.draws(640, 480, 0))[0].0, 48);

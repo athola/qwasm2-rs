@@ -281,7 +281,7 @@ const LASER_ON: i32 = 1;
 /// Burn along the beam: hurt everything it crosses until something that
 /// is neither a monster nor a player, spark there when the beam moved,
 /// and end the beam (`old_origin`) where it stopped. A laser with a
-/// target aims at its centre. C ref: `target_laser_think`.
+/// target aims at its center. C ref: `target_laser_think`.
 fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
     let enemy_point = world
         .entities
@@ -417,7 +417,7 @@ fn target_laser_use(
     }
 }
 
-/// A beam (`RF_BEAM`, 4 or with spawnflag 64 16 wide) in the colour its
+/// A beam (`RF_BEAM`, 4 or with spawnflag 64 16 wide) in the color its
 /// spawnflags pick (2 red, 4 green, 8 blue, 16 yellow, 32 orange; four
 /// palette indices packed in `skinnum`), aimed at its target or along its
 /// angles, on when spawnflag 1 is set. C ref: `target_laser_start`.
@@ -439,7 +439,7 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
     ent.state.modelindex = 1; // must be non-zero
     ent.state.frame = if ent.game.spawnflags & 64 != 0 { 16 } else { 4 };
     let flags = ent.game.spawnflags;
-    let colour: Option<u32> = if flags & 2 != 0 {
+    let color: Option<u32> = if flags & 2 != 0 {
         Some(0xf2f2_f0f0)
     } else if flags & 4 != 0 {
         Some(0xd0d1_d2d3)
@@ -452,8 +452,8 @@ fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
     } else {
         None
     };
-    if let Some(colour) = colour {
-        ent.state.skinnum = colour as i32;
+    if let Some(color) = color {
+        ent.state.skinnum = color as i32;
     }
     let mut bad_target = None;
     if ent.game.enemy.is_none() {
@@ -520,7 +520,7 @@ fn use_target_tent(
     temp_entity(world, style, &[origin], None, origin, Multicast::PVS);
 }
 
-/// A `count`-particle splash of colour `sounds` along `movedir`, and
+/// A `count`-particle splash of color `sounds` along `movedir`, and
 /// radius damage when `dmg` is set. C ref: `use_target_splash`.
 fn use_target_splash(
     world: &mut GameWorld,
@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_target_laser_starts_a_second_after_spawning_as_a_coloured_beam() {
+    fn a_target_laser_starts_a_second_after_spawning_as_a_colored_beam() {
         let (mut world, laser, gi) = laser_world(1 | 2 | 64);
         let ent = world.entities.get(laser).unwrap();
         assert_eq!(ent.game.nextthink, 3.0, "C: level.time + 1");

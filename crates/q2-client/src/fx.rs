@@ -78,7 +78,7 @@ pub const FX_MODELS: [&str; 13] = [
     MOD_MONSTER_HEATBEAM,
 ];
 
-/// TE_SPLASH colours by `SPLASH_*` (C `splash_color`).
+/// TE_SPLASH colors by `SPLASH_*` (C `splash_color`).
 const SPLASH_COLOR: [i32; 7] = [0x00, 0xe0, 0xb0, 0x50, 0xd0, 0xe0, 0xe8];
 /// C `cl_sfx_footsteps`.
 const FOOTSTEPS: [&str; 4] = [
@@ -91,7 +91,7 @@ const FOOTSTEPS: [&str; 4] = [
 const BFG_LIGHTRAMP: [f32; 6] = [300.0, 400.0, 600.0, 300.0, 150.0, 75.0];
 
 /// A model to draw (C `entity_t`). A laser has no model: it is an
-/// `RF_BEAM` from `origin` to `oldorigin`, `frame` wide, in palette colour
+/// `RF_BEAM` from `origin` to `oldorigin`, `frame` wide, in palette color
 /// `skinnum`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct FxEntity {
@@ -109,7 +109,7 @@ pub struct FxEntity {
     pub skinnum: i32,
 }
 
-/// A light for this frame only (C `V_AddLight`). A negative colour
+/// A light for this frame only (C `V_AddLight`). A negative color
 /// darkens (the tracker's lights).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FxLight {
@@ -142,7 +142,7 @@ pub struct FxView {
     pub forward: Vec3f,
     pub right: Vec3f,
     pub up: Vec3f,
-    /// C cvar `hand`: 0 right, 1 left, 2 centre.
+    /// C cvar `hand`: 0 right, 1 left, 2 center.
     pub hand: i32,
 }
 
@@ -418,7 +418,7 @@ impl ClientFx {
         Some(NamedSound::on(entnum, CHAN_WEAPON, &name, ATTN_NORM))
     }
 
-    /// Not in C (opt-in `extras`): a 64-unit column of grey smoke rising
+    /// Not in C (opt-in `extras`): a 64-unit column of gray smoke rising
     /// from a dry explosion, drawn by C's otherwise unused
     /// `CL_SmokeTrail`. ADR-003 records why it is opt-in.
     fn explosion_smoke(&mut self, pos: Vec3f, time: i32, randk: &mut impl FnMut() -> u32) {
@@ -435,7 +435,7 @@ impl ClientFx {
     }
 
     /// A model explosion (C's `ex_poly` cases): `light` in orange unless
-    /// the caller recolours it, starting one server frame back.
+    /// the caller recolors it, starting one server frame back.
     fn poly_explosion(
         &mut self,
         origin: Vec3f,
@@ -565,7 +565,7 @@ impl ClientFx {
                 let count = msg.read_byte();
                 let (pos, dir) = (read_pos(msg), msg.read_dir()?);
                 let r = msg.read_byte();
-                // C indexes past the table for a negative r; colour 0 here.
+                // C indexes past the table for a negative r; color 0 here.
                 let color = usize::try_from(r)
                     .ok()
                     .and_then(|r| SPLASH_COLOR.get(r))
@@ -1117,7 +1117,7 @@ impl ClientFx {
             None
         } else if effects & EF_ROCKET != 0 {
             ps.rocket_trail(lerp_origin, origin, &mut trail.trailcount, time, randk);
-            // cl_r1q2_lightstyle's default 1 colour.
+            // cl_r1q2_lightstyle's default 1 color.
             light(origin, 200.0, [1.0, 0.23, 0.0])
         } else if effects & EF_BLASTER != 0 {
             if tracker {
@@ -1570,7 +1570,7 @@ pub fn effect_alpha(effects: u32) -> Option<f32> {
 }
 
 /// The extra model an `EF_POWERSCREEN` entity draws over `view`: the
-/// translucent green armour shell on frame 0. C ref: `CL_AddPacketEntities`.
+/// translucent green armor shell on frame 0. C ref: `CL_AddPacketEntities`.
 pub fn powerscreen_entity(view: &EntityView) -> FxEntity {
     FxEntity {
         model: Some(MOD_POWERSCREEN),
@@ -1758,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn blood_shotgun_and_screen_sparks_spray_their_colours() {
+    fn blood_shotgun_and_screen_sparks_spray_their_colors() {
         let mut fx = ClientFx::default();
         assert!(fx
             .temp_entity(&pos_dir(TE_BLOOD, P, Vec3f::Z), 1000, 1000, &mut rng(&[0]))
@@ -1866,7 +1866,7 @@ mod tests {
             assert_eq!(fx.particles.len(), plain + 16, "{kind}");
             let smoke = &fx.particles.active[plain..];
             for p in smoke {
-                assert!((4..12).contains(&p.color), "grey: {}", p.color);
+                assert!((4..12).contains(&p.color), "gray: {}", p.color);
                 assert!(p.vel.z > 0.0, "rises");
                 assert!(p.org.z >= P.z - 3.0 && p.org.z <= P.z + 67.0);
             }
@@ -2017,7 +2017,7 @@ mod tests {
     }
 
     #[test]
-    fn splashes_take_their_colour_and_sparks_crackle() {
+    fn splashes_take_their_color_and_sparks_crackle() {
         let mut fx = ClientFx::default();
         let splash = |count: i32, kind: i32| {
             tent(TE_SPLASH, |m| {
@@ -2039,10 +2039,7 @@ mod tests {
         assert_eq!(sounds[0].attenuation, ATTN_STATIC);
         fx.clear();
         fx.temp_entity(&splash(4, 9), 1000, 1000, &mut rng(&[0]));
-        assert_eq!(
-            fx.particles.active[0].color, 0,
-            "past the table is colour 0"
-        );
+        assert_eq!(fx.particles.active[0].color, 0, "past the table is color 0");
     }
 
     #[test]
@@ -2085,7 +2082,7 @@ mod tests {
             m.write_position(P);
             m.write_position(end);
         });
-        // randk 1: colour byte 1 of 0xd0d1d2d3.
+        // randk 1: color byte 1 of 0xd0d1d2d3.
         fx.temp_entity(&msg, 1000, 1000, &mut rng(&[1]));
         let frame = fx.frame(1100, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
         let laser = frame.entities[0];
@@ -2660,25 +2657,25 @@ mod tests {
         })
     }
 
-    fn colour_of(fx: &ClientFx) -> i32 {
+    fn color_of(fx: &ClientFx) -> i32 {
         fx.particles.active[0].color
     }
 
     #[test]
-    fn mission_pack_impacts_spray_their_colours() {
+    fn mission_pack_impacts_spray_their_colors() {
         let mut fx = ClientFx::default();
         let mut r = rng(&[0]);
         assert!(fx
             .temp_entity(&pos_dir(TE_GREENBLOOD, P, Vec3f::Z), 0, 0, &mut r)
             .is_empty());
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (30, 0xdf));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (30, 0xdf));
         fx.clear();
         fx.temp_entity(&pos_dir(TE_MOREBLOOD, P, Vec3f::Z), 0, 0, &mut r);
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (250, 0xe8));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (250, 0xe8));
         fx.clear();
         let sounds = fx.temp_entity(&pos_dir(TE_ELECTRIC_SPARKS, P, Vec3f::Z), 0, 0, &mut r);
         assert_eq!(names(&sounds), ["weapons/lashit.wav"]);
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (40, 0x75));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (40, 0x75));
         fx.clear();
         let tunnel = tent(TE_TUNNEL_SPARKS, |m| {
             m.write_byte(7);
@@ -2687,7 +2684,7 @@ mod tests {
             m.write_byte(0x40);
         });
         fx.temp_entity(&tunnel, 0, 0, &mut rng(&[3]));
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (7, 0x40));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (7, 0x40));
         assert_eq!(fx.particles.active[0].accel.z, 40.0, "effect3 rises");
         fx.clear();
         fx.temp_entity(&pos_only(TE_CHAINFIST_SMOKE, P), 0, 0, &mut r);
@@ -2711,7 +2708,7 @@ mod tests {
             fx.clear();
             let sounds = fx.temp_entity(&pos_dir(kind, P, Vec3f::Z), 0, 0, &mut r);
             assert_eq!(names(&sounds), ["weapons/lashit.wav"]);
-            assert_eq!((fx.particles.len(), colour_of(&fx)), (count, color));
+            assert_eq!((fx.particles.len(), color_of(&fx)), (count, color));
         }
         fx.clear();
         let end = P + Vec3f::new(80.0, 0.0, 0.0);
@@ -2729,7 +2726,7 @@ mod tests {
             m.write_byte(0x74);
         });
         fx.temp_entity(&wall, 0, 0, &mut rng(&[32767]));
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (20, 0x74));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (20, 0x74));
     }
 
     #[test]
@@ -2737,7 +2734,7 @@ mod tests {
         let mut fx = ClientFx::default();
         let msg = pos_pos(TE_BLUEHYPERBLASTER, P, Vec3f::Z);
         assert!(fx.temp_entity(&msg, 1000, 1000, &mut rng(&[0])).is_empty());
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (40, 0xe0));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (40, 0xe0));
         let frame = fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
         assert!(frame.entities.is_empty());
     }
@@ -2751,7 +2748,7 @@ mod tests {
             let mut fx = ClientFx::default();
             let sounds = fx.temp_entity(&pos_dir(kind, P, Vec3f::Z), 1000, 1000, &mut rng(&[0]));
             assert_eq!(names(&sounds), ["weapons/lashit.wav"]);
-            assert_eq!((fx.particles.len(), colour_of(&fx)), (40, color));
+            assert_eq!((fx.particles.len(), color_of(&fx)), (40, color));
             let frame = fx.frame(1000, 1.0, 1, Vec3f::ZERO, &mut rng(&[0]));
             let ex = frame.entities[0];
             assert_eq!(ex.model, Some(MOD_EXPLODE));
@@ -2967,7 +2964,7 @@ mod tests {
         assert_eq!(seg.frame, 1);
         assert_eq!(frame.entities.len(), 4);
         assert_eq!(frame.particles.len(), 6 * 20);
-        // Left-handed mirrors the offset; centre-handed drops it and
+        // Left-handed mirrors the offset; center-handed drops it and
         // lowers the beam a unit (C does it twice).
         let frame = fx.frame_view(1000, 1.0, &view(1), &mut rng(&[0]));
         assert_eq!(frame.entities[0].origin, Vec3f::new(7.0, 2.0, -3.0));
@@ -3114,7 +3111,7 @@ mod tests {
         let msg = pos_only(TE_TRACKER_EXPLOSION, P);
         let sounds = fx.temp_entity(&msg, 1000, 1000, &mut rng(&[0]));
         assert_eq!(names(&sounds), ["weapons/disrupthit.wav"]);
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (128, 0));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (128, 0));
         let lights = fx.take_dlights();
         assert_eq!((lights[0].key, lights[0].radius), (0, 150.0));
         assert_eq!(lights[0].color, [-1.0, -1.0, -1.0]);
@@ -3153,13 +3150,13 @@ mod tests {
         });
         let (light, fx) = trail_light(EF_BLASTER | EF_TRACKER, &[0]);
         assert_eq!(light, green);
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (4, 0xd0));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (4, 0xd0));
         let (light, fx) = trail_light(EF_HYPERBLASTER | EF_TRACKER, &[0]);
         assert_eq!((light, fx.particles.len()), (green, 0));
     }
 
     #[test]
-    fn ctf_flags_and_the_tag_trail_and_light_their_colours() {
+    fn ctf_flags_and_the_tag_trail_and_light_their_colors() {
         for (effects, color, light, count) in [
             (EF_FLAG1, 242, [1.0, 0.1, 0.1], 4),
             (EF_FLAG2, 115, [0.1, 0.1, 1.0], 4),
@@ -3168,7 +3165,7 @@ mod tests {
             let (lit, fx) = trail_light(effects, &[0]);
             let lit = lit.unwrap();
             assert_eq!((lit.intensity, lit.color), (225.0, light));
-            assert_eq!((fx.particles.len(), colour_of(&fx)), (count, color));
+            assert_eq!((fx.particles.len(), color_of(&fx)), (count, color));
         }
     }
 
@@ -3193,7 +3190,7 @@ mod tests {
         let (light, fx) = trail_light(EF_IONRIPPER, &[0]);
         let light = light.unwrap();
         assert_eq!((light.intensity, light.color), (100.0, [1.0, 0.5, 0.5]));
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (4, 0xe4));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (4, 0xe4));
         let (light, fx) = trail_light(EF_BLUEHYPERBLASTER, &[0]);
         assert_eq!(light.unwrap().color, [0.0, 0.0, 1.0]);
         assert!(fx.particles.is_empty());
@@ -3201,7 +3198,7 @@ mod tests {
         assert_eq!(light.unwrap().intensity, 130.0);
         assert!(fx.particles.is_empty());
         let (_, fx) = trail_light(EF_PLASMA | EF_ANIM_ALLFAST, &[0]);
-        assert_eq!((fx.particles.len(), colour_of(&fx)), (4, 0xe0));
+        assert_eq!((fx.particles.len(), color_of(&fx)), (4, 0xe0));
     }
 
     #[test]

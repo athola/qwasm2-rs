@@ -436,7 +436,7 @@ pub struct GameEntityData {
     pub random: f32,
     pub count: i32,
     pub style: i32,
-    /// The map's `sounds` key (C `edict_t.sounds`); target_splash's colour.
+    /// The map's `sounds` key (C `edict_t.sounds`); target_splash's color.
     pub sounds: i32,
     pub item: Option<usize>, // index into the item table
     pub gravity: f32,        // per-entity gravity multiplier

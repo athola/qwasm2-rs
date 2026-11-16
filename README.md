@@ -87,11 +87,11 @@ Settings are query parameters, such as
 | Parameter | Effect | Default |
 |-----------|--------|---------|
 | `map` | Start map (`demo1`, `demo2`, `demo3` in the demo pak) | `demo1` |
-| `hand` | C `hand`: 0 right, 1 left, 2 centre (moves shots and the gun) | 0 |
+| `hand` | C `hand`: 0 right, 1 left, 2 center (moves shots and the gun) | 0 |
 | `cl_gun` | C `cl_gun`: 0 hides the first-person gun | 2 |
 | `gamma` | Start gamma, 0.1 to 2.0; F7/F8 step it in game | 1.0 |
 | `vid_fullscreen` | 1: the click to play also goes fullscreen and locks the keyboard (Chromium) | off |
-| `game` | C `game`; `rogue` applies the mission pack's colour shells (client only) | baseq2 |
+| `game` | C `game`; `rogue` applies the mission pack's color shells (client only) | baseq2 |
 | `cl_fxextra` | 1: explosion smoke C does not draw ([ADR-003](docs/adr/003-game-logic-design.md)) | off |
 
 ### Prerequisites
@@ -213,9 +213,9 @@ GPL-2.0-or-later; see [LICENSE](LICENSE) and
 GPL-2.0-or-later C: id Software's Quake II (Copyright (C) 1997-2001 Id
 Software, Inc.), [Yamagi Quake II](https://github.com/yquake2/yquake2) and
 [Qwasm2](https://github.com/GMH-Code/Qwasm2). A port is a derivative work,
-so it carries the same licence.
+so it carries the same license.
 
 Quake II game data (the PAK files) is not part of this repository and
-has its own, more restrictive licence. Do not host it publicly. This
+has its own, more restrictive license. Do not host it publicly. This
 project is not affiliated with id Software, Bethesda Softworks or
 ZeniMax Media.

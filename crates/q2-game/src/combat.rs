@@ -40,7 +40,7 @@ impl GameWorld {
             None => return false,
         };
 
-        // Bmodels have their origin at 0,0,0: trace to the box centre,
+        // Bmodels have their origin at 0,0,0: trace to the box center,
         // and hitting the bmodel itself counts.
         if targ_movetype == MoveType::Push {
             let dest = (targ_absmin + targ_absmax) * 0.5;
@@ -2075,7 +2075,7 @@ mod tests {
     }
 
     #[test]
-    fn radius_damage_falls_off_with_the_distance_to_the_box_centre() {
+    fn radius_damage_falls_off_with_the_distance_to_the_box_center() {
         // C ref: T_RadiusDamage, v = inflictor - (origin + (mins+maxs)/2).
         let mut world = test_world();
         let inflictor = world.spawn().unwrap();
@@ -2094,7 +2094,7 @@ mod tests {
             MeansOfDeath::RocketSplash,
         );
 
-        // Centre (48, 0, 8) is 38.8 away: 100 - 19.4 = 80 points.
+        // Center (48, 0, 8) is 38.8 away: 100 - 19.4 = 80 points.
         assert_eq!(world.entities.get(target).unwrap().game.health, 920);
     }
 
@@ -2365,7 +2365,7 @@ mod tests {
     }
 
     #[test]
-    fn can_damage_tries_the_corners_when_the_centre_is_blocked() {
+    fn can_damage_tries_the_corners_when_the_center_is_blocked() {
         let (mut world, gi) = crate::world::test_world_recording();
         let target = world.spawn().unwrap();
         let inflictor = world.spawn().unwrap();
@@ -2379,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn can_damage_probes_the_centre_then_four_corners_in_c_order() {
+    fn can_damage_probes_the_center_then_four_corners_in_c_order() {
         // C ref: CanDamage tries origin, then +x+y, +x-y, -x+y, -x-y by 15.
         let (mut world, gi) = crate::world::test_world_recording();
         let target = world.spawn().unwrap();
@@ -2412,7 +2412,7 @@ mod tests {
     }
 
     #[test]
-    fn can_damage_aims_at_the_centre_of_a_bmodels_box() {
+    fn can_damage_aims_at_the_center_of_a_bmodels_box() {
         // C ref: CanDamage, MOVETYPE_PUSH traces to (absmin + absmax) / 2.
         let (mut world, gi) = crate::world::test_world_recording();
         let target = world.spawn().unwrap();

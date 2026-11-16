@@ -61,7 +61,7 @@ pub(crate) fn angle_vectors2(v: Vec3f) -> Vec3f {
     Vec3f::new(-pitch, yaw, 0.0)
 }
 
-/// C's three `crandk()` normalised: a random unit direction.
+/// C's three `crandk()` normalized: a random unit direction.
 fn random_dir(randk: &mut impl FnMut() -> u32) -> Vec3f {
     let mut dir = Vec3f::ZERO;
     for j in 0..3 {
@@ -71,7 +71,7 @@ fn random_dir(randk: &mut impl FnMut() -> u32) -> Vec3f {
     dir
 }
 
-/// The look of a smoke trail: colours `color_start + randk % color_run`,
+/// The look of a smoke trail: colors `color_start + randk % color_run`,
 /// one particle every `spacing` units. C ref: `CL_SmokeTrail`'s
 /// `colorStart`, `colorRun` and `spacing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ pub struct SmokeTrail {
 
 impl Particles {
     /// Rising smoke along a line. C leaves the x and y velocity unset (0
-    /// here); a zero colour run divides by zero in C and makes nothing
+    /// here); a zero color run divides by zero in C and makes nothing
     /// here. C ref: `CL_SmokeTrail`.
     pub fn smoke_trail(
         &mut self,
@@ -628,7 +628,7 @@ impl Particles {
         }
     }
 
-    /// 128 particles in colours `color + randk % run` bursting from `org`.
+    /// 128 particles in colors `color + randk % run` bursting from `org`.
     /// A `run` of 0 divides by zero in C and makes nothing here.
     /// C ref: `CL_ColorExplosionParticles`.
     pub fn color_explosion_particles(
@@ -657,7 +657,7 @@ impl Particles {
         }
     }
 
-    /// `blaster_particles` in colours `color..+7` (0xd0 for the blaster2,
+    /// `blaster_particles` in colors `color..+7` (0xd0 for the blaster2,
     /// 0x6f for flechettes). C ref: `CL_BlasterParticles2`.
     pub fn blaster_particles2(
         &mut self,
@@ -682,8 +682,8 @@ impl Particles {
         }
     }
 
-    /// The green blaster bolt's trail. yquake2 never sets the colour (a
-    /// freed particle's colour stays); id's cl_newfx.c sets 0xd0, used
+    /// The green blaster bolt's trail. yquake2 never sets the color (a
+    /// freed particle's color stays); id's cl_newfx.c sets 0xd0, used
     /// here. C ref: `CL_BlasterTrail2`.
     pub fn blaster_trail2(
         &mut self,
@@ -722,7 +722,7 @@ mod tests {
     const X100: Vec3f = Vec3f::new(100.0, 0.0, 0.0);
 
     #[test]
-    fn a_colour_explosion_stays_in_c_ranges_for_any_random_number() {
+    fn a_color_explosion_stays_in_c_ranges_for_any_random_number() {
         // C randk is never negative; the high bit must not flip signs.
         let mut ps = Particles::default();
         ps.color_explosion_particles(Vec3f::ZERO, 0x10, 4, 0, &mut rng(&[u32::MAX, 0x8000_0001]));
@@ -736,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn a_smoke_trail_rises_in_its_colour_run() {
+    fn a_smoke_trail_rises_in_its_color_run() {
         let mut ps = Particles::default();
         let style = SmokeTrail {
             color_start: 0x10,
@@ -752,7 +752,7 @@ mod tests {
         ps.clear();
         ps.smoke_trail(Vec3f::ZERO, X100, style, 0, &mut rng(&[u32::MAX]));
         assert!(ps.active.iter().all(|p| (0x10..0x14).contains(&p.color)));
-        // C divides by zero for an empty colour run.
+        // C divides by zero for an empty color run.
         ps.clear();
         let style = SmokeTrail {
             color_run: 0,
@@ -961,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_explosion_bursts_128_particles() {
+    fn a_color_explosion_bursts_128_particles() {
         let mut ps = Particles::default();
         ps.color_explosion_particles(Vec3f::ZERO, 0, 1, 0, &mut rng(&[300]));
         assert_eq!(ps.len(), 128);

@@ -526,7 +526,7 @@ fn unsafe_scan_flags_every_crate_but_q2_render() {
 
 /// The C this workspace ports (id's Quake II, yquake2, Qwasm2) is
 /// GPL-2.0-or-later, and a translation of it is a derivative work, so no
-/// crate may declare a licence of its own.
+/// crate may declare a license of its own.
 const LICENSE: &str = "GPL-2.0-or-later";
 
 #[test]
@@ -550,7 +550,7 @@ fn every_crate_is_gpl_2_or_later_like_the_c_it_ports() {
         assert_eq!(
             lines,
             ["license.workspace = true"],
-            "{krate} must inherit the workspace licence"
+            "{krate} must inherit the workspace license"
         );
     }
     let text = fs::read_to_string(repo_root().join("LICENSE")).expect("LICENSE at the root");

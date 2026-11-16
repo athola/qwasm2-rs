@@ -7,7 +7,7 @@
 //! Brush entities are lit by the frame's dynamic lights through their model
 //! matrix, as C `vertexSrc3Dlm` does with `transModel`.
 //!
-//! Not modelled relative to C: frustum culling of brush entities,
+//! Not modeled relative to C: frustum culling of brush entities,
 //! `RF_IR_VISIBLE`, the null-model placeholder and entity shadows. Beams and sprites are drawn in the same passes
 //! through `fx`. Entities whose model is none of the above are skipped.
 
@@ -55,9 +55,9 @@ pub struct ExtraGpu {
     pub notexture: glow::Texture,
 }
 
-/// MD2 vertices: position(3), uv(2), colour(4).
+/// MD2 vertices: position(3), uv(2), color(4).
 const ALIAS_ATTRIBUTES: [Attribute; 3] = [(0, 3, 0), (1, 2, 3), (2, 4, 5)];
-/// 2D vertices: position(2), uv(2), colour(4).
+/// 2D vertices: position(2), uv(2), color(4).
 const UI_ATTRIBUTES: [Attribute; 3] = [(0, 2, 0), (1, 2, 2), (2, 4, 4)];
 
 /// Every step is attempted; if any fails, the objects the others made are
@@ -194,7 +194,7 @@ pub struct EntityScene<'a> {
     pub hand: i32,
     /// Beam and sprite programs; without them neither is drawn.
     pub fx: Option<&'a super::fx::FxGpu>,
-    /// Beam colours.
+    /// Beam colors.
     pub palette: Option<&'a Palette>,
     /// The view's right and up, which sprites face.
     pub view_right_up: (q2_shared::types::Vec3f, q2_shared::types::Vec3f),
@@ -398,7 +398,7 @@ fn alias_frames(
     (!culled).then_some((frame, oldframe))
 }
 
-/// A colour shell samples white; a skin whose image did not load, or
+/// A color shell samples white; a skin whose image did not load, or
 /// none, draws as the notexture checker (C `gl3_notexture` fallback).
 fn alias_texture(
     entity: &RenderEntity,

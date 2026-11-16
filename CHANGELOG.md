@@ -14,9 +14,9 @@ All notable changes to qwasm2-rs are documented here.
   argument
 - The workspace denies rustc's `unsafe_code` lint; q2-render allows it
   at its crate root
-- The licence is GPL-2.0-or-later (`LICENSE`, and `license` in every
+- The license is GPL-2.0-or-later (`LICENSE`, and `license` in every
   crate's manifest). The C this ports is GPL-2.0-or-later, so the README's
-  earlier "MIT or Apache-2.0" was not a licence the port could carry, and
+  earlier "MIT or Apache-2.0" was not a license the port could carry, and
   no crate declared one
 
 ### Added
@@ -95,9 +95,9 @@ All notable changes to qwasm2-rs are documented here.
   and nuke sustains, heat beams from the player's gun, lightning, the
   grapple cable, and the trails and lights of every effect flag;
   translucent BFG balls, plasma and spheres, spinning lights
-- Colour shells: quad, pentagram, double and half damage and the power
-  shield draw C's second, colour-only model pushed out along the vertex
-  normals, and power screens their armour shell (`RF_SHELL_*`)
+- Color shells: quad, pentagram, double and half damage and the power
+  shield draw C's second, color-only model pushed out along the vertex
+  normals, and power screens their armor shell (`RF_SHELL_*`)
 - A keys legend: F4 (Q2's `default.cfg` binds it to `menu_keys`, the
   controls screen) or the page's Keys button lists every action and its
   keys, named as C's controls menu names them
@@ -124,25 +124,25 @@ All notable changes to qwasm2-rs are documented here.
   `pointerlockchange`, and that released every held key; held keys are
   now only released when the lock (or focus) is lost
 - Opt-in explosion smoke (`?cl_fxextra=1`, off by default): rocket,
-  grenade and other dry explosions leave a rising column of grey smoke,
+  grenade and other dry explosions leave a rising column of gray smoke,
   drawn with C's otherwise unused `CL_SmokeTrail`; ADR-005 now allows
   additions like this only behind settings that default to C
 - The page reads C's `cl_gun` (`?cl_gun=`: 0 no gun, 1 none in a wide
   view, 2 always, the default), which the game reads too (`gi.cvar`) to
   show the weapon icon only when the gun is not drawn
-- The page reads C's `hand` (`?hand=1` left, `2` centre), `game`
+- The page reads C's `hand` (`?hand=1` left, `2` center), `game`
   (`?game=rogue`) and a start map (`?map=demo3`): shots leave from the
   player's hand, the gun is mirrored or hidden, heat beams follow the
-  hand, and rogue's shell colours
+  hand, and rogue's shell colors
   apply; flashlight and tracker lights take slots in the client's
   dlights like C's
 - Map lasers (C `target_laser`): beams aimed along their angles or at a
-  target, in the five spawnflag colours, burning what they cross, with
+  target, in the five spawnflag colors, burning what they cross, with
   sparks where they land when they move; the browser draws a beam in one
-  of its four packed colours at alpha 0.30 each frame
+  of its four packed colors at alpha 0.30 each frame
 - The browser shows the server's text: printed lines at the top for
   three seconds (death messages, pickups, chat with its talk sound),
-  centre prints such as door messages, and the server layout over the
+  center prints such as door messages, and the server layout over the
   status bar, so F1 opens the help computer and the scoreboard draws
   with C's `client` blocks (`q2_client::notify`, prints and unicasts
   reach `LocalGame::take_messages`)
@@ -211,7 +211,7 @@ All notable changes to qwasm2-rs are documented here.
   - a disconnecting player is announced, shows C's logout flash and
     leaves the scoreboard
   - hand grenade throws, vectoangles, monster steps, sound
-    spatialisation and the fov use C's double arithmetic where C does
+    spatialization and the fov use C's double arithmetic where C does
   - monster footsteps follow the `g_monsterfootsteps` cvar
   - a malformed entity lump, a full edict table, a missing spawn point, a
     think-less entity due to think, a bad configstring index and a full
@@ -224,7 +224,7 @@ All notable changes to qwasm2-rs are documented here.
   them: through the origin's PVS or PHS and connected areas, and
   unreliable ones only once the client is in the game, so effects in
   unseen rooms no longer light or sound through walls
-- Centre prints, prints and unicasts go only to client entities
+- Center prints, prints and unicasts go only to client entities
   (C `1..=maxclients`), so a trigger or monster activator's message no
   longer shows on the player's screen
 
@@ -433,7 +433,7 @@ All notable changes to qwasm2-rs are documented here.
   `Drop`, which discards them), writes outputs via temp file + rename,
   removes a stale `.br` when run without `--brotli`, and rejects output
   over the 4 GiB PAK offset limit instead of truncating offsets
-- `q2-devserver` honours `br;q=0`, sends `Vary: Accept-Encoding`, streams
+- `q2-devserver` honors `br;q=0`, sends `Vary: Accept-Encoding`, streams
   the pak instead of reading it per request, and skips a `.br` older than
   its pak; an invalid `PORT` is an error
 - `q2-bundler` fails when wasm-bindgen glue no longer matches its rewrites

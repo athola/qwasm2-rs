@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Replaces Com_Error() with ERR_FATAL / ERR_DROP. C's third code,
-/// ERR_DISCONNECT, is not modelled.
+/// ERR_DISCONNECT, is not modeled.
 /// The frame loop catches Drop errors and continues.
 /// Fatal errors terminate the process.
 #[derive(Error, Debug)]

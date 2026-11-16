@@ -39,7 +39,7 @@
 //! the `flushmap` cvar (the same map is always kept). Of [`RefDef`], `x`/`y`
 //! (the 3D viewport is always at 0, 0), the `RDF_UNDERWATER` water warp
 //! post-process, `RDF_NOWORLDMODEL` (the world is drawn anyway) and
-//! `r_fullbright` are not honoured.
+//! `r_fullbright` are not honored.
 
 mod alias;
 mod draw;
@@ -515,7 +515,7 @@ impl Renderer for Gl3Renderer {
         }
 
         let (Some(program), Some(uniforms)) = (&self.program, &self.uniforms) else {
-            tracing::trace!("GL3: skipping draw, renderer not initialised");
+            tracing::trace!("GL3: skipping draw, renderer not initialized");
             return;
         };
         // SAFETY: `program` was created on this same `gl` by init and is
@@ -781,7 +781,7 @@ fn world_draw<'a>(fd: &'a RefDef, view_proj: &'a [f32; 16], filter: BatchFilter)
 const MAX_DLIGHTS: usize = 32;
 
 /// The world shader's dynamic light uniforms (C `GL3_UpdateUBOLights`):
-/// origins as xyz0 and colours as rgb + intensity, 32 vec4s each, and
+/// origins as xyz0 and colors as rgb + intensity, 32 vec4s each, and
 /// how many are used. Lights past 32 are dropped.
 fn dlight_uniforms(dlights: &[DLight]) -> (Vec<f32>, Vec<f32>, i32) {
     let mut origins = vec![0.0; MAX_DLIGHTS * 4];
@@ -879,7 +879,7 @@ fn view_matrix(fd: &RefDef) -> [f32; 16] {
 }
 
 /// [`view_matrix`] for an explicit eye position and angles; the sky box uses
-/// a zero position so it stays centred on the eye.
+/// a zero position so it stays centered on the eye.
 fn view_matrix_at(origin: Vec3f, angles: Vec3f) -> [f32; 16] {
     // Column-major: first put the Z axis going up.
     #[rustfmt::skip]
@@ -947,7 +947,7 @@ fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
-/// The 2D quad colour that draws `fd.blend` as C does. Dry, C
+/// The 2D quad color that draws `fd.blend` as C does. Dry, C
 /// `GL3_Draw_Flash` (fragmentSrc2Dcolor) scales by intensity2D and applies
 /// gamma, as the 2D shader here does, so the blend is passed as is. With
 /// `RDF_UNDERWATER` and a world, C `SetupGL` binds the post-process FBO
@@ -1218,7 +1218,7 @@ mod tests {
         for i in 1..4 {
             assert!((left[i] - right[i]).abs() < 1e-4);
         }
-        // Centre-handed draws no gun; left-handed culls the mirrored side.
+        // Center-handed draws no gun; left-handed culls the mirrored side.
         assert_eq!(gun_cull_face(0), Some(CULL_FACE));
         assert_eq!(gun_cull_face(1), Some(glow::BACK));
         assert_eq!(gun_cull_face(2), None);
@@ -1762,7 +1762,7 @@ mod tests {
         assert_eq!(r.hand, 2);
     }
 
-    /// "IDS2" with one frame per `(name, width, height)`, hung from its centre.
+    /// "IDS2" with one frame per `(name, width, height)`, hung from its center.
     fn synthetic_sp2(frames: &[(&str, i32, i32)]) -> Vec<u8> {
         let mut bytes = b"IDS2".to_vec();
         bytes.extend_from_slice(&2i32.to_le_bytes());
@@ -2004,7 +2004,7 @@ mod tests {
         assert!(r.ui_queue.is_empty(), "no alpha, no flash");
     }
 
-    /// The colour queued for the full-view flash of `fd`.
+    /// The color queued for the full-view flash of `fd`.
     fn queued_flash_color(r: &mut Gl3Renderer, fd: &RefDef) -> [f32; 4] {
         r.ui_queue.clear();
         r.render_frame(fd, &[], &[], &[]);
@@ -2028,7 +2028,7 @@ mod tests {
         for (got, want) in got.iter().zip([0.5 / 1.5, 0.3 / 1.5, 0.2 / 1.5, 0.4]) {
             assert!((got - want).abs() < 1e-6, "{got:?}");
         }
-        // ... and the 2D shader's pow(rgb, 1/vid_gamma) is cancelled too.
+        // ... and the 2D shader's pow(rgb, 1/vid_gamma) is canceled too.
         r.set_gamma(2.0);
         let got = queued_flash_color(&mut r, &water);
         for (got, want) in got.iter().zip([0.25 / 1.5, 0.09 / 1.5, 0.04 / 1.5, 0.4]) {

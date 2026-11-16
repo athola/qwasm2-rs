@@ -14,7 +14,7 @@ use std::num::IntErrorKind;
 pub enum HudDraw {
     /// `Draw_Pic`: a pic name as C passes it (`num_0`, `i_health`, ...).
     Pic { x: i32, y: i32, name: String },
-    /// `Draw_Char`: a conchars glyph (bit 7 selects the alternate colour).
+    /// `Draw_Char`: a conchars glyph (bit 7 selects the alternate color).
     Char { x: i32, y: i32, ch: u8 },
 }
 
@@ -33,7 +33,7 @@ pub struct LayoutInput<'a> {
     pub serverframe: i32,
 }
 
-/// `sb_nums`: big digits, normal and alternate colour.
+/// `sb_nums`: big digits, normal and alternate color.
 const SB_NUMS: [[&str; 11]; 2] = [
     [
         "num_0",
@@ -157,7 +157,7 @@ fn draw_string(out: &mut Vec<HudDraw>, x: i32, y: i32, text: &str, xor: u8) {
     draw_bytes(out, x, y, wire_bytes(text).map(|ch| ch ^ xor));
 }
 
-/// C DrawHUDString: lines centred in `centerwidth` (0 = left aligned).
+/// C DrawHUDString: lines centered in `centerwidth` (0 = left aligned).
 fn draw_hud_string(out: &mut Vec<HudDraw>, x: i32, y: i32, centerwidth: i32, text: &str, xor: u8) {
     for (n, line) in text.split('\n').enumerate() {
         let lx = if centerwidth != 0 {
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(chars_at(&draws, y + 16), "Ping:  50");
         assert_eq!(chars_at(&draws, y + 24), "Time:  3");
         // C DrawAltString: the name and the whole score row are in the
-        // alternate colour, Ping and Time are not.
+        // alternate color, Ping and Time are not.
         let alt = |row: i32| {
             draws
                 .iter()
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn low_health_flashes_and_zero_health_is_alternate_coloured() {
+    fn low_health_flashes_and_zero_health_is_alternate_colored() {
         let mut stats = [0; 32];
         stats[STAT_HEALTH] = -5;
         let draws = run("hnum", &stats, &[]);
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn quoted_strings_and_alt_colour_and_centring() {
+    fn quoted_strings_and_alt_color_and_centering() {
         let stats = [0; 32];
         let draws = run("string2 \"a b\" cstring \"ab\"", &stats, &[]);
         assert_eq!(
@@ -856,7 +856,7 @@ mod tests {
     #[test]
     fn a_high_byte_draws_as_one_glyph_of_its_value() {
         // A layout or configstring as NetMsg::read_string returns it: byte
-        // 0xE1 is the char U+00E1. C draws, and centres, the one byte. It
+        // 0xE1 is the char U+00E1. C draws, and centers, the one byte. It
         // is quoted, as an unquoted high byte is whitespace to COM_Parse.
         let stats = [0; 32];
         assert_eq!(

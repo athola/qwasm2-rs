@@ -1392,7 +1392,7 @@ mod tests {
         assert!(msg.remaining_data().is_empty());
     }
 
-    // Laser colour skins are negative as i32 and need the 32-bit form.
+    // Laser color skins are negative as i32 and need the 32-bit form.
     #[test]
     fn entity_negative_skinnum_roundtrips() {
         let from = EntityState::default();

@@ -49,7 +49,7 @@ fn float_bytes(floats: &[f32]) -> &[u8] {
     bytemuck::cast_slice(floats)
 }
 
-/// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for colour, but
+/// C's `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` for color, but
 /// destination alpha stays 1: desktop GL ignores framebuffer alpha, while a
 /// WebGL canvas (alpha, premultiplied) would show the page through it.
 pub(super) fn set_alpha_blend(gl: &glow::Context) {
@@ -483,7 +483,7 @@ pub struct MeshDraw<'a> {
     pub texture: Option<glow::Texture>,
     pub mvp: &'a [f32; 16],
     pub blend: bool,
-    /// Draw the vertex colour alone (colour shells).
+    /// Draw the vertex color alone (color shells).
     pub color_only: bool,
 }
 

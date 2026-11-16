@@ -61,7 +61,7 @@ impl GameWorld {
             .find(|&(until, _)| until > framenum)
         });
         let timer = timer.map(|(until, icon)| (self.gi.image_index(icon), (until - framenum) / 10));
-        // Help icon blinks on new help; else, centre-handed or with a wide
+        // Help icon blinks on new help; else, center-handed or with a wide
         // view, the weapon icon unless cl_gun 2 (C's default) draws the
         // gun anyway.
         let helpicon = match self.client(key) {

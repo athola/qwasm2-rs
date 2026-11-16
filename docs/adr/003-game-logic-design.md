@@ -148,7 +148,7 @@ effects, and the deathmatch rules end matches through C's intermission.
   multicast from `ClientBegin` is dropped. Only `maxclients > 1` sends
   one (the login flash), and the browser runs one client.
 - **Weapons.** Userinfo `hand` (the page's `?hand=`: 0 right, 1 left,
-  2 centre) moves shots (`P_ProjectSource`), the gun (mirrored or not
+  2 center) moves shots (`P_ProjectSource`), the gun (mirrored or not
   drawn) and heat beams; `aimfix`, `g_swap_speed` and
   `coop_pickup_weapons` are at their yquake2 defaults. `CheckNeedPass`
   has nothing to do (it publishes password cvars, and there are none);
@@ -159,7 +159,7 @@ effects, and the deathmatch rules end matches through C's intermission.
   `cl_tempentities.c`, `cl_particles.c`, `cl_effects.c`) through the
   renderer's particles, beams and sprites, mission-pack ones (rogue,
   xatrix, CTF: `q2_client::newfx`, sustains, player beams, lightning)
-  included; colour shells and power screens draw as C's colour-only
+  included; color shells and power screens draw as C's color-only
   models; their lights share the client's 32 dlights as in C. The
   rogue shell combinations apply with C's `game` set to `rogue`
   (`?game=rogue`), which only the client reads: no rogue game code or
@@ -181,13 +181,13 @@ effects, and the deathmatch rules end matches through C's intermission.
   `CL_Tracker_Explode` and `CL_GenericParticleEffect` have no caller in yquake2 or id's 3.21 release,
   so drawing them would change what valid input looks like. id's
   `TE_TRACKER_EXPLOSION` has the `CL_Tracker_Explode` call commented out
-  in favour of the colour flash and `CL_ColorExplosionParticles` drawn
-  here, and `CL_QuadTrail` is `CL_FlagTrail` with the blue flag's colour
+  in favor of the color flash and `CL_ColorExplosionParticles` drawn
+  here, and `CL_QuadTrail` is `CL_FlagTrail` with the blue flag's color
   115, which quad carriers never get (they get the blue shell).
 - **Opt-in additions (ADR-005), off by default:** `?cl_fxextra=1` gives
   C's otherwise unused `CL_SmokeTrail` a caller: rocket, grenade and
   `TE_EXPLOSION1`/`TE_EXPLOSION2` blasts out of water leave a 64-unit
-  column of grey smoke (palette 4..11, every 4 units) rising from the
+  column of gray smoke (palette 4..11, every 4 units) rising from the
   blast. C has no such effect; the trigger is this port's invention.
 
 ## Consequences

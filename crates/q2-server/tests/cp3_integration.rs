@@ -26,7 +26,7 @@ fn new_game(gi: &Rc<ServerGameImport>) -> GameWorld {
     game
 }
 
-/// Minimal entity string for map initialisation: just a worldspawn and a
+/// Minimal entity string for map initialization: just a worldspawn and a
 /// player start.  A real map has hundreds of entities; this is enough to
 /// exercise the spawn path without depending on filesystem access.
 const MINIMAL_ENTSTRING: &str = r#"
@@ -46,10 +46,10 @@ fn cp3_server_runs_100_frames() {
     // 1. Set up the GameImport (server → game callbacks).
     let gi = Rc::new(ServerGameImport::new());
 
-    // 2. Create and initialise the game module.
+    // 2. Create and initialize the game module.
     let mut game = new_game(&gi);
 
-    // 3. Initialise server with 1 client slot.
+    // 3. Initialize server with 1 client slot.
     let mut svs = ServerStatic::default();
     svs.init_game(1);
 
