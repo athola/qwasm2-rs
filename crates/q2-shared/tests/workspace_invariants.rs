@@ -555,4 +555,14 @@ fn every_crate_is_gpl_2_or_later_like_the_c_it_ports() {
     }
     let text = fs::read_to_string(repo_root().join("LICENSE")).expect("LICENSE at the root");
     assert!(text.contains("GNU GENERAL PUBLIC LICENSE") && text.contains("Version 2, June 1991"));
+    // As Qwasm2's LICENSE does, credit the C's authors and carry the notice
+    // of stb, whose TGA decoder q2-render's tga.rs follows.
+    let notices = fs::read_to_string(repo_root().join("THIRD-PARTY-NOTICES"))
+        .expect("THIRD-PARTY-NOTICES at the root");
+    for credit in ["Id Software", "Yamagi Quake II", "Qwasm2", "Sean Barrett"] {
+        assert!(
+            notices.contains(credit),
+            "THIRD-PARTY-NOTICES omits {credit}"
+        );
+    }
 }
