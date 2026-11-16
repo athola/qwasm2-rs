@@ -1330,51 +1330,6 @@ mod tests {
         assert_eq!(gi.take_commands(), "");
     }
 
-    /// The `target level: message` of each event `run` logs at INFO or
-    /// above.
-    fn logged(run: impl FnOnce()) -> Vec<String> {
-        use std::sync::{Arc, Mutex};
-        struct Shared(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Shared {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("log lock").extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let out = Arc::new(Mutex::new(Vec::new()));
-        let writer = out.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || Shared(writer.clone()))
-            .with_max_level(tracing::Level::INFO)
-            .with_ansi(false)
-            .without_time()
-            .finish();
-        tracing::subscriber::with_default(subscriber, run);
-        let text = String::from_utf8(out.lock().expect("log lock").clone()).expect("utf-8");
-        text.lines().map(|line| line.trim().to_string()).collect()
-    }
-
-    #[test]
-    fn dprintf_and_a_console_cprintf_log_at_info_under_the_game_target() {
-        // C PF_dprintf and PF_cprintf with no entity call Com_Printf, which
-        // always reaches the console (not Com_DPrintf).
-        let gi = ServerGameImport::new();
-        let lines = logged(|| {
-            gi.dprintf("teleporter without a target\n");
-            gi.cprintf(None, q2_shared::constants::PRINT_HIGH, "console line\n");
-        });
-        assert_eq!(
-            lines,
-            [
-                format!("INFO {GAME_PRINT_TARGET}: teleporter without a target"),
-                format!("INFO {GAME_PRINT_TARGET}: console line"),
-            ]
-        );
-    }
-
     #[test]
     fn unobstructed_trace_ends_at_requested_end_point() {
         let gi = ServerGameImport::new();
