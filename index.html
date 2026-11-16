@@ -51,6 +51,7 @@
   pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
   ul { padding-left: 1.2rem; }
   li { margin: .3rem 0; }
+  .note { color: var(--muted); font-size: .95rem; }
   footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
 </style>
 </head>
@@ -61,7 +62,13 @@
   browser on WebAssembly, WebGL 2 and WebAudio. It is a port of the C of
   <a href="https://github.com/GMH-Code/Qwasm2">Qwasm2</a> (yquake2), checked
   against that source.</p>
-  <p><a class="button" href="https://github.com/athola/qwasm2-rs">Source on GitHub</a></p>
+  <p><a class="button" href="play/">Play the demo in your browser</a>
+  &nbsp; <a href="https://github.com/athola/qwasm2-rs">Source on GitHub</a></p>
+  <p class="note">The demo plays the first levels of the Quake II demo
+  (about 50 MB to download, WebGL 2 required). Click the game to capture
+  the mouse; WASD moves, the mouse aims and fires, 1-0 choose weapons.
+  Its game data is id Software's unmodified demo <code>pak0.pak</code>,
+  served under the <a href="play/license.txt">Quake II demo licence</a>.</p>
 
   <h2>What runs today</h2>
   <p>Alpha. The browser loads a map from real Quake 2 game data into an
@@ -94,7 +101,8 @@ make play</code></pre>
   <a href="https://github.com/athola/qwasm2-rs/tree/main/docs/adr">ADRs</a>.</p>
 
   <footer>Licensed GPL-2.0-or-later, like the C it ports (id Software's
-  Quake II, Yamagi Quake II and Qwasm2). Quake 2 game data is not included.
+  Quake II, Yamagi Quake II and Qwasm2). The Quake II demo data is Copyright id Software, distributed under
+  its own <a href="play/license.txt">licence</a>.
   Quake is a trademark of id Software; this project is not affiliated with
   id Software.</footer>
 </main>
