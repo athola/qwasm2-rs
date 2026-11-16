@@ -8,9 +8,10 @@ All notable changes to qwasm2-rs are documented here.
 - `Renderer` gains the required `set_hand`;
   `ServerStatic::connect_local_client` takes the client's `userinfo`;
   the unused `q2_client::state::ClientStatic` is removed
-- `GameImport` gains the required `cvar` and `local_time` (C `gi.cvar`,
-  the game's `time`/`localtime`); `q2_client::entities::entity_views`
-  takes C's `game` value as its first argument
+- `GameImport` gains the required `error` (C `gi.error`), `cvar` (C
+  `gi.cvar`) and `local_time` (the game's `time`/`localtime`);
+  `q2_client::entities::entity_views` takes C's `game` value as its first
+  argument
 - The workspace denies rustc's `unsafe_code` lint; q2-render allows it
   at its crate root
 
@@ -208,6 +209,13 @@ All notable changes to qwasm2-rs are documented here.
   - hand grenade throws, vectoangles, monster steps, sound
     spatialisation and the fov use C's double arithmetic where C does
   - monster footsteps follow the `g_monsterfootsteps` cvar
+  - a malformed entity lump, a full edict table, a missing spawn point, a
+    think-less entity due to think, a bad configstring index and a full
+    model, sound or image table end the map with C's error text, where
+    they used to log and run a broken level
+  - a cooked grenade dropped on death keeps the quad damage of the last
+    weapon frame, and monster yaw (`vectoyaw`) truncates from double, as
+    in C
 - Multicasts reach the local client only as C `SV_Multicast` routes
   them: through the origin's PVS or PHS and connected areas, and
   unreliable ones only once the client is in the game, so effects in

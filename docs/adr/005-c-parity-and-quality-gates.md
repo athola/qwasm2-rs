@@ -56,6 +56,13 @@ lengths with overflow-safe arithmetic (wasm32 has a 32-bit `usize`), return
 before traversal. wasm32 builds abort on panic, so a panic in these paths
 would kill the whole page.
 
+Game code raises C `gi.error` through `GameImport::error`. The server latches
+the first error and, once the game call returns, returns it as
+`Q2Error::Drop("Game Error: ..")` and leaves the server `Dead`. Unlike C, the
+rest of that game call still runs. Synthetic test maps live in
+`crates/q2-server/tests/common/bsp.rs`; the q2-server and q2-wasm unit tests
+include it with `#[path]`.
+
 ### Quality gates
 
 The toolchain is pinned in `rust-toolchain.toml`. `make ci` runs
