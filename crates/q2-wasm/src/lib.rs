@@ -2404,8 +2404,8 @@ mod tests {
     }
 
     /// The client state `LevelClient` borrows, owned for a test.
-    #[derive(Default)]
     struct TestClient {
+        sound: q2_client::sound::SoundSystem,
         frames: q2_client::frame::FrameHistory,
         effects: q2_client::effects::Effects,
         fx: q2_client::fx::ClientFx,
@@ -2415,14 +2415,79 @@ mod tests {
         view_angles: q2_shared::types::Vec3f,
     }
 
+    impl Default for TestClient {
+        fn default() -> Self {
+            Self {
+                sound: q2_client::sound::SoundSystem::new(1),
+                frames: Default::default(),
+                effects: Default::default(),
+                fx: Default::default(),
+                trails: Default::default(),
+                last_states: Default::default(),
+                text: Default::default(),
+                view_angles: Default::default(),
+            }
+        }
+    }
+
+    /// A 100 ms 8-bit mono PCM WAV (100 samples at 1 kHz).
+    fn one_shot_wav() -> Vec<u8> {
+        let samples = [200u8; 100];
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        // PCM, 1 channel, 1000 Hz, 1000 bytes/s, block 1, 8 bits.
+        for field in [1u16, 1] {
+            wav.extend_from_slice(&field.to_le_bytes());
+        }
+        wav.extend_from_slice(&1000u32.to_le_bytes());
+        wav.extend_from_slice(&1000u32.to_le_bytes());
+        for field in [1u16, 8] {
+            wav.extend_from_slice(&field.to_le_bytes());
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&samples);
+        wav
+    }
+
+    /// Start sound 1 (`a.wav`) as the player's on `entchannel`.
+    fn start_client_sound(sound: &mut q2_client::sound::SoundSystem, entchannel: i32) {
+        let configstring = |i| {
+            if i == q2_shared::constants::CS_SOUNDS + 1 {
+                "a.wav"
+            } else {
+                ""
+            }
+        };
+        let load = |path: &str| (path == "sound/a.wav").then(one_shot_wav);
+        sound.register_sounds(configstring, load);
+        let start = q2_client::sound::StartSound {
+            entnum: 1,
+            entchannel,
+            sound_index: 1,
+            volume: 1.0,
+            attenuation: 1.0,
+            timeofs: 0.0,
+            origin: None,
+        };
+        sound.start_sound(&start, configstring, load);
+    }
+
+    /// What the client's sound system mixes next.
+    fn next_mix(sound: &mut q2_client::sound::SoundSystem) -> Vec<q2_client::sound::MixCommand> {
+        let listener = q2_client::sound::Listener::default();
+        sound.update(1000.0, &listener, |_| None, &[]).commands
+    }
+
     /// Run `frame_output` on `local` with `client`, reading no files.
     fn run_frame_output(
         local: &mut q2_server::local::LocalGame,
         client: &mut TestClient,
     ) -> FrameOutput {
-        let mut sound = q2_client::sound::SoundSystem::new(1);
         let mut level = LevelClient {
-            sound: &mut sound,
+            sound: &mut client.sound,
             frames: &mut client.frames,
             effects: &mut client.effects,
             fx: &mut client.fx,
@@ -2436,8 +2501,6 @@ mod tests {
         })
     }
 
-    /// A local game whose last server frame both sent a print and asked
-    /// for a level exit to `level`, and a client that has a frame.
     fn test_rocket() -> q2_shared::types::EntityState {
         q2_shared::types::EntityState {
             number: 20,
@@ -2467,10 +2530,22 @@ mod tests {
         )
     }
 
+    /// A local game whose last server frames sent a print and a game
+    /// sound (a `target_speaker` that `trigger_always` fires) and asked
+    /// for a level exit to `level`, and a client that has a frame, one
+    /// sound playing and one waiting for the next mix.
     fn frame_with_a_print_and_a_level_exit(
         level: &str,
     ) -> (q2_server::local::LocalGame, TestClient) {
-        let map = crate::test_bsp::floor_wall_bsp();
+        let map = crate::test_bsp::floor_wall_bsp_with(&format!(
+            "{}{}",
+            crate::test_bsp::ENTSTRING,
+            concat!(
+                "{\n\"classname\" \"trigger_always\"\n\"target\" \"spk\"\n}\n",
+                "{\n\"classname\" \"target_speaker\"\n\"targetname\" \"spk\"\n",
+                "\"noise\" \"world/klaxon2.wav\"\n\"origin\" \"32 0 48\"\n}\n",
+            )
+        ));
         let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
         local.frame(100_000).unwrap();
         local.frame(100_000).unwrap();
@@ -2481,6 +2556,9 @@ mod tests {
         remember_states(&mut client.last_states, &local.entity_states());
         client.view_angles = q2_shared::types::Vec3f::new(10.0, 20.0, 0.0);
         client.text.layout = "xv 0".into();
+        start_client_sound(&mut client.sound, 1);
+        assert_eq!(next_mix(&mut client.sound).len(), 1, "sound 1 plays");
+        start_client_sound(&mut client.sound, 2);
         // Printed late in a long level: C times it on cls.realtime, which
         // a level change does not restart.
         let mut center = vec![q2_shared::protocol::SvcOp::CenterPrint as u8];
@@ -2536,7 +2614,14 @@ mod tests {
         assert!(change.is_ok());
         assert_eq!(local.picture(), Some("victory.pcx"));
         assert!(output.messages.is_empty(), "{:?}", output.messages);
-        assert!(output.sounds.is_empty());
+        // The old level's sounds name its CS_SOUNDS: none are started.
+        assert!(output.sounds.is_empty(), "{:?}", output.sounds);
+        // C S_StopAllSounds: the playing sound stops, the waiting one
+        // never starts.
+        assert_eq!(
+            next_mix(&mut client.sound),
+            vec![q2_client::sound::MixCommand::Stop { channel: 0 }]
+        );
         assert_eq!(client.frames.serverframe(), None);
         assert_eq!(client.view_angles, q2_shared::types::Vec3f::ZERO);
         assert!(client.last_states.is_empty());
@@ -2558,7 +2643,20 @@ mod tests {
         assert_eq!(level, "base2");
         assert!(change.is_err());
         assert_eq!(output.messages.len(), 1);
+        assert_eq!(output.sounds.len(), 1, "the speaker's sound is kept");
         assert!(client.frames.serverframe().is_some());
+        // The playing sound goes on and the waiting one starts beside it.
+        let mix = next_mix(&mut client.sound);
+        use q2_client::sound::MixCommand;
+        assert!(
+            mix.iter()
+                .any(|c| matches!(c, MixCommand::Play { channel: 1, .. })),
+            "{mix:?}"
+        );
+        assert!(
+            !mix.iter().any(|c| matches!(c, MixCommand::Stop { .. })),
+            "{mix:?}"
+        );
     }
 
     #[test]
