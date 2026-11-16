@@ -1,7 +1,6 @@
 //! Sprite (`.sp2`) loader (C `Mod_LoadSP2` in `refresh/files/models.c`).
 //!
-//! Parsed and tested against pak0, but no renderer path loads sprites yet
-//! (deferred in `gl3`; `register_model` returns `NONE` for `.sp2`).
+//! `gl3::fx` registers and draws them.
 
 use super::{fixed_cstring, malformed, non_negative, slice_at};
 use q2_common::binary::{try_read_i32, try_read_u32};

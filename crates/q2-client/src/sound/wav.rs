@@ -113,7 +113,12 @@ pub fn wav_info(name: &str, wav: &[u8]) -> Q2Result<WavInfo> {
         // own comment: not a proper parse, but it works with cooledit.
         if let Some(list) = find_next_chunk(wav, end, &mut last, b"LIST") {
             if list + 32 <= end && wav.get(list + 28..list + 32) == Some(b"mark") {
-                samples = loopstart + le_i32(wav, list + 24).unwrap_or(0);
+                let length = le_i32(wav, list + 24).unwrap_or(0);
+                // C's int sum overflows here; no data chunk is that long.
+                let Some(loop_end) = loopstart.checked_add(length) else {
+                    return bad("bad loop length");
+                };
+                samples = loop_end;
             }
         }
     }
@@ -159,7 +164,12 @@ pub fn decode(name: &str, wav: &[u8]) -> Q2Result<Sound> {
     let width = info.width as usize;
     let step = width * info.channels as usize;
     let frames = info.samples as usize / info.channels as usize;
-    let Some(bytes) = wav.get(info.dataofs..info.dataofs + frames * step) else {
+    // Checked: the header's sample count is not bounded by the file size,
+    // and usize is 32 bits on wasm32.
+    let data_end = frames
+        .checked_mul(step)
+        .and_then(|len| info.dataofs.checked_add(len));
+    let Some(bytes) = data_end.and_then(|end| wav.get(info.dataofs..end)) else {
         return bad("truncated data chunk");
     };
     let samples = bytes
@@ -305,6 +315,25 @@ pub(crate) mod tests {
             (b"data", pcm16(&[1, 2])),
         ]);
         assert!(wav_info("a.wav", &wav).is_err());
+    }
+
+    #[test]
+    fn a_loop_end_past_i32_max_is_an_error_not_a_panic() {
+        let wav = riff(&[
+            (b"fmt ", fmt(1, 11025, 16)),
+            (b"cue ", cue(i32::MAX)),
+            (b"LIST", mark_list(1)),
+            (b"data", pcm16(&[1, 2])),
+        ]);
+        assert!(wav_info("a.wav", &wav).is_err());
+    }
+
+    #[test]
+    fn a_data_chunk_claiming_i32_max_bytes_is_truncated_not_a_panic() {
+        let mut wav = riff(&[(b"fmt ", fmt(1, 11025, 32)), (b"data", vec![0; 8])]);
+        let len_at = wav.windows(4).position(|w| w == b"data").unwrap() + 4;
+        wav[len_at..len_at + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+        assert!(decode("a.wav", &wav).is_err());
     }
 
     // C reads the cue point past the end of such a file; Some(0) here

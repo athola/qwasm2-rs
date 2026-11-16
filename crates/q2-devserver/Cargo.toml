@@ -1,6 +1,7 @@
 [package]
 name = "q2-devserver"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
@@ -20,4 +21,4 @@ tracing-subscriber = { workspace = true }
 workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

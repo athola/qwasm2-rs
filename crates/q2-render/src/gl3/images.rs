@@ -23,13 +23,15 @@ pub enum ImageKind {
     Pic,
     /// `it_skin`: MD2 skins, background flood-filled and mipmapped.
     Skin,
+    /// `it_sprite`: `.sp2` frames, mipmapped.
+    Sprite,
 }
 
 /// C `GL3_LoadPic` mipmaps everything but pics and skies.
 pub fn sampling(kind: ImageKind) -> &'static Sampling {
     match kind {
         ImageKind::Pic => &CLAMPED_SAMPLING,
-        ImageKind::Skin => &WORLD_SAMPLING,
+        ImageKind::Skin | ImageKind::Sprite => &WORLD_SAMPLING,
     }
 }
 
@@ -398,6 +400,14 @@ mod tests {
         assert_eq!(&skin.rgba[0..4], &[2, 0, 0, 255]);
         assert!(sampling(ImageKind::Skin).mipmaps);
         assert!(!sampling(ImageKind::Pic).mipmaps);
+    }
+
+    #[test]
+    fn sprite_frames_are_mipmapped_but_not_flood_filled_like_c_it_sprite() {
+        let loader = loader_for("s.pcx", tiny_pcx(), Rc::new(Cell::new(0)));
+        let sprite = decode_image(&loader, None, "s.pcx", ImageKind::Sprite).unwrap();
+        assert_eq!(&sprite.rgba[0..4], &[1, 0, 0, 255]);
+        assert!(sampling(ImageKind::Sprite).mipmaps);
     }
 
     #[test]

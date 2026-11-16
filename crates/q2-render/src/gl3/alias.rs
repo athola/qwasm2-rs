@@ -12,8 +12,7 @@ use q2_shared::constants::{RF_FULLBRIGHT, RF_GLOW, RF_TRANSLUCENT};
 
 use crate::files::md2::{Md2Frame, Md2Model, VERTEX_NORMALS};
 
-/// C `RF_MINLIGHT`; not yet in `q2_shared::constants`.
-pub const RF_MINLIGHT: i32 = 1;
+pub use q2_shared::constants::RF_MINLIGHT;
 /// C `MAX_MD2SKINS`.
 pub const MAX_SKINS: usize = 32;
 /// Floats per vertex: position(3), skin uv(2), colour(4).
@@ -243,9 +242,44 @@ pub fn normal_dot(row: usize, normal_index: u8) -> f32 {
     }
 }
 
+/// C `POWERSUIT_SCALE`: how far a shell stands out along the normals.
+const POWERSUIT_SCALE: f32 = 4.0;
+
+/// A colour shell's flat colour (C `GL3_DrawAliasModel`'s `shadelight`
+/// for `RF_SHELL_*`), each flag setting its channels in C order; `None`
+/// when the entity is no shell.
+pub fn shell_light(flags: i32) -> Option<[f32; 3]> {
+    use q2_shared::constants::{
+        RF_SHELL_BLUE, RF_SHELL_DOUBLE, RF_SHELL_GREEN, RF_SHELL_HALF_DAM, RF_SHELL_RED,
+    };
+    let shells =
+        RF_SHELL_HALF_DAM | RF_SHELL_GREEN | RF_SHELL_RED | RF_SHELL_BLUE | RF_SHELL_DOUBLE;
+    if flags & shells == 0 {
+        return None;
+    }
+    let mut light = [0.0; 3];
+    if flags & RF_SHELL_HALF_DAM != 0 {
+        light = [0.56, 0.59, 0.45];
+    }
+    if flags & RF_SHELL_DOUBLE != 0 {
+        light[0] = 0.9;
+        light[1] = 0.7;
+    }
+    if flags & RF_SHELL_RED != 0 {
+        light[0] = 1.0;
+    }
+    if flags & RF_SHELL_GREEN != 0 {
+        light[1] = 1.0;
+    }
+    if flags & RF_SHELL_BLUE != 0 {
+        light[2] = 1.0;
+    }
+    Some(light)
+}
+
 /// Light colour of an entity: `RF_FULLBRIGHT` is white, otherwise `lit` (the
 /// lightmap sample under it); then `RF_MINLIGHT` and the `RF_GLOW` pulse,
-/// in C order. Shell effects (`RF_SHELL_*`) are not modelled.
+/// in C order. Shells take [`shell_light`] instead.
 pub fn shade_light(flags: i32, lit: impl FnOnce() -> [f32; 3], time: f32) -> [f32; 3] {
     let mut light = if flags & RF_FULLBRIGHT != 0 {
         [1.0; 3]
@@ -300,9 +334,11 @@ pub struct AliasDraw {
     /// [`model_space_delta`] result.
     pub delta: [f32; 3],
     pub yaw: f32,
-    /// Light colour from [`shade_light`].
+    /// Light colour from [`shade_light`], or a shell's from [`shell_light`].
     pub light: [f32; 3],
     pub alpha: f32,
+    /// A colour shell: pushed out along the normals, flat coloured.
+    pub shell: bool,
 }
 
 /// Interpolated, lit vertex stream (three vertices per triangle) for a draw.
@@ -323,10 +359,20 @@ pub fn build_vertices(
         .iter()
         .zip(&oldframe.verts)
         .map(|(new, old)| {
-            (
-                lerp_position(&params, new.v, old.v),
-                normal_dot(row, new.normal_index),
-            )
+            let mut position = lerp_position(&params, new.v, old.v);
+            if draw.shell {
+                // C LerpVerts with powerUpEffect, along the new frame's normal.
+                let normal = VERTEX_NORMALS
+                    .get(usize::from(new.normal_index))
+                    .copied()
+                    .unwrap_or([0.0; 3]);
+                for (p, n) in position.iter_mut().zip(normal) {
+                    *p += n * POWERSUIT_SCALE;
+                }
+                (position, 1.0)
+            } else {
+                (position, normal_dot(row, new.normal_index))
+            }
         })
         .collect();
 
@@ -365,14 +411,16 @@ pub fn entity_vertices(
     let origin = [entity.origin.x, entity.origin.y, entity.origin.z];
     let oldorigin = [entity.oldorigin.x, entity.oldorigin.y, entity.oldorigin.z];
     let angles = [entity.angles.x, entity.angles.y, entity.angles.z];
+    let shell = shell_light(entity.flags);
     let draw = AliasDraw {
         frame,
         oldframe,
         backlerp: entity.backlerp,
         delta: model_space_delta(origin, oldorigin, angles),
         yaw: angles[1],
-        light: shade_light(entity.flags, lit, time),
+        light: shell.unwrap_or_else(|| shade_light(entity.flags, lit, time)),
         alpha: entity_alpha(entity.flags, entity.alpha),
+        shell: shell.is_some(),
     };
     build_vertices(&model.md2, &model.corners, &draw)
 }
@@ -693,6 +741,7 @@ mod tests {
             yaw: 0.0,
             light: [0.5, 0.25, 1.0],
             alpha: 0.7,
+            shell: false,
         };
         let stream = build_vertices(&model, &corners, &draw).unwrap();
         assert_eq!(stream.len(), 3 * ALIAS_VERTEX_FLOATS);
@@ -734,6 +783,45 @@ mod tests {
     }
 
     #[test]
+    fn shells_take_c_colours_from_their_flags() {
+        use q2_shared::constants::{
+            RF_SHELL_BLUE, RF_SHELL_DOUBLE, RF_SHELL_GREEN, RF_SHELL_HALF_DAM, RF_SHELL_RED,
+        };
+        assert_eq!(shell_light(0), None);
+        assert_eq!(
+            shell_light(RF_SHELL_RED | RF_SHELL_BLUE),
+            Some([1.0, 0.0, 1.0])
+        );
+        assert_eq!(shell_light(RF_SHELL_GREEN), Some([0.0, 1.0, 0.0]));
+        assert_eq!(shell_light(RF_SHELL_HALF_DAM), Some([0.56, 0.59, 0.45]));
+        // Later flags overwrite channels, in C order.
+        assert_eq!(
+            shell_light(RF_SHELL_DOUBLE | RF_SHELL_RED),
+            Some([1.0, 0.7, 0.0])
+        );
+        assert_eq!(
+            shell_light(RF_SHELL_HALF_DAM | RF_SHELL_DOUBLE),
+            Some([0.9, 0.7, 0.45])
+        );
+    }
+
+    #[test]
+    fn a_shell_is_the_model_blown_out_along_its_normals_in_flat_colour() {
+        let model = registered_triangle();
+        let entity = RenderEntity {
+            flags: q2_shared::constants::RF_SHELL_RED | RF_TRANSLUCENT,
+            alpha: 0.3,
+            ..Default::default()
+        };
+        let stream = entity_vertices(&model, &entity, || panic!("not lit"), 0.0).unwrap();
+        let n = crate::files::md2::VERTEX_NORMALS[0];
+        // C POWERSUIT_SCALE: 4 units out along the vertex normal.
+        assert_near(&stream[0..3], &[n[0] * 4.0, 10.0 + n[1] * 4.0, n[2] * 4.0]);
+        // No normal shading: the shell colour as is.
+        assert_near(&stream[5..9], &[1.0, 0.0, 0.0, 0.3 * TRANSLUCENT_SCALE]);
+    }
+
+    #[test]
     fn entity_origin_delta_shifts_the_blend_toward_the_old_position() {
         let model = registered_triangle();
         let entity = RenderEntity {
@@ -762,6 +850,7 @@ mod tests {
             yaw: 0.0,
             light: [1.0; 3],
             alpha: 1.0,
+            shell: false,
         };
         assert!(build_vertices(&model, &corners, &draw(5)).is_none());
         let bad_corner = [AliasCorner {

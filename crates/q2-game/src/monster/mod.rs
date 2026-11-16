@@ -71,13 +71,15 @@ pub(crate) fn sound(world: &GameWorld, key: EntityKey, channel: i32, name: &str,
         .sound(world.number_of(key), channel, index, 1.0, attenuation, 0.0);
 }
 
-/// C cvar `g_monsterfootsteps`, which defaults to "0". `GameImport` has no
-/// cvar reader, so monster footsteps stay off as in a default C game.
-pub(crate) const MONSTER_FOOTSTEPS: bool = false;
+/// C cvar `g_monsterfootsteps` (default "0"), which each C
+/// `<monster>_footstep` tests on every call.
+pub(crate) fn monster_footsteps(world: &GameWorld) -> bool {
+    q2_common::cvar::parse_value(&world.gi.cvar("g_monsterfootsteps", "0")) != 0.0
+}
 
 /// The body of the C `<monster>_footstep`s: nothing (and no `randk()`)
 /// unless `enabled`, else `steps[randk() % steps.len()]` on `CHAN_BODY`
-/// at `ATTN_NORM`. Callers pass `MONSTER_FOOTSTEPS`; tests pass `true`.
+/// at `ATTN_NORM`. Callers pass `monster_footsteps(world)`.
 pub(crate) fn footstep(
     world: &mut GameWorld,
     key: EntityKey,
@@ -186,6 +188,21 @@ mod tests {
             assert_eq!(world.level.rand_state, rand, "no randk() drawn");
         }
         assert!(gi.sound_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn monster_footsteps_play_once_g_monsterfootsteps_is_set() {
+        let (mut world, gi) = test_world_recording();
+        gi.cvars
+            .borrow_mut()
+            .insert("g_monsterfootsteps".into(), "1".into());
+        let key = world.spawn().unwrap();
+        let fns = c_footsteps().into_iter().map(|(f, ..)| f);
+        for step in fns.chain([parasite::parasite_footstep as ThinkFn]) {
+            let before = gi.sound_calls.borrow().len();
+            step(&mut world, key);
+            assert_eq!(gi.sound_calls.borrow().len(), before + 1);
+        }
     }
 
     #[test]

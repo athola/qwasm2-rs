@@ -157,24 +157,3 @@ pub struct RefDefState {
     pub fov_x: f32,
     pub fov_y: f32,
 }
-
-/// Persistent client data (survives reconnects)
-#[derive(Debug)]
-pub struct ClientStatic {
-    pub state: ConnState,
-    pub realtime: f32,
-    pub frametime: f32,
-    /// Key bindings
-    pub key_bindings: Vec<Option<String>>,
-}
-
-impl Default for ClientStatic {
-    fn default() -> Self {
-        Self {
-            state: ConnState::default(),
-            realtime: 0.0,
-            frametime: 0.0,
-            key_bindings: vec![None; 256],
-        }
-    }
-}

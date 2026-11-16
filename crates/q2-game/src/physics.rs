@@ -192,8 +192,7 @@ impl GameWorld {
 
         match think_fn {
             Some(think) => think(self, key),
-            // C raises gi.error("NULL ent->think").
-            None => tracing::warn!("run_think: entity with nextthink has no think"),
+            None => self.gi.error("NULL ent->think"),
         }
         false
     }
@@ -827,7 +826,7 @@ impl GameWorld {
                     c.game.movetype,
                     MoveType::Push | MoveType::Stop | MoveType::None | MoveType::Noclip
                 )
-                || c.linkcount == 0
+                || !c.area_linked
             {
                 continue; // Not a pushable, or not linked in anywhere.
             }
@@ -1250,6 +1249,17 @@ mod tests {
     }
 
     #[test]
+    fn a_due_think_without_a_function_is_a_game_error() {
+        // C SV_RunThink: gi.error("NULL ent->think").
+        let (mut world, gi) = test_world_recording();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.nextthink = 0.5;
+        world.run_think(key);
+        assert_eq!(*gi.errors.borrow(), ["NULL ent->think"]);
+    }
+
+    #[test]
     fn run_think_skips_when_not_due() {
         fn test_think(world: &mut GameWorld, key: EntityKey) {
             world.entities.get_mut(key).unwrap().game.count += 1;
@@ -1536,6 +1546,48 @@ mod tests {
                 assert_eq!((plat_x, rock_x, count), (10.0, 40.0, 0), "{movetype:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_pusher_ignores_solid_not_entities_even_riding_ones() {
+        // C SV_Push skips edicts with no area link, and SV_LinkEdict never
+        // area-links a SOLID_NOT one (a debris chunk), though it counts
+        // the link.
+        let mut world = test_world();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        let chunk = box_at(&mut world, Vec3f::new(0.0, 0.0, 4.0), Some(plat));
+        {
+            let e = world.entities.get_mut(chunk).unwrap();
+            e.game.movetype = MoveType::Bounce;
+            e.solid = Solid::Not;
+        }
+        world.link_entity(chunk);
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, plat), Vec3f::new(10.0, 0.0, 0.0));
+        assert_eq!(origin_of(&world, chunk), Vec3f::new(0.0, 0.0, 4.0));
+    }
+
+    #[test]
+    fn a_pusher_still_ignores_an_entity_made_solid_without_a_relink() {
+        // C's area link only changes in SV_LinkEdict and SV_UnlinkEdict.
+        let mut world = test_world();
+        let plat = mover(
+            &mut world,
+            MoveType::Push,
+            Vec3f::ZERO,
+            Vec3f::new(100.0, 0.0, 0.0),
+        );
+        let chunk = box_at(&mut world, Vec3f::new(0.0, 0.0, 4.0), Some(plat));
+        world.entities.get_mut(chunk).unwrap().solid = Solid::Not;
+        world.link_entity(chunk);
+        world.entities.get_mut(chunk).unwrap().solid = Solid::Bbox;
+        world.physics_pusher(plat);
+        assert_eq!(origin_of(&world, chunk), Vec3f::new(0.0, 0.0, 4.0));
     }
 
     #[test]

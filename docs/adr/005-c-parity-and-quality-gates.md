@@ -43,6 +43,11 @@ every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
 missing).
 
+Additions C does not have, on valid input, are allowed only behind an
+opt-in setting that defaults to C's behaviour, so the default build stays
+comparable to C and tests pin both. Each one is listed in ADR-003. The
+first is `?cl_fxextra=1` (explosion smoke).
+
 ### Untrusted input never panics
 
 Network messages, pak files and BSP files are untrusted. Their parsers check
@@ -50,6 +55,13 @@ lengths with overflow-safe arithmetic (wasm32 has a 32-bit `usize`), return
 `Q2Error::Drop` the way C raises `ERR_DROP`, and validate cross-references
 before traversal. wasm32 builds abort on panic, so a panic in these paths
 would kill the whole page.
+
+Game code raises C `gi.error` through `GameImport::error`. The server latches
+the first error and, once the game call returns, returns it as
+`Q2Error::Drop("Game Error: ..")` and leaves the server `Dead`. Unlike C, the
+rest of that game call still runs. Synthetic test maps live in
+`crates/q2-server/tests/common/bsp.rs`; the q2-server and q2-wasm unit tests
+include it with `#[path]`.
 
 ### Quality gates
 
@@ -68,7 +80,7 @@ Parity work is measurable: a byte or bit difference is a failing test rather
 than a judgement call. The cost is that some cleanups C would not do are off
 the table without an ADR note, and toolchain upgrades are explicit changes
 that can bring their own lint fixes. Findings that were too large for the
-review pass are tracked as issues: entity numbering and SlotMap world links
-(#9, #31), map loading and spawn reset (#11), a complete `GameImport` (#18,
+review pass are tracked as issues (entity numbering and SlotMap world links,
+#9 and #31, are since closed): map loading and spawn reset (#11), a complete `GameImport` (#18,
 #10), client opcodes, prediction and stufftext (#19, #6, #7), and the rest of the
 renderer (#20).

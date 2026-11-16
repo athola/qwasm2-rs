@@ -10,7 +10,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::misc::{throw_gib, throw_head, GibType};
-use crate::monster::{fire, flash, footstep, MONSTER_FOOTSTEPS};
+use crate::monster::{fire, flash, footstep, monster_footsteps};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -725,7 +725,8 @@ fn hold_until_pausetime(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `soldier_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn soldier_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `soldier_idle`.
@@ -1466,7 +1467,7 @@ mod tests {
 
     use crate::entity::ThinkFn;
     use crate::monster::test_support::{
-        assert_moves_match_c, player_arena, seed, sounds, think_for, CMoveRow,
+        assert_moves_match_c, player_arena, seed, sounds, spawn_monster, think_for, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
@@ -2454,15 +2455,7 @@ mod tests {
     ) {
         let (mut world, gi, player) = player_arena(x);
         world.game.skill = 1;
-        let key = world.spawn().unwrap();
-        let fields: HashMap<String, String> = [("classname".to_string(), class.to_string())].into();
-        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(0.0, 0.0, 24.0);
-        world.entities.get_mut(key).unwrap().game.classname = class.to_string();
-        let &(_, spawn, _, finish) = crate::spawn::find_spawn(class).unwrap();
-        spawn(&mut world.entities, key, &fields);
-        finish.unwrap()(&mut world, key, &fields);
-        ai::monster_start(&mut world, key);
-        world.link_entity(key);
+        let key = spawn_monster(&mut world, class, Vec3f::new(0.0, 0.0, 24.0));
         (world, gi, key, player)
     }
 

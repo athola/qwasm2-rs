@@ -47,11 +47,6 @@ fn multi_wait(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// Remove the entity on its next think (C `think = G_FreeEdict`).
-fn free_think(world: &mut GameWorld, key: EntityKey) {
-    world.free_entity(key);
-}
-
 /// Fire the targets unless still waiting; then wait, or remove the trigger
 /// next frame when `wait` is not positive (trigger_once).
 /// C ref: `multi_trigger`.
@@ -77,7 +72,7 @@ fn multi_trigger(world: &mut GameWorld, key: EntityKey) {
         // looping through area links.
         ent.touch = None;
         ent.game.nextthink = time + FRAMETIME;
-        ent.think = Some(free_think);
+        ent.think = Some(crate::misc::free_think);
     }
 }
 
@@ -265,9 +260,10 @@ fn trigger_push_touch(
     let Some(ent) = world.entities.get(self_key) else {
         return;
     };
-    let (push, once) = (
+    let (push, once, windsound) = (
         ent.game.movedir * (ent.game.speed * 10.0),
         ent.game.spawnflags & PUSH_ONCE != 0,
+        ent.game.noise_index,
     );
     let time = world.level.time;
     let mut wind = None;
@@ -285,10 +281,9 @@ fn trigger_push_touch(
         }
     }
     if let Some(number) = wind {
-        let sound = world.gi.sound_index("misc/windfly.wav");
         world
             .gi
-            .sound(Some(number), CHAN_AUTO, sound, 1.0, ATTN_NORM, 0.0);
+            .sound(Some(number), CHAN_AUTO, windsound, 1.0, ATTN_NORM, 0.0);
     }
     if once {
         world.free_entity(self_key);
@@ -325,10 +320,9 @@ fn trigger_hurt_touch(
         } else {
             FRAMETIME
         };
-    let dmg = ent.game.dmg;
+    let (dmg, sound) = (ent.game.dmg, ent.game.noise_index);
 
     if flags & HURT_SILENT == 0 && world.level.framenum % 10 == 0 {
-        let sound = world.gi.sound_index("world/electro.wav");
         world.gi.sound(
             world.number_of(other_key),
             CHAN_AUTO,
@@ -484,15 +478,18 @@ impl GameWorld {
             "trigger_always" => self.use_targets(key, key),
             // C SP_trigger_key.
             "trigger_key" => {
-                let origin = self.entities.get(key).map(|e| e.state.origin);
+                let origin = self
+                    .entities
+                    .get(key)
+                    .map_or(String::new(), |e| crate::ai::vtos(e.state.origin));
                 let Some(item_name) = fields.get("item") else {
                     self.gi
-                        .dprintf(&format!("no key item for trigger_key at {origin:?}\n"));
+                        .dprintf(&format!("no key item for trigger_key at {origin}\n"));
                     return;
                 };
-                let Some(item) = self.find_item(item_name) else {
+                let Some(item) = self.find_item_by_classname(item_name) else {
                     self.gi.dprintf(&format!(
-                        "item {item_name} not found for trigger_key at {origin:?}\n"
+                        "item {item_name} not found for trigger_key at {origin}\n"
                     ));
                     return;
                 };
@@ -502,7 +499,7 @@ impl GameWorld {
                 ent.game.item = Some(item);
                 if ent.game.target.is_empty() {
                     self.gi
-                        .dprintf(&format!("trigger_key at {origin:?} has no target\n"));
+                        .dprintf(&format!("{classname} at {origin} has no target\n"));
                     return;
                 }
                 ent.use_fn = Some(trigger_key_use);
@@ -567,11 +564,19 @@ pub fn sp_trigger_once(
     let Some(ent) = storage.get_mut(key) else {
         return;
     };
+    ent.game.wait = -1.0;
     // Old maps put TRIGGERED on bit 1 instead of bit 4.
     if ent.game.spawnflags & 1 != 0 {
         ent.game.spawnflags = (ent.game.spawnflags & !1) | MULTI_TRIGGERED;
+        // C prints mins + size / 2 before its setmodel, while both are
+        // still zero; `call_spawn` has already set the model here.
+        let warning = format!(
+            "fixed TRIGGERED flag on {} at {}\n",
+            ent.game.classname,
+            crate::ai::vtos(Vec3f::ZERO)
+        );
+        storage.dprintf(warning);
     }
-    ent.game.wait = -1.0;
     sp_trigger_multiple(storage, key, fields);
 }
 
@@ -585,7 +590,32 @@ pub fn sp_trigger_relay(
     }
 }
 
-/// C ref: `SP_trigger_push`.
+/// C SP_trigger_push's `windsound`, kept on each push trigger here
+/// rather than in a static.
+pub fn finish_trigger_push(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let windsound = world.gi.sound_index("misc/windfly.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = windsound;
+    }
+}
+
+/// C SP_trigger_hurt's sound registration.
+pub fn finish_trigger_hurt(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _fields: &HashMap<String, String>,
+) {
+    let noise = world.gi.sound_index("world/electro.wav");
+    if let Some(ent) = world.entities.get_mut(key) {
+        ent.game.noise_index = noise;
+    }
+}
+
+/// C ref: `SP_trigger_push`; `finish_trigger_push` registers its sound.
 pub fn sp_trigger_push(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -600,7 +630,7 @@ pub fn sp_trigger_push(
     }
 }
 
-/// C ref: `SP_trigger_hurt`.
+/// C ref: `SP_trigger_hurt`; `finish_trigger_hurt` registers its sound.
 pub fn sp_trigger_hurt(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -635,10 +665,11 @@ pub fn sp_trigger_gravity(
         return;
     };
     if fields.get("gravity").is_none_or(|g| g.is_empty()) {
-        tracing::debug!(
-            "trigger_gravity without gravity set at {:?}",
-            ent.state.origin
+        let warning = format!(
+            "trigger_gravity without gravity set at {}\n",
+            crate::ai::vtos(ent.state.origin)
         );
+        storage.dprintf(warning);
         storage.soft_free(key);
         return;
     }
@@ -1180,5 +1211,39 @@ mod tests {
         let v = world.entities.get(monster).unwrap().velocity;
         assert!((v.x - 100.0).abs() < 1e-3, "{v:?}");
         assert_eq!(v.z, 0.0);
+    }
+
+    #[test]
+    fn trigger_hurt_and_trigger_push_register_their_sounds_at_spawn() {
+        // C SP_trigger_hurt sets noise_index and SP_trigger_push the
+        // static windsound, so both are precached with the map.
+        let (mut world, gi) = test_world_recording();
+        spawn_map(
+            &mut world,
+            r#"{ "classname" "trigger_hurt" } { "classname" "trigger_push" }"#,
+        );
+        let sounds = gi.sounds.borrow();
+        assert!(
+            sounds.contains(&"world/electro.wav".to_string()),
+            "{sounds:?}"
+        );
+        assert!(
+            sounds.contains(&"misc/windfly.wav".to_string()),
+            "{sounds:?}"
+        );
+    }
+
+    #[test]
+    fn trigger_key_finds_its_item_ignoring_case() {
+        // C SP_trigger_key: FindItemByClassname compares with Q_stricmp.
+        let mut world = test_world();
+        spawn_map(
+            &mut world,
+            r#"{ "classname" "trigger_key" "item" "KEY_BLUE_KEY" "target" "t" }"#,
+        );
+        let trigger = world.find_by_classname(None, "trigger_key").unwrap();
+        let ent = world.entities.get(trigger).unwrap();
+        assert_eq!(ent.game.item, world.find_item("key_blue_key"));
+        assert!(ent.use_fn.is_some());
     }
 }

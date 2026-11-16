@@ -277,12 +277,22 @@ mod tests {
     #[test]
     fn monster_fire_grenade_uses_a_2_5_second_fuse_and_damage_plus_40_radius() {
         let (mut world, gi, monster) = shooter();
+        // The two C crandom() draws fire_grenade takes, read off a copy of
+        // the RNG: (200 + crandom() * 10) up, crandom() * 10 right.
+        let mut probe = crate::world::test_world();
+        probe.level.rand_state = world.level.rand_state;
+        let (lift_random, side_random) = (probe.random(), probe.random());
+        let lift = (200.0 + 2.0 * (lift_random as f64 - 0.5) * 10.0) as f32;
+        let side = (2.0 * (side_random as f64 - 0.5) * 10.0) as f32;
         monster_fire_grenade(&mut world, monster, START, DIR, 50, 600, 12);
         let gren = projectile(&world, "grenade");
         assert_eq!(gren.game.dmg, 50);
         assert_eq!(gren.game.dmg_radius, 90.0);
         assert_eq!(gren.game.nextthink, 1.0 + 2.5);
-        assert_eq!(gren.velocity, DIR * 600.0 + Vec3f::new(0.0, 0.0, 200.0));
+        // Thrown along +x: up is +z and right is -y.
+        assert_eq!(gren.velocity.x, 600.0);
+        assert_eq!(gren.velocity.y, -side);
+        assert_eq!(gren.velocity.z, lift);
         assert_muzzle_flash(&world, &gi, monster, 12);
     }
 

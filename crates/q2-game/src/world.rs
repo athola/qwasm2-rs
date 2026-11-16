@@ -3,6 +3,7 @@
 //! `GameWorld` owns all entities, level state, and engine callbacks.
 //! It replaces the C globals `g_edicts[]`, `level`, `game`, `globals`.
 
+use q2_common::error::Q2Error;
 use q2_shared::types::*;
 
 use crate::constants::{
@@ -37,6 +38,9 @@ pub struct LevelLocals {
     pub changemap: String,
     pub intermission_time: f32,
     pub exitintermission: bool,
+    /// Where intermission puts everyone and which way they look.
+    pub intermission_origin: Vec3f,
+    pub intermission_angle: Vec3f,
     pub sight_client_key: Option<EntityKey>,
     /// A monster that just saw a player, which other monsters notice
     /// (C `level.sight_entity`, set by `FoundTarget`).
@@ -97,6 +101,16 @@ pub struct GameLocals {
     /// single player, so both stay false there.
     pub deathmatch: bool,
     pub coop: bool,
+    /// C `fraglimit` and `timelimit` (minutes) cvars, 0 for none, and
+    /// `sv_maplist`, the deathmatch rotation.
+    pub fraglimit: i32,
+    pub timelimit: f32,
+    pub maplist: String,
+    /// The help computer's objectives and how often they changed (C
+    /// `helpmessage1`, `helpmessage2`, `helpchanged`).
+    pub helpmessage1: String,
+    pub helpmessage2: String,
+    pub helpchanged: i32,
     /// How far the view bob cycle advances each frame on the ground; kept
     /// while airborne (C view.c file static `bobmove`).
     pub bobmove: f32,
@@ -121,6 +135,12 @@ impl Default for GameLocals {
             skill: 1, // C cvar default
             deathmatch: false,
             coop: false,
+            fraglimit: 0,
+            timelimit: 0.0,
+            maplist: String::new(),
+            helpmessage1: String::new(),
+            helpmessage2: String::new(),
+            helpchanged: 0,
             bobmove: 0.0,
         }
     }
@@ -144,6 +164,22 @@ pub struct GameWorld {
     /// outlives the edicts `spawn_entities` rebuilds.
     pub clients: Vec<ClientData>,
     pub items: Vec<ItemDef>,
+    /// What the last `t_damage` was from, for obituaries (C global
+    /// `meansOfDeath`).
+    pub means_of_death: crate::constants::MeansOfDeath,
+    /// Whether that damage came from a teammate (C `meansOfDeath`'s
+    /// `MOD_FRIENDLY_FIRE` bit).
+    pub friendly_fire: bool,
+    /// Frames left on a player-dropped quad being picked up, for
+    /// `use_quad` (C `quad_drop_timeout_hack`); 0 for a fresh one.
+    pub quad_drop_timeout_hack: i32,
+    /// Which of the three pain animations a hit starts next (C
+    /// `P_DamageFeedback`'s static counter).
+    pub pain_anim_cycle: i32,
+    /// Whether the last weapon think ran with quad damage (C player/weapon.c's
+    /// `is_quad` static). The grenade a dying player drops reads it from
+    /// that think, as C does.
+    pub is_quad: bool,
     pub spawn_table: SpawnTable,
     /// Breadcrumbs monsters follow after losing sight (C trail.c statics).
     pub trail: crate::player::trail::PlayerTrail,
@@ -171,6 +207,11 @@ impl GameWorld {
             game,
             clients: vec![ClientData::default(); maxclients],
             items: Vec::new(),
+            means_of_death: crate::constants::MeansOfDeath::Unknown,
+            friendly_fire: false,
+            quad_drop_timeout_hack: 0,
+            pain_anim_cycle: 0,
+            is_quad: false,
             spawn_table: SpawnTable::new(),
             trail: Default::default(),
             enemy_check: Default::default(),
@@ -231,9 +272,7 @@ impl GameWorld {
         let Some(number) = self.entities.get(key).map(|e| e.state.number) else {
             return;
         };
-        if let Ok(n) = usize::try_from(number) {
-            self.gi.unlink_entity(n);
-        }
+        self.unlink_entity(key);
         // C G_FreeEdict: client edicts, and in coop or deathmatch the body
         // queue after them, are never freed. C always has `bodyque` edicts
         // there in those modes; checking the classname keeps entities
@@ -250,6 +289,17 @@ impl GameWorld {
         }
         self.entities.set_level_time(self.level.time);
         self.entities.soft_free(key);
+    }
+
+    /// Take the entity out of the server's world. C ref: `gi.unlinkentity`.
+    pub fn unlink_entity(&mut self, key: EntityKey) {
+        let Some(ent) = self.entities.get_mut(key) else {
+            return;
+        };
+        ent.area_linked = false;
+        if let Ok(n) = usize::try_from(ent.state.number) {
+            self.gi.unlink_entity(n);
+        }
     }
 
     /// Recompute the link fields and hand the entity to the server.
@@ -300,6 +350,7 @@ impl GameWorld {
             ent.state.old_origin = ent.state.origin;
         }
         ent.linkcount += 1;
+        ent.area_linked = ent.solid != Solid::Not;
 
         let owner = ent.owner;
         let link = EntityLink {
@@ -477,10 +528,10 @@ impl GameWorld {
 
     /// Telefrag every entity whose box overlaps `key`'s. Returns `false` if
     /// one survived, `true` once the box is clear; no caller reads it.
-    /// C ref: `KillBox` (g_utils.c). C's SV_Trace reports the world when
+    /// C ref: `KillBox` (g_utils.c). C SV_Trace names the world when
     /// nothing is hit, so C's loop ends by "damaging" the solid world and
-    /// returns false every time; here `world_trace`'s "world only on a hit"
-    /// (ADR-005) makes a clear box return true. The telefrags are the same.
+    /// returns false every time; here entity 0 counts as a clear box and
+    /// returns true. The telefrags are the same.
     pub fn kill_box(&mut self, key: EntityKey) -> bool {
         use crate::constants::{DamageFlags, MeansOfDeath};
         loop {
@@ -935,9 +986,31 @@ use crate::traits::AREA_TRIGGERS;
 #[cfg(test)]
 pub type SoundCall = (Option<usize>, i32, i32, f32, f32, f32);
 
+/// One message write, with its type, as `MockGameImport::message` keeps
+/// them: the other write lists cannot tell a byte from a short, or show
+/// how bytes and vectors interleave.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum Write {
+    Byte(i32),
+    Short(i32),
+    Long(i32),
+    Float(f32),
+    String(String),
+    Position(Vec3f),
+    Dir(Vec3f),
+    Angle(f32),
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub struct MockGameImport {
+    /// Cvars `cvar` answers; others give their default.
+    pub cvars: RefCell<HashMap<String, String>>,
+    /// What `local_time` answers.
+    pub local_time: std::cell::Cell<Option<(u32, u32, u32)>>,
+    /// What `point_contents` answers everywhere.
+    pub contents: std::cell::Cell<i32>,
     pub links: RefCell<Vec<EntityLink>>,
     pub unlinks: RefCell<Vec<usize>>,
     pub trace_pass_ents: RefCell<Vec<Option<usize>>>,
@@ -945,6 +1018,10 @@ pub struct MockGameImport {
     pub trace_masks: RefCell<Vec<i32>>,
     /// End point of every `trace` call, in order.
     pub trace_ends: RefCell<Vec<Vec3f>>,
+    /// `(mins, maxs)` of every `trace` call, in order.
+    pub trace_boxes: RefCell<Vec<(Vec3f, Vec3f)>>,
+    /// Every point `point_contents` was asked about, in order.
+    pub contents_points: RefCell<Vec<Vec3f>>,
     pub configstrings: RefCell<Vec<(i32, String)>>,
     /// Returned by the next `trace` call instead of an unobstructed trace.
     pub next_trace: RefCell<Option<Trace>>,
@@ -964,6 +1041,8 @@ pub struct MockGameImport {
     pub sounds: RefCell<Vec<String>>,
     /// Every `dprintf` text, in order.
     pub dprints: RefCell<Vec<String>>,
+    /// Every `error` text, in order.
+    pub errors: RefCell<Vec<String>>,
     /// Every `positioned_sound` call as (origin, entity, channel, sound).
     pub positioned_sounds: RefCell<Vec<(Vec3f, usize, i32, i32)>>,
     /// Every `sound` call (entity, channel, index, volume, attenuation,
@@ -971,14 +1050,25 @@ pub struct MockGameImport {
     pub sound_calls: RefCell<Vec<SoundCall>>,
     /// Every `centerprintf` call, in order.
     pub centerprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// Every `cprintf` call (entity, text), in order.
+    pub cprints: RefCell<Vec<(Option<usize>, String)>>,
+    /// The client command `argv`/`args` read, already tokenized.
+    pub command: RefCell<Vec<String>>,
     /// Every `set_area_portal_state` call, in order.
     pub portal_states: RefCell<Vec<(i32, bool)>>,
     /// Every `bprintf` call as (print level, text).
     pub bprints: RefCell<Vec<(i32, String)>>,
     /// Every `write_byte` and `write_short` value, in order.
     pub writes: RefCell<Vec<i32>>,
+    /// Every write of any type, in order.
+    pub message: RefCell<Vec<Write>>,
     /// Every `multicast` call.
     pub multicasts: RefCell<Vec<(Vec3f, Multicast)>>,
+    /// Every `write_position` and `write_dir`, in order.
+    pub vectors: RefCell<Vec<Vec3f>>,
+    /// Every `write_string`, and every `unicast` (entity, reliable).
+    pub strings: RefCell<Vec<String>>,
+    pub unicasts: RefCell<Vec<(usize, bool)>>,
     /// `entity_areas` by entity number; unlisted numbers are in no area.
     pub areas: RefCell<HashMap<usize, (i32, i32)>>,
     /// Area pairs `areas_connected` reports as cut off (either order).
@@ -993,7 +1083,12 @@ impl GameImport for MockGameImport {
     fn dprintf(&self, msg: &str) {
         self.dprints.borrow_mut().push(msg.to_string());
     }
-    fn cprintf(&self, _: Option<usize>, _: i32, _: &str) {}
+    fn error(&self, msg: &str) {
+        self.errors.borrow_mut().push(msg.to_string());
+    }
+    fn cprintf(&self, ent: Option<usize>, _: i32, msg: &str) {
+        self.cprints.borrow_mut().push((ent, msg.to_string()));
+    }
     fn centerprintf(&self, ent: Option<usize>, msg: &str) {
         self.centerprints.borrow_mut().push((ent, msg.to_string()));
     }
@@ -1058,12 +1153,13 @@ impl GameImport for MockGameImport {
     fn trace(
         &self,
         _start: Vec3f,
-        _mins: Vec3f,
-        _maxs: Vec3f,
+        mins: Vec3f,
+        maxs: Vec3f,
         end: Vec3f,
         pass_ent: Option<usize>,
         content_mask: i32,
     ) -> Trace {
+        self.trace_boxes.borrow_mut().push((mins, maxs));
         self.trace_pass_ents.borrow_mut().push(pass_ent);
         self.trace_masks.borrow_mut().push(content_mask);
         self.trace_ends.borrow_mut().push(end);
@@ -1073,7 +1169,9 @@ impl GameImport for MockGameImport {
         if let Some(trace) = self.queued_traces.borrow_mut().pop_front() {
             return trace;
         }
-        // Default trace: no collision, endpoint reached.
+        // Default trace: no collision, endpoint reached. Like the server
+        // (C SV_Trace sets `clip.trace.ent = ge->edicts`), it names the
+        // world even when nothing is hit.
         Trace {
             fraction: 1.0,
             endpos: end,
@@ -1082,12 +1180,13 @@ impl GameImport for MockGameImport {
             plane: Plane::default(),
             surface: None,
             contents: 0,
-            ent_index: None,
+            ent_index: Some(0),
         }
     }
 
-    fn point_contents(&self, _: Vec3f) -> i32 {
-        0
+    fn point_contents(&self, point: Vec3f) -> i32 {
+        self.contents_points.borrow_mut().push(point);
+        self.contents.get()
     }
     fn in_pvs(&self, _: Vec3f, _: Vec3f) -> bool {
         true
@@ -1114,32 +1213,67 @@ impl GameImport for MockGameImport {
     }
     fn write_byte(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Byte(c));
     }
     fn write_short(&self, c: i32) {
         self.writes.borrow_mut().push(c);
+        self.message.borrow_mut().push(Write::Short(c));
     }
-    fn write_long(&self, _: i32) {}
-    fn write_float(&self, _: f32) {}
-    fn write_string(&self, _: &str) {}
-    fn write_position(&self, _: Vec3f) {}
-    fn write_dir(&self, _: Vec3f) {}
-    fn write_angle(&self, _: f32) {}
+    fn write_long(&self, c: i32) {
+        self.message.borrow_mut().push(Write::Long(c));
+    }
+    fn write_float(&self, f: f32) {
+        self.message.borrow_mut().push(Write::Float(f));
+    }
+    fn write_string(&self, s: &str) {
+        self.strings.borrow_mut().push(s.to_string());
+        self.message.borrow_mut().push(Write::String(s.to_string()));
+    }
+    fn write_position(&self, pos: Vec3f) {
+        self.vectors.borrow_mut().push(pos);
+        self.message.borrow_mut().push(Write::Position(pos));
+    }
+    fn write_dir(&self, dir: Vec3f) {
+        self.vectors.borrow_mut().push(dir);
+        self.message.borrow_mut().push(Write::Dir(dir));
+    }
+    fn write_angle(&self, a: f32) {
+        self.message.borrow_mut().push(Write::Angle(a));
+    }
     fn multicast(&self, origin: Vec3f, to: Multicast) {
         self.multicasts.borrow_mut().push((origin, to));
     }
-    fn unicast(&self, _: usize, _: bool) {}
+    fn unicast(&self, ent: usize, reliable: bool) {
+        self.unicasts.borrow_mut().push((ent, reliable));
+    }
 
     fn argc(&self) -> i32 {
-        0
+        self.command.borrow().len() as i32
     }
-    fn argv(&self, _: i32) -> String {
-        String::new()
+    fn argv(&self, n: i32) -> String {
+        let command = self.command.borrow();
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| command.get(n).cloned())
+            .unwrap_or_default()
     }
     fn args(&self) -> String {
-        String::new()
+        self.command.borrow().get(1..).unwrap_or_default().join(" ")
     }
     fn add_command_string(&self, text: &str) {
         self.commands.borrow_mut().push(text.to_string());
+    }
+
+    fn local_time(&self) -> Option<(u32, u32, u32)> {
+        self.local_time.get()
+    }
+
+    fn cvar(&self, name: &str, default: &str) -> String {
+        self.cvars
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -1156,8 +1290,7 @@ impl GameWorld {
     }
 
     /// The body queue, configstrings, images, sounds and models C
-    /// SP_worldspawn sets up. `sv_gravity`, `snd_fry` and
-    /// `PrecacheItem(Blaster)` are not ported.
+    /// SP_worldspawn sets up. `sv_gravity` is not ported (see `add_gravity`).
     pub(crate) fn worldspawn_configstrings(
         &mut self,
         _key: EntityKey,
@@ -1207,8 +1340,14 @@ impl GameWorld {
         self.level.pic_health = self.gi.image_index("i_health");
         self.gi.image_index("help");
         self.gi.image_index("field_3");
-        for sound in WORLDSPAWN_SOUNDS {
+        for (i, sound) in WORLDSPAWN_SOUNDS.into_iter().enumerate() {
             self.gi.sound_index(sound);
+            if i == 0 {
+                // After snd_fry, as C does.
+                if let Some(blaster) = self.find_item_by_name("Blaster") {
+                    self.precache_item(blaster);
+                }
+            }
         }
         // Only coop and deathmatch show other players' weapons.
         if self.game.coop || self.game.deathmatch {
@@ -1322,6 +1461,9 @@ impl GameWorld {
             self.run_entity(key);
         }
 
+        // See if it is time to end a deathmatch.
+        self.check_dm_rules();
+
         // Build the player state each client is sent this frame.
         self.client_end_server_frames();
     }
@@ -1351,7 +1493,7 @@ impl GameWorld {
             return;
         }
 
-        let Some(&(_, sfn, model, finish)) = crate::spawn::find_spawn(classname) else {
+        let Some(&(_, sfn, model, finish, is_monster)) = crate::spawn::find_spawn(classname) else {
             self.gi
                 .dprintf(&format!("{classname} doesn't have a spawn function\n"));
             return;
@@ -1364,6 +1506,9 @@ impl GameWorld {
             self.set_model(key, model);
         }
         sfn(&mut self.entities, key, fields);
+        for text in self.entities.take_dprints() {
+            self.gi.dprintf(&text);
+        }
         if !self.entities.is_live(key) {
             return; // The spawn function removed it (info_null, bad keys).
         }
@@ -1377,10 +1522,8 @@ impl GameWorld {
             self.set_model(key, model);
         }
 
-        let is_monster = self
-            .entities
-            .get(key)
-            .is_some_and(|e| e.monsterinfo.is_some());
+        // C runs monster_start from each monster's SP_* function; the
+        // SPAWNS row says which ones do.
         if is_monster {
             if !crate::ai::monster_start(self, key) {
                 return; // Deathmatch freed the monster.
@@ -1391,9 +1534,17 @@ impl GameWorld {
         self.link_entity(key);
     }
 
+    /// C `FindItemByClassname`, which compares with Q_stricmp, where
+    /// ED_CallSpawn's item lookup (`find_item`) uses strcmp.
+    pub(crate) fn find_item_by_classname(&self, classname: &str) -> Option<usize> {
+        self.items
+            .iter()
+            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(classname))
+    }
+
     /// The item a monster drops on death, from its `item` key. C ref:
     /// `monster_start` (g_monster.c), which reads `st.item`.
-    fn monster_start_item(
+    pub(crate) fn monster_start_item(
         &mut self,
         key: EntityKey,
         classname: &str,
@@ -1402,13 +1553,7 @@ impl GameWorld {
         let Some(name) = fields.get("item") else {
             return;
         };
-        // C FindItemByClassname compares with Q_stricmp, where
-        // ED_CallSpawn's item lookup (find_item) uses strcmp.
-        let found = self
-            .items
-            .iter()
-            .position(|it| !it.classname.is_empty() && it.classname.eq_ignore_ascii_case(name));
-        match found {
+        match self.find_item_by_classname(name) {
             Some(item) => {
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.item = Some(item);
@@ -1527,13 +1672,11 @@ impl GameWorld {
             &self.game.maxclients().to_string(),
         );
 
-        // C ED_ParseEdict errors are ERR_DROP: spawn nothing from a bad string.
+        // C ED_ParseEdict errors are gi.error: spawn nothing from a bad string.
         let parsed = match crate::spawn::parse_entity_string(entstring) {
             Ok(parsed) => parsed,
-            Err(e) => {
-                tracing::error!("spawn_entities: {e}");
-                return;
-            }
+            Err(Q2Error::Drop(msg)) => return self.gi.error(&msg),
+            Err(e) => return self.gi.error(&e.to_string()),
         };
 
         let mut inhibit = 0;
@@ -1553,16 +1696,18 @@ impl GameWorld {
                 self.entities.spawn()
             };
             let Some(key) = slot else {
-                // C G_Spawn raises ERR_DROP here; GameExport::spawn_entities
-                // cannot fail, so report it and stop parsing.
-                self.gi.dprintf("ED_Alloc: no free edicts\n");
-                tracing::error!("spawn_entities: no free edicts");
-                break;
+                // C G_Spawn.
+                return self.gi.error("ED_Alloc: no free edicts");
             };
             let Some(ent) = self.entities.get_mut(key) else {
                 continue;
             };
             crate::spawn::apply_spawn_fields(ent, fields);
+            // C ED_ParseField; the block is a HashMap, so several unknown
+            // keys print in an unspecified order where C uses file order.
+            for unknown in crate::spawn::unknown_spawn_keys(fields) {
+                self.gi.dprintf(&format!("{unknown} is not a field\n"));
+            }
 
             // Yet another map hack.
             if mapname.eq_ignore_ascii_case("command")
@@ -1573,8 +1718,8 @@ impl GameWorld {
             }
 
             // Remove things (except the world) from other skill levels or
-            // deathmatch. Coop filters like single player: C has its
-            // SPAWNFLAG_NOT_COOP test commented out.
+            // deathmatch. C SpawnEntities has no coop branch: coop filters
+            // by skill like single player and clears SPAWNFLAG_NOT_COOP.
             if classname != "worldspawn" {
                 let skill_flag = match self.game.skill {
                     0 => SPAWNFLAG_NOT_EASY,
@@ -1640,6 +1785,23 @@ pub fn test_world_recording() -> (GameWorld, Rc<MockGameImport>) {
 
 #[cfg(test)]
 impl GameWorld {
+    /// An `info_player_start` for `begin_client` unless the world has a
+    /// start it can use: C SelectSpawnPoint raises gi.error without one. It
+    /// stands 9 units below the origin, so the player, raised 9, starts at
+    /// the origin.
+    pub(crate) fn ensure_player_start(&mut self) {
+        if ["info_player_start", "info_player_deathmatch"]
+            .iter()
+            .any(|class| self.find_by_classname(None, class).is_some())
+        {
+            return;
+        }
+        let key = self.spawn().expect("a free edict");
+        let ent = self.entities.get_mut(key).expect("just spawned");
+        ent.game.classname = "info_player_start".to_string();
+        ent.state.origin = Vec3f::new(0.0, 0.0, -9.0);
+    }
+
     /// Spawn a fake player in the first free client number, holding
     /// `client` in that number's `game.clients` slot. Panics when every
     /// client number is taken: C has no client record for other edicts.
@@ -2065,6 +2227,24 @@ mod tests {
     }
 
     #[test]
+    fn worldspawn_precaches_the_blaster_after_the_lava_fry_sound() {
+        let (_, gi) = world_in_mode(false, false, "{ \"classname\" \"worldspawn\" }");
+        let sounds = gi.sounds.borrow();
+        let fry = sounds.iter().position(|s| s == "player/fry.wav").unwrap();
+        assert_eq!(
+            sounds[fry + 1],
+            "misc/w_pkup.wav",
+            "the blaster's pickup sound"
+        );
+        assert!(sounds.iter().any(|s| s == "weapons/blastf1a.wav"));
+        assert!(gi
+            .models
+            .borrow()
+            .iter()
+            .any(|m| m == "models/weapons/v_blast/tris.md2"));
+    }
+
+    #[test]
     fn deathmatch_worldspawn_sends_the_deathmatch_status_bar() {
         use q2_shared::constants::CS_STATUSBAR;
         let (_, gi) = world_in_mode(true, false, "{ \"classname\" \"worldspawn\" }");
@@ -2263,8 +2443,9 @@ mod tests {
     }
 
     #[test]
-    fn running_out_of_edicts_while_spawning_is_reported() {
-        // C G_Spawn raises "ED_Alloc: no free edicts".
+    fn running_out_of_edicts_while_spawning_is_a_game_error() {
+        // C G_Spawn raises gi.error "ED_Alloc: no free edicts", which never
+        // returns: the rest of SpawnEntities does not run.
         let (mut world, gi) = test_world_recording();
         world.init_game();
         let lots = "{ \"classname\" \"info_notnull\" }\n".repeat(1100);
@@ -2273,11 +2454,23 @@ mod tests {
             &format!("{{ \"classname\" \"worldspawn\" }}\n{lots}"),
             "",
         );
-        assert!(gi
+        assert_eq!(*gi.errors.borrow(), ["ED_Alloc: no free edicts"]);
+        assert!(!gi
             .dprints
             .borrow()
             .iter()
-            .any(|m| m == "ED_Alloc: no free edicts\n"));
+            .any(|m| m.ends_with("entities inhibited.\n")));
+    }
+
+    #[test]
+    fn a_malformed_entity_string_is_a_game_error() {
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\"", "");
+        assert_eq!(
+            *gi.errors.borrow(),
+            ["ED_ParseEntity: EOF without closing brace"]
+        );
     }
 
     #[test]
@@ -2801,6 +2994,7 @@ mod tests {
 
         // Connect and begin.
         let player = world.connect_client(1, "\\name\\TestPlayer").unwrap();
+        world.ensure_player_start();
         world.begin_client(player);
 
         assert_eq!(world.entities.get(player).unwrap().game.health, 100);
@@ -3052,6 +3246,9 @@ mod tests {
             fn dprintf(&self, a: &str) {
                 self.inner.dprintf(a)
             }
+            fn error(&self, a: &str) {
+                self.inner.error(a)
+            }
             fn cprintf(&self, a: Option<usize>, b: i32, c: &str) {
                 self.inner.cprintf(a, b, c)
             }
@@ -3119,6 +3316,12 @@ mod tests {
                 String::new()
             }
             fn add_command_string(&self, _: &str) {}
+            fn cvar(&self, name: &str, default: &str) -> String {
+                self.inner.cvar(name, default)
+            }
+            fn local_time(&self) -> Option<(u32, u32, u32)> {
+                self.inner.local_time()
+            }
         }
         let gi = Rc::new(Printer::default());
         let mut world = GameWorld::new(gi.clone(), 64);
@@ -3258,7 +3461,8 @@ mod tests {
 
     #[test]
     fn coop_filters_by_skill_and_keeps_not_coop_entities_like_c() {
-        // C G_SpawnEntities has the SPAWNFLAG_NOT_COOP test commented out.
+        // C SpawnEntities has no coop branch: it filters by skill and
+        // clears SPAWNFLAG_NOT_COOP (g_spawn.c).
         let mut world = test_world();
         world.init_game();
         world.game.coop = true;
@@ -3407,5 +3611,113 @@ mod tests {
         let freed = radius_target(&mut world, Vec3f::ZERO, Solid::Bbox);
         world.free_entity(freed);
         assert_eq!(world.find_radius(None, Vec3f::ZERO, 1000.0), None);
+    }
+
+    #[test]
+    fn spawn_warnings_reach_dprintf_in_c_form() {
+        // Each C SP_* below warns with gi.dprintf, vectors through vtos.
+        let cases = [
+            (
+                r#""classname" "func_wall" "model" "*1" "spawnflags" "4""#,
+                "func_wall START_ON without TOGGLE\n",
+            ),
+            (
+                r#""classname" "func_clock" "origin" "1 2 3""#,
+                "func_clock with no target at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_clock" "target" "d" "spawnflags" "2" "origin" "1 2 3""#,
+                "func_clock with no count at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "misc_strogg_ship" "origin" "1 2 3""#,
+                "misc_strogg_ship without a target at (0 0 0)\n",
+            ),
+            (
+                r#""classname" "misc_teleporter""#,
+                "teleporter without a target.\n",
+            ),
+            (
+                r#""classname" "path_corner" "origin" "1 2 3""#,
+                "path_corner with no targetname at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "func_train" "model" "*1""#,
+                "func_train without a target at (-1 -1 -1)\n",
+            ),
+            (
+                r#""classname" "func_timer" "random" "2" "origin" "1 2 3""#,
+                "func_timer at (1 2 3) has random >= wait\n",
+            ),
+            (
+                r#""classname" "trigger_gravity" "model" "*1" "origin" "1 2 3""#,
+                "trigger_gravity without gravity set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_changelevel" "origin" "1 2 3""#,
+                "target_changelevel with no map at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "target_speaker" "origin" "1 2 3""#,
+                "target_speaker with no noise set at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "origin" "1 2 3""#,
+                "no key item for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "foo" "origin" "1 2 3""#,
+                "item foo not found for trigger_key at (1 2 3)\n",
+            ),
+            (
+                r#""classname" "trigger_key" "item" "key_blue_key" "origin" "1 2 3""#,
+                "trigger_key at (1 2 3) has no target\n",
+            ),
+            (
+                // C prints mins + size / 2 before its setmodel, while both
+                // are still zero.
+                r#""classname" "trigger_once" "model" "*1" "spawnflags" "1" "origin" "1 2 3""#,
+                "fixed TRIGGERED flag on trigger_once at (0 0 0)\n",
+            ),
+        ];
+        for (keys, warning) in cases {
+            let (mut world, gi) = test_world_recording();
+            gi.inline_bounds
+                .borrow_mut()
+                .insert("*1".into(), (Vec3f::ZERO, Vec3f::splat(16.0)));
+            world.init_game();
+            world.spawn_entities(
+                "base1",
+                &format!("{{ \"classname\" \"worldspawn\" }}\n{{ {keys} }}"),
+                "",
+            );
+            let dprints = gi.dprints.borrow();
+            assert!(dprints.iter().any(|d| d == warning), "{keys}: {dprints:?}");
+        }
+    }
+
+    #[test]
+    fn spawn_parsing_names_unknown_keys_and_door_rotating_without_distance() {
+        // C ED_ParseField prints unknown keys, skipping spawn-temp and
+        // F_IGNORE ones; ED_ParseEdict drops `_` keys before it.
+        let (mut world, gi) = test_world_recording();
+        world.init_game();
+        world.spawn_entities(
+            "base1",
+            r#"{ "classname" "worldspawn" }
+               { "classname" "func_door_rotating" "origin" "1 2 3" "foo" "1" }
+               { "classname" "info_null" "LIP" "1" "light" "200" "_color" "1 0 0" "sounds" "2" "nextmap" "x" }
+               { "classname" "info_null" "enemy" "1" }"#,
+            "",
+        );
+        let dprints = gi.dprints.borrow();
+        let fields: Vec<&String> = dprints
+            .iter()
+            .filter(|d| d.ends_with(" is not a field\n"))
+            .collect();
+        assert_eq!(fields, ["foo is not a field\n", "enemy is not a field\n"]);
+        assert!(
+            dprints.contains(&"func_door_rotating at (1 2 3) with no distance set\n".to_string())
+        );
     }
 }

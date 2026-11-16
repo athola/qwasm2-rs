@@ -13,15 +13,14 @@ pub mod wav;
 
 use std::rc::Rc;
 
-use q2_shared::constants::{CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
+use q2_common::pmove::angle_vectors;
+use q2_shared::constants::{ATTN_STATIC, CS_PLAYERSKINS, MAX_EDICTS, MAX_SOUNDS};
 use q2_shared::types::{EntityState, Vec3f};
 
 use wav::Sound;
 
 /// C `MAX_CHANNELS`.
 pub const MAX_CHANNELS: usize = 32;
-/// C `ATTN_STATIC`: attenuates twice as fast as the other attenuations.
-pub const ATTN_STATIC: f32 = 3.0;
 /// C `SDL_FULLVOLUME`: closer than this is full volume.
 const FULL_VOLUME_DIST: f32 = 80.0;
 /// C `SDL_LOOPATTENUATE`: the distance multiplier of entity loop sounds.
@@ -44,15 +43,7 @@ impl Listener {
     /// The listener at the view (C `S_Update(cl.refdef.vieworg, v_forward,
     /// v_right, v_up)`), `right` from C `AngleVectors`.
     pub fn from_view(origin: Vec3f, angles: Vec3f) -> Self {
-        let rad = |degrees: f32| f64::from(degrees) * (std::f64::consts::PI / 180.0);
-        let (sp, cp) = (rad(angles.x).sin() as f32, rad(angles.x).cos() as f32);
-        let (sy, cy) = (rad(angles.y).sin() as f32, rad(angles.y).cos() as f32);
-        let (sr, cr) = (rad(angles.z).sin() as f32, rad(angles.z).cos() as f32);
-        let right = Vec3f::new(
-            -(sr * sp * cy) + (cr * sy),
-            -(sr * sp * sy) + -(cr * cy),
-            -sr * cp,
-        );
+        let (_, right, _) = angle_vectors(angles);
         Self { origin, right }
     }
 }
@@ -68,11 +59,13 @@ pub fn spatialize_origin(
     dist_mult: f32,
 ) -> (i32, i32) {
     let source = origin - listener.origin;
+    // C VectorNormalize: a multiply by the reciprocal, which rounds
+    // differently from a divide.
     let length = source.length();
-    let source = if length > 0.0 {
-        source / length
+    let source = if length != 0.0 {
+        source * (1.0 / length)
     } else {
-        Vec3f::ZERO
+        source
     };
     let dist = (length - FULL_VOLUME_DIST).max(0.0) * dist_mult;
     let dot = listener.right.dot(source);
@@ -82,7 +75,9 @@ pub fn spatialize_origin(
         (0.5 * (1.0 + dot), 0.5 * (1.0 - dot))
     };
     let right = ((master_vol * ((1.0 - dist) * rscale)) as i32).max(0);
-    let left = ((master_vol * ((1.0 - dist) * lscale)) as i32).max(0);
+    // C writes `(1.0 - dist) * lscale` with a double 1.0 for this ear.
+    let lscale = ((1.0 - f64::from(dist)) * f64::from(lscale)) as f32;
+    let left = ((master_vol * lscale) as i32).max(0);
     (left, right)
 }
 
@@ -119,6 +114,50 @@ pub fn entity_origin(
     let now = find(current)?;
     let before = find(previous).unwrap_or(now);
     Some(before + (now - before) * lerpfrac)
+}
+
+/// A sound the client starts by name (C `S_RegisterSound` +
+/// `S_StartSound`): a muzzle flash's, a temp entity's, an entity event's
+/// or a chat line's. It plays at a fixed `origin`, or follows `entnum`
+/// when `origin` is `None`. A name starting with `*` is a sexed player
+/// sound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamedSound {
+    pub name: String,
+    pub entnum: i32,
+    pub entchannel: i32,
+    pub volume: f32,
+    pub attenuation: f32,
+    pub timeofs: f32,
+    pub origin: Option<Vec3f>,
+}
+
+impl NamedSound {
+    /// A full-volume sound at `origin` from the world (entity 0).
+    pub(crate) fn at(origin: Vec3f, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum: 0,
+            entchannel: 0,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: Some(origin),
+        }
+    }
+
+    /// A full-volume sound that follows `entnum`.
+    pub(crate) fn on(entnum: i32, entchannel: i32, name: &str, attenuation: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            entnum,
+            entchannel,
+            volume: 1.0,
+            attenuation,
+            timeofs: 0.0,
+            origin: None,
+        }
+    }
 }
 
 /// A sound the server started (C `CL_ParseStartSoundPacket`'s fields).
@@ -412,6 +451,34 @@ impl SoundSystem {
             volume: start.volume,
             attenuation: start.attenuation,
             timeofs: start.timeofs,
+        });
+    }
+
+    /// C `S_RegisterSound(name)` (or `S_RegisterSexedSound` for a `*`
+    /// name) then `S_StartSound`: a sound the client starts itself, such
+    /// as a muzzle flash or a temp entity's.
+    pub fn start_named_sound<'a>(
+        &mut self,
+        sound: &NamedSound,
+        configstring: impl Fn(usize) -> &'a str,
+        mut load: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) {
+        let id = if sound.name.starts_with('*') {
+            self.sexed_sound(sound.entnum, &sound.name, &configstring, &mut load)
+        } else {
+            self.find_or_add(&sound.name)
+        };
+        if !self.load(id, &mut load) {
+            return;
+        }
+        self.pending.push(PlaySound {
+            sfx: id,
+            entnum: sound.entnum,
+            entchannel: sound.entchannel,
+            origin: sound.origin,
+            volume: sound.volume,
+            attenuation: sound.attenuation,
+            timeofs: sound.timeofs,
         });
     }
 

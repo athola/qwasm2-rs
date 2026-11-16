@@ -8,7 +8,7 @@ use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
 use crate::monster::flash::project_source;
-use crate::monster::{frame, set_move, sound, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{frame, monster_footsteps, set_move, sound, throw_organic_gibs};
 use crate::world::GameWorld;
 use std::collections::HashMap;
 
@@ -367,7 +367,8 @@ pub fn parasite_tap(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `parasite_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn parasite_footstep(world: &mut GameWorld, key: EntityKey) {
-    parasite_step(world, key, MONSTER_FOOTSTEPS);
+    let on = monster_footsteps(world);
+    parasite_step(world, key, on);
 }
 
 /// The `parasite_footstep` body: the tap, without a `randk()`, when
@@ -903,6 +904,12 @@ mod tests {
                 format!("position {start:?}"),
                 format!("position {:?}", Vec3f::new(100.0, 0.0, 24.0)),
                 format!("multicast {:?} PVS", Vec3f::new(0.0, 0.0, 24.0)),
+                // T_Damage's blood on the enemy (C SpawnDamage).
+                format!("byte {}", q2_shared::protocol::SvcOp::TempEntity as i32),
+                format!("byte {}", q2_shared::constants::TE_BLOOD),
+                format!("position {:?}", Vec3f::new(100.0, 0.0, 24.0)),
+                format!("dir {:?}", Vec3f::ZERO),
+                format!("multicast {:?} PVS", Vec3f::new(100.0, 0.0, 24.0)),
             ]
         );
     }

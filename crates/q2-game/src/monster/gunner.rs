@@ -9,7 +9,7 @@ use q2_shared::types::*;
 use crate::ai;
 use crate::constants::*;
 use crate::entity::{EntityKey, EntityStorage, MonsterFrame, MonsterInfo, MonsterMove};
-use crate::monster::{fire, flash, footstep, throw_organic_gibs, MONSTER_FOOTSTEPS};
+use crate::monster::{fire, flash, footstep, monster_footsteps, throw_organic_gibs};
 use crate::monster::{frame, set_move, sound};
 use crate::world::GameWorld;
 use std::collections::HashMap;
@@ -408,7 +408,8 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
 
 /// C ref: `gunner_footstep`; silent unless `g_monsterfootsteps` is set.
 pub fn gunner_footstep(world: &mut GameWorld, key: EntityKey) {
-    footstep(world, key, MONSTER_FOOTSTEPS, &SOUND_STEPS, 1.0);
+    let on = monster_footsteps(world);
+    footstep(world, key, on, &SOUND_STEPS, 1.0);
 }
 
 /// C ref: `gunner_idlesound`.
@@ -823,7 +824,7 @@ mod tests {
     use crate::misc::wire::{wire_world, Wire};
     use crate::monster::test_support::{
         assert_moves_match_c, keep_kick, mi, mi_mut, player_arena, playing, seed, sounds,
-        think_for, ArenaImport, CMoveRow,
+        spawn_monster, think_for, ArenaImport, CMoveRow,
     };
     use crate::world::{test_world, test_world_recording, MockGameImport};
     use std::rc::Rc;
@@ -1272,15 +1273,7 @@ mod tests {
     fn gunner_facing_player(x: f32) -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
         let (mut world, gi, player) = player_arena(x);
         world.game.skill = 1;
-        let key = world.spawn().unwrap();
-        let fields: HashMap<String, String> =
-            [("classname".to_string(), "monster_gunner".to_string())].into();
-        world.entities.get_mut(key).unwrap().state.origin = Vec3f::new(0.0, 0.0, 24.0);
-        let &(_, spawn, _, finish) = crate::spawn::find_spawn("monster_gunner").unwrap();
-        spawn(&mut world.entities, key, &fields);
-        finish.unwrap()(&mut world, key, &fields);
-        ai::monster_start(&mut world, key);
-        world.link_entity(key);
+        let key = spawn_monster(&mut world, "monster_gunner", Vec3f::new(0.0, 0.0, 24.0));
         (world, gi, key, player)
     }
 

@@ -12,7 +12,7 @@
 //! split this into `MsgWriter` / `MsgReader` for compile-time enforcement.
 
 use crate::error::{Q2Error, Q2Result};
-use q2_shared::constants::{MAX_EDICTS, MAX_MSGLEN, MAX_STATS};
+use q2_shared::constants::{MAX_EDICTS, MAX_MSGLEN, MAX_STATS, MAX_STRING_CHARS};
 use q2_shared::protocol::{PlayerStateFlags, SvcOp, UpdateFlags};
 use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
@@ -21,10 +21,13 @@ use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 // Taken from the Quake 2 source (anorms.h / NUMVERTEXNORMALS).
 // ---------------------------------------------------------------------------
 
-const NUM_VERTEX_NORMALS: usize = 162;
+/// C `NUMVERTEXNORMALS`.
+pub const NUM_VERTEX_NORMALS: usize = 162;
 
+/// C `bytedirs` (anorms.h): the protocol's direction table, also the
+/// normals the client's particle effects index.
 #[rustfmt::skip]
-const BYTEDIRS: [[f32; 3]; NUM_VERTEX_NORMALS] = [
+pub const BYTEDIRS: [[f32; 3]; NUM_VERTEX_NORMALS] = [
     [-0.525731, 0.000000, 0.850651], [-0.442863, 0.238856, 0.864188],
     [-0.295242, 0.000000, 0.955423], [-0.309017, 0.500000, 0.809017],
     [-0.162460, 0.262866, 0.951056], [0.000000, 0.000000, 1.000000],
@@ -417,9 +420,10 @@ impl NetMsg {
     /// byte is lost. Like C `MSG_ReadString`, at most 2047 bytes are read;
     /// the remainder of a longer string stays in the stream.
     pub fn read_string(&mut self) -> String {
-        const MAX_STRING_CHARS: usize = 2047;
+        // C reads into `char string[2048]` (MAX_STRING_CHARS) and keeps one
+        // byte for the terminator.
         let mut result = String::new();
-        for _ in 0..MAX_STRING_CHARS {
+        for _ in 0..MAX_STRING_CHARS - 1 {
             let c = self.read_byte();
             if c <= 0 {
                 break; // terminator, or end of message (-1)

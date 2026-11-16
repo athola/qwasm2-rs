@@ -611,7 +611,7 @@ mod tests {
     fn flyer_in_jail5_at_z_minus_104_waits_to_be_triggered_by_its_target() {
         let mut world = test_world();
         world.level.mapname = "JAIL5".to_string();
-        let &(_, sfn, _, finish) = crate::spawn::find_spawn("monster_flyer").unwrap();
+        let &(_, sfn, _, finish, _) = crate::spawn::find_spawn("monster_flyer").unwrap();
         let fields = HashMap::new();
         for (z, fixed) in [(-104.0, true), (-103.0, false)] {
             let key = world.spawn().unwrap();

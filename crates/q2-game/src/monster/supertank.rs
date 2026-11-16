@@ -5,7 +5,6 @@ use q2_shared::constants::{
     MZ2_SUPERTANK_MACHINEGUN_1, MZ2_SUPERTANK_ROCKET_1, MZ2_SUPERTANK_ROCKET_2,
     MZ2_SUPERTANK_ROCKET_3,
 };
-use q2_shared::protocol::SvcOp;
 use q2_shared::types::*;
 use std::collections::HashMap;
 
@@ -16,6 +15,7 @@ use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::{monster_flash_source, project_source, MONSTER_FLASH_OFFSET};
 use crate::monster::{enemy_eye, frame, set_move, sound};
+use crate::weapons::temp_entity;
 use crate::world::GameWorld;
 
 /// C supertank.h `MODEL_SCALE`.
@@ -485,14 +485,16 @@ pub fn supertank_machine_gun(world: &mut GameWorld, key: EntityKey) {
         return;
     };
     let flash = MZ2_SUPERTANK_MACHINEGUN_1 + (ent.state.frame - FRAME_ATTAK1_1);
+    // A flash off the table fires nothing, as monster_flash_source does.
+    let Some(&offset) = usize::try_from(flash)
+        .ok()
+        .and_then(|i| MONSTER_FLASH_OFFSET.get(i))
+    else {
+        return;
+    };
     let (forward, right, _) =
         crate::physics::angle_vectors(Vec3f::new(0.0, ent.state.angles.y, 0.0));
-    let start = project_source(
-        ent.state.origin,
-        MONSTER_FLASH_OFFSET[flash as usize],
-        forward,
-        right,
-    );
+    let start = project_source(ent.state.origin, offset, forward, right);
     // C adds the enemy's velocity times 0: no lead.
     let dir = enemy_eye(world, key).map_or(forward, |eye| (eye - start).normalize_or_zero());
     monster_fire_bullet(
@@ -612,10 +614,7 @@ pub(crate) fn boss_explode(world: &mut GameWorld, key: EntityKey) {
         }
         return;
     }
-    world.gi.write_byte(SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_EXPLOSION1);
-    world.gi.write_position(org);
-    world.gi.multicast(origin, Multicast::PVS);
+    temp_entity(world, TE_EXPLOSION1, &[org], None, origin, Multicast::PVS);
     let time = world.level.time;
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.nextthink = time + FRAMETIME;
@@ -716,6 +715,7 @@ mod tests {
     use crate::entity::ThinkFn;
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
+    use q2_shared::protocol::SvcOp;
     use std::rc::Rc;
 
     fn supertank() -> (GameWorld, Rc<WireImport>, EntityKey) {
@@ -985,6 +985,18 @@ mod tests {
         assert_eq!(muzzle_flashes(&gi), want);
     }
 
+    #[test]
+    fn supertank_machine_gun_off_the_flash_table_skips_the_shot() {
+        let (mut world, gi, key) = supertank();
+        let below = FRAME_ATTAK1_1 - MZ2_SUPERTANK_MACHINEGUN_1 - 1;
+        let past = FRAME_ATTAK1_1 + MONSTER_FLASH_OFFSET.len() as i32;
+        for frame in [below, past] {
+            set_frame(&mut world, key, frame);
+            supertank_machine_gun(&mut world, key);
+        }
+        assert!(muzzle_flashes(&gi).is_empty());
+    }
+
     /// A supertank at (0, 0, 24) facing +x but pitched 20 degrees, on
     /// attak1_1, with a player at (300, 0, 24) as its enemy.
     fn pitched_supertank() -> (GameWorld, Rc<ArenaImport>, EntityKey, EntityKey) {
@@ -1084,6 +1096,29 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn boss_explode_writes_the_blast_offset_but_multicasts_from_the_boss() {
+        // C BossExplode: gi.WritePosition(org), then
+        // gi.multicast(self->s.origin, MULTICAST_PVS).
+        let (mut world, gi, key) = supertank();
+        let origin = Vec3f::new(100.0, 200.0, 0.0);
+        world.entities.get_mut(key).unwrap().state.origin = origin;
+        gi.wire.borrow_mut().clear();
+        boss_explode(&mut world, key);
+        let wire = gi.wire.borrow();
+        let org = explosions(&gi)[0];
+        assert_eq!((org.x, org.y), (76.0, 176.0));
+        assert_eq!(
+            *wire,
+            [
+                Wire::Byte(SvcOp::TempEntity as i32),
+                Wire::Byte(TE_EXPLOSION1),
+                Wire::Position(org),
+                Wire::Multicast(origin, Multicast::PVS),
+            ]
+        );
     }
 
     #[test]

@@ -16,6 +16,10 @@ use crate::monster::infantry;
 use crate::weapons::vectoangles;
 use crate::world::GameWorld;
 use std::collections::HashMap;
+use std::f64::consts::PI;
+
+/// C `FRAMETIME` (local.h), a double literal.
+const C_FRAMETIME: f64 = 0.1;
 
 /// Set on the breach by its driver to fire on the breach's next think.
 const SPAWNFLAG_FIRE: i32 = 65536;
@@ -200,18 +204,26 @@ pub fn turret_breach_think(world: &mut GameWorld, key: EntityKey) {
     d.avelocity.x = avelocity.x;
     d.avelocity.y = avelocity.y;
 
+    // C works these in double: `angle *= (M_PI * 2 / 360)` rounds into a
+    // float, then double cos/sin/tan, and `dir * 1.0 / FRAMETIME` divides by
+    // the double 0.1.
+    let radians = |deg: f32| f64::from((f64::from(deg) * (PI * 2.0 / 360.0)) as f32);
+    let speed = |dir: f32| (f64::from(dir) * 1.0 / C_FRAMETIME) as f32;
+    let reach = f64::from(d.game.move_origin.x);
+
     // X and y.
-    let angle = (angles.y + d.game.move_origin.y).to_radians();
-    let target_x = snap_to_eights(origin.x + angle.cos() * d.game.move_origin.x);
-    let target_y = snap_to_eights(origin.y + angle.sin() * d.game.move_origin.x);
-    d.velocity.x = (target_x - d.state.origin.x) / FRAMETIME;
-    d.velocity.y = (target_y - d.state.origin.y) / FRAMETIME;
+    let angle = radians(angles.y + d.game.move_origin.y);
+    let target_x = snap_to_eights((f64::from(origin.x) + angle.cos() * reach) as f32);
+    let target_y = snap_to_eights((f64::from(origin.y) + angle.sin() * reach) as f32);
+    d.velocity.x = speed(target_x - d.state.origin.x);
+    d.velocity.y = speed(target_y - d.state.origin.y);
 
     // Z.
-    let angle = angles.x.to_radians();
-    let target_z =
-        snap_to_eights(origin.z + d.game.move_origin.x * angle.tan() + d.game.move_origin.z);
-    d.velocity.z = (target_z - d.state.origin.z) / FRAMETIME;
+    let angle = radians(angles.x);
+    let target_z = snap_to_eights(
+        (f64::from(origin.z) + reach * angle.tan() + f64::from(d.game.move_origin.z)) as f32,
+    );
+    d.velocity.z = speed(target_z - d.state.origin.z);
 
     if fire {
         turret_breach_fire(world, key);
@@ -461,14 +473,12 @@ fn monsterinfo_mut(world: &mut GameWorld, key: EntityKey) -> Option<&mut Monster
 
 /// Take the seat: own the breach (and its team), face its way, record
 /// where the driver sits relative to it, and join the end of its team.
-/// C ref: `turret_driver_link`. Also puts back the MOVETYPE_PUSH that
-/// `monster_start` (which C's SP_turret_driver does not call) replaced.
+/// C ref: `turret_driver_link`.
 pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
-    ent.game.movetype = MoveType::Push;
     ent.think = Some(turret_driver_think);
     ent.game.nextthink = time + FRAMETIME;
     let (target, origin) = (ent.game.target.clone(), ent.state.origin);
@@ -510,16 +520,9 @@ pub fn turret_driver_link(world: &mut GameWorld, key: EntityKey) {
     }
 }
 
-/// The `EntityStorage` half of C `SP_turret_driver`; `GameWorld::call_spawn`
-/// then runs `monster_start`, which does the rest of C's inline monster
-/// setup (deathmatch removal, `total_monsters`, SVF_MONSTER, RF_FRAMELERP,
-/// DAMAGE_AIM, `monster_use`, MASK_MONSTERSOLID, `old_origin`) and keeps
-/// the `turret_driver_link` think. It also does what C's driver never
-/// gets: MOVETYPE_STEP until `turret_driver_link` puts PUSH back,
-/// `max_health`, `air_finished`, the `M_CheckAttack` checkattack, a
-/// forever `pausetime` and the SIGHT-to-AMBUSH spawnflag rewrite. The
-/// stand is `infantry_stand`, which C's HuntTarget calls for this
-/// STAND_GROUND monster once FindTarget succeeds.
+/// The `EntityStorage` half of C `SP_turret_driver`; `turret_driver_finish`
+/// does the rest. The stand is `infantry_stand`, which C's HuntTarget
+/// calls for this STAND_GROUND monster once FindTarget succeeds.
 pub fn sp_turret_driver(
     storage: &mut EntityStorage,
     key: EntityKey,
@@ -544,6 +547,37 @@ pub fn sp_turret_driver(
         ..Default::default()
     }));
     ent.think = Some(turret_driver_link);
+}
+
+/// The `GameWorld` half of C `SP_turret_driver`: removal in deathmatch,
+/// then the part of `monster_start` C inlines (the monster count,
+/// SVF_MONSTER, RF_FRAMELERP, DAMAGE_AIM, `monster_use`,
+/// MASK_MONSTERSOLID, `old_origin`, `st.item`) and the first think. Not
+/// the rest of `monster_start`: C leaves `max_health`, `air_finished`,
+/// `checkattack` and the spawnflags alone. C ref: `SP_turret_driver`.
+pub fn turret_driver_finish(
+    world: &mut GameWorld,
+    key: EntityKey,
+    fields: &HashMap<String, String>,
+) {
+    if world.game.deathmatch {
+        world.free_entity(key);
+        return;
+    }
+    world.level.total_monsters += 1;
+    let time = world.level.time;
+    let Some(ent) = world.entities.get_mut(key) else {
+        return;
+    };
+    ent.svflags |= SvFlags::MONSTER.bits();
+    ent.state.renderfx |= q2_shared::constants::RF_FRAMELERP;
+    ent.game.takedamage = TakeDamage::Aim;
+    ent.use_fn = Some(ai::monster_use);
+    ent.clipmask = MASK_MONSTERSOLID;
+    ent.state.old_origin = ent.state.origin;
+    ent.game.nextthink = time + FRAMETIME;
+    let classname = ent.game.classname.clone();
+    world.monster_start_item(key, &classname, fields);
 }
 
 // ==========================================================================
@@ -783,6 +817,24 @@ mod tests {
     }
 
     #[test]
+    fn turret_breach_think_drags_the_driver_in_c_double_precision() {
+        // C rounds the radians to float, then works the seat and the
+        // `dir * 1.0 / FRAMETIME` speed in double. Expected values come
+        // from that sequence; f32 throughout gives 60.749996 and -175.49998.
+        let mut world = test_world();
+        let t = turret(&mut world);
+        let b = world.entities.get_mut(t.breach).unwrap();
+        b.state.origin = Vec3f::ZERO;
+        b.state.angles = Vec3f::new(10.0, 21.0, 0.0);
+        let d = world.entities.get_mut(t.driver).unwrap();
+        d.game.move_origin = Vec3f::new(10.0, 0.0, -16.0);
+        d.state.origin = Vec3f::splat(3.3);
+        turret_breach_think(&mut world, t.breach);
+        let v = world.entities.get(t.driver).unwrap().velocity;
+        assert_eq!(v, Vec3f::new(60.75, 3.250_000_5, -175.5));
+    }
+
+    #[test]
     fn turret_breach_fires_a_rocket_when_its_driver_asks() {
         let (mut world, gi) = test_world_recording();
         let t = turret(&mut world);
@@ -868,6 +920,57 @@ mod tests {
             ent.think.unwrap(),
             turret_driver_link as ThinkFn
         ));
+    }
+
+    /// C SP_turret_driver inlines only part of monster_start, so
+    /// max_health, air_finished, checkattack and the spawnflags stay as
+    /// the spawn left them.
+    #[test]
+    fn turret_driver_spawn_does_only_cs_inline_monster_setup() {
+        let mut world = test_world();
+        world.init_items();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        let ent = world.entities.get_mut(key).unwrap();
+        ent.game.classname = "turret_driver".to_string();
+        ent.game.spawnflags = 1; // monster_start would make this AMBUSH
+        ent.state.origin = Vec3f::new(-32.0, 0.0, 48.0);
+        let spawn_fields = fields(&[("classname", "turret_driver"), ("item", "ammo_shells")]);
+        world.call_spawn(key, "turret_driver", &spawn_fields);
+
+        assert_eq!(world.level.total_monsters, 1);
+        let ent = world.entities.get(key).unwrap();
+        assert_ne!(ent.svflags & SvFlags::MONSTER.bits(), 0);
+        assert_ne!(ent.state.renderfx & q2_shared::constants::RF_FRAMELERP, 0);
+        assert_eq!(ent.game.takedamage, TakeDamage::Aim);
+        assert!(ent
+            .use_fn
+            .is_some_and(|f| std::ptr::fn_addr_eq(f, ai::monster_use as crate::entity::UseFn)));
+        assert_eq!(ent.clipmask, MASK_MONSTERSOLID);
+        assert_eq!(ent.state.old_origin, ent.state.origin);
+        assert_eq!(ent.game.nextthink, 1.1);
+        assert_eq!(ent.game.movetype, MoveType::Push);
+        assert!(ent.game.item.is_some(), "st.item looked up");
+        // What monster_start would have added and C's driver never gets.
+        assert_eq!(ent.game.max_health, 0);
+        assert_eq!(ent.game.spawnflags, 1);
+        let mi = ent.monsterinfo.as_ref().unwrap();
+        assert_eq!(mi.air_finished, 0.0);
+        assert!(mi.checkattack.is_none());
+    }
+
+    #[test]
+    fn turret_driver_is_removed_in_deathmatch() {
+        let mut world = test_world();
+        world.game.deathmatch = true;
+        let key = world.spawn().unwrap();
+        world.call_spawn(
+            key,
+            "turret_driver",
+            &fields(&[("classname", "turret_driver")]),
+        );
+        assert!(!world.entities.is_live(key));
+        assert_eq!(world.level.total_monsters, 0);
     }
 
     #[test]

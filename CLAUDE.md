@@ -11,8 +11,9 @@ Key C source directories:
 - `~/Qwasm2/src/common/`: collision, pmove, cvar, cmd, filesystem, net_msg
 - `~/Qwasm2/src/game/`: entity system, spawning, AI, items, weapons
 - `~/Qwasm2/src/server/`: server frame loop, world, client management
-- `~/Qwasm2/src/client/`: client prediction, view, input, parsing
-- `~/Qwasm2/src/backends/`: renderer, sound, platform
+- `~/Qwasm2/src/client/`: client prediction, view, input, parsing, effects
+- `~/Qwasm2/src/client/refresh/gl3/`: GL3 renderer; `~/Qwasm2/src/client/sound/`: sound
+- `~/Qwasm2/src/backends/`: platform (unix, windows, wasm)
 
 ## Architecture
 
@@ -62,4 +63,3 @@ make play                       # Release build, bundle, repack game data, run d
 - No global mutable state. All state is instance-owned or passed by reference.
 - Large algorithmic modules (collision, pmove) are faithful C ports; modify with care and tests.
 - `#[allow(clippy::too_many_arguments)]` on weapon fire functions matching C signatures.
-- `#[allow(clippy::field_reassign_with_default)]` on spawn functions building MoveInfo incrementally.

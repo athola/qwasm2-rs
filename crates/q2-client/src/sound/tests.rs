@@ -162,6 +162,39 @@ fn listener_right_is_c_angle_vectors_right() {
     assert!((l.right - Vec3f::new(0.0, -1.0, 0.0)).length() < 1e-6);
 }
 
+#[test]
+fn listener_right_rounds_like_c_angle_vectors() {
+    // C AngleVectors stores the radian angle to float before sin/cos.
+    // View angles are lerped floats: sweep -180..180 degrees.
+    for step in 0..200_000u32 {
+        let degrees = step as f32 * 0.0018 - 180.0;
+        for angles in [
+            Vec3f::new(0.0, degrees, 0.0),
+            Vec3f::new(degrees, 45.0, 0.0),
+            Vec3f::new(10.0, degrees, degrees),
+        ] {
+            let right = q2_common::pmove::angle_vectors(angles).1;
+            assert_eq!(
+                Listener::from_view(Vec3f::ZERO, angles).right,
+                right,
+                "{angles}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spatialized_volumes_round_like_c() {
+    // Expected values from C SDL_SpatializeOrigin, compiled: VectorNormalize
+    // multiplies by the reciprocal, and the left scale is a double product.
+    let at = |x, y, master_vol| {
+        spatialize_origin(Vec3f::new(x, y, 0.0), &listener(), master_vol, 0.0005)
+    };
+    assert_eq!(at(20.0, 15.0, 255.0), (203, 51));
+    assert_eq!(at(-18.0, 667.0, 160.0), (112, 0));
+    assert_eq!(at(229.0, 931.0, 219.0), (121, 1));
+}
+
 // -- registration (C CL_RegisterSounds, S_LoadSound) -------------------------
 
 #[test]
@@ -501,6 +534,68 @@ fn entity_origin_lerps_between_frames_and_is_none_for_absent_entities() {
     assert_eq!(at(2), Some(Vec3f::new(25.0, 0.0, 0.0)));
     assert_eq!(at(3), Some(Vec3f::new(0.0, 8.0, 0.0)), "new: no lerp");
     assert_eq!(at(4), None);
+}
+
+fn named(entnum: i32, name: &str) -> NamedSound {
+    NamedSound {
+        name: name.to_string(),
+        entnum,
+        entchannel: 1,
+        volume: 1.0,
+        attenuation: 1.0,
+        timeofs: 0.0,
+        origin: None,
+    }
+}
+
+#[test]
+fn a_sound_started_by_name_registers_it_like_s_registersound() {
+    let mut sys = system();
+    let files = files();
+    sys.start_named_sound(&named(2, "b.wav"), strings(""), |p| files.get(p).cloned());
+    let mix = update(&mut sys, 0.0);
+    assert_eq!(plays(&mix).len(), 1);
+    assert_eq!(sys.name(plays(&mix)[0].1), "b.wav");
+}
+
+#[test]
+fn a_named_sound_that_does_not_load_is_dropped() {
+    let mut sys = system();
+    sys.start_named_sound(&named(2, "missing.wav"), strings(""), |_| None);
+    assert!(plays(&update(&mut sys, 0.0)).is_empty());
+}
+
+#[test]
+fn a_named_sound_at_a_fixed_origin_does_not_follow_its_entity() {
+    // Temp entity sounds play at their origin from entity 0.
+    let mut sys = system();
+    let files = files();
+    let sound = NamedSound {
+        origin: Some(Vec3f::new(0.0, 10.0, 0.0)),
+        ..named(0, "b.wav")
+    };
+    sys.start_named_sound(&sound, strings(""), |p| files.get(p).cloned());
+    sys.update(0.0, &listener(), |_| None, &[]);
+    let far = |_: i32| Some(Vec3f::new(5000.0, 0.0, 0.0));
+    let mix = sys.update(10.0, &listener(), far, &[]);
+    assert!(matches!(
+        mix.commands[..],
+        [MixCommand::Gain { channel: 0, .. }]
+    ));
+}
+
+#[test]
+fn a_sexed_named_sound_resolves_through_the_players_model() {
+    // Entity events start `*fall1.wav` and the like by name.
+    let mut sys = system();
+    let files = files();
+    sys.start_named_sound(
+        &named(PLAYER, "*jump1.wav"),
+        strings("Ann\\female/athena"),
+        |p| files.get(p).cloned(),
+    );
+    let mix = update(&mut sys, 0.0);
+    assert_eq!(sys.name(plays(&mix)[0].1), "#players/female/jump1.wav");
 }
 
 /// One update with entity 2 seen at (0, -1000, 0), then a sound started

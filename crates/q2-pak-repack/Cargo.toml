@@ -1,6 +1,7 @@
 [package]
 name = "q2-pak-repack"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Filter a Quake 2 PAK file by extension allowlist, producing a smaller web-optimized PAK"
@@ -18,4 +19,4 @@ brotli = "7"
 workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

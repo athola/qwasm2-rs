@@ -1,8 +1,7 @@
 //! Technician (floater): flies, fires blaster bursts, claws and zaps up
 //! close, explodes when killed. C ref: `~/Qwasm2/src/game/monster/float/float.c`.
 
-use q2_shared::constants::{EF_HYPERBLASTER, MZ2_FLOAT_BLASTER_1};
-use q2_shared::protocol::SvcOp;
+use q2_shared::constants::{EF_HYPERBLASTER, MZ2_FLOAT_BLASTER_1, SPLASH_SPARKS};
 use q2_shared::types::*;
 
 use crate::ai;
@@ -13,11 +12,9 @@ use crate::monster::{
     fire::monster_fire_blaster, flash::monster_flash_source, flash::project_source,
 };
 use crate::monster::{frame, set_move, sound};
+use crate::weapons::spark_temp_entity;
 use crate::world::GameWorld;
 use std::collections::HashMap;
-
-/// C `SPLASH_SPARKS`, the `TE_SPLASH` colour (shared.h).
-const SPLASH_SPARKS: i32 = 1;
 
 const SOUND_ATTACK2: &str = "floater/fltatck2.wav";
 const SOUND_ATTACK3: &str = "floater/fltatck3.wav";
@@ -358,13 +355,7 @@ pub fn floater_zap(world: &mut GameWorld, key: EntityKey) {
 
     sound(world, key, CHAN_WEAPON, SOUND_ATTACK2, ATTN_NORM);
 
-    world.gi.write_byte(SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_SPLASH);
-    world.gi.write_byte(32);
-    world.gi.write_position(origin);
-    world.gi.write_dir(dir);
-    world.gi.write_byte(SPLASH_SPARKS);
-    world.gi.multicast(origin, Multicast::PVS);
+    spark_temp_entity(world, TE_SPLASH, 32, origin, dir, SPLASH_SPARKS);
 
     if ai::range(world, key, enemy) == Range::Melee
         && ai::infront(world, key, enemy)
@@ -730,6 +721,12 @@ mod tests {
                 format!("dir {:?}", Vec3f::new(50.0, 0.0, 0.0)),
                 "byte 1".to_string(),
                 format!("multicast {origin:?} PVS"),
+                // T_Damage's blood where the zap hit (C SpawnDamage).
+                format!("byte {}", q2_shared::protocol::SvcOp::TempEntity as i32),
+                format!("byte {}", q2_shared::constants::TE_BLOOD),
+                format!("position {:?}", Vec3f::new(50.0, 0.0, 64.0)),
+                format!("dir {:?}", Vec3f::ZERO),
+                format!("multicast {:?} PVS", Vec3f::new(50.0, 0.0, 64.0)),
             ]
         );
 

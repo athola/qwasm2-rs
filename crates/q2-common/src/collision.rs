@@ -1146,9 +1146,9 @@ impl CollisionMap {
     /// Clip a movement trace against frame entities, C CL_ClipMoveToEntities.
     ///
     /// `tr` is the world trace (see `world_trace`); a closer entity hit
-    /// replaces it and sets `ent_index` to the entity number. Unwired until
-    /// client prediction lands (#19); server-side clipping needs linked
-    /// entities (#11, #31).
+    /// replaces it and sets `ent_index` to the entity number. This is client
+    /// prediction's half, unwired until #19; the server clips against
+    /// linked entities in `ServerGameImport::trace`.
     pub fn clip_move_to_entities(
         &mut self,
         start: Vec3f,

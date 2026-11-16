@@ -76,7 +76,7 @@ fn cp3_server_runs_100_frames() {
     //    sv.time = 1000 like C SV_SpawnServer, so the first call only clamps
     //    realtime up to 900 ms; each later call runs exactly one game frame.
     for _ in 0..101 {
-        sv.frame(&mut svs, 100_000, &mut game, &gi);
+        sv.frame(&mut svs, 100_000, &mut game, &gi).unwrap();
     }
 
     // 8. Verify frame counters.
@@ -98,20 +98,21 @@ fn cp3_client_disconnect_does_not_panic() {
     svs.init_game(1);
     let mut sv = Server::default();
     sv.map(&mut svs, "test", &[], "", &gi, &mut game).unwrap();
+    game.spawn_entities("test", MINIMAL_ENTSTRING, "");
 
     game.client_connect(1, "");
     game.client_begin(1);
 
     // Run a few 60 Hz calls, then disconnect.
     for _ in 0..5 {
-        sv.frame(&mut svs, 16_667, &mut game, &gi);
+        sv.frame(&mut svs, 16_667, &mut game, &gi).unwrap();
     }
     let framenum_before = sv.framenum;
     game.client_disconnect(1);
 
     // Server must keep running game frames after the disconnect.
     for _ in 0..10 {
-        sv.frame(&mut svs, 16_667, &mut game, &gi);
+        sv.frame(&mut svs, 16_667, &mut game, &gi).unwrap();
     }
     assert!(
         sv.framenum > framenum_before,
@@ -135,8 +136,8 @@ fn cp3_configstring_written_by_game_survives_frame() {
     assert!(sv.configstrings[CS_SKY].is_empty());
 
     // First call clamps realtime to 900 ms, second runs the game frame.
-    sv.frame(&mut svs, 100_000, &mut game, &gi);
-    sv.frame(&mut svs, 100_000, &mut game, &gi);
+    sv.frame(&mut svs, 100_000, &mut game, &gi).unwrap();
+    sv.frame(&mut svs, 100_000, &mut game, &gi).unwrap();
 
     assert_eq!(sv.framenum, 1);
     assert_eq!(sv.configstrings[CS_SKY], "unit1_");

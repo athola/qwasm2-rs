@@ -165,7 +165,7 @@ impl ServerWorld {
     /// Indices at or beyond `MAX_EDICTS` are ignored: C edicts live in a
     /// fixed `MAX_EDICTS` array, and an unchecked index would grow `links`
     /// without bound.
-    // TODO(#9): migrate from raw usize indices to SlotMap generational keys per ADR-001
+    // Indexed by C edict number, as the `GameImport` boundary is (ADR-003).
     pub fn link_entity(&mut self, ent_idx: usize, mins: Vec3f, maxs: Vec3f, solid: Solid) {
         if ent_idx >= MAX_EDICTS {
             tracing::warn!(ent_idx, "link_entity: index beyond MAX_EDICTS ignored");
