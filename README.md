@@ -79,6 +79,21 @@ This builds the WASM module, bundles it into a single HTML file,
 downloads the Quake 2 demo installer (~39 MB) if pak0.pak is missing, and starts a
 local dev server. Open `http://127.0.0.1:8080/qwasm2.html`.
 
+### Page Settings
+
+Settings are query parameters, such as
+`qwasm2.html?map=demo3&hand=1`.
+
+| Parameter | Effect | Default |
+|-----------|--------|---------|
+| `map` | Start map (`demo1`, `demo2`, `demo3` in the demo pak) | `demo1` |
+| `hand` | C `hand`: 0 right, 1 left, 2 centre (moves shots and the gun) | 0 |
+| `cl_gun` | C `cl_gun`: 0 hides the first-person gun | 2 |
+| `gamma` | Start gamma, 0.1 to 2.0; F7/F8 step it in game | 1.0 |
+| `vid_fullscreen` | 1: the click to play also goes fullscreen and locks the keyboard (Chromium) | off |
+| `game` | C `game`; `rogue` applies the mission pack's colour shells (client only) | baseq2 |
+| `cl_fxextra` | 1: explosion smoke C does not draw ([ADR-003](docs/adr/003-game-logic-design.md)) | off |
+
 ### Prerequisites
 
 | Tool | Purpose | Install |
@@ -132,7 +147,7 @@ tables and backend coupling. Layers and rationale:
 | `q2-render` | GL3/GLES3 renderer backend | q2-shared, q2-common, q2-render-api |
 | `q2-game` | Game logic: entities (SlotMap), spawn, physics, combat, items, weapons, AI, 20 monsters, player | q2-shared, q2-common |
 | `q2-server` | Server state, frame loop, world | q2-shared, q2-common, q2-game |
-| `q2-client` | Client state, parsing, input, view | q2-shared, q2-common |
+| `q2-client` | Client state, parsing, input, view, sound mixing, temp entities and particle effects | q2-shared, q2-common |
 | `q2-platform` | Platform abstraction (WASM input, GL context, PAK reader) | q2-common |
 | `q2-wasm` | WASM cdylib entry point | q2-shared, q2-common, q2-server, q2-client, q2-render-api, q2-render, q2-platform |
 | `q2-net` | Placeholder for P2P networking (WebRTC via Matchbox, #22) | none |
