@@ -2,7 +2,7 @@
 
 All notable changes to qwasm2-rs are documented here.
 
-## [0.1.3] - Unreleased
+## [0.1.3] - 2026-11-16
 
 ### Changed (breaking)
 - `Renderer` gains the required `set_hand`;
