@@ -733,7 +733,7 @@ impl GameWorld {
 }
 
 /// C `Think_Delay`: fire the delayed targets, then remove the temp entity.
-fn think_delay(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn think_delay(world: &mut GameWorld, key: EntityKey) {
     let activator = world.entities.get(key).and_then(|e| e.game.activator);
     match activator {
         Some(activator) => world.use_targets(key, activator),
@@ -767,7 +767,12 @@ const LIGHT_STYLES: [&str; 12] = [
 const LIGHT_START_OFF: i32 = 1;
 
 /// C ref: `light_use`.
-fn light_use(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+pub(crate) fn light_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };

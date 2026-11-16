@@ -59,7 +59,7 @@ const FRAME_STAND_1: i32 = 194;
 const FRAME_STAND_60: i32 = 253;
 
 static SUPERTANK_FRAMES_STAND: [MonsterFrame; 60] = [frame(ai::ai_stand, 0.0, None); 60];
-static SUPERTANK_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND_1,
     lastframe: FRAME_STAND_60,
     frames: &SUPERTANK_FRAMES_STAND,
@@ -86,7 +86,7 @@ static SUPERTANK_FRAMES_RUN: [MonsterFrame; 18] = [
     frame(ai::ai_run, 12.0, None),
     frame(ai::ai_run, 12.0, None),
 ];
-static SUPERTANK_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_FORWRD_1,
     lastframe: FRAME_FORWRD_18,
     frames: &SUPERTANK_FRAMES_RUN,
@@ -113,7 +113,7 @@ static SUPERTANK_FRAMES_FORWARD: [MonsterFrame; 18] = [
     frame(ai::ai_walk, 4.0, None),
     frame(ai::ai_walk, 4.0, None),
 ];
-static SUPERTANK_MOVE_FORWARD: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_FORWARD: MonsterMove = MonsterMove {
     firstframe: FRAME_FORWRD_1,
     lastframe: FRAME_FORWRD_18,
     frames: &SUPERTANK_FRAMES_FORWARD,
@@ -177,7 +177,7 @@ pub static SUPERTANK_MOVE_TURN_LEFT: MonsterMove = MonsterMove {
 };
 
 static SUPERTANK_FRAMES_PAIN3: [MonsterFrame; 4] = [frame(ai::ai_move, 0.0, None); 4];
-static SUPERTANK_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN3_9,
     lastframe: FRAME_PAIN3_12,
     frames: &SUPERTANK_FRAMES_PAIN3,
@@ -185,7 +185,7 @@ static SUPERTANK_MOVE_PAIN3: MonsterMove = MonsterMove {
 };
 
 static SUPERTANK_FRAMES_PAIN2: [MonsterFrame; 4] = [frame(ai::ai_move, 0.0, None); 4];
-static SUPERTANK_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN2_5,
     lastframe: FRAME_PAIN2_8,
     frames: &SUPERTANK_FRAMES_PAIN2,
@@ -193,7 +193,7 @@ static SUPERTANK_MOVE_PAIN2: MonsterMove = MonsterMove {
 };
 
 static SUPERTANK_FRAMES_PAIN1: [MonsterFrame; 4] = [frame(ai::ai_move, 0.0, None); 4];
-static SUPERTANK_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN1_1,
     lastframe: FRAME_PAIN1_4,
     frames: &SUPERTANK_FRAMES_PAIN1,
@@ -226,7 +226,7 @@ static SUPERTANK_FRAMES_DEATH1: [MonsterFrame; 24] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, Some(boss_explode)),
 ];
-static SUPERTANK_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH_1,
     lastframe: FRAME_DEATH_24,
     frames: &SUPERTANK_FRAMES_DEATH1,
@@ -308,7 +308,7 @@ static SUPERTANK_FRAMES_ATTACK2: [MonsterFrame; 27] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SUPERTANK_MOVE_ATTACK2: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_ATTACK2: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK2_1,
     lastframe: FRAME_ATTAK2_27,
     frames: &SUPERTANK_FRAMES_ATTACK2,
@@ -317,7 +317,7 @@ static SUPERTANK_MOVE_ATTACK2: MonsterMove = MonsterMove {
 
 static SUPERTANK_FRAMES_ATTACK1: [MonsterFrame; 6] =
     [frame(ai::ai_charge, 0.0, Some(supertank_machine_gun)); 6];
-static SUPERTANK_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK1_1,
     lastframe: FRAME_ATTAK1_6,
     frames: &SUPERTANK_FRAMES_ATTACK1,
@@ -325,7 +325,7 @@ static SUPERTANK_MOVE_ATTACK1: MonsterMove = MonsterMove {
 };
 
 static SUPERTANK_FRAMES_END_ATTACK1: [MonsterFrame; 14] = [frame(ai::ai_move, 0.0, None); 14];
-static SUPERTANK_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static SUPERTANK_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK1_7,
     lastframe: FRAME_ATTAK1_20,
     frames: &SUPERTANK_FRAMES_END_ATTACK1,

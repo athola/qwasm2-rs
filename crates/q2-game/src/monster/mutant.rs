@@ -89,7 +89,7 @@ const PRECACHE: [&str; 13] = [
 
 static MUTANT_FRAMES_STAND: [MonsterFrame; 51] = [frame(ai::ai_stand, 0.0, None); 51];
 
-static MUTANT_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
     lastframe: FRAME_STAND151,
     frames: &MUTANT_FRAMES_STAND,
@@ -112,7 +112,7 @@ static MUTANT_FRAMES_IDLE: [MonsterFrame; 13] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static MUTANT_MOVE_IDLE: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_IDLE: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND152,
     lastframe: FRAME_STAND164,
     frames: &MUTANT_FRAMES_IDLE,
@@ -134,7 +134,7 @@ static MUTANT_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 6.0, None),
 ];
 
-static MUTANT_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK05,
     lastframe: FRAME_WALK16,
     frames: &MUTANT_FRAMES_WALK,
@@ -148,7 +148,7 @@ static MUTANT_FRAMES_START_WALK: [MonsterFrame; 4] = [
     frame(ai::ai_walk, 1.0, None),
 ];
 
-static MUTANT_MOVE_START_WALK: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_START_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK01,
     lastframe: FRAME_WALK04,
     frames: &MUTANT_FRAMES_START_WALK,
@@ -164,7 +164,7 @@ static MUTANT_FRAMES_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 10.0, None),
 ];
 
-static MUTANT_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN03,
     lastframe: FRAME_RUN08,
     frames: &MUTANT_FRAMES_RUN,
@@ -181,7 +181,7 @@ static MUTANT_FRAMES_ATTACK: [MonsterFrame; 7] = [
     frame(ai::ai_charge, 0.0, Some(mutant_check_refire)),
 ];
 
-static MUTANT_MOVE_ATTACK: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_ATTACK: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK09,
     lastframe: FRAME_ATTACK15,
     frames: &MUTANT_FRAMES_ATTACK,
@@ -199,7 +199,7 @@ static MUTANT_FRAMES_JUMP: [MonsterFrame; 8] = [
     frame(ai::ai_charge, 0.0, None),
 ];
 
-static MUTANT_MOVE_JUMP: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_JUMP: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK01,
     lastframe: FRAME_ATTACK08,
     frames: &MUTANT_FRAMES_JUMP,
@@ -214,7 +214,7 @@ static MUTANT_FRAMES_PAIN1: [MonsterFrame; 5] = [
     frame(ai::ai_move, 5.0, None),
 ];
 
-static MUTANT_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN105,
     frames: &MUTANT_FRAMES_PAIN1,
@@ -230,7 +230,7 @@ static MUTANT_FRAMES_PAIN2: [MonsterFrame; 6] = [
     frame(ai::ai_move, 4.0, None),
 ];
 
-static MUTANT_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN206,
     frames: &MUTANT_FRAMES_PAIN2,
@@ -251,7 +251,7 @@ static MUTANT_FRAMES_PAIN3: [MonsterFrame; 11] = [
     frame(ai::ai_move, 1.0, None),
 ];
 
-static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN311,
     frames: &MUTANT_FRAMES_PAIN3,
@@ -260,7 +260,7 @@ static MUTANT_MOVE_PAIN3: MonsterMove = MonsterMove {
 
 static MUTANT_FRAMES_DEATH1: [MonsterFrame; 9] = [frame(ai::ai_move, 0.0, None); 9];
 
-static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH109,
     frames: &MUTANT_FRAMES_DEATH1,
@@ -269,7 +269,7 @@ static MUTANT_MOVE_DEATH1: MonsterMove = MonsterMove {
 
 static MUTANT_FRAMES_DEATH2: [MonsterFrame; 10] = [frame(ai::ai_move, 0.0, None); 10];
 
-static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static MUTANT_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH210,
     frames: &MUTANT_FRAMES_DEATH2,

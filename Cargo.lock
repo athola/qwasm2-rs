@@ -671,7 +671,9 @@ dependencies = [
  "bitflags",
  "q2-common",
  "q2-shared",
+ "quote",
  "slotmap",
+ "syn 2.0.117",
  "tracing",
 ]
 

@@ -12,5 +12,9 @@ slotmap = { workspace = true }
 tracing = { workspace = true }
 bitflags = { workspace = true }
 
+[build-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"
+
 [lints]
 workspace = true

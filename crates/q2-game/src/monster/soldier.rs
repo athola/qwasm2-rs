@@ -137,7 +137,7 @@ static SOLDIER_FRAMES_STAND1: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
     frame(ai::ai_stand, 0.0, None),
 ];
-static SOLDIER_MOVE_STAND1: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_STAND1: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
     lastframe: FRAME_STAND130,
     frames: &SOLDIER_FRAMES_STAND1,
@@ -185,7 +185,7 @@ static SOLDIER_FRAMES_STAND3: [MonsterFrame; 39] = [
     frame(ai::ai_stand, 0.0, None),
     frame(ai::ai_stand, 0.0, None),
 ];
-static SOLDIER_MOVE_STAND3: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_STAND3: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND301,
     lastframe: FRAME_STAND339,
     frames: &SOLDIER_FRAMES_STAND3,
@@ -227,7 +227,7 @@ static SOLDIER_FRAMES_WALK1: [MonsterFrame; 33] = [
     frame(ai::ai_walk, 0.0, None),
     frame(ai::ai_walk, 0.0, None),
 ];
-static SOLDIER_MOVE_WALK1: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_WALK1: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK101,
     lastframe: FRAME_WALK133,
     frames: &SOLDIER_FRAMES_WALK1,
@@ -246,7 +246,7 @@ static SOLDIER_FRAMES_WALK2: [MonsterFrame; 10] = [
     frame(ai::ai_walk, 6.0, None),
     frame(ai::ai_walk, 7.0, None),
 ];
-static SOLDIER_MOVE_WALK2: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_WALK2: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK209,
     lastframe: FRAME_WALK218,
     frames: &SOLDIER_FRAMES_WALK2,
@@ -255,7 +255,7 @@ static SOLDIER_MOVE_WALK2: MonsterMove = MonsterMove {
 
 static SOLDIER_FRAMES_START_RUN: [MonsterFrame; 2] =
     [frame(ai::ai_run, 7.0, None), frame(ai::ai_run, 5.0, None)];
-static SOLDIER_MOVE_START_RUN: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_START_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN01,
     lastframe: FRAME_RUN02,
     frames: &SOLDIER_FRAMES_START_RUN,
@@ -270,7 +270,7 @@ static SOLDIER_FRAMES_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 10.0, Some(soldier_footstep)),
     frame(ai::ai_run, 15.0, None),
 ];
-static SOLDIER_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN03,
     lastframe: FRAME_RUN08,
     frames: &SOLDIER_FRAMES_RUN,
@@ -284,7 +284,7 @@ static SOLDIER_FRAMES_PAIN1: [MonsterFrame; 5] = [
     frame(ai::ai_move, 1.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN105,
     frames: &SOLDIER_FRAMES_PAIN1,
@@ -300,7 +300,7 @@ static SOLDIER_FRAMES_PAIN2: [MonsterFrame; 7] = [
     frame(ai::ai_move, 3.0, None),
     frame(ai::ai_move, 2.0, None),
 ];
-static SOLDIER_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN207,
     frames: &SOLDIER_FRAMES_PAIN2,
@@ -327,7 +327,7 @@ static SOLDIER_FRAMES_PAIN3: [MonsterFrame; 18] = [
     frame(ai::ai_move, 3.0, None),
     frame(ai::ai_move, 2.0, Some(soldier_footstep)),
 ];
-static SOLDIER_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN318,
     frames: &SOLDIER_FRAMES_PAIN3,
@@ -353,7 +353,7 @@ static SOLDIER_FRAMES_PAIN4: [MonsterFrame; 17] = [
     frame(ai::ai_move, 2.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_PAIN4: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_PAIN4: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN401,
     lastframe: FRAME_PAIN417,
     frames: &SOLDIER_FRAMES_PAIN4,
@@ -374,7 +374,7 @@ static SOLDIER_FRAMES_ATTACK1: [MonsterFrame; 12] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static SOLDIER_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK112,
     frames: &SOLDIER_FRAMES_ATTACK1,
@@ -401,7 +401,7 @@ static SOLDIER_FRAMES_ATTACK2: [MonsterFrame; 18] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static SOLDIER_MOVE_ATTACK2: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_ATTACK2: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK218,
     frames: &SOLDIER_FRAMES_ATTACK2,
@@ -419,7 +419,7 @@ static SOLDIER_FRAMES_ATTACK3: [MonsterFrame; 9] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static SOLDIER_MOVE_ATTACK3: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_ATTACK3: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK301,
     lastframe: FRAME_ATTAK309,
     frames: &SOLDIER_FRAMES_ATTACK3,
@@ -434,7 +434,7 @@ static SOLDIER_FRAMES_ATTACK4: [MonsterFrame; 6] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, Some(soldier_footstep)),
 ];
-static SOLDIER_MOVE_ATTACK4: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_ATTACK4: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK401,
     lastframe: FRAME_ATTAK406,
     frames: &SOLDIER_FRAMES_ATTACK4,
@@ -457,7 +457,7 @@ static SOLDIER_FRAMES_ATTACK6: [MonsterFrame; 14] = [
     frame(ai::ai_charge, 12.0, Some(soldier_footstep)),
     frame(ai::ai_charge, 17.0, Some(soldier_attack6_refire)),
 ];
-static SOLDIER_MOVE_ATTACK6: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_ATTACK6: MonsterMove = MonsterMove {
     firstframe: FRAME_RUNS01,
     lastframe: FRAME_RUNS14,
     frames: &SOLDIER_FRAMES_ATTACK6,
@@ -471,7 +471,7 @@ static SOLDIER_FRAMES_DUCK: [MonsterFrame; 5] = [
     frame(ai::ai_move, 0.0, Some(soldier_duck_up)),
     frame(ai::ai_move, 5.0, None),
 ];
-static SOLDIER_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK01,
     lastframe: FRAME_DUCK05,
     frames: &SOLDIER_FRAMES_DUCK,
@@ -516,7 +516,7 @@ static SOLDIER_FRAMES_DEATH1: [MonsterFrame; 36] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH136,
     frames: &SOLDIER_FRAMES_DEATH1,
@@ -560,7 +560,7 @@ static SOLDIER_FRAMES_DEATH2: [MonsterFrame; 35] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH235,
     frames: &SOLDIER_FRAMES_DEATH2,
@@ -614,7 +614,7 @@ static SOLDIER_FRAMES_DEATH3: [MonsterFrame; 45] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_DEATH3: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH3: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH301,
     lastframe: FRAME_DEATH345,
     frames: &SOLDIER_FRAMES_DEATH3,
@@ -622,7 +622,7 @@ static SOLDIER_MOVE_DEATH3: MonsterMove = MonsterMove {
 };
 
 static SOLDIER_FRAMES_DEATH4: [MonsterFrame; 53] = [frame(ai::ai_move, 0.0, None); 53];
-static SOLDIER_MOVE_DEATH4: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH4: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH401,
     lastframe: FRAME_DEATH453,
     frames: &SOLDIER_FRAMES_DEATH4,
@@ -655,7 +655,7 @@ static SOLDIER_FRAMES_DEATH5: [MonsterFrame; 24] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static SOLDIER_MOVE_DEATH5: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH5: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH501,
     lastframe: FRAME_DEATH524,
     frames: &SOLDIER_FRAMES_DEATH5,
@@ -663,7 +663,7 @@ static SOLDIER_MOVE_DEATH5: MonsterMove = MonsterMove {
 };
 
 static SOLDIER_FRAMES_DEATH6: [MonsterFrame; 10] = [frame(ai::ai_move, 0.0, None); 10];
-static SOLDIER_MOVE_DEATH6: MonsterMove = MonsterMove {
+pub(crate) static SOLDIER_MOVE_DEATH6: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH601,
     lastframe: FRAME_DEATH610,
     frames: &SOLDIER_FRAMES_DEATH6,

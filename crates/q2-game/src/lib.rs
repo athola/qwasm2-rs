@@ -23,6 +23,7 @@ pub mod monster;
 pub mod physics;
 pub mod player;
 pub mod rules;
+pub mod savegame;
 pub mod spawn;
 pub mod targets;
 pub mod traits;

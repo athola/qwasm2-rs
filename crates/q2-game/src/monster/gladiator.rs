@@ -83,7 +83,7 @@ static GLADIATOR_FRAMES_STAND: [MonsterFrame; 7] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND1,
     lastframe: FRAME_STAND7,
     frames: &GLADIATOR_FRAMES_STAND,
@@ -109,7 +109,7 @@ static GLADIATOR_FRAMES_WALK: [MonsterFrame; 16] = [
     frame(ai::ai_walk, 8.0, None),
 ];
 
-static GLADIATOR_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK16,
     frames: &GLADIATOR_FRAMES_WALK,
@@ -125,7 +125,7 @@ static GLADIATOR_FRAMES_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 13.0, Some(gladiator_footstep)),
 ];
 
-static GLADIATOR_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN1,
     lastframe: FRAME_RUN6,
     frames: &GLADIATOR_FRAMES_RUN,
@@ -152,7 +152,7 @@ static GLADIATOR_FRAMES_ATTACK_MELEE: [MonsterFrame; 17] = [
     frame(ai::ai_charge, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_ATTACK_MELEE: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_ATTACK_MELEE: MonsterMove = MonsterMove {
     firstframe: FRAME_MELEE1,
     lastframe: FRAME_MELEE17,
     frames: &GLADIATOR_FRAMES_ATTACK_MELEE,
@@ -171,7 +171,7 @@ static GLADIATOR_FRAMES_ATTACK_GUN: [MonsterFrame; 9] = [
     frame(ai::ai_charge, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_ATTACK_GUN: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_ATTACK_GUN: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK1,
     lastframe: FRAME_ATTACK9,
     frames: &GLADIATOR_FRAMES_ATTACK_GUN,
@@ -187,7 +187,7 @@ static GLADIATOR_FRAMES_PAIN: [MonsterFrame; 6] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_PAIN: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_PAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN1,
     lastframe: FRAME_PAIN6,
     frames: &GLADIATOR_FRAMES_PAIN,
@@ -204,7 +204,7 @@ static GLADIATOR_FRAMES_PAIN_AIR: [MonsterFrame; 7] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_PAIN_AIR: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_PAIN_AIR: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINUP1,
     lastframe: FRAME_PAINUP7,
     frames: &GLADIATOR_FRAMES_PAIN_AIR,
@@ -236,7 +236,7 @@ static GLADIATOR_FRAMES_DEATH: [MonsterFrame; 22] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static GLADIATOR_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static GLADIATOR_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH1,
     lastframe: FRAME_DEATH22,
     frames: &GLADIATOR_FRAMES_DEATH,

@@ -116,7 +116,7 @@ static GUNNER_FRAMES_FIDGET: [MonsterFrame; 40] = [
     frame(ai::ai_stand, 0.0, None),
     frame(ai::ai_stand, 0.0, None),
 ];
-static GUNNER_MOVE_FIDGET: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_FIDGET: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND31,
     lastframe: FRAME_STAND70,
     frames: &GUNNER_FRAMES_FIDGET,
@@ -155,7 +155,7 @@ static GUNNER_FRAMES_STAND: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
     frame(ai::ai_stand, 0.0, Some(gunner_fidget)),
 ];
-static GUNNER_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND01,
     lastframe: FRAME_STAND30,
     frames: &GUNNER_FRAMES_STAND,
@@ -177,7 +177,7 @@ static GUNNER_FRAMES_WALK: [MonsterFrame; 13] = [
     frame(ai::ai_walk, 7.0, None),
     frame(ai::ai_walk, 4.0, Some(gunner_footstep)),
 ];
-static GUNNER_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK07,
     lastframe: FRAME_WALK19,
     frames: &GUNNER_FRAMES_WALK,
@@ -194,7 +194,7 @@ static GUNNER_FRAMES_RUN: [MonsterFrame; 8] = [
     frame(ai::ai_run, 13.0, None),
     frame(ai::ai_run, 6.0, None),
 ];
-static GUNNER_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN01,
     lastframe: FRAME_RUN08,
     frames: &GUNNER_FRAMES_RUN,
@@ -209,7 +209,7 @@ static GUNNER_FRAMES_RUNANDSHOOT: [MonsterFrame; 6] = [
     frame(ai::ai_run, 8.0, Some(gunner_footstep)),
     frame(ai::ai_run, 20.0, None),
 ];
-static GUNNER_MOVE_RUNANDSHOOT: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_RUNANDSHOOT: MonsterMove = MonsterMove {
     firstframe: FRAME_RUNS01,
     lastframe: FRAME_RUNS06,
     frames: &GUNNER_FRAMES_RUNANDSHOOT,
@@ -223,7 +223,7 @@ static GUNNER_FRAMES_PAIN3: [MonsterFrame; 5] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 1.0, None),
 ];
-static GUNNER_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN305,
     frames: &GUNNER_FRAMES_PAIN3,
@@ -240,7 +240,7 @@ static GUNNER_FRAMES_PAIN2: [MonsterFrame; 8] = [
     frame(ai::ai_move, -2.0, None),
     frame(ai::ai_move, -7.0, Some(gunner_footstep)),
 ];
-static GUNNER_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN208,
     frames: &GUNNER_FRAMES_PAIN2,
@@ -267,7 +267,7 @@ static GUNNER_FRAMES_PAIN1: [MonsterFrame; 18] = [
     frame(ai::ai_move, 0.0, Some(gunner_footstep)),
     frame(ai::ai_move, 0.0, None),
 ];
-static GUNNER_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN118,
     frames: &GUNNER_FRAMES_PAIN1,
@@ -287,7 +287,7 @@ static GUNNER_FRAMES_DEATH: [MonsterFrame; 11] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static GUNNER_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH01,
     lastframe: FRAME_DEATH11,
     frames: &GUNNER_FRAMES_DEATH,
@@ -304,7 +304,7 @@ static GUNNER_FRAMES_DUCK: [MonsterFrame; 8] = [
     frame(ai::ai_move, 0.0, Some(gunner_duck_up)),
     frame(ai::ai_move, -1.0, None),
 ];
-static GUNNER_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK01,
     lastframe: FRAME_DUCK08,
     frames: &GUNNER_FRAMES_DUCK,
@@ -320,7 +320,7 @@ static GUNNER_FRAMES_ATTACK_CHAIN: [MonsterFrame; 7] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static GUNNER_MOVE_ATTACK_CHAIN: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_ATTACK_CHAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK209,
     lastframe: FRAME_ATTAK215,
     frames: &GUNNER_FRAMES_ATTACK_CHAIN,
@@ -337,7 +337,7 @@ static GUNNER_FRAMES_FIRE_CHAIN: [MonsterFrame; 8] = [
     frame(ai::ai_charge, 0.0, Some(gunner_fire)),
     frame(ai::ai_charge, 0.0, Some(gunner_fire)),
 ];
-static GUNNER_MOVE_FIRE_CHAIN: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_FIRE_CHAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK216,
     lastframe: FRAME_ATTAK223,
     frames: &GUNNER_FRAMES_FIRE_CHAIN,
@@ -353,7 +353,7 @@ static GUNNER_FRAMES_ENDFIRE_CHAIN: [MonsterFrame; 7] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, Some(gunner_footstep)),
 ];
-static GUNNER_MOVE_ENDFIRE_CHAIN: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_ENDFIRE_CHAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK224,
     lastframe: FRAME_ATTAK230,
     frames: &GUNNER_FRAMES_ENDFIRE_CHAIN,
@@ -383,7 +383,7 @@ static GUNNER_FRAMES_ATTACK_GRENADE: [MonsterFrame; 21] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static GUNNER_MOVE_ATTACK_GRENADE: MonsterMove = MonsterMove {
+pub(crate) static GUNNER_MOVE_ATTACK_GRENADE: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK121,
     frames: &GUNNER_FRAMES_ATTACK_GRENADE,

@@ -76,7 +76,7 @@ static BERSERK_FRAMES_STAND: [MonsterFrame; 5] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static BERSERK_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND1,
     lastframe: FRAME_STAND5,
     frames: &BERSERK_FRAMES_STAND,
@@ -106,7 +106,7 @@ static BERSERK_FRAMES_STAND_FIDGET: [MonsterFrame; 20] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static BERSERK_MOVE_STAND_FIDGET: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_STAND_FIDGET: MonsterMove = MonsterMove {
     firstframe: FRAME_STANDB1,
     lastframe: FRAME_STANDB20,
     frames: &BERSERK_FRAMES_STAND_FIDGET,
@@ -128,7 +128,7 @@ static BERSERK_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 4.8, None),
 ];
 
-static BERSERK_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALKC1,
     lastframe: FRAME_WALKC11,
     frames: &BERSERK_FRAMES_WALK,
@@ -144,7 +144,7 @@ static BERSERK_FRAMES_RUN1: [MonsterFrame; 6] = [
     frame(ai::ai_run, 19.0, None),
 ];
 
-static BERSERK_MOVE_RUN1: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_RUN1: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN1,
     lastframe: FRAME_RUN6,
     frames: &BERSERK_FRAMES_RUN1,
@@ -162,7 +162,7 @@ static BERSERK_FRAMES_ATTACK_SPIKE: [MonsterFrame; 8] = [
     frame(ai::ai_charge, 0.0, None),
 ];
 
-static BERSERK_MOVE_ATTACK_SPIKE: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_ATTACK_SPIKE: MonsterMove = MonsterMove {
     firstframe: FRAME_ATT_C1,
     lastframe: FRAME_ATT_C8,
     frames: &BERSERK_FRAMES_ATTACK_SPIKE,
@@ -184,7 +184,7 @@ static BERSERK_FRAMES_ATTACK_CLUB: [MonsterFrame; 12] = [
     frame(ai::ai_charge, 0.0, None),
 ];
 
-static BERSERK_MOVE_ATTACK_CLUB: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_ATTACK_CLUB: MonsterMove = MonsterMove {
     firstframe: FRAME_ATT_C9,
     lastframe: FRAME_ATT_C20,
     frames: &BERSERK_FRAMES_ATTACK_CLUB,
@@ -223,7 +223,7 @@ static BERSERK_FRAMES_PAIN1: [MonsterFrame; 4] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BERSERK_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINC1,
     lastframe: FRAME_PAINC4,
     frames: &BERSERK_FRAMES_PAIN1,
@@ -253,7 +253,7 @@ static BERSERK_FRAMES_PAIN2: [MonsterFrame; 20] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BERSERK_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINB1,
     lastframe: FRAME_PAINB20,
     frames: &BERSERK_FRAMES_PAIN2,
@@ -276,7 +276,7 @@ static BERSERK_FRAMES_DEATH1: [MonsterFrame; 13] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BERSERK_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH1,
     lastframe: FRAME_DEATH13,
     frames: &BERSERK_FRAMES_DEATH1,
@@ -294,7 +294,7 @@ static BERSERK_FRAMES_DEATH2: [MonsterFrame; 8] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BERSERK_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static BERSERK_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATHC1,
     lastframe: FRAME_DEATHC8,
     frames: &BERSERK_FRAMES_DEATH2,
