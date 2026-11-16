@@ -5,7 +5,7 @@
 //!   cargo run -p q2-bundler
 //!
 //! Output: dist/qwasm2.html (single file; serve it with q2-devserver, since the
-//! page fetches `/gamedata/baseq2/pak0-web.pak` from the same origin)
+//! page fetches `gamedata/baseq2/pak0-web.pak` relative to its own URL)
 
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -335,8 +335,9 @@ try {{
   document.getElementById('self-test-result').textContent = self_test();
   document.getElementById('engine-version').textContent = engine_version();
 
-  // Determine pak URL — if served by devserver, fetch from /gamedata/
-  const pakUrl = '/gamedata/baseq2/pak0-web.pak';
+  // Relative to the page: the devserver serves it at the root, GitHub
+  // Pages under /qwasm2-rs/play/, with gamedata/ beside it in both.
+  const pakUrl = 'gamedata/baseq2/pak0-web.pak';
 
   await start_game('canvas', pakUrl);
 }} catch (e) {{
@@ -467,6 +468,20 @@ mod tests {
         let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
         assert!(html.contains(&inlined));
         assert!(html.contains("await start_game('canvas', pakUrl);"));
+    }
+
+    #[test]
+    fn the_page_fetches_the_pak_relative_to_its_own_url() {
+        // GitHub Pages serves the page under /qwasm2-rs/play/, where an
+        // absolute /gamedata/ would leave the site; the devserver serves it
+        // at the root, where both forms name the same path.
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = pkg_with_glue(dir.path());
+        let html = fs::read_to_string(bundle(&pkg, &dir.path().join("dist")).unwrap()).unwrap();
+        assert!(
+            html.contains("const pakUrl = 'gamedata/baseq2/pak0-web.pak';"),
+            "the pak URL must be relative"
+        );
     }
 
     fn pkg_with_glue(dir: &Path) -> PathBuf {
