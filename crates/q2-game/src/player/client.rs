@@ -75,14 +75,14 @@ impl GameWorld {
     pub fn begin_client(&mut self, key: EntityKey) {
         // Before health is set back up, so farthest ranging does not count
         // this client.
-        let (spawn_origin, spawn_angles) = self
+        let Some((spawn_origin, spawn_angles)) = self
             .select_spawn_point(key)
             .and_then(|k| self.entities.get(k))
             .map(|e| (e.state.origin + Vec3f::new(0.0, 0.0, 9.0), e.state.angles))
-            .unwrap_or_else(|| {
-                tracing::error!(spawnpoint = %self.game.spawnpoint, "Couldn't find spawn point");
-                (Vec3f::ZERO, Vec3f::ZERO)
-            });
+        else {
+            let msg = format!("Couldn't find spawn point {}\n", self.game.spawnpoint);
+            return self.gi.error(&msg);
+        };
 
         // Clear everything but the persistent data, which starts over only
         // for a client that died (or never had any). Deathmatch restarts it
@@ -810,7 +810,7 @@ impl GameWorld {
     }
 
     /// Per-frame cleanup for all clients at the end of the server frame.
-    /// C ref: `ClientEndServerFrames` (player/client.c).
+    /// C ref: `ClientEndServerFrames` (g_main.c).
     pub fn client_end_server_frames(&mut self) {
         let keys: Vec<EntityKey> = self
             .entities
@@ -1308,6 +1308,7 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let shells = world.find_item("ammo_shells").unwrap();
         world.client_mut(key).unwrap().pers.inventory[shells] = 25;
@@ -1336,6 +1337,7 @@ mod tests {
         }
 
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
 
         let pos = world.entities.get(key).unwrap().state.origin;
@@ -1348,6 +1350,7 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
 
         let inv = world.client(key).unwrap().pers.inventory;
@@ -1359,6 +1362,7 @@ mod tests {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
         world.entities.get_mut(key).unwrap().state.old_origin = Vec3f::new(-500.0, 0.0, 0.0);
+        world.ensure_player_start();
         world.begin_client(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.state.old_origin, ent.state.origin);
@@ -1423,9 +1427,10 @@ mod tests {
             e.game.waterlevel = 2;
             e.game.watertype = q2_shared::constants::CONTENTS_WATER;
         }
+        world.ensure_player_start();
         world.begin_client(key);
         let e = world.entities.get(key).unwrap();
-        // ChangeWeapon then raises the blaster: C ShowGun puts its weapmodel
+        // ChangeWeapon then raises the blaster: it puts the weapmodel
         // (1) in the skin's high byte and plays FRAME_pain301 (62).
         assert_eq!(
             (e.state.effects, e.state.skinnum, e.state.frame),
@@ -1456,6 +1461,7 @@ mod tests {
             ent_index: world.number_of(camper),
             ..Default::default()
         });
+        world.ensure_player_start();
         world.begin_client(key);
         assert!(world.entities.get(camper).unwrap().game.health <= 0);
     }
@@ -1476,6 +1482,7 @@ mod tests {
             "",
         );
         let key = world.connect_client(1, "").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.state.origin, Vec3f::new(128.0, -320.0, 42.0));
@@ -1485,9 +1492,23 @@ mod tests {
         world.game.spawnpoint = "BASE2".to_string(); // compared case-insensitively
         world.disconnect_client(key);
         let key = world.connect_client(1, "").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let ent = world.entities.get(key).unwrap();
         assert_eq!(ent.state.origin, Vec3f::new(-1768.0, 1536.0, 138.0));
+    }
+
+    #[test]
+    fn a_client_with_no_spawn_point_is_a_game_error() {
+        // C SelectSpawnPoint: gi.error, and PutClientInServer goes no
+        // further.
+        let (mut world, gi) = crate::world::test_world_recording();
+        world.init_game();
+        world.game.spawnpoint = "base2".into();
+        let key = world.connect_client(1, "").unwrap();
+        world.begin_client(key);
+        assert_eq!(*gi.errors.borrow(), ["Couldn't find spawn point base2\n"]);
+        assert!(world.client(key).unwrap().ps.stats.iter().all(|&s| s == 0));
     }
 
     #[test]
@@ -1705,6 +1726,7 @@ mod tests {
         use q2_shared::constants::BUTTON_ATTACK;
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.client_mut(key).unwrap().pers.weapon = None;
 
@@ -1729,6 +1751,7 @@ mod tests {
         use q2_shared::constants::BUTTON_ATTACK;
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
 
         world.think_client(key, &attack(BUTTON_ATTACK));
@@ -1745,6 +1768,7 @@ mod tests {
     fn think_client_keeps_the_view_angles_for_aiming_like_c_v_angle() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let mut cmd = attack(0);
         cmd.angles = [angle2short(10.0), angle2short(90.0), 0];
@@ -1762,6 +1786,7 @@ mod tests {
     fn the_weapon_hum_plays_on_the_player_and_lava_drowns_it_out() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let hum = world.gi.sound_index("weapons/hyprbl1a.wav");
         world.client_mut(key).unwrap().weapon_sound = hum;
@@ -1786,6 +1811,7 @@ mod tests {
     fn the_frame_end_copies_a_pushed_origin_and_velocity_into_pmove() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let ent = world.entities.get_mut(key).unwrap();
         ent.state.origin = Vec3f::new(100.5, -20.25, 30.0);
@@ -1800,6 +1826,7 @@ mod tests {
     fn the_body_faces_where_the_player_looks_and_leans_into_strafes() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let v_angle = Vec3f::new(350.0, 45.0, 0.0);
         world.client_mut(key).unwrap().v_angle = v_angle;
@@ -1817,6 +1844,7 @@ mod tests {
     fn open_help_is_resent_every_32_frames_and_stops_the_beep() {
         let (mut world, gi) = crate::world::test_world_recording();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let client = world.client_mut(key).unwrap();
         client.showhelp = true;
@@ -1841,6 +1869,7 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.client_mut(key).unwrap().weapon_sound = world.gi.sound_index("weapons/hyprbl1a.wav");
         world.entities.get_mut(key).unwrap().game.health = -10;
@@ -1854,6 +1883,7 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         for (classname, sound) in [
             ("weapon_railgun", "weapons/rg_hum.wav"),
@@ -1888,6 +1918,7 @@ mod tests {
         }
         .into();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.time = 10.0;
         let ent = world.entities.get_mut(key).unwrap();
@@ -1950,6 +1981,7 @@ mod tests {
         world.level.framenum = 100;
         world.level.time = 10.0;
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let weapon = world.find_item_by_name(weapon).unwrap();
         let ammo_item = world.find_item_by_name(ammo.0).unwrap();
@@ -2032,6 +2064,7 @@ mod tests {
         let (mut world, _) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().game.health = -10;
         player_die(&mut world, key, key, key, 50, Vec3f::ZERO);
@@ -2047,6 +2080,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().game.health = -50;
         player_die(&mut world, key, key, key, 80, Vec3f::ZERO);
@@ -2074,6 +2108,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.time = 7.0;
         let _ = gi;
@@ -2089,6 +2124,7 @@ mod tests {
         // apply sv_gravity (800) and the entity follows pm.s back out.
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let cmd = UserCmd {
             msec: 100,
@@ -2115,6 +2151,7 @@ mod tests {
         for (upmove, jumps) in [(200, true), (9, false)] {
             let (mut world, gi) = crate::world::test_world_recording();
             let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             let floor = world.spawn().unwrap();
             world.entities.get_mut(key).unwrap().game.ground_entity = Some(floor);
@@ -2143,6 +2180,7 @@ mod tests {
     fn think_client_keeps_the_light_level_the_player_stands_in_for_monsters() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let cmd = UserCmd {
             msec: 100,
@@ -2194,6 +2232,7 @@ mod tests {
             world.game.coop = coop;
             world.init_items();
             let key = world.connect_client(1, "\\name\\P1").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             let pass = world.find_item("key_pass").unwrap();
             let shells = world.find_item("ammo_shells").unwrap();
@@ -2220,6 +2259,7 @@ mod tests {
         let mut world = test_world();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let attacker = world.spawn().unwrap();
 
@@ -2259,6 +2299,7 @@ mod tests {
             "",
         );
         assert!(world.client_connect(1, r"\name\Tester"));
+        world.ensure_player_start();
         world.client_begin(1);
         let player = world.entities.key_for_number(1).unwrap();
         (world, player)

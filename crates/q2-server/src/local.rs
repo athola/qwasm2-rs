@@ -69,6 +69,7 @@ impl LocalGame {
         let mut sv = Server::default();
         sv.map(&mut svs, map_name, bsp, "", &gi, game.as_mut())?;
         svs.connect_local_client(game.as_mut(), userinfo)?;
+        sv.drop_on_game_error(&gi)?;
         gi.set_client_states(svs.clients.iter().map(|client| client.state));
         let next_map = Rc::new(RefCell::new(None));
         let mut cmd = CmdSystem::new();
@@ -142,8 +143,9 @@ impl LocalGame {
     /// Apply one user command to the local player (C ClientThink). Like C
     /// `SV_ExecuteClientMessage`, the command is dropped unless the client
     /// is in the game (`cs_spawned`): a picture level or a failed map load
-    /// leaves it only connected.
-    pub fn think(&mut self, cmd: &UserCmd) {
+    /// leaves it only connected. A `Com_Error` the game raised ends the
+    /// server and is returned.
+    pub fn think(&mut self, cmd: &UserCmd) -> Q2Result<()> {
         let spawned = self
             .svs
             .clients
@@ -152,6 +154,7 @@ impl LocalGame {
         if spawned {
             self.game.client_think(LOCAL_PLAYER, cmd);
         }
+        self.sv.drop_on_game_error(&self.gi)
     }
 
     /// Advance the server by `frametime_us`; game frames run at 10 Hz.
@@ -161,7 +164,8 @@ impl LocalGame {
     /// packet frame. This is called every rendered frame, where that
     /// truncation would slow the game clock by up to 14% at 144 Hz, so the
     /// sub-millisecond remainder is carried to the next call instead.
-    pub fn frame(&mut self, frametime_us: u32) {
+    /// A `Com_Error` the game frame raised ends the server and is returned.
+    pub fn frame(&mut self, frametime_us: u32) -> Q2Result<()> {
         let total = self.pending_us.saturating_add(frametime_us);
         self.pending_us = total % 1000;
         let framenum = self.sv.framenum;
@@ -170,7 +174,7 @@ impl LocalGame {
             total - self.pending_us,
             self.game.as_mut(),
             &self.gi,
-        );
+        )?;
         if self.sv.framenum != framenum {
             self.send_client_frame();
             // C SV_SendClientMessages sends what ClientThink and the game
@@ -186,6 +190,7 @@ impl LocalGame {
             self.cmd.cbuf_add_text(&commands);
             self.cmd.cbuf_execute();
         }
+        Ok(())
     }
 
     /// The level string a game `gamemap` command (C `ExitLevel`) asked
@@ -273,6 +278,7 @@ impl LocalGame {
         self.pending_us = 0;
         if level.kind == LevelKind::Game {
             self.svs.begin_connected_clients(self.game.as_mut());
+            self.sv.drop_on_game_error(&self.gi)?;
             self.gi
                 .set_client_states(self.svs.clients.iter().map(|client| client.state));
         }
@@ -380,17 +386,18 @@ mod tests {
     fn a_print_to_the_local_player_reaches_the_client_with_the_next_server_frame() {
         // C Cmd_Use_f: `gi.cprintf(ent, PRINT_HIGH, "Out of item: %s\n")`.
         // C SV_Frame sends client messages only after a game frame.
-        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
+        let mut local =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        local.frame(100_000).unwrap();
         local.take_messages();
         local.client_command("use Shotgun");
         assert!(local.take_messages().is_empty(), "no server frame yet");
-        local.frame(50_000);
+        local.frame(50_000).unwrap();
         assert!(
             local.take_messages().is_empty(),
             "the game frame is not due"
         );
-        local.frame(50_000);
+        local.frame(50_000).unwrap();
         let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
         print.extend_from_slice(b"Out of item: Shotgun\n\0");
         assert_eq!(local.take_messages(), vec![print]);
@@ -400,12 +407,13 @@ mod tests {
     fn a_sound_started_between_server_frames_waits_for_the_next_one() {
         // C SV_StartSound writes into the client's datagram, which
         // SV_SendClientMessages sends after the next game frame.
-        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
+        let mut local =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        local.frame(100_000).unwrap();
         local.take_sounds();
         local.gi.sound(Some(LOCAL_PLAYER), 0, 1, 1.0, 1.0, 0.0);
         assert!(local.take_sounds().is_empty(), "no server frame yet");
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
         assert_eq!(local.take_sounds().len(), 1);
     }
 
@@ -413,11 +421,12 @@ mod tests {
     fn messages_from_the_old_level_are_dropped_by_a_map_change() {
         // C's client parses them against the old level, then CL_ClearState
         // clears the effects they started; nothing reaches the new level.
-        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
+        let mut local =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        local.frame(100_000).unwrap();
         local.client_command("use Shotgun");
         local.gi.sound(Some(LOCAL_PLAYER), 0, 1, 1.0, 1.0, 0.0);
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
         local
             .change_map(&MapRequest::parse("victory.pcx"), &[])
             .expect("a picture level loads");
@@ -430,9 +439,10 @@ mod tests {
         // A print or sound queued between game frames is still in the
         // import at the map change; C's client would parse it against the
         // old level before CL_ClearState, so the new level never sees it.
-        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
-        local.frame(100_000);
+        let mut local =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        local.frame(100_000).unwrap();
+        local.frame(100_000).unwrap();
         local.take_messages();
         local.take_sounds();
         local.client_command("use Shotgun");
@@ -440,8 +450,8 @@ mod tests {
         local
             .change_map(&MapRequest::parse("victory.pcx"), &[])
             .expect("a picture level loads");
-        local.frame(100_000);
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
+        local.frame(100_000).unwrap();
         let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
         print.extend_from_slice(b"Out of item: Shotgun\n\0");
         assert!(!local.take_messages().contains(&print));
@@ -452,10 +462,11 @@ mod tests {
     fn a_skipped_cinematic_keeps_the_running_maps_messages() {
         // The current map keeps running until the caller follows the next
         // server, so what it sent is still its own.
-        let mut local = LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
+        let mut local =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        local.frame(100_000).unwrap();
         local.client_command("use Shotgun");
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
         local
             .change_map(&MapRequest::parse("intro.cin+base1"), &[])
             .expect("the cinematic is skipped");
@@ -481,22 +492,34 @@ mod tests {
     #[test]
     fn think_runs_client_think_for_a_spawned_client() {
         let (mut local, thinks, _) = local_with_client(ClientState::Spawned);
-        local.think(&UserCmd::default());
+        local.think(&UserCmd::default()).unwrap();
         assert_eq!(thinks.get(), 1);
+    }
+
+    #[test]
+    fn a_game_error_in_client_think_ends_the_server_and_is_returned() {
+        let (mut local, _, _) = local_with_client(ClientState::Spawned);
+        local.gi.error("Couldn't find spawn point \n");
+        let err = local.think(&UserCmd::default()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "drop: Game Error: Couldn't find spawn point \n"
+        );
+        assert_eq!(local.sv.state, ServerState::Dead);
     }
 
     #[test]
     fn think_is_ignored_while_the_client_is_only_connected() {
         // A picture level or a failed map load leaves the client Connected.
         let (mut local, thinks, _) = local_with_client(ClientState::Connected);
-        local.think(&UserCmd::default());
+        local.think(&UserCmd::default()).unwrap();
         assert_eq!(thinks.get(), 0);
     }
 
     #[test]
     fn think_is_ignored_for_a_free_client_slot() {
         let (mut local, thinks, _) = local_with_client(ClientState::Free);
-        local.think(&UserCmd::default());
+        local.think(&UserCmd::default()).unwrap();
         assert_eq!(thinks.get(), 0);
     }
 }

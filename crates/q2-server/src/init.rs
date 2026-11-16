@@ -56,6 +56,13 @@ impl Server {
         self.spawn_server(svs, name, &[], spawnpoint, ServerState::Pic, gi, game)
     }
 
+    /// Raise the C `Com_Error` the last game call latched: the server ends
+    /// (C SV_Shutdown) and the caller gets the error.
+    pub(crate) fn drop_on_game_error(&mut self, gi: &ServerGameImport) -> Q2Result<()> {
+        gi.take_error()
+            .inspect_err(|_| self.state = ServerState::Dead)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn spawn_server(
         &mut self,
@@ -110,8 +117,11 @@ impl Server {
         }
 
         game.spawn_entities(map_name, &gi.entity_string(), spawnpoint);
+        self.drop_on_game_error(gi)?;
         game.run_frame();
+        self.drop_on_game_error(gi)?;
         game.run_frame();
+        self.drop_on_game_error(gi)?;
 
         self.sync_configstrings(gi);
         // C strtol: a string that is not a number reads as 0.
@@ -207,7 +217,7 @@ impl Server {
 
 impl ServerStatic {
     /// Put an in-process client in the first free slot and into the game:
-    /// C `SV_DirectConnect` (slot `Connected` once `ClientConnect`
+    /// C `SVC_DirectConnect` (slot `Connected` once `ClientConnect`
     /// accepts) then `SV_Begin_f` (`ClientBegin`, slot `Spawned`).
     /// `userinfo` is what C's connect packet carries (the client's
     /// `CVAR_USERINFO` cvars). Returns the client's entity number. A
@@ -529,7 +539,7 @@ mod tests {
         svs.begin_connected_clients(&mut game);
 
         // C: the client answers "reconnect" with `new` and `begin` over the
-        // same netchan; SV_DirectConnect (ClientConnect) does not run again.
+        // same netchan; SVC_DirectConnect (ClientConnect) does not run again.
         assert_eq!(game.connects, connects);
         assert_eq!(game.begun, [1, 2]);
         assert_eq!(svs.clients[0].state, crate::state::ClientState::Spawned);

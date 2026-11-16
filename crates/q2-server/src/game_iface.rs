@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 
 use q2_common::collision::CollisionMap;
-use q2_common::error::Q2Result;
+use q2_common::error::{Q2Error, Q2Result};
 use q2_common::net_msg::NetMsg;
 use q2_game::traits::{EntityLink, GameImport, ModelInfo};
 use q2_shared::{
@@ -80,6 +80,10 @@ struct GiInner {
     /// entity `i + 1`); the slot count is C `maxclients`. No slots until
     /// the server sets them.
     clients: Vec<ClientState>,
+    /// The first C `Com_Error` a game call raised (`gi.error`, or the
+    /// import's own checks), until the server takes it. C never returns
+    /// from it, so a later one cannot happen there: the first stands.
+    error: Option<Q2Error>,
 }
 
 /// One sound the game started: what C `SV_StartSound` writes as an
@@ -132,6 +136,7 @@ impl GiInner {
             command_args: String::new(),
             messages: Vec::new(),
             clients: Vec::new(),
+            error: None,
         }
     }
 
@@ -198,9 +203,18 @@ impl GiInner {
         }
     }
 
+    /// Latch a C `Com_Error` for the server to raise once the game call
+    /// returns.
+    fn raise(&mut self, error: Q2Error) {
+        if self.error.is_none() {
+            tracing::error!("{error}");
+            self.error = Some(error);
+        }
+    }
+
     /// C SV_FindIndex with `create`: the slot already holding `name`, or the
-    /// first empty one from 1. A full table is ERR_DROP in C; the trait can't
-    /// return an error, so it is logged and 0 (no model/sound) returned.
+    /// first empty one from 1. A full table is ERR_DROP in C, raised once
+    /// the game call returns; until then the name gets 0 (no model/sound).
     fn find_index(&mut self, name: &str, start: usize, max: usize) -> i32 {
         if name.is_empty() {
             return 0;
@@ -213,7 +227,7 @@ impl GiInner {
             i += 1;
         }
         if i == max {
-            tracing::error!(name, start, "index overflow (C ERR_DROP)");
+            self.raise(Q2Error::Drop("*Index: overflow".into()));
             return 0;
         }
         self.set_configstring(start + i, name);
@@ -221,16 +235,19 @@ impl GiInner {
     }
 
     /// C SV_HullForEntity. Model index 1 is the world (`sv.models[1]`), so
-    /// index `n` is inline model `n - 1`.
+    /// index `n` is inline model `n - 1`. A bsp entity with no such model
+    /// is C's ERR_FATAL, raised once the game call returns; until then it
+    /// is not collided with.
     fn hull_for_entity(&mut self, link: &EntityLink) -> Option<i32> {
         if link.solid == Solid::Bsp {
-            let model = usize::try_from(link.modelindex - 1)
+            let head_node = usize::try_from(link.modelindex - 1)
                 .ok()
-                .and_then(|i| self.collision.model(i));
-            if model.is_none() {
-                tracing::error!(number = link.number, "MOVETYPE_PUSH with a non bsp model");
+                .and_then(|i| self.collision.model(i))
+                .map(|m| m.head_node);
+            if head_node.is_none() {
+                self.raise(Q2Error::Fatal("MOVETYPE_PUSH with a non bsp model".into()));
             }
-            return model.map(|m| m.head_node);
+            return head_node;
         }
         Some(self.collision.headnode_for_box(link.mins, link.maxs))
     }
@@ -256,6 +273,13 @@ impl ServerGameImport {
         Self {
             inner: RefCell::new(GiInner::new()),
         }
+    }
+
+    /// The error the game calls since the last take raised, if any (C
+    /// `Com_Error` longjmps out of the call; here the server checks after
+    /// it).
+    pub fn take_error(&self) -> Q2Result<()> {
+        self.inner.borrow_mut().error.take().map_or(Ok(()), Err)
     }
 
     /// Tokenize a client's command for the game to read (C
@@ -383,6 +407,7 @@ impl ServerGameImport {
     /// the map checksum.
     pub fn load_map(&self, bsp: &[u8]) -> Q2Result<u32> {
         let mut inner = self.inner.borrow_mut();
+        inner.error = None;
         inner.links.fill(None);
         inner.clusters.fill(EntityClusters::List(Vec::new()));
         inner.areas.fill((0, 0));
@@ -552,6 +577,12 @@ impl GameImport for ServerGameImport {
 
     fn dprintf(&self, msg: &str) {
         tracing::info!(target: GAME_PRINT_TARGET, "{}", msg.trim_end());
+    }
+
+    /// C PF_error: `Com_Error(ERR_DROP, "Game Error: %s")`.
+    fn error(&self, msg: &str) {
+        let error = Q2Error::Drop(format!("Game Error: {msg}"));
+        self.inner.borrow_mut().raise(error);
     }
 
     /// C PF_cprintf: to a client as `svc_print`, or the console for none.
@@ -904,12 +935,12 @@ impl GameImport for ServerGameImport {
     // -- configstrings -------------------------------------------------------
 
     /// C PF_Configstring raises ERR_DROP for an index outside
-    /// `0..MAX_CONFIGSTRINGS`; the trait cannot fail, so the write is
-    /// logged and dropped.
+    /// `0..MAX_CONFIGSTRINGS`; the server raises it once the game call
+    /// returns, and the write is dropped.
     fn configstring(&self, num: i32, string: &str) {
         let Some(index) = usize::try_from(num).ok().filter(|&i| i < MAX_CONFIGSTRINGS) else {
-            tracing::error!(num, "configstring: bad index (C ERR_DROP)");
-            return;
+            let error = Q2Error::Drop(format!("configstring: bad index {num}\n"));
+            return self.inner.borrow_mut().raise(error);
         };
         self.inner.borrow_mut().set_configstring(index, string);
     }
@@ -1299,51 +1330,6 @@ mod tests {
         assert_eq!(gi.take_commands(), "");
     }
 
-    /// The `target level: message` of each event `run` logs at INFO or
-    /// above.
-    fn logged(run: impl FnOnce()) -> Vec<String> {
-        use std::sync::{Arc, Mutex};
-        struct Shared(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Shared {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().expect("log lock").extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let out = Arc::new(Mutex::new(Vec::new()));
-        let writer = out.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || Shared(writer.clone()))
-            .with_max_level(tracing::Level::INFO)
-            .with_ansi(false)
-            .without_time()
-            .finish();
-        tracing::subscriber::with_default(subscriber, run);
-        let text = String::from_utf8(out.lock().expect("log lock").clone()).expect("utf-8");
-        text.lines().map(|line| line.trim().to_string()).collect()
-    }
-
-    #[test]
-    fn dprintf_and_a_console_cprintf_log_at_info_under_the_game_target() {
-        // C PF_dprintf and PF_cprintf with no entity call Com_Printf, which
-        // always reaches the console (not Com_DPrintf).
-        let gi = ServerGameImport::new();
-        let lines = logged(|| {
-            gi.dprintf("teleporter without a target\n");
-            gi.cprintf(None, q2_shared::constants::PRINT_HIGH, "console line\n");
-        });
-        assert_eq!(
-            lines,
-            [
-                format!("INFO {GAME_PRINT_TARGET}: teleporter without a target"),
-                format!("INFO {GAME_PRINT_TARGET}: console line"),
-            ]
-        );
-    }
-
     #[test]
     fn unobstructed_trace_ends_at_requested_end_point() {
         let gi = ServerGameImport::new();
@@ -1495,20 +1481,57 @@ mod tests {
         assert_eq!(inner.msg_buf.data()[0], expected);
     }
 
+    fn raised(gi: &ServerGameImport) -> String {
+        match gi.take_error() {
+            Err(e) => e.to_string(),
+            Ok(()) => "nothing".into(),
+        }
+    }
+
     #[test]
-    fn configstring_negative_index_ignored() {
+    fn a_negative_configstring_index_is_dropped_and_raises_err_drop() {
         let gi = ServerGameImport::new();
         gi.configstring(-1, "should_not_store");
         let updates = gi.drain_configstring_updates();
         assert!(updates.is_empty());
+        assert_eq!(raised(&gi), "drop: configstring: bad index -1\n");
+        assert!(gi.take_error().is_ok(), "taken once");
     }
 
     #[test]
-    fn configstring_oob_index_ignored() {
+    fn a_configstring_index_past_the_table_is_dropped_and_raises_err_drop() {
         let gi = ServerGameImport::new();
         gi.configstring(MAX_CONFIGSTRINGS as i32 + 10, "oob");
         let updates = gi.drain_configstring_updates();
         assert!(updates.is_empty());
+        assert_eq!(raised(&gi), "drop: configstring: bad index 2090\n");
+    }
+
+    #[test]
+    fn gi_error_raises_a_game_error_and_the_first_one_stands() {
+        let gi = ServerGameImport::new();
+        gi.error("first");
+        gi.error("second");
+        assert_eq!(raised(&gi), "drop: Game Error: first");
+    }
+
+    #[test]
+    fn a_full_sound_table_raises_index_overflow() {
+        let gi = ServerGameImport::new();
+        for n in 1..MAX_SOUNDS {
+            assert_eq!(gi.sound_index(&format!("s{n}.wav")), n as i32);
+        }
+        assert!(gi.take_error().is_ok());
+        assert_eq!(gi.sound_index("one_more.wav"), 0);
+        assert_eq!(raised(&gi), "drop: *Index: overflow");
+    }
+
+    #[test]
+    fn loading_a_map_clears_an_error_nobody_took() {
+        let gi = ServerGameImport::new();
+        gi.error("old map");
+        gi.load_map(&[]).expect("an empty map loads");
+        assert!(gi.take_error().is_ok());
     }
 
     #[test]

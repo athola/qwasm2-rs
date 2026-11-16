@@ -18,8 +18,9 @@ fn run(game: &mut LocalGame, frames: usize) -> (Vec<EntityState>, Vec<Vec<u8>>) 
         game.think(&UserCmd {
             msec: 100,
             ..Default::default()
-        });
-        game.frame(100_000);
+        })
+        .unwrap();
+        game.frame(100_000).unwrap();
         messages.extend(game.take_messages());
     }
     (game.entity_states(), messages)

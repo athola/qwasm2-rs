@@ -1,7 +1,7 @@
 //! Text the server sends: printed lines shown briefly at the top of the
 //! screen, the centred message, and the server layout (scoreboard, help
-//! computer). C ref: `CL_ParsePrint`, `CL_ParseLayout`
-//! (client/cl_parse.c), `Con_Print`/`Con_DrawNotify` (client/cl_console.c)
+//! computer). C ref: the `svc_print` and `svc_layout` cases of
+//! `CL_ParseServerMessage` (client/cl_parse.c), `Con_Print`/`Con_DrawNotify` (client/cl_console.c)
 //! and `SCR_CenterPrint`/`SCR_DrawCenterString` (client/cl_screen.c), at
 //! HUD scale 1. The console itself is not ported.
 

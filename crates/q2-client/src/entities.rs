@@ -1,5 +1,5 @@
 //! Entities to draw between two server frames. C ref: `CL_AddPacketEntities`
-//! (client/cl_entities.c) and the no-lerp rules of `CL_ParseEntity`
+//! (client/cl_entities.c) and the no-lerp rules of `CL_DeltaEntity`
 //! (client/cl_parse.c). Particle trails and lights are `fx`'s. Not done:
 //! player skins with the custom weapon model (`modelindex2` 255) and the
 //! Rogue defender sphere's translucent linked shell (#35).
@@ -53,7 +53,7 @@ pub(crate) fn anglemod(a: f32) -> f32 {
     (360.0 / 65536.0) * (((f64::from(a) * (65536.0 / 360.0)) as i32) & 65535) as f32
 }
 
-/// Whether `s` must not be lerped from `prev` (C `CL_ParseEntity` sets
+/// Whether `s` must not be lerped from `prev` (C `CL_DeltaEntity` sets
 /// `serverframe = -99`): a model change, a teleport, or a jump of more than
 /// 512 units on an axis.
 pub(crate) fn breaks_lerp(prev: &EntityState, s: &EntityState) -> bool {

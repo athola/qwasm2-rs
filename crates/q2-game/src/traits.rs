@@ -91,6 +91,11 @@ pub trait GameImport {
     /// Print a debug message to the server console only.
     fn dprintf(&self, msg: &str);
 
+    /// C `gi.error`: end the level with `ERR_DROP` "Game Error: `msg`". C
+    /// never returns from it; here the caller stops what it was doing and
+    /// the server drops the map once the game call returns.
+    fn error(&self, msg: &str);
+
     /// Print to a specific client (or server console if `ent_idx` is `None`).
     /// `printlevel`: same as [`bprintf`](Self::bprintf).
     fn cprintf(&self, ent_idx: Option<usize>, printlevel: i32, msg: &str);
@@ -357,6 +362,7 @@ mod tests {
     impl GameImport for NoopImport {
         fn bprintf(&self, _printlevel: i32, _msg: &str) {}
         fn dprintf(&self, _msg: &str) {}
+        fn error(&self, _msg: &str) {}
         fn cprintf(&self, _ent_idx: Option<usize>, _printlevel: i32, _msg: &str) {}
         fn centerprintf(&self, _ent_idx: Option<usize>, _msg: &str) {}
         fn sound(

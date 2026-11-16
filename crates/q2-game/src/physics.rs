@@ -192,8 +192,7 @@ impl GameWorld {
 
         match think_fn {
             Some(think) => think(self, key),
-            // C raises gi.error("NULL ent->think").
-            None => tracing::warn!("run_think: entity with nextthink has no think"),
+            None => self.gi.error("NULL ent->think"),
         }
         false
     }
@@ -1247,6 +1246,17 @@ mod tests {
         assert!(!result);
         // nextthink should be cleared.
         assert_eq!(world.entities.get(key).unwrap().game.nextthink, 0.0);
+    }
+
+    #[test]
+    fn a_due_think_without_a_function_is_a_game_error() {
+        // C SV_RunThink: gi.error("NULL ent->think").
+        let (mut world, gi) = test_world_recording();
+        world.level.time = 1.0;
+        let key = world.spawn().unwrap();
+        world.entities.get_mut(key).unwrap().game.nextthink = 0.5;
+        world.run_think(key);
+        assert_eq!(*gi.errors.borrow(), ["NULL ent->think"]);
     }
 
     #[test]

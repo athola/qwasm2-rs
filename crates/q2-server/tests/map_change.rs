@@ -32,8 +32,9 @@ fn play(game: &mut LocalGame, frames: usize) {
         game.think(&UserCmd {
             msec: 100,
             ..Default::default()
-        });
-        game.frame(100_000);
+        })
+        .unwrap();
+        game.frame(100_000).unwrap();
     }
 }
 

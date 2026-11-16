@@ -33,7 +33,7 @@ pub fn vectoyaw(v: Vec3f) -> f32 {
             0.0
         }
     } else {
-        let yaw = (v.y.atan2(v.x).to_degrees() as i32) as f32;
+        let yaw = crate::weapons::degrees_from_atan2(v.y, v.x);
         if yaw < 0.0 {
             yaw + 360.0
         } else {
@@ -764,6 +764,18 @@ mod tests {
         assert_eq!(anglemod(-247.89), 112.11548);
         assert_eq!(anglemod(-0.01), 359.9945);
         assert_eq!(anglemod(704.37), 344.36646);
+    }
+
+    #[test]
+    fn vectoyaw_truncates_from_double_like_c() {
+        // C `(int)(atan2(y, x) * 180 / M_PI)` is double; in f32 these
+        // directions truncate one degree off. Expected values are C's,
+        // plus 360 when negative.
+        for (degrees, yaw) in [(-177.0_f64, 184.0), (-170.0, 191.0)] {
+            let r = degrees.to_radians();
+            let v = Vec3f::new(r.cos() as f32, r.sin() as f32, 0.0);
+            assert_eq!(vectoyaw(v), yaw, "{degrees}");
+        }
     }
 
     #[test]

@@ -443,10 +443,18 @@ impl Engine {
             now.get_minutes(),
             now.get_seconds(),
         )));
-        self.local.think(&cmd);
         // The server and the client clock run on the real elapsed time; only
-        // the movement command is capped.
-        self.local.frame(elapsed_us);
+        // the movement command is capped. A game error is C's ERR_DROP: the
+        // server ends and the console shows why.
+        if let Err(e) = self
+            .local
+            .think(&cmd)
+            .and_then(|()| self.local.frame(elapsed_us))
+        {
+            report_error(&format!("ERROR: {e}"));
+            self.dropped = true;
+            return;
+        }
         let fs = &self.fs;
         let mut client = LevelClient {
             sound: &mut self.sound,
@@ -1343,8 +1351,8 @@ fn game_from_query(search: &str) -> &str {
 /// slider range; `None` keeps the default.
 #[cfg(any(target_arch = "wasm32", test))]
 fn vid_gamma_from_query(search: &str) -> Option<f32> {
-    let value = query_value(search, "gamma")?;
-    let vid_gamma = value.parse::<f32>().ok().filter(|v| v.is_finite())?;
+    let raw_gamma = query_value(search, "gamma")?;
+    let vid_gamma = raw_gamma.parse::<f32>().ok().filter(|v| v.is_finite())?;
     Some(vid_gamma.clamp(VID_GAMMA_MIN, VID_GAMMA_MAX))
 }
 
@@ -1973,6 +1981,12 @@ fn console_error_panic_hook_setup() {
     }));
 }
 
+/// q2-server's synthetic maps, for tests that need a map with a player
+/// start.
+#[cfg(test)]
+#[path = "../../q2-server/tests/common/bsp.rs"]
+mod test_bsp;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2456,9 +2470,10 @@ mod tests {
     fn frame_with_a_print_and_a_level_exit(
         level: &str,
     ) -> (q2_server::local::LocalGame, TestClient) {
-        let mut local = q2_server::local::LocalGame::start("empty", &[]).expect("empty map loads");
-        local.frame(100_000);
-        local.frame(100_000);
+        let map = crate::test_bsp::floor_wall_bsp();
+        let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
+        local.frame(100_000).unwrap();
+        local.frame(100_000).unwrap();
         let mut client = TestClient::default();
         let (_, ps) = local.player().expect("player in game");
         let ps = ps.clone();
@@ -2506,7 +2521,7 @@ mod tests {
             )
             .expect("the cinematic is skipped");
         local.client_command("use Shotgun");
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
         (local, client)
     }
 
@@ -2554,12 +2569,16 @@ mod tests {
             local_userinfo(1),
             "\\name\\unnamed\\skin\\male/grunt\\gender\\male\\hand\\1"
         );
-        let mut local =
-            q2_server::local::LocalGame::start_with_userinfo("empty", &[], &local_userinfo(0))
-                .expect("empty map loads");
+        let map = crate::test_bsp::floor_wall_bsp();
+        let mut local = q2_server::local::LocalGame::start_with_userinfo(
+            "floor_wall",
+            &map,
+            &local_userinfo(0),
+        )
+        .expect("map loads");
         // The first game frame, which publishes the configstrings.
-        local.frame(100_000);
-        local.frame(100_000);
+        local.frame(100_000).unwrap();
+        local.frame(100_000).unwrap();
         // C ClientUserinfoChanged: CS_PLAYERSKINS is "name\\skin", which
         // the obituaries also print ("unnamed died.").
         assert_eq!(
@@ -3138,7 +3157,7 @@ mod tests {
     fn chat_is_greeted_with_the_talk_sound_on_the_local_player() {
         // C S_StartLocalSound: `S_StartSound(NULL, cl.playernum + 1, 0, sfx,
         // 1, 1, 0)`, attenuation 1 on the listener's own entity, which
-        // S_Spatialize plays at full volume.
+        // SDL_Spatialize and AL_Spatialize play at full volume.
         let talk = talk_sound();
         assert_eq!(
             (talk.name.as_str(), talk.entnum, talk.attenuation),

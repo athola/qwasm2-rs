@@ -598,12 +598,7 @@ fn become_explosion(world: &mut GameWorld, self_key: EntityKey, effect: i32) {
     let Some(origin) = world.entities.get(self_key).map(|e| e.state.origin) else {
         return;
     };
-    world
-        .gi
-        .write_byte(q2_shared::protocol::SvcOp::TempEntity as i32);
-    world.gi.write_byte(effect);
-    world.gi.write_position(origin);
-    world.gi.multicast(origin, Multicast::PVS);
+    crate::weapons::temp_entity(world, effect, &[origin], None, origin, Multicast::PVS);
     world.free_entity(self_key);
 }
 
@@ -1595,6 +1590,9 @@ pub(crate) mod wire {
         }
         fn dprintf(&self, a: &str) {
             self.inner.dprintf(a)
+        }
+        fn error(&self, a: &str) {
+            self.inner.error(a)
         }
         fn cprintf(&self, a: Option<usize>, b: i32, c: &str) {
             self.inner.cprintf(a, b, c)

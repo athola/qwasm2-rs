@@ -12,6 +12,7 @@ use q2_shared::types::{Multicast, Vec3f};
 
 use crate::constants::*;
 use crate::entity::{EntityKey, WeaponState};
+use crate::monster::sound;
 use crate::world::GameWorld;
 
 // Player model frames the weapon code starts (C `player.h`).
@@ -140,6 +141,10 @@ impl GameWorld {
             .and_then(|w| self.items.get(w))
             .and_then(|item| item.weaponthink);
         if let Some(think) = think {
+            // C sets the is_quad static here, after the dead check.
+            self.is_quad = self
+                .client(key)
+                .is_some_and(|c| c.quad_framenum > self.level.framenum);
             think(self, key);
         }
     }
@@ -231,14 +236,8 @@ impl GameWorld {
     }
 
     /// Quad damage multiplier and muzzle flash silencer bit for a shot
-    /// now (C `is_quad`, `is_silenced`). Deviation: C keeps these in file
-    /// statics that `Think_Weapon` sets only after its dead check, so the
-    /// grenade a dying player drops (`think_weapon` to `change_weapon` to
-    /// `weapon_grenade_fire`) reads the value from the last weapon think
-    /// of whichever client ran it. In single player that is this player's
-    /// previous frame, so C gives that grenade quad damage even though
-    /// `player_die` has cleared `quad_framenum`. Here the value is read
-    /// live, so it never has quad.
+    /// now (C `is_quad`, `is_silenced`), read live: every caller fires
+    /// inside a weapon think, where C's statics hold the same values.
     fn shot_modifiers(&self, key: EntityKey) -> (bool, i32) {
         self.client(key).map_or((false, 0), |c| {
             let silenced = if c.silencer_shots > 0 { MZ_SILENCED } else { 0 };
@@ -492,11 +491,7 @@ pub fn weapon_generic(
     if client.weaponstate == WeaponState::Firing {
         if fire_frames.contains(&client.ps.gunframe) {
             if client.quad_framenum > world.level.framenum {
-                let number = world.number_of(key);
-                let damage3 = world.gi.sound_index("items/damage3.wav");
-                world
-                    .gi
-                    .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
+                sound(world, key, CHAN_ITEM, "items/damage3.wav", ATTN_NORM);
             }
             fire(world, key);
         } else {
@@ -591,11 +586,7 @@ fn click_and_switch(world: &mut GameWorld, key: EntityKey) {
         due
     });
     if click {
-        let number = world.number_of(key);
-        let noammo = world.gi.sound_index("weapons/noammo.wav");
-        world
-            .gi
-            .sound(number, CHAN_VOICE, noammo, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_VOICE, "weapons/noammo.wav", ATTN_NORM);
     }
     world.no_ammo_weapon_change(key);
 }
@@ -801,17 +792,13 @@ pub fn weapon_machinegun(world: &mut GameWorld, key: EntityKey) {
 /// on release. C ref: `Chaingun_Fire` (player/weapon.c).
 pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
     let damage = if world.game.deathmatch { 6 } else { 8 };
-    let number = world.number_of(key);
     let ammo = ammo_left(world, key);
     let Some(client) = world.client(key) else {
         return;
     };
     let held = client.buttons & BUTTON_ATTACK != 0;
     if client.ps.gunframe == 5 {
-        let spin_up = world.gi.sound_index("weapons/chngnu1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, spin_up, 1.0, ATTN_IDLE, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/chngnu1a.wav", ATTN_IDLE);
     }
     let Some(client) = world.client_mut(key) else {
         return;
@@ -828,10 +815,7 @@ pub fn chaingun_fire(world: &mut GameWorld, key: EntityKey) {
     let gunframe = client.ps.gunframe;
     if gunframe == 22 {
         client.weapon_sound = 0;
-        let spin_down = world.gi.sound_index("weapons/chngnd1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, spin_down, 1.0, ATTN_IDLE, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/chngnd1a.wav", ATTN_IDLE);
     } else {
         let spin = world.gi.sound_index("weapons/chngnl1a.wav");
         if let Some(client) = world.client_mut(key) {
@@ -949,11 +933,7 @@ pub fn weapon_hyperblaster_fire(world: &mut GameWorld, key: EntityKey) {
         }
     }
     if world.client(key).is_some_and(|c| c.ps.gunframe == 12) {
-        let number = world.number_of(key);
-        let wind_down = world.gi.sound_index("weapons/hyprbd1a.wav");
-        world
-            .gi
-            .sound(number, CHAN_AUTO, wind_down, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_AUTO, "weapons/hyprbd1a.wav", ATTN_NORM);
         if let Some(client) = world.client_mut(key) {
             client.weapon_sound = 0;
         }
@@ -1128,16 +1108,14 @@ const GRENADE_MAXSPEED: i32 = 800;
 /// the longer it was held, the faster it flies and the sooner it goes
 /// off. C ref: `weapon_grenade_fire` (player/weapon.c).
 pub fn weapon_grenade_fire(world: &mut GameWorld, key: EntityKey, held: bool) {
-    let (quad, _) = world.shot_modifiers(key);
+    // C reads the is_quad static: a grenade thrown by ChangeWeapon for a
+    // dying player gets the previous think's value (see `is_quad`).
+    let quad = world.is_quad;
     let mut damage = 125;
     let radius = (damage + 40) as f32;
     if quad {
         damage *= 4;
-        let number = world.number_of(key);
-        let damage3 = world.gi.sound_index("items/damage3.wav");
-        world
-            .gi
-            .sound(number, CHAN_ITEM, damage3, 1.0, ATTN_NORM, 0.0);
+        sound(world, key, CHAN_ITEM, "items/damage3.wav", ATTN_NORM);
     }
     let (start, forward, _) = world.shot_source(key, [8.0, 8.0, viewheight(world, key) - 8.0]);
     let grenade_time = world.client(key).map_or(0.0, |c| c.grenade_time);
@@ -1221,12 +1199,8 @@ pub fn weapon_grenade(world: &mut GameWorld, key: EntityKey) {
         }
         WeaponState::Firing => {
             let gunframe = client.ps.gunframe;
-            let number = world.number_of(key);
             if gunframe == 5 {
-                let pin = world.gi.sound_index("weapons/hgrena1b.wav");
-                world
-                    .gi
-                    .sound(number, CHAN_WEAPON, pin, 1.0, ATTN_NORM, 0.0);
+                sound(world, key, CHAN_WEAPON, "weapons/hgrena1b.wav", ATTN_NORM);
             }
             if world.client(key).is_some_and(|c| c.ps.gunframe == 11) {
                 let tick = world.gi.sound_index("weapons/hgrenc1b.wav");
@@ -1537,6 +1511,7 @@ mod tests {
         let (mut world, gi) = test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         (world, key, gi)
     }
@@ -2288,6 +2263,44 @@ mod tests {
     }
 
     #[test]
+    fn a_cooked_grenade_dropped_on_death_keeps_the_last_weapon_thinks_quad() {
+        // C Think_Weapon sets the is_quad static only after its dead check,
+        // so the grenade ChangeWeapon throws for a dying player reads the
+        // previous think's value: quad, though player_die cleared it.
+        let (mut world, key, gi) = ready();
+        equip(&mut world, key, "Grenades", "Grenades", 5);
+        world.client_mut(key).unwrap().quad_framenum = world.level.framenum + 300;
+        hold(&mut world, key, true);
+        press(&mut world, key);
+        think_n(&mut world, key, 12);
+        assert_ne!(world.client(key).unwrap().grenade_time, 0.0, "cooking");
+
+        let origin = world.entities.get(key).unwrap().state.origin;
+        let target = world.spawn().unwrap();
+        let ent = world.entities.get_mut(target).unwrap();
+        ent.state.origin = origin;
+        ent.solid = q2_shared::types::Solid::Bbox;
+        ent.game.takedamage = crate::constants::TakeDamage::Yes;
+        ent.game.health = 1000;
+
+        world.entities.get_mut(key).unwrap().game.health = 0;
+        crate::player::client::player_die(&mut world, key, key, key, 100, Vec3f::ZERO);
+        assert_eq!(world.client(key).unwrap().quad_framenum, 0);
+        gi.sound_calls.borrow_mut().clear();
+        world.think_weapon(key);
+
+        let damage3 = world.gi.sound_index("items/damage3.wav");
+        assert!(gi
+            .sound_calls
+            .borrow()
+            .iter()
+            .any(|&(_, chan, index, ..)| chan == CHAN_ITEM && index == damage3));
+        // 500 at the blast less half the distance, where 125 is no quad.
+        let health = world.entities.get(target).unwrap().game.health;
+        assert!(health < 1000 - 125, "{health}");
+    }
+
+    #[test]
     fn hand_grenades_put_weap_grenades_in_the_skin_for_vwep() {
         let (mut world, key, _) = ready();
         world.entities.get_mut(key).unwrap().state.modelindex = 255;
@@ -2765,6 +2778,8 @@ mod tests {
         // radius = damage + 40, damage x4 with quad.
         let (mut world, key, _) = gunner("Grenades");
         quad(&mut world, key);
+        // What Think_Weapon sets before the weapon think that fires.
+        world.is_quad = true;
         world.level.time = 10.0;
         world.client_mut(key).unwrap().grenade_time = 12.0;
         weapon_grenade_fire(&mut world, key, false);

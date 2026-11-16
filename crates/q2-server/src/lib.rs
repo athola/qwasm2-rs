@@ -18,6 +18,12 @@ pub mod world;
 
 pub use game_iface::ServerGameImport;
 
+/// The integration tests' synthetic maps, for unit tests that need a map
+/// with a player start.
+#[cfg(test)]
+#[path = "../tests/common/bsp.rs"]
+pub(crate) mod test_bsp;
+
 /// A `GameExport` that counts frames and does nothing else, for server unit
 /// tests that don't need game logic.
 #[cfg(test)]

@@ -20,14 +20,6 @@ use crate::func::{func_train_find, train_use};
 use crate::misc::{become_explosion2, throw_gib, throw_head, GibType};
 use crate::world::GameWorld;
 
-/// Play `name` on the entity's body channel at full volume.
-fn body_sound(world: &mut GameWorld, key: EntityKey, name: &str) {
-    let index = world.gi.sound_index(name);
-    world
-        .gi
-        .sound(world.number_of(key), CHAN_BODY, index, 1.0, ATTN_NORM, 0.0);
-}
-
 /// Think again in `delay` seconds.
 fn think_in(world: &mut GameWorld, key: EntityKey, delay: f32) {
     let time = world.level.time;
@@ -132,7 +124,7 @@ pub fn misc_deadsoldier_die(
     if world.entities.get(key).is_none_or(|e| e.game.health > -80) {
         return;
     }
-    body_sound(world, key, "misc/udeath.wav");
+    crate::monster::sound(world, key, CHAN_BODY, "misc/udeath.wav", ATTN_NORM);
     for _ in 0..4 {
         throw_gib(
             world,
@@ -319,7 +311,7 @@ pub fn commander_body_think(world: &mut GameWorld, key: EntityKey) {
         ent.game.nextthink = 0.0;
     }
     if frame == 22 {
-        body_sound(world, key, "tank/thud.wav");
+        crate::monster::sound(world, key, CHAN_BODY, "tank/thud.wav", ATTN_NORM);
     }
 }
 
@@ -329,7 +321,7 @@ pub fn commander_body_use(world: &mut GameWorld, key: EntityKey, _: EntityKey, _
         ent.think = Some(commander_body_think);
     }
     think_in(world, key, FRAMETIME);
-    body_sound(world, key, "tank/pain.wav");
+    crate::monster::sound(world, key, CHAN_BODY, "tank/pain.wav", ATTN_NORM);
 }
 
 /// Let the body fall to the floor. C ref: `commander_body_drop`.
@@ -357,7 +349,7 @@ pub fn commander_body_die(
     {
         return;
     }
-    body_sound(world, key, "tank/pain.wav");
+    crate::monster::sound(world, key, CHAN_BODY, "tank/pain.wav", ATTN_NORM);
     throw_gib(
         world,
         key,

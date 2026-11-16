@@ -1496,7 +1496,8 @@ fn beam_angles(dist: Vec3f) -> (f32, f32) {
         yaw += 360.0;
     }
     let forward = (dist.x * dist.x + dist.y * dist.y).sqrt();
-    // Unlike `vectoangles2`, C multiplies the pitch by -180.0 in double.
+    // C CL_AddBeams: `(float)atan2(dist[2], forward) * -180.0 / M_PI`,
+    // the product in double (cl_tempentities.c).
     let mut pitch =
         (f64::from(f64::from(dist.z).atan2(f64::from(forward)) as f32) * -180.0 / PI) as f32;
     if pitch < 0.0 {

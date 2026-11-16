@@ -1,5 +1,6 @@
 //! World texture loading: `.wal` through the colormap palette to RGBA, and the
-//! GL upload (C `GL3_FindImage` / `LoadWal` / `GL3_Upload32` in `gl3_image.c`).
+//! GL upload (C `GL3_FindImage` and `GL3_Upload32` in `gl3_image.c`, `LoadWal`
+//! in `files/wal.c`).
 
 use std::collections::HashMap;
 
@@ -26,7 +27,7 @@ pub struct Image {
     pub is_lava: bool,
 }
 
-/// Read the 256-colour palette used by every `.wal` (C `GL3_GetPalette`).
+/// Read the 256-colour palette used by every `.wal` (C `GetPCXPalette`, files/pcx.c).
 pub fn load_palette(loader: &FileLoader) -> Option<Palette> {
     let bytes = loader(PALETTE_PATH)?;
     match Palette::from_pcx(&bytes) {

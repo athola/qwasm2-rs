@@ -24,6 +24,7 @@ const FRAME_PAIN304: i32 = 65;
 const FRAME_CRPAIN1: i32 = 169;
 const FRAME_CRPAIN4: i32 = 172;
 use crate::entity::EntityKey;
+use crate::monster::sound;
 use crate::world::GameWorld;
 
 /// C `bob_up`, `bob_pitch`, `bob_roll`, `run_pitch` and `run_roll` cvar
@@ -207,9 +208,7 @@ impl GameWorld {
         if let Some((until, warning, ..)) = powerup {
             if until - framenum == 30 {
                 // Beginning to fade.
-                let sound = self.gi.sound_index(warning);
-                self.gi
-                    .sound(self.number_of(key), CHAN_ITEM, sound, 1.0, ATTN_NORM, 0.0);
+                sound(self, key, CHAN_ITEM, warning, ATTN_NORM);
             }
         }
         let Some(client) = self.client_mut(key) else {
@@ -271,19 +270,14 @@ impl GameWorld {
         let envirosuit = client.enviro_framenum > framenum;
         let breather_left = client.breather_framenum - framenum;
         let air_finished = client.air_finished;
-        let number = self.number_of(key);
-        let sound = |world: &GameWorld, channel, name: &str| {
-            let index = world.gi.sound_index(name);
-            world.gi.sound(number, channel, index, 1.0, ATTN_NORM, 0.0);
-        };
 
         // Just entered a water volume.
         if old_waterlevel == 0 && waterlevel != 0 {
             self.player_noise(key, origin, PlayerNoise::SelfNoise);
             if watertype & CONTENTS_LAVA != 0 {
-                sound(self, CHAN_BODY, "player/lava_in.wav");
+                sound(self, key, CHAN_BODY, "player/lava_in.wav", ATTN_NORM);
             } else if watertype & (CONTENTS_SLIME | CONTENTS_WATER) != 0 {
-                sound(self, CHAN_BODY, "player/watr_in.wav");
+                sound(self, key, CHAN_BODY, "player/watr_in.wav", ATTN_NORM);
             }
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.game.flags |= EntityFlags::INWATER;
@@ -294,21 +288,21 @@ impl GameWorld {
         // Just completely left a water volume.
         if old_waterlevel != 0 && waterlevel == 0 {
             self.player_noise(key, origin, PlayerNoise::SelfNoise);
-            sound(self, CHAN_BODY, "player/watr_out.wav");
+            sound(self, key, CHAN_BODY, "player/watr_out.wav", ATTN_NORM);
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.game.flags.remove(EntityFlags::INWATER);
             }
         }
         // Head just going under, or just coming out.
         if old_waterlevel != 3 && waterlevel == 3 {
-            sound(self, CHAN_BODY, "player/watr_un.wav");
+            sound(self, key, CHAN_BODY, "player/watr_un.wav", ATTN_NORM);
         }
         if old_waterlevel == 3 && waterlevel != 3 {
             if air_finished < time {
-                sound(self, CHAN_VOICE, "player/gasp1.wav");
+                sound(self, key, CHAN_VOICE, "player/gasp1.wav", ATTN_NORM);
                 self.player_noise(key, origin, PlayerNoise::SelfNoise);
             } else if air_finished < time + 11.0 {
-                sound(self, CHAN_VOICE, "player/gasp2.wav");
+                sound(self, key, CHAN_VOICE, "player/gasp2.wav", ATTN_NORM);
             }
         }
 
@@ -324,7 +318,7 @@ impl GameWorld {
                     } else {
                         "player/u_breath1.wav"
                     };
-                    sound(self, CHAN_AUTO, name);
+                    sound(self, key, CHAN_AUTO, name, ATTN_NORM);
                     if let Some(client) = self.client_mut(key) {
                         client.breather_sound = !second;
                     }
@@ -354,7 +348,7 @@ impl GameWorld {
                 } else {
                     "*gurp2.wav"
                 };
-                sound(self, CHAN_VOICE, gurp);
+                sound(self, key, CHAN_VOICE, gurp, ATTN_NORM);
                 world_damage(self, key, dmg, DamageFlags::NO_ARMOR, MeansOfDeath::Water);
             }
         } else {
@@ -384,7 +378,7 @@ impl GameWorld {
                 } else {
                     "player/burn2.wav"
                 };
-                sound(self, CHAN_VOICE, name);
+                sound(self, key, CHAN_VOICE, name, ATTN_NORM);
                 if let Some(ent) = self.entities.get_mut(key) {
                     ent.game.pain_debounce_time = time + 1.0;
                 }
@@ -676,6 +670,7 @@ mod tests {
     fn a_shot_kicks_the_view_for_one_frame_like_c() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         let client = world.client_mut(key).unwrap();
         client.kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
@@ -702,6 +697,7 @@ mod tests {
     fn the_kick_offset_is_clamped_like_sv_calcviewoffset() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.client_mut(key).unwrap().kick_origin = Vec3f::new(-30.0, 30.0, 40.0);
         world.update_player_view(key);
@@ -713,6 +709,7 @@ mod tests {
     fn a_damage_kick_fades_over_damage_time_like_c() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.time = 10.0;
         let client = world.client_mut(key).unwrap();
@@ -740,6 +737,7 @@ mod tests {
 
     fn player_in(world: &mut GameWorld) -> EntityKey {
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         key
@@ -1534,6 +1532,7 @@ mod tests {
     fn a_dead_player_gets_no_kick_angles() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.entities.get_mut(key).unwrap().game.deadflag = crate::constants::DeadFlag::Dead;
         world.client_mut(key).unwrap().kick_angles = Vec3f::new(-1.0, 0.0, 0.0);
@@ -1545,6 +1544,7 @@ mod tests {
     fn view_offset_default_height() {
         let mut world = test_world();
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key); // viewheight 22
         world.entities.get_mut(key).unwrap().velocity = Vec3f::ZERO;
 
@@ -1572,6 +1572,7 @@ mod tests {
             let mut world = test_world();
             world.level.time = 1.0;
             let key = world.connect_client(1, "\\name\\P").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             let ent = world.entities.get_mut(key).unwrap();
             ent.velocity = Vec3f::new(speed, 0.0, 0.0);
@@ -1597,6 +1598,7 @@ mod tests {
 
     fn player(world: &mut GameWorld) -> EntityKey {
         let key = world.connect_client(1, "\\name\\P").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         key
     }

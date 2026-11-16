@@ -1,4 +1,4 @@
-//! 2D drawing maths (C `gl3_draw.c`, `R_FindPic` in `ref_shared.c`). GL-free.
+//! 2D drawing maths (C `gl3_draw.c`, `R_FindPic` in `files/stb.c`). GL-free.
 //!
 //! Every 2D draw becomes one quad of [`UI_VERTEX_FLOATS`]-float vertices
 //! (position(2), uv(2), colour(4)) in screen pixels, origin top-left.

@@ -5,7 +5,6 @@ use q2_shared::constants::{
     MZ2_SUPERTANK_MACHINEGUN_1, MZ2_SUPERTANK_ROCKET_1, MZ2_SUPERTANK_ROCKET_2,
     MZ2_SUPERTANK_ROCKET_3,
 };
-use q2_shared::protocol::SvcOp;
 use q2_shared::types::*;
 use std::collections::HashMap;
 
@@ -16,6 +15,7 @@ use crate::misc::{throw_gib, throw_head, GibType};
 use crate::monster::fire::{monster_fire_bullet, monster_fire_rocket};
 use crate::monster::flash::{monster_flash_source, project_source, MONSTER_FLASH_OFFSET};
 use crate::monster::{enemy_eye, frame, set_move, sound};
+use crate::weapons::temp_entity;
 use crate::world::GameWorld;
 
 /// C supertank.h `MODEL_SCALE`.
@@ -614,10 +614,7 @@ pub(crate) fn boss_explode(world: &mut GameWorld, key: EntityKey) {
         }
         return;
     }
-    world.gi.write_byte(SvcOp::TempEntity as i32);
-    world.gi.write_byte(TE_EXPLOSION1);
-    world.gi.write_position(org);
-    world.gi.multicast(origin, Multicast::PVS);
+    temp_entity(world, TE_EXPLOSION1, &[org], None, origin, Multicast::PVS);
     let time = world.level.time;
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.nextthink = time + FRAMETIME;
@@ -718,6 +715,7 @@ mod tests {
     use crate::entity::ThinkFn;
     use crate::misc::wire::{Wire, WireImport};
     use crate::monster::test_support::*;
+    use q2_shared::protocol::SvcOp;
     use std::rc::Rc;
 
     fn supertank() -> (GameWorld, Rc<WireImport>, EntityKey) {
@@ -1098,6 +1096,29 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn boss_explode_writes_the_blast_offset_but_multicasts_from_the_boss() {
+        // C BossExplode: gi.WritePosition(org), then
+        // gi.multicast(self->s.origin, MULTICAST_PVS).
+        let (mut world, gi, key) = supertank();
+        let origin = Vec3f::new(100.0, 200.0, 0.0);
+        world.entities.get_mut(key).unwrap().state.origin = origin;
+        gi.wire.borrow_mut().clear();
+        boss_explode(&mut world, key);
+        let wire = gi.wire.borrow();
+        let org = explosions(&gi)[0];
+        assert_eq!((org.x, org.y), (76.0, 176.0));
+        assert_eq!(
+            *wire,
+            [
+                Wire::Byte(SvcOp::TempEntity as i32),
+                Wire::Byte(TE_EXPLOSION1),
+                Wire::Position(org),
+                Wire::Multicast(origin, Multicast::PVS),
+            ]
+        );
     }
 
     #[test]

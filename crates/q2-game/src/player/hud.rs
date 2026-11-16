@@ -6,6 +6,7 @@ use crate::constants::{
     SKILL_HARD, SKILL_MEDIUM,
 };
 use crate::entity::EntityKey;
+use crate::monster::sound;
 use crate::world::GameWorld;
 use q2_shared::protocol::SvcOp;
 use q2_shared::types::{PmType, Solid, Vec3f};
@@ -40,9 +41,7 @@ impl GameWorld {
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.game.flags.remove(EntityFlags::POWER_ARMOR);
             }
-            let power2 = self.gi.sound_index("misc/power2.wav");
-            self.gi
-                .sound(self.number_of(key), CHAN_ITEM, power2, 1.0, ATTN_NORM, 0.0);
+            sound(self, key, CHAN_ITEM, "misc/power2.wav", ATTN_NORM);
             power_armor = POWER_ARMOR_NONE;
         }
         let ammo = self.client(key).map_or(0, |c| c.ammo_index);
@@ -167,8 +166,8 @@ impl GameWorld {
         let skin = crate::player::client::extract_info_value(&client.pers.userinfo, "skin")
             .unwrap_or_default();
         let index = q2_shared::constants::CS_PLAYERSKINS + number - 1;
-        let value = format!("{}\\{skin}", client.pers.netname);
-        self.gi.configstring(index as i32, &value);
+        let player_skin = format!("{}\\{skin}", client.pers.netname);
+        self.gi.configstring(index as i32, &player_skin);
     }
 
     /// Write the scoreboard layout for `key`: up to twelve players by
@@ -452,6 +451,7 @@ mod tests {
         let (mut world, gi) = crate::world::test_world_recording();
         world.init_items();
         let key = world.connect_client(1, "\\name\\P1").unwrap();
+        world.ensure_player_start();
         world.begin_client(key);
         world.level.framenum = 100;
         (world, key, gi)
@@ -846,12 +846,9 @@ mod tests {
     fn without_an_intermission_spot_the_player_start_is_used() {
         let (mut world, key, _) = armed_player();
         world.game.deathmatch = true;
-        spot(
-            &mut world,
-            "info_player_start",
-            Vec3f::new(8.0, 0.0, 0.0),
-            0.0,
-        );
+        // The start armed_player spawned the player at.
+        let start = world.find_by_classname(None, "info_player_start").unwrap();
+        world.entities.get_mut(start).unwrap().state.origin = Vec3f::new(8.0, 0.0, 0.0);
         let exit = exit_to(&mut world, "q2dm2");
         world.begin_intermission(exit);
         assert_eq!(
@@ -878,7 +875,8 @@ mod tests {
         use q2_shared::types::UserCmd;
         let (mut world, key, _) = armed_player();
         world.game.deathmatch = true;
-        spot(&mut world, "info_player_start", Vec3f::ZERO, 0.0);
+        let start = world.find_by_classname(None, "info_player_start").unwrap();
+        world.entities.get_mut(start).unwrap().state.origin = Vec3f::ZERO;
         world.level.time = 10.0;
         let exit = exit_to(&mut world, "q2dm2");
         world.begin_intermission(exit);
@@ -920,10 +918,12 @@ mod tests {
         let a = world
             .connect_client(1, "\\name\\Ann\\skin\\female/athena")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(a);
         let b = world
             .connect_client(2, "\\name\\Bob\\skin\\male/grunt")
             .unwrap();
+        world.ensure_player_start();
         world.begin_client(b);
         (world, a, b, gi)
     }
@@ -964,6 +964,7 @@ mod tests {
         let mut players = Vec::new();
         for n in 1..=4 {
             let key = world.connect_client(n, "\\name\\P").unwrap();
+            world.ensure_player_start();
             world.begin_client(key);
             world.client_mut(key).unwrap().resp.score = 10 - n as i32;
             players.push(key);

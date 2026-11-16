@@ -10,8 +10,8 @@ use q2_shared::types::UserCmd;
 fn started(extra: &str) -> LocalGame {
     let map = common::floor_wall_bsp_with(&format!("{}{extra}", common::ENTSTRING));
     let mut game = LocalGame::start("floor_wall", &map).expect("map loads");
-    game.think(&UserCmd::default());
-    game.frame(100_000);
+    game.think(&UserCmd::default()).unwrap();
+    game.frame(100_000).unwrap();
     game
 }
 
@@ -56,8 +56,8 @@ fn demo1_sends_only_entities_in_the_players_pvs_and_always_the_player() {
         return;
     };
     let mut game = LocalGame::start("demo1", &map).expect("demo1 loads");
-    game.think(&UserCmd::default());
-    game.frame(100_000);
+    game.think(&UserCmd::default()).unwrap();
+    game.frame(100_000).unwrap();
     // The same map in a server whose game the test can read.
     let world = common::ServerWorld::start("demo1", &map);
     let modelled = world
@@ -85,7 +85,7 @@ fn game_frames_in(seconds: u32, frame_us: u32) -> i32 {
     let mut game = started("");
     let first = game.framenum();
     for _ in 0..seconds * 1_000_000 / frame_us {
-        game.frame(frame_us);
+        game.frame(frame_us).unwrap();
     }
     game.framenum() - first
 }
@@ -116,8 +116,8 @@ fn hidden_brush_entity_is_not_sent_and_visible_one_is() {
     );
     let mut game = LocalGame::start("two_cluster", &common::two_cluster_bsp_with(&entities))
         .expect("map loads");
-    game.think(&UserCmd::default());
-    game.frame(100_000);
+    game.think(&UserCmd::default()).unwrap();
+    game.frame(100_000).unwrap();
     let sent: Vec<f32> = game
         .entity_states()
         .iter()
@@ -131,7 +131,7 @@ fn hidden_brush_entity_is_not_sent_and_visible_one_is() {
 fn framenum_counts_server_frames_from_the_map_load() {
     let mut game = started("");
     let before = game.framenum();
-    game.frame(100_000);
+    game.frame(100_000).unwrap();
     assert_eq!(game.framenum(), before + 1);
 }
 
@@ -144,8 +144,8 @@ fn a_level_exit_hands_the_gamemap_command_to_the_local_server() {
     ));
     let mut next = None;
     for _ in 0..10 {
-        game.think(&UserCmd::default());
-        game.frame(100_000);
+        game.think(&UserCmd::default()).unwrap();
+        game.frame(100_000).unwrap();
         next = next.or_else(|| game.take_map_change());
     }
     assert_eq!(next.as_deref(), Some("base2"));
@@ -158,8 +158,8 @@ fn demo1_area_bits_show_the_players_own_area() {
         return;
     };
     let mut game = LocalGame::start("demo1", &map).expect("demo1 loads");
-    game.think(&UserCmd::default());
-    game.frame(100_000);
+    game.think(&UserCmd::default()).unwrap();
+    game.frame(100_000).unwrap();
     let area = game.player_area().expect("player in an area");
     let bits = game.area_bits().expect("area bits");
     let byte = bits[(area >> 3) as usize];
@@ -176,8 +176,8 @@ fn a_teleport_event_is_sent_in_exactly_one_frame() {
     let mut frames_with_event = 0;
     let mut framenum = game.framenum();
     for _ in 0..20 {
-        game.think(&UserCmd::default());
-        game.frame(100_000);
+        game.think(&UserCmd::default()).unwrap();
+        game.frame(100_000).unwrap();
         if game.framenum() == framenum {
             continue;
         }

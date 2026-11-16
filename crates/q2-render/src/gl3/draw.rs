@@ -1,5 +1,5 @@
 //! GPU objects for the world and sky box, and the draw loops that use them
-//! (C `GL3_DrawWorld`, `GL3_DrawTextureChains`, `GL3_DrawAlphaSurfaces`,
+//! (C `GL3_DrawWorld`, `DrawTextureChains`, `GL3_DrawAlphaSurfaces`,
 //! `GL3_DrawSkyBox`).
 
 use glow::HasContext;
