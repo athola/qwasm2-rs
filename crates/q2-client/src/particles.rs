@@ -33,7 +33,7 @@ pub struct Particle {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawParticle {
     pub origin: Vec3f,
-    /// Index into the 256-colour palette.
+    /// Index into the 256-color palette.
     pub color: u8,
     pub alpha: f32,
 }
@@ -108,7 +108,7 @@ impl Particles {
         self.active.last_mut()
     }
 
-    /// A puff around `org`, spread along `dir`, in colours `color..+7`,
+    /// A puff around `org`, spread along `dir`, in colors `color..+7`,
     /// sinking a little slower than gravity. C ref: `CL_ParticleEffect`.
     pub fn particle_effect(&mut self, spray: Spray, time: i32, randk: &mut impl FnMut() -> u32) {
         for _ in 0..spray.count {
@@ -132,7 +132,7 @@ impl Particles {
         self.short_spray(spray, true, -PARTICLE_GRAVITY, time, randk);
     }
 
-    /// As `particle_effect2` in one colour, rising instead of falling.
+    /// As `particle_effect2` in one color, rising instead of falling.
     /// C ref: `CL_ParticleEffect3`.
     pub fn particle_effect3(&mut self, spray: Spray, time: i32, randk: &mut impl FnMut() -> u32) {
         self.short_spray(spray, false, PARTICLE_GRAVITY, time, randk);
@@ -142,7 +142,7 @@ impl Particles {
     fn short_spray(
         &mut self,
         spray: Spray,
-        colour_offset: bool,
+        color_offset: bool,
         accel_z: f32,
         time: i32,
         randk: &mut impl FnMut() -> u32,
@@ -151,7 +151,7 @@ impl Particles {
             let Some(p) = self.alloc() else { return };
             p.time = time as f32;
             p.color = spray.color
-                + if colour_offset {
+                + if color_offset {
                     (randk() & 7) as i32
                 } else {
                     0
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn particle_effect_reads_randk_in_c_order() {
         let mut particles = Particles::default();
-        // colour, d, then per axis an org jitter and a crandk velocity,
+        // color, d, then per axis an org jitter and a crandk velocity,
         // then the frandk fade.
         let mut r = rng(&[3, 10, 7, 32767, 0, 0, 4, 16383, 32767]);
         let dir = Vec3f::new(0.0, 0.0, 1.0);
@@ -252,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn particle_effect2_falls_and_effect3_rises_with_a_fixed_colour() {
+    fn particle_effect2_falls_and_effect3_rises_with_a_fixed_color() {
         let mut particles = Particles::default();
         particles.particle_effect2(spray(Vec3f::ZERO, Vec3f::X, 0xd0, 2), 0, &mut rng(&[5]));
         assert_eq!(particles.len(), 2);
@@ -304,7 +304,7 @@ mod tests {
         // C adds accel * t * t, without the half.
         assert_eq!(drawn[0].origin, Vec3f::new(6.0, 2.0, -7.0));
         assert_eq!(drawn[0].alpha, 0.75);
-        assert_eq!(drawn[0].color, 0xe0, "colour is a palette byte");
+        assert_eq!(drawn[0].color, 0xe0, "color is a palette byte");
     }
 
     #[test]

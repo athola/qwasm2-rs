@@ -242,13 +242,13 @@ pub trait GameImport {
     /// Write a null-terminated string to the message buffer.
     fn write_string(&self, s: &str);
 
-    /// Write a quantised 3D position (3 × 16-bit coords) to the message buffer.
+    /// Write a quantized 3D position (3 × 16-bit coords) to the message buffer.
     fn write_position(&self, pos: Vec3f);
 
     /// Write a compressed direction (1-byte index into BYTEDIRS) to the message buffer.
     fn write_dir(&self, dir: Vec3f);
 
-    /// Write a quantised angle (1 byte, 256 steps per revolution) to the message buffer.
+    /// Write a quantized angle (1 byte, 256 steps per revolution) to the message buffer.
     fn write_angle(&self, f: f32);
 
     // -- multicast / unicast -----------------------------------------------

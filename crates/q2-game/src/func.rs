@@ -543,7 +543,7 @@ fn crush_non_living(world: &mut GameWorld, self_key: EntityKey, other: EntityKey
         DamageFlags::empty(),
         MeansOfDeath::Crush,
     );
-    // If it's still there, nuke it, at its box centre for entities whose
+    // If it's still there, nuke it, at its box center for entities whose
     // origin is not near the model.
     if let Some(o) = world.entities.get_mut(other).filter(|o| o.in_use) {
         o.state.origin = o.absmin + o.size * 0.5;
@@ -1300,7 +1300,7 @@ pub(crate) fn start_func_timer(
 /// func_explosive spawnflag: invisible and non-solid until used.
 const EXPLOSIVE_TRIGGER_SPAWN: i32 = 1;
 
-/// Blow the brush up from its centre (bmodel origins are 0,0,0) into
+/// Blow the brush up from its center (bmodel origins are 0,0,0) into
 /// debris flung away from the inflictor, fire its targets and remove it,
 /// with an explosion when it does damage. C ref: `func_explosive_explode`.
 pub fn func_explosive_die(
@@ -1318,7 +1318,7 @@ pub fn func_explosive_die(
     let Some(ent) = world.entities.get_mut(self_key) else {
         return;
     };
-    // Bmodel origins are (0 0 0), so blow up from the centre.
+    // Bmodel origins are (0 0 0), so blow up from the center.
     let mut size = ent.size * 0.5;
     let origin = ent.absmin + size;
     ent.state.origin = origin;
@@ -2681,7 +2681,7 @@ mod tests {
     const CAR_MINS: Vec3f = Vec3f::new(-32.0, -32.0, -8.0);
 
     /// A world spawned from `entities`, where `*1` is a 16x64x96 box, `*2`
-    /// a 128x128x64 plat and `*3` a 64x64x16 car centred on its origin.
+    /// a 128x128x64 plat and `*3` a 64x64x16 car centered on its origin.
     fn spawned(entities: &str) -> GameWorld {
         spawned_gi(entities).0
     }
@@ -3392,7 +3392,7 @@ mod tests {
     }
 
     #[test]
-    fn func_rotating_waits_for_use_and_honours_axis_and_reverse_flags() {
+    fn func_rotating_waits_for_use_and_honors_axis_and_reverse_flags() {
         let mut world = test_world();
         let key = world.spawn().unwrap();
         world.entities.get_mut(key).unwrap().game.spawnflags = ROTATING_X_AXIS | ROTATING_REVERSE;
@@ -3437,14 +3437,14 @@ mod tests {
     }
 
     #[test]
-    fn func_explosive_blasts_from_its_centre_with_dmg_plus_40() {
+    fn func_explosive_blasts_from_its_center_with_dmg_plus_40() {
         let mut world =
             spawned("{ \"classname\" \"func_explosive\" \"model\" \"*1\" \"dmg\" \"50\" }");
         let brush = by_class(&world, "func_explosive");
         let victim = world.spawn().unwrap();
         {
             let v = world.entities.get_mut(victim).unwrap();
-            // 70 units from the brush centre (8, 32, 48): within dmg + 40.
+            // 70 units from the brush center (8, 32, 48): within dmg + 40.
             v.state.origin = Vec3f::new(78.0, 32.0, 48.0);
             v.game.health = 100;
             v.game.takedamage = TakeDamage::Yes;
@@ -3614,7 +3614,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uncrushable_blocker_explodes_at_its_box_centre() {
+    fn an_uncrushable_blocker_explodes_at_its_box_center() {
         // C door_blocked: VectorMA(absmin, 0.5, size, s.origin), then
         // BecomeExplosion1.
         let (mut world, gi) = spawned_gi("{ \"classname\" \"func_door\" \"model\" \"*1\" }");

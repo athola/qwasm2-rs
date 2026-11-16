@@ -2,12 +2,12 @@ qwasm2-rs is licensed under the GNU General Public License, version 2
 or (at your option) any later version. The full text is in LICENSE.
 
 qwasm2-rs is a Rust translation of software developed by multiple
-individuals, projects and organisations, all under the same licence:
+individuals, projects and organizations, all under the same license:
 
 - Quake II, Copyright (C) 1997-2001 Id Software, Inc.
 - Yamagi Quake II (https://github.com/yquake2/yquake2) and its
   contributors. Yamagi Quake II includes parts of other Quake II
-  clients, covered by the same GPLv2 licence as Quake II itself:
+  clients, covered by the same GPLv2 license as Quake II itself:
   Hecatomb, Icculus Quake 2, KMQuake2, Q2Pro, QuDoS, r1q2, stereo quake
   and zeq2.
 - Qwasm2 (https://github.com/GMH-Code/Qwasm2), Copyright (C) 2024
@@ -26,7 +26,7 @@ stb_image_resize, stb_image_write and stb_vorbis. qwasm2-rs contains no
 code from them, so their notices are not repeated here.
 
 Quake II game data (PAK files) is not part of qwasm2-rs and is under its
-own licence. This project is not affiliated with, endorsed by, or in any
+own license. This project is not affiliated with, endorsed by, or in any
 way connected to id Software, Bethesda Softworks, or ZeniMax Media.
 
 ===============================================================================

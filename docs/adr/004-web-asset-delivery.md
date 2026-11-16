@@ -19,7 +19,7 @@ Brotli precompression alone cuts about 27% and does nothing about unused
 assets. Transcoding audio to Opus cuts the most but needs an audio engine
 that does not exist yet and an ffmpeg build step. HTTP Range streaming would
 fetch only what is read, but needs an async load path through the engine and
-a host that honours Range requests. A Service Worker cache helps only repeat
+a host that honors Range requests. A Service Worker cache helps only repeat
 visits.
 
 ## Decision
@@ -38,7 +38,7 @@ Repack at build time and compress, with room to transcode later.
   changes.
 - **Serving.** The dev server sends the `.br` variant with
   `Content-Encoding: br` and `Vary: Accept-Encoding` when the client accepts
-  Brotli (honouring `q=0`) and the `.br` is not older than the pak; otherwise
+  Brotli (honoring `q=0`) and the `.br` is not older than the pak; otherwise
   it serves the uncompressed file.
 
 ## Consequences

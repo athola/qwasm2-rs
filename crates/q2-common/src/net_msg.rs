@@ -303,7 +303,7 @@ impl NetMsg {
     ///
     /// Q2 strings are bytes, not UTF-8: each char U+0000..=U+00FF becomes the
     /// byte with that value (the inverse of [`read_string`](Self::read_string)),
-    /// so high-bit console colour bytes survive a read/write cycle. Chars that
+    /// so high-bit console color bytes survive a read/write cycle. Chars that
     /// do not fit in a byte become `?`. An interior NUL ends the string, as
     /// with C `strlen`.
     pub fn write_string(&mut self, s: &str) {
@@ -321,7 +321,7 @@ impl NetMsg {
         self.write_short((f * 8.0) as i32);
     }
 
-    /// Write 3 coordinates (a quantised 3D position).
+    /// Write 3 coordinates (a quantized 3D position).
     pub fn write_position(&mut self, pos: Vec3f) {
         self.write_coord(pos.x);
         self.write_coord(pos.y);
@@ -438,7 +438,7 @@ impl NetMsg {
         self.read_short() as f32 * (1.0 / 8.0)
     }
 
-    /// Read a quantised 3D position (3 coordinates) into a Vec3f.
+    /// Read a quantized 3D position (3 coordinates) into a Vec3f.
     pub fn read_position(&mut self, pos: &mut Vec3f) {
         pos.x = self.read_coord();
         pos.y = self.read_coord();
@@ -541,7 +541,7 @@ impl NetMsg {
         }
 
         // Field widths follow C: 8 bit, 16 bit alone, or both bits for 32.
-        // C compares skinnum as unsigned (laser colours are negative as int);
+        // C compares skinnum as unsigned (laser colors are negative as int);
         // frame and renderfx are signed compares, effects is unsigned.
         if to.skinnum != from.skinnum {
             let skin = to.skinnum as u32;
@@ -891,7 +891,7 @@ impl NetMsg {
         if new.rdflags != old.rdflags {
             flags |= PlayerStateFlags::RDFLAGS;
         }
-        // gunindex always sent (mirrors C server behaviour)
+        // gunindex always sent (mirrors C server behavior)
         flags |= PlayerStateFlags::WEAPONINDEX;
         if new.gunframe != old.gunframe
             || new.gunoffset != old.gunoffset
@@ -1133,7 +1133,7 @@ mod tests {
         assert_eq!(buf.read_string(), "hello world");
     }
 
-    // Q2 strings are raw bytes (high-bit bytes are coloured console text).
+    // Q2 strings are raw bytes (high-bit bytes are colored console text).
     // Each byte maps to the char with the same code point (Latin-1).
     #[test]
     fn read_string_keeps_high_bit_bytes() {
@@ -1404,7 +1404,7 @@ mod tests {
         );
     }
 
-    // Laser colours: C compares (unsigned)skinnum, so a negative i32 is
+    // Laser colors: C compares (unsigned)skinnum, so a negative i32 is
     // >= 0x10000 and goes out as SKIN8|SKIN16 + long.
     // bits = SKIN8|SKIN16 | MOREBITS3|2|1 = 0x2818080.
     #[test]

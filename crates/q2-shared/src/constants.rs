@@ -84,7 +84,7 @@ pub const RF_SHELL_BLUE: i32 = 4096;
 /// Don't draw a shadow.
 pub const RF_NOSHADOW: i32 = 8192;
 pub const RF_IR_VISIBLE: i32 = 0x0000_8000;
-/// Mission-pack shells: yellow (double damage) and grey-green (half damage).
+/// Mission-pack shells: yellow (double damage) and gray-green (half damage).
 pub const RF_SHELL_DOUBLE: i32 = 0x0001_0000;
 pub const RF_SHELL_HALF_DAM: i32 = 0x0002_0000;
 /// `rdflags`: the view is under water, slime or lava.
@@ -101,7 +101,7 @@ pub const EF_ROCKET: u32 = 0x0000_0010;
 pub const EF_GRENADE: u32 = 0x0000_0020;
 pub const EF_HYPERBLASTER: u32 = 0x0000_0040;
 pub const EF_BFG: u32 = 0x0000_0080;
-/// Colour shell (`RF_SHELL_*` picks the colours) and power screen.
+/// Color shell (`RF_SHELL_*` picks the colors) and power screen.
 pub const EF_COLOR_SHELL: u32 = 0x0000_0100;
 pub const EF_POWERSCREEN: u32 = 0x0000_0200;
 /// Quad damage and invulnerability glows.
@@ -203,7 +203,7 @@ pub const TE_EXPLOSION1_BIG: i32 = 53;
 pub const TE_EXPLOSION1_NP: i32 = 54;
 pub const TE_FLECHETTE: i32 = 55;
 
-// TE_SPLASH colours (shared.h SPLASH_*).
+// TE_SPLASH colors (shared.h SPLASH_*).
 pub const SPLASH_UNKNOWN: i32 = 0;
 pub const SPLASH_SPARKS: i32 = 1;
 pub const SPLASH_BLUE_WATER: i32 = 2;

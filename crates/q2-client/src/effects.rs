@@ -42,7 +42,7 @@ pub struct Effects {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashParticles {
     Smoke,
-    /// 40 sparks of palette colour 0, then the smoke.
+    /// 40 sparks of palette color 0, then the smoke.
     SparksAndSmoke,
     /// `SparksAndSmoke`, then entity n's `tank/tnkatk2a.wav` .. `e`,
     /// whose letter C draws from randk after the sparks.
@@ -106,7 +106,7 @@ impl Effects {
     /// A player's weapon fired: a light ahead and right of the player and
     /// the weapon's sound. `weapon` carries `MZ_SILENCED`. Covers the
     /// baseq2, xatrix and rogue flashes; any other number keeps the
-    /// light's old colour and plays nothing, as C's switch has no default.
+    /// light's old color and plays nothing, as C's switch has no default.
     /// Returns the sounds to start. C ref: `CL_AddMuzzleFlash`.
     pub fn muzzle_flash(
         &mut self,
@@ -1078,7 +1078,7 @@ mod tests {
         const SMOKE: Option<FlashParticles> = Some(FlashParticles::Smoke);
         // C ref: CL_AddMuzzleFlash2's switch; the first and last case of
         // each group, so a case dropped from either end shows.
-        // Flashes, light colour, sound with its attenuation, and the
+        // Flashes, light color, sound with its attenuation, and the
         // particles (C CL_ParticleEffect and CL_SmokeAndFlash).
         type Group = (
             &'static [i32],
@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn a_monster_flash_c_has_no_case_for_lights_without_changing_colour_or_sound() {
+    fn a_monster_flash_c_has_no_case_for_lights_without_changing_color_or_sound() {
         let mut fx = Effects::default();
         let monster = player_at(7, 0.0);
         fx.muzzle_flash2(&monster, MZ2_WIDOW_DISRUPTOR, 0.0, &mut rng(&[0]));
@@ -1286,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_player_flash_c_has_no_case_for_keeps_the_lights_colour_and_is_silent() {
+    fn a_player_flash_c_has_no_case_for_keeps_the_lights_color_and_is_silent() {
         let mut fx = Effects::default();
         fx.muzzle_flash(&player_at(1, 0.0), MZ_RAILGUN, 10.0, &mut rng(&[0]));
         // 99 is no MZ_* number: C's switch has no case and no default.

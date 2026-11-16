@@ -27,7 +27,7 @@ pub struct Image {
     pub is_lava: bool,
 }
 
-/// Read the 256-colour palette used by every `.wal` (C `GetPCXPalette`, files/pcx.c).
+/// Read the 256-color palette used by every `.wal` (C `GetPCXPalette`, files/pcx.c).
 pub fn load_palette(loader: &FileLoader) -> Option<Palette> {
     let bytes = loader(PALETTE_PATH)?;
     match Palette::from_pcx(&bytes) {
@@ -40,7 +40,7 @@ pub fn load_palette(loader: &FileLoader) -> Option<Palette> {
 }
 
 /// Index every pixel through the palette; index 255 becomes alpha 0 with a
-/// neighbour's colour (C `GL3_Upload8`).
+/// neighbor's color (C `GL3_Upload8`).
 pub fn wal_to_image(wal: &WalTexture, palette: &Palette, name: &str) -> Image {
     let rgba = palette.indexed_to_rgba(&wal.pixels, wal.width);
     Image {
@@ -253,7 +253,7 @@ mod tests {
         let wal = load_wal(&wal_bytes(2, 1, &[1, 255])).unwrap();
         let image = wal_to_image(&wal, &gradient_palette(), "e1u1/x");
         assert_eq!((image.width, image.height), (2, 1));
-        // The transparent pixel takes its left neighbour's colour (C Upload8).
+        // The transparent pixel takes its left neighbor's color (C Upload8).
         assert_eq!(image.rgba, vec![1, 0, 254, 255, 1, 0, 254, 0]);
         assert!(!image.is_lava);
     }
@@ -296,11 +296,11 @@ mod tests {
     }
 
     #[test]
-    fn notexture_is_an_opaque_two_colour_checker() {
+    fn notexture_is_an_opaque_two_color_checker() {
         let image = notexture();
         assert_eq!(image.rgba.len(), image.width * image.height * 4);
         assert_eq!(&image.rgba[0..4], &[255, 0, 255, 255]);
-        // Pixel (4, 0) is in the next 4x4 block, so the other colour.
+        // Pixel (4, 0) is in the next 4x4 block, so the other color.
         assert_eq!(&image.rgba[16..20], &[0, 0, 0, 255]);
         assert!(image.rgba.chunks(4).all(|px| px[3] == 255));
     }

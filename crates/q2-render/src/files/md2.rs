@@ -39,7 +39,7 @@ pub struct Md2Triangle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Md2Vertex {
-    /// Quantised position, expanded by the frame's scale and translate.
+    /// Quantized position, expanded by the frame's scale and translate.
     pub v: [u8; 3],
     /// Index into [`VERTEX_NORMALS`].
     pub normal_index: u8,

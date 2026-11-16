@@ -14,7 +14,7 @@ const MAX_INFO_KEY: usize = 64;
 const MAX_INFO_STRING: usize = 512;
 
 bitflags! {
-    /// Flags controlling cvar behaviour.
+    /// Flags controlling cvar behavior.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct CVarFlags: u32 {
         /// Saved to config.cfg on shutdown.
@@ -787,8 +787,8 @@ mod tests {
     fn info_string_measures_high_bit_values_in_q2_bytes() {
         let mut cvars = CVarSystem::new();
         // 40 bytes in C (80 in UTF-8): under MAX_INFO_KEY, so kept.
-        let coloured: String = std::iter::repeat_n('\u{e1}', 40).collect();
-        cvars.get("name", &coloured, CVarFlags::USERINFO);
+        let colored: String = std::iter::repeat_n('\u{e1}', 40).collect();
+        cvars.get("name", &colored, CVarFlags::USERINFO);
         let expected = format!("\\name\\{}", "a".repeat(40));
         assert_eq!(cvars.userinfo_string(), expected);
     }

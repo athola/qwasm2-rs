@@ -129,7 +129,7 @@ pub fn entity_views(
                 }
             };
             let (shelled, renderfx) = shell_effects(s.effects, s.renderfx);
-            // C: the renderfx go on the colour shell entity.
+            // C: the renderfx go on the color shell entity.
             let mut flags = if shelled { 0 } else { renderfx };
             let viewer = s.number == playernum + 1;
             if viewer {
@@ -220,8 +220,8 @@ pub(crate) fn drawn_origin(prev_origin: Vec3f, s: &EntityState, lerpfrac: f32) -
 
 /// C's "quad and pent can do different things on client": `EF_PENT`,
 /// `EF_QUAD`, `EF_DOUBLE` and `EF_HALF_DAMAGE` become a red, blue, yellow
-/// or grey shell. Whether the entity has a colour shell, and its renderfx
-/// with the shell colours.
+/// or gray shell. Whether the entity has a color shell, and its renderfx
+/// with the shell colors.
 fn shell_effects(effects: u32, renderfx: i32) -> (bool, i32) {
     let mut renderfx = renderfx;
     for (effect, shell) in [
@@ -269,10 +269,10 @@ fn shell_combinations(renderfx: i32, rogue: bool) -> i32 {
     renderfx
 }
 
-/// C `CL_AddPacketEntities` for `RF_BEAM`: the four colours are packed in
+/// C `CL_AddPacketEntities` for `RF_BEAM`: the four colors are packed in
 /// `skinnum`, and each frame draws one, picked by `randk`, at alpha 0.30
 /// with no model.
-pub fn pick_beam_colours(views: &mut [EntityView], randk: &mut impl FnMut() -> u32) {
+pub fn pick_beam_colors(views: &mut [EntityView], randk: &mut impl FnMut() -> u32) {
     for view in views.iter_mut().filter(|v| v.flags & RF_BEAM != 0) {
         let shift = (randk() % 4) * 8;
         view.skinnum = ((view.skinnum as u32 >> shift) & 0xff) as i32;
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_beam_draws_one_of_its_four_colours_at_0_30_without_a_model() {
+    fn a_beam_draws_one_of_its_four_colors_at_0_30_without_a_model() {
         let mut laser = state(4, Vec3f::ZERO, 0);
         laser.renderfx = RF_BEAM | RF_TRANSLUCENT;
         laser.modelindex = 1;
@@ -380,7 +380,7 @@ mod tests {
         let plain = state(5, Vec3f::ZERO, 0);
         let mut views = entity_views("baseq2", &[laser, plain], &[], 1.0, 0, 0);
         // randk() % 4 picks the byte: 2 is bits 16..24.
-        pick_beam_colours(&mut views, &mut || 6);
+        pick_beam_colors(&mut views, &mut || 6);
         assert_eq!(
             (views[0].skinnum, views[0].alpha, views[0].modelindex),
             (0xf2, 0.30, 0)
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn pent_double_half_damage_and_server_shells_each_pick_their_colour() {
+    fn pent_double_half_damage_and_server_shells_each_pick_their_color() {
         for (effects, renderfx, shell) in [
             (EF_PENT, 0, RF_SHELL_RED),
             (EF_DOUBLE, 0, RF_SHELL_DOUBLE),
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn rogue_turns_clashing_shells_into_c_colours() {
+    fn rogue_turns_clashing_shells_into_c_colors() {
         let rogue = |fx| shell_combinations(fx, true);
         assert_eq!(
             rogue(RF_SHELL_RED | RF_SHELL_DOUBLE),

@@ -395,7 +395,7 @@ pub fn sv_new_chase_dir(world: &mut GameWorld, key: EntityKey, goal: Vec3f, dist
     if olddir != DI_NODIR && sv_step_direction(world, key, olddir, dist) {
         return;
     }
-    // Search every direction, clockwise or anticlockwise at random.
+    // Search every direction, clockwise or counterclockwise at random.
     const DIRECTIONS: [f32; 8] = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0];
     let ascending = world.random_u32() & 1 != 0;
     for i in 0..DIRECTIONS.len() {

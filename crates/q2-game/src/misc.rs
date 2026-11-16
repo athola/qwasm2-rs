@@ -210,7 +210,7 @@ fn barrel_explode(world: &mut GameWorld, self_key: EntityKey) {
         (dmg + 40) as f32,
         MeansOfDeath::Barrel,
     );
-    // C throws from the box centre, then puts the origin back.
+    // C throws from the box center, then puts the origin back.
     let center = absmin + size * 0.5;
     if let Some(ent) = world.entities.get_mut(self_key) {
         ent.state.origin = center;

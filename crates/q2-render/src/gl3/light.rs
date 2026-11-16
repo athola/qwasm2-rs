@@ -3,7 +3,7 @@
 //!
 //! [`LightTree`] keeps only what the trace needs from the BSP (the node tree,
 //! per-face extents and lightmap samples) because the world load borrows
-//! the `BspData` and does not retain it. `r_modulate` (1.0) is not modelled.
+//! the `BspData` and does not retain it. `r_modulate` (1.0) is not modeled.
 
 use q2_render_api::DLight;
 use q2_shared::constants::{MAX_LIGHTSTYLES, SURF_WARP};
@@ -103,7 +103,7 @@ impl LightTree {
         }
     }
 
-    /// Light colour (0..1 per channel, may exceed 1 with dynamic lights) at
+    /// Light color (0..1 per channel, may exceed 1 with dynamic lights) at
     /// `origin`: the lightmap of the first face hit by a ray straight down,
     /// each style's samples scaled by `styles`, plus dynamic lights. Maps
     /// without lighting data are fullbright.
@@ -447,7 +447,7 @@ mod tests {
             color: Vec3f::new(1.0, 0.5, 0.0),
             intensity: 192.0,
         };
-        // (192 - 64) / 256 = 0.5 of the lamp colour on top of fullbright.
+        // (192 - 64) / 256 = 0.5 of the lamp color on top of fullbright.
         near(
             tree.light_point([20.0, 36.0, 100.0], &ON, &[lamp]),
             [1.5, 1.25, 1.0],

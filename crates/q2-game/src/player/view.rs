@@ -505,7 +505,7 @@ impl GameWorld {
         };
         // The total alpha of the blend is always proportional to count.
         client.damage_alpha = (client.damage_alpha.max(0.0) + count * 0.01).clamp(0.2, 0.6);
-        // The colour varies with how much each armor absorbed.
+        // The color varies with how much each armor absorbed.
         let mut blend = [0.0; 3];
         for (amount, color) in [
             (parmor, POWER_COLOR),

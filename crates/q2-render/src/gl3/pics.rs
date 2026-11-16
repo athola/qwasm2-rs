@@ -1,7 +1,7 @@
 //! 2D drawing maths (C `gl3_draw.c`, `R_FindPic` in `files/stb.c`). GL-free.
 //!
 //! Every 2D draw becomes one quad of [`UI_VERTEX_FLOATS`]-float vertices
-//! (position(2), uv(2), colour(4)) in screen pixels, origin top-left.
+//! (position(2), uv(2), color(4)) in screen pixels, origin top-left.
 
 pub const UI_VERTEX_FLOATS: usize = 8;
 /// Two triangles per quad.
@@ -166,7 +166,7 @@ mod tests {
         // 'A' = 65: row 4, column 1.
         assert_eq!(char_uv(65), Some([0.0625, 0.25, 0.125, 0.3125]));
         assert_eq!(char_uv(0), Some([0.0, 0.0, 0.0625, 0.0625]));
-        // The last cell, and the high bit set (coloured text) wraps with & 255.
+        // The last cell, and the high bit set (colored text) wraps with & 255.
         assert_eq!(char_uv(255), Some([0.9375, 0.9375, 1.0, 1.0]));
         assert_eq!(char_uv(256 + 65), char_uv(65));
     }
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_uses_the_palette_colour_and_rejects_bad_indices() {
+    fn fill_uses_the_palette_color_and_rejects_bad_indices() {
         let rgb = |index: u8| [index, 255 - index, 0];
         let q = fill_quad((0, 0, 8, 8), 51, rgb).unwrap();
         assert_eq!(q.image, QuadImage::White);

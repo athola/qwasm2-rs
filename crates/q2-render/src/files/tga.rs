@@ -1,9 +1,9 @@
 //! Targa loader for sky boxes (C `LoadSTB(..., "tga")` in `refresh/files/stb.c`).
 //!
 //! Supports the two variants Quake 2 content ships: uncompressed (type 2) and
-//! RLE (type 10) truecolour, 24 or 32 bits per pixel. Output is RGBA with the
+//! RLE (type 10) truecolor, 24 or 32 bits per pixel. Output is RGBA with the
 //! first row at the top, matching the other loaders. stb also decodes
-//! colour-mapped (1/9), greyscale (3/11) and 16-bit TGAs; none ship with the
+//! color-mapped (1/9), grayscale (3/11) and 16-bit TGAs; none ship with the
 //! game, so those are rejected and a sky in such a format draws the checker.
 //! Like stb, descriptor bit 4 (right-to-left columns) is ignored, and an RLE
 //! packet running past the last pixel is clipped.
@@ -21,7 +21,7 @@ const TOP_ORIGIN_BIT: u8 = 0x20;
 /// Also keeps every size product inside a 32-bit `usize` on wasm32.
 const MAX_DECODED_BYTES: usize = i32::MAX as usize;
 
-/// Decoded truecolour image.
+/// Decoded truecolor image.
 #[derive(Debug, Clone)]
 pub struct TgaImage {
     pub width: usize,
@@ -41,7 +41,7 @@ pub fn load_tga(data: &[u8]) -> Q2Result<TgaImage> {
     let descriptor = header[17];
 
     if colormap_type != 0 || !matches!(image_type, TYPE_TRUECOLOR | TYPE_TRUECOLOR_RLE) {
-        return Err(malformed(WHAT, "only truecolour images are supported"));
+        return Err(malformed(WHAT, "only truecolor images are supported"));
     }
     if bits != 24 && bits != 32 {
         return Err(malformed(WHAT, format_args!("unsupported depth {bits}")));
@@ -177,7 +177,7 @@ mod tests {
         let mut short = header(2, 2, 2, 24, 0);
         short.extend_from_slice(&[0; 6]);
         assert!(load_tga(&short).is_err());
-        assert!(load_tga(&header(1, 1, 1, 8, 0)).is_err()); // colour-mapped
+        assert!(load_tga(&header(1, 1, 1, 8, 0)).is_err()); // color-mapped
         assert!(load_tga(&header(2, 1, 1, 16, 0)).is_err()); // 16-bit
         assert!(load_tga(&header(2, 0, 1, 24, 0)).is_err());
     }

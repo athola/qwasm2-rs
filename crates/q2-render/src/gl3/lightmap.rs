@@ -259,7 +259,7 @@ pub fn face_layers<'a>(
 
 /// Lightmap coordinate of a vertex (C `GL3_LM_BuildPolygonFromSurface`):
 /// texel coordinate relative to `texturemins`, offset to the slot and to the
-/// luxel centre (+8), over the page size in texels.
+/// luxel center (+8), over the page size in texels.
 pub fn lightmap_coords(texel: [f32; 2], extents: &Extents, slot: &LightmapSlot) -> [f32; 2] {
     let coord = |axis: usize, origin: usize, block: usize| {
         (texel[axis] - extents.texture_mins[axis] as f32 + origin as f32 * 16.0 + 8.0)

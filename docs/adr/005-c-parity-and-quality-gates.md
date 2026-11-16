@@ -21,10 +21,10 @@ repository).
 
 The network protocol is C protocol 34, byte for byte; encoder and decoder
 change together, and tests pin bytes derived from `movemsg.c`. Physics and
-collision follow C's precision: trigonometry and normalisation in double
+collision follow C's precision: trigonometry and normalization in double
 where C promotes, comparisons against double constants where C compares a
 float to a double literal, and shorts that wrap rather than saturate.
-Behaviour that deliberately deviates from C is allowed when it only changes
+Behavior that deliberately deviates from C is allowed when it only changes
 what happens on input C would mis-handle (reject it, or stay in bounds where C
 would read past a buffer), and is written down in a comment where it
 lives; the code comments, not this ADR, are the complete list. Examples: BSP
@@ -44,7 +44,7 @@ every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 missing).
 
 Additions C does not have, on valid input, are allowed only behind an
-opt-in setting that defaults to C's behaviour, so the default build stays
+opt-in setting that defaults to C's behavior, so the default build stays
 comparable to C and tests pin both. Each one is listed in ADR-003. The
 first is `?cl_fxextra=1` (explosion smoke).
 
@@ -71,13 +71,13 @@ on the wasm32 libraries, `cargo check`, and the tests. CI sets
 `CARGO_FLAGS=--locked`, so there every cargo step fails on a stale
 `Cargo.lock` instead of rewriting it (a local `make ci` passes no flag). CI adds `cargo audit` and the Playwright suite, and restores the demo
 `pak0.pak` first so the map-data tests run instead of returning early. Tests come first for a fix,
-and a test that encoded non-C behaviour is changed only together with the
+and a test that encoded non-C behavior is changed only together with the
 code and with the reason in the commit message.
 
 ## Consequences
 
 Parity work is measurable: a byte or bit difference is a failing test rather
-than a judgement call. The cost is that some cleanups C would not do are off
+than a judgment call. The cost is that some cleanups C would not do are off
 the table without an ADR note, and toolchain upgrades are explicit changes
 that can bring their own lint fixes. Findings that were too large for the
 review pass are tracked as issues (entity numbering and SlotMap world links,

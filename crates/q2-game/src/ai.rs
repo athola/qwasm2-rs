@@ -2090,7 +2090,7 @@ mod tests {
         ai_run(&mut world, key, 10.0);
 
         let mi = monsterinfo(&world, key);
-        // Both probes hit the same wall as the centre line, so the monster
+        // Both probes hit the same wall as the center line, so the monster
         // only turns toward the goal (C: no side is clearer).
         assert!(!mi.aiflags.contains(AiFlags::PURSUE_TEMP));
         assert_eq!(world.entities.get(key).unwrap().game.ideal_yaw, 0.0);
@@ -2110,8 +2110,8 @@ mod tests {
 
         ai_run(&mut world, key, 10.0);
 
-        // Worked by hand from C ai_run: centre fraction 0.46 at yaw 26,
-        // probes 326.5 ahead: left 0.6425 beats centre 0.630 and right
+        // Worked by hand from C ai_run: center fraction 0.46 at yaw 26,
+        // probes 326.5 ahead: left 0.6425 beats center 0.630 and right
         // 0.6125, so head for the left point at half the left fraction.
         let mi = monsterinfo(&world, key);
         assert!(mi.aiflags.contains(AiFlags::PURSUE_TEMP));

@@ -4,7 +4,7 @@
 //! Frames are interpolated on the CPU every draw, as C does: positions for
 //! all `num_xyz` vertices are lerped once and then expanded to one vertex per
 //! triangle corner ([`ALIAS_VERTEX_FLOATS`] floats: position(3), skin uv(2),
-//! colour(4)) for a stream upload. C builds the same data from the GL command
+//! color(4)) for a stream upload. C builds the same data from the GL command
 //! list; the MD2 triangle lump is equivalent and is what the parser keeps.
 
 use q2_render_api::RenderEntity;
@@ -15,7 +15,7 @@ use crate::files::md2::{Md2Frame, Md2Model, VERTEX_NORMALS};
 pub use q2_shared::constants::RF_MINLIGHT;
 /// C `MAX_MD2SKINS`.
 pub const MAX_SKINS: usize = 32;
-/// Floats per vertex: position(3), skin uv(2), colour(4).
+/// Floats per vertex: position(3), skin uv(2), color(4).
 pub const ALIAS_VERTEX_FLOATS: usize = 9;
 /// C `SHADEDOT_QUANT`: yaw steps for the precomputed light directions.
 const SHADEDOT_QUANT: i32 = 16;
@@ -203,7 +203,7 @@ pub fn lerp_params(
     params
 }
 
-/// C `LerpVerts` for one vertex (`new` and `old` are quantised positions).
+/// C `LerpVerts` for one vertex (`new` and `old` are quantized positions).
 pub fn lerp_position(params: &LerpParams, new: [u8; 3], old: [u8; 3]) -> [f32; 3] {
     let mut position = [0.0; 3];
     for axis in 0..3 {
@@ -245,7 +245,7 @@ pub fn normal_dot(row: usize, normal_index: u8) -> f32 {
 /// C `POWERSUIT_SCALE`: how far a shell stands out along the normals.
 const POWERSUIT_SCALE: f32 = 4.0;
 
-/// A colour shell's flat colour (C `GL3_DrawAliasModel`'s `shadelight`
+/// A color shell's flat color (C `GL3_DrawAliasModel`'s `shadelight`
 /// for `RF_SHELL_*`), each flag setting its channels in C order; `None`
 /// when the entity is no shell.
 pub fn shell_light(flags: i32) -> Option<[f32; 3]> {
@@ -277,7 +277,7 @@ pub fn shell_light(flags: i32) -> Option<[f32; 3]> {
     Some(light)
 }
 
-/// Light colour of an entity: `RF_FULLBRIGHT` is white, otherwise `lit` (the
+/// Light color of an entity: `RF_FULLBRIGHT` is white, otherwise `lit` (the
 /// lightmap sample under it); then `RF_MINLIGHT` and the `RF_GLOW` pulse,
 /// in C order. Shells take [`shell_light`] instead.
 pub fn shade_light(flags: i32, lit: impl FnOnce() -> [f32; 3], time: f32) -> [f32; 3] {
@@ -334,10 +334,10 @@ pub struct AliasDraw {
     /// [`model_space_delta`] result.
     pub delta: [f32; 3],
     pub yaw: f32,
-    /// Light colour from [`shade_light`], or a shell's from [`shell_light`].
+    /// Light color from [`shade_light`], or a shell's from [`shell_light`].
     pub light: [f32; 3],
     pub alpha: f32,
-    /// A colour shell: pushed out along the normals, flat coloured.
+    /// A color shell: pushed out along the normals, flat colored.
     pub shell: bool,
 }
 
@@ -438,7 +438,7 @@ mod tests {
     use super::*;
     use crate::files::md2::{Md2Triangle, Md2Vertex};
 
-    /// A 32-unit cube frame centred on the entity origin.
+    /// A 32-unit cube frame centered on the entity origin.
     fn cube() -> Md2Frame {
         frame([32.0 / 255.0; 3], [-16.0; 3], &[])
     }
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn a_model_straddling_an_edge_or_around_the_eye_is_kept() {
         let (cube, view) = (cube(), ahead());
-        // Centre just outside the left plane (y = x at 90 fov), corner inside.
+        // Center just outside the left plane (y = x at 90 fov), corner inside.
         assert!(!cull_alias(
             &cube,
             &cube,
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn shade_row_quantises_yaw_into_16_steps_like_c() {
+    fn shade_row_quantizes_yaw_into_16_steps_like_c() {
         assert_eq!(shade_row(0.0), 0);
         assert_eq!(shade_row(30.0), 1);
         assert_eq!(shade_row(100.0), 4);
@@ -721,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn corners_use_half_texel_centred_skin_coordinates() {
+    fn corners_use_half_texel_centered_skin_coordinates() {
         let corners = build_corners(&triangle_model());
         assert_eq!(corners.len(), 3);
         assert_eq!(corners[0].vertex, 2);
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn vertex_stream_has_position_uv_and_lit_colour_per_corner() {
+    fn vertex_stream_has_position_uv_and_lit_color_per_corner() {
         let model = triangle_model();
         let corners = build_corners(&model);
         let draw = AliasDraw {
@@ -783,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn shells_take_c_colours_from_their_flags() {
+    fn shells_take_c_colors_from_their_flags() {
         use q2_shared::constants::{
             RF_SHELL_BLUE, RF_SHELL_DOUBLE, RF_SHELL_GREEN, RF_SHELL_HALF_DAM, RF_SHELL_RED,
         };
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_is_the_model_blown_out_along_its_normals_in_flat_colour() {
+    fn a_shell_is_the_model_blown_out_along_its_normals_in_flat_color() {
         let model = registered_triangle();
         let entity = RenderEntity {
             flags: q2_shared::constants::RF_SHELL_RED | RF_TRANSLUCENT,
@@ -817,7 +817,7 @@ mod tests {
         let n = crate::files::md2::VERTEX_NORMALS[0];
         // C POWERSUIT_SCALE: 4 units out along the vertex normal.
         assert_near(&stream[0..3], &[n[0] * 4.0, 10.0 + n[1] * 4.0, n[2] * 4.0]);
-        // No normal shading: the shell colour as is.
+        // No normal shading: the shell color as is.
         assert_near(&stream[5..9], &[1.0, 0.0, 0.0, 0.3 * TRANSLUCENT_SCALE]);
     }
 

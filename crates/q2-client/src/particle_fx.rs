@@ -123,7 +123,7 @@ impl Particles {
     }
 
     /// The 256-particle blast shared by `CL_ExplosionParticles` and
-    /// `CL_BFGExplosionParticles`, which differ only in colour.
+    /// `CL_BFGExplosionParticles`, which differ only in color.
     fn burst(&mut self, org: Vec3f, color: i32, time: i32, randk: &mut impl FnMut() -> u32) {
         for _ in 0..256 {
             let Some(p) = self.alloc() else { return };
@@ -304,7 +304,7 @@ impl Particles {
         }
     }
 
-    /// A railgun shot: a blue spiral, one particle per unit, round a grey
+    /// A railgun shot: a blue spiral, one particle per unit, round a gray
     /// core. C ref: `CL_RailTrail`.
     pub fn rail_trail(
         &mut self,
@@ -513,7 +513,7 @@ mod tests {
     use crate::particles::Particles;
     use q2_shared::constants::{EF_GIB, EF_GREENGIB, EF_GRENADE, MZ_LOGIN, MZ_LOGOUT, MZ_RESPAWN};
 
-    fn colours(particles: &Particles) -> Vec<i32> {
+    fn colors(particles: &Particles) -> Vec<i32> {
         particles.active.iter().map(|p| p.color).collect()
     }
 
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn login_logout_and_respawn_burst_in_their_colours() {
+    fn login_logout_and_respawn_burst_in_their_colors() {
         let mut ps = Particles::default();
         for (kind, base) in [(MZ_LOGIN, 0xd0), (MZ_LOGOUT, 0x40), (MZ_RESPAWN, 0xe0)] {
             ps.clear();
@@ -563,11 +563,11 @@ mod tests {
     }
 
     #[test]
-    fn a_big_teleport_fills_the_pool_from_its_colour_table() {
+    fn a_big_teleport_fills_the_pool_from_its_color_table() {
         let mut ps = Particles::default();
         ps.big_teleport_particles(Vec3f::ZERO, 0, &mut rng(&[1, 0]));
         assert_eq!(ps.len(), 4096);
-        assert!(colours(&ps).iter().all(|c| [16, 104, 168, 144].contains(c)));
+        assert!(colors(&ps).iter().all(|c| [16, 104, 168, 144].contains(c)));
         assert_eq!(ps.active[0].accel.z, PARTICLE_GRAVITY * 4.0);
     }
 
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(ps.len(), 4);
         let xs: Vec<f32> = ps.active.iter().map(|p| p.org.x.round()).collect();
         assert_eq!(xs, [0.0, 5.0, 10.0, 15.0]);
-        assert_eq!(colours(&ps), [0xe0; 4]);
+        assert_eq!(colors(&ps), [0xe0; 4]);
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
         // Smoke: 4 steps, all kept (8 < trailcount). Fire: 4 steps, each
         // kept as 8 & 7 == 0.
         assert_eq!(ps.len(), 8);
-        assert_eq!(colours(&ps)[4..], [0xdc; 4]);
+        assert_eq!(colors(&ps)[4..], [0xdc; 4]);
     }
 
     #[test]

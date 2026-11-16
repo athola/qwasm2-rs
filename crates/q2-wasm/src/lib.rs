@@ -80,11 +80,11 @@ struct Engine {
     last_states: std::collections::HashMap<i32, q2_shared::types::EntityState>,
     /// The client's random numbers (C `randk`) for flash sizes and sounds.
     rng: u32,
-    /// Printed lines, the centre print and the server layout.
+    /// Printed lines, the center print and the server layout.
     text: q2_client::notify::ServerText,
     /// C cvar `game`, the game directory (`?game=`; empty is baseq2).
     game: String,
-    /// C cvar `hand` (`?hand=`): 0 right, 1 left, 2 centre.
+    /// C cvar `hand` (`?hand=`): 0 right, 1 left, 2 center.
     hand: i32,
     /// C cvar `cl_gun` (`?cl_gun=`): 0 no gun, 1 none in a wide view, 2
     /// always.
@@ -372,7 +372,7 @@ impl Engine {
             file_exists: &file_exists,
             serverframe: self.frames.serverframe().unwrap_or(0),
         };
-        // C SCR_DrawStats, SCR_DrawLayout, then the centre print and the
+        // C SCR_DrawStats, SCR_DrawLayout, then the center print and the
         // notify lines.
         let mut draws = execute_layout(
             local.configstring(q2_shared::constants::CS_STATUSBAR),
@@ -559,7 +559,7 @@ impl Engine {
             cl_time,
             (q2_server::local::LOCAL_PLAYER - 1) as i32,
         );
-        // C CL_AddPacketEntities' beam colours and trails, then CL_AddTEnts
+        // C CL_AddPacketEntities' beam colors and trails, then CL_AddTEnts
         // and CL_AddParticles; C cl.playernum + 1 is the local player.
         let player = q2_server::local::LOCAL_PLAYER as i32;
         let rng = &mut self.rng;
@@ -681,7 +681,7 @@ fn frame_output(
 }
 
 /// The random draws of C `CL_AddPacketEntities`, in its one loop over the
-/// frame's entities: each entity's `RF_BEAM` colour, then its lights and
+/// frame's entities: each entity's `RF_BEAM` color, then its lights and
 /// trail (`EntityTrails::run`), before the next entity's. Returns the
 /// lights.
 #[cfg(any(target_arch = "wasm32", test))]
@@ -699,7 +699,7 @@ fn packet_entity_effects(
     let mut lights = Vec::new();
     for s in current {
         for view in views.iter_mut().filter(|v| v.number == s.number) {
-            q2_client::entities::pick_beam_colours(std::slice::from_mut(view), randk);
+            q2_client::entities::pick_beam_colors(std::slice::from_mut(view), randk);
         }
         let entity = std::slice::from_ref(s);
         lights.extend(trails.run(fx, entity, lerpfrac, player, time, randk));
@@ -845,8 +845,8 @@ fn picture_frame(renderer: &mut dyn q2_render_api::Renderer, width: i32, height:
 
 /// Draw a picture level's `pics/<name>` in place of the view and status
 /// bar (C `SCR_DrawCinematic` with its default `cin_force43 1`): stretched
-/// to the largest centred 4:3 rectangle, width a multiple of 4, with
-/// palette colour 0 filling the rest. C draws the decoded PCX with its own
+/// to the largest centered 4:3 rectangle, width a multiple of 4, with
+/// palette color 0 filling the rest. C draws the decoded PCX with its own
 /// palette (`Draw_StretchRaw`); `victory.pcx` differs from the colormap
 /// only in indices 48-51 and 255, none of which it uses, so the renderer's
 /// colormap pic draws it the same.
@@ -1305,7 +1305,7 @@ fn start_map<'a>(requested: Option<&str>, maps: &[&'a str]) -> Option<(&'a str, 
         .map(|&fallback| (fallback, wanted.is_none()))
 }
 
-/// C cvar `hand` (0 right, 1 left, 2 centre) from `?hand=`; 0 when unset
+/// C cvar `hand` (0 right, 1 left, 2 center) from `?hand=`; 0 when unset
 /// or not a number.
 #[cfg(any(target_arch = "wasm32", test))]
 fn hand_from_query(search: &str) -> i32 {
@@ -1469,9 +1469,9 @@ fn key_legend() -> Vec<(String, String)> {
     legend
 }
 
-/// The keys legend centred on a `width` x `height` screen: its backing
+/// The keys legend centered on a `width` x `height` screen: its backing
 /// rectangle (x, y, w, h) and its characters, title "KEYS" in the
-/// alternate colour, each action right-aligned against its keys.
+/// alternate color, each action right-aligned against its keys.
 #[cfg(any(target_arch = "wasm32", test))]
 fn legend_draws(
     width: i32,
@@ -2353,8 +2353,8 @@ mod tests {
     }
 
     #[test]
-    fn a_beam_colour_is_drawn_after_the_trails_of_lower_numbered_entities() {
-        // C CL_AddPacketEntities: one loop, the beam colour and the trail
+    fn a_beam_color_is_drawn_after_the_trails_of_lower_numbered_entities() {
+        // C CL_AddPacketEntities: one loop, the beam color and the trail
         // of each entity in turn.
         use q2_shared::constants::{EF_ROCKET, RF_BEAM};
         use q2_shared::types::{EntityState, Vec3f};
@@ -2372,7 +2372,7 @@ mod tests {
             skinnum: 0x4433_2211,
             ..Default::default()
         };
-        // randk is 0 on the first draw and 1 after: the laser's colour
+        // randk is 0 on the first draw and 1 after: the laser's color
         // says whether the rocket trail drew first.
         let run = |current: &[EntityState]| {
             let mut trails = q2_client::fx::EntityTrails::default();
@@ -2562,7 +2562,7 @@ mod tests {
         // Printed late in a long level: C times it on cls.realtime, which
         // a level change does not restart.
         let mut center = vec![q2_shared::protocol::SvcOp::CenterPrint as u8];
-        center.extend_from_slice(b"centre\0");
+        center.extend_from_slice(b"center\0");
         client.text.message(&center, 600_000, 40);
         let mut print = vec![q2_shared::protocol::SvcOp::Print as u8, 2];
         print.extend_from_slice(b"late\n\0");
@@ -3192,7 +3192,7 @@ mod tests {
     }
 
     #[test]
-    fn the_legend_is_centred_on_screen_with_its_title() {
+    fn the_legend_is_centered_on_screen_with_its_title() {
         let (rect, draws) = legend_draws(640, 480);
         let (x, y, w, h) = rect;
         assert!(x >= 0 && y >= 0 && x + w <= 640 && y + h <= 480, "{rect:?}");
@@ -3204,7 +3204,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // Title in the alternate (bit 7) colour, then a row per action.
+        // Title in the alternate (bit 7) color, then a row per action.
         assert!(chars.iter().any(|&(_, _, c)| c == b'K' | 0x80));
         assert!(chars
             .iter()

@@ -78,10 +78,10 @@ impl Default for ImageStore {
     }
 }
 
-/// C `FloodFillSkin`: the colour in the top-left corner is taken as the
+/// C `FloodFillSkin`: the color in the top-left corner is taken as the
 /// skin's background, and the region of it connected to the corner is
-/// replaced by a neighbouring opaque colour so mipmaps get no halo. C looks
-/// for an opaque-black fill colour by comparing palette entries with
+/// replaced by a neighboring opaque color so mipmaps get no halo. C looks
+/// for an opaque-black fill color by comparing palette entries with
 /// `0x000000FF`, which no Quake 2 palette entry matches, so it is index 0.
 /// C's queue is a 4096-entry ring; this one grows instead of wrapping.
 pub fn flood_fill_skin(skin: &mut [u8], width: usize, height: usize) {
@@ -98,12 +98,12 @@ pub fn flood_fill_skin(skin: &mut [u8], width: usize, height: usize) {
     while let Some((x, y)) = queue.pop_front() {
         let mut found = FILLED_COLOR;
         let here = x + width * y;
-        let mut step = |neighbour: usize, nx: usize, ny: usize| {
-            if skin[neighbour] == fill_color {
-                skin[neighbour] = TRANSPARENT_INDEX;
+        let mut step = |neighbor: usize, nx: usize, ny: usize| {
+            if skin[neighbor] == fill_color {
+                skin[neighbor] = TRANSPARENT_INDEX;
                 queue.push_back((nx, ny));
-            } else if skin[neighbour] != TRANSPARENT_INDEX {
-                found = skin[neighbour];
+            } else if skin[neighbor] != TRANSPARENT_INDEX {
+                found = skin[neighbor];
             }
         };
         if x > 0 {
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!((image.width, image.height), (2, 2));
         // The global palette wins over the PCX's own (i, 0, 0).
         assert_eq!(&image.rgba[0..4], &[0, 1, 0, 255]);
-        // Transparent, with the colour of the pixel below it (C Upload8).
+        // Transparent, with the color of the pixel below it (C Upload8).
         assert_eq!(&image.rgba[4..8], &[0, 3, 0, 0]);
     }
 
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn skin_whose_corner_is_transparent_or_the_fill_colour_is_left_alone() {
+    fn skin_whose_corner_is_transparent_or_the_fill_color_is_left_alone() {
         for corner in [255, 0] {
             let mut skin = [corner, corner, 5, corner];
             flood_fill_skin(&mut skin, 2, 2);
@@ -391,8 +391,8 @@ mod tests {
 
     #[test]
     fn skins_are_flood_filled_and_mipmapped_but_pics_are_not() {
-        // tiny_pcx is [1, 255, 2, 3]: as a skin, the corner's colour (1) is
-        // background and takes its opaque neighbour's colour (2).
+        // tiny_pcx is [1, 255, 2, 3]: as a skin, the corner's color (1) is
+        // background and takes its opaque neighbor's color (2).
         let loader = loader_for("s.pcx", tiny_pcx(), Rc::new(Cell::new(0)));
         let pic = decode_image(&loader, None, "s.pcx", ImageKind::Pic).unwrap();
         let skin = decode_image(&loader, None, "s.pcx", ImageKind::Skin).unwrap();

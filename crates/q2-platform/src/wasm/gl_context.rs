@@ -15,7 +15,7 @@ pub fn create_webgl2_context(canvas_id: &str) -> Q2Result<(glow::Context, HtmlCa
         .dyn_into()
         .map_err(|_| fatal("element is not a canvas"))?;
 
-    // No alpha channel: the renderer blends colour only, as C does on a
+    // No alpha channel: the renderer blends color only, as C does on a
     // desktop framebuffer whose alpha is ignored. With the default
     // `alpha: true`, translucent draws would leave framebuffer alpha below 1
     // and the page would show through when the browser composites the

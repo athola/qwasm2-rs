@@ -121,7 +121,7 @@ pub struct RefDef {
     pub vieworg: Vec3f,
     /// Camera angles (pitch, yaw, roll).
     pub viewangles: Vec3f,
-    /// Full-screen colour blend (damage flash, powerups, etc.). RGBA 0-1.
+    /// Full-screen color blend (damage flash, powerups, etc.). RGBA 0-1.
     pub blend: [f32; 4],
     /// Time value used for auto-animating textures.
     pub time: f32,
@@ -283,7 +283,7 @@ pub trait Renderer {
     /// Draw a character from the console font.
     fn draw_char(&mut self, x: i32, y: i32, ch: i32);
 
-    /// Fill a rectangle with a palette colour.
+    /// Fill a rectangle with a palette color.
     fn draw_fill(&mut self, x: i32, y: i32, w: i32, h: i32, color: i32);
 
     /// Clear the screen.
@@ -297,7 +297,7 @@ pub trait Renderer {
     fn set_gamma(&mut self, vid_gamma: f32);
 
     /// Which hand the gun is held in (C cvar `hand`: 0 right, 1 left,
-    /// mirrored, 2 centre, not drawn).
+    /// mirrored, 2 center, not drawn).
     fn set_hand(&mut self, hand: i32);
 
     /// How lit the last rendered view origin was, for the server's monster

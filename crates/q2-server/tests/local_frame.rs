@@ -60,7 +60,7 @@ fn demo1_sends_only_entities_in_the_players_pvs_and_always_the_player() {
     game.frame(100_000).unwrap();
     // The same map in a server whose game the test can read.
     let world = common::ServerWorld::start("demo1", &map);
-    let modelled = world
+    let modeled = world
         .game
         .entities
         .iter()
@@ -74,8 +74,8 @@ fn demo1_sends_only_entities_in_the_players_pvs_and_always_the_player() {
     let sent = game.entity_states();
     assert!(sent.iter().any(|s| s.number == LOCAL_PLAYER as i32));
     assert!(
-        sent.len() < modelled,
-        "sent {} of {modelled} modelled entities",
+        sent.len() < modeled,
+        "sent {} of {modeled} modeled entities",
         sent.len()
     );
 }

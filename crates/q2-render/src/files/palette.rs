@@ -1,4 +1,4 @@
-//! 256-colour palette from `pics/colormap.pcx` (C `GetPCXPalette`, files/pcx.c).
+//! 256-color palette from `pics/colormap.pcx` (C `GetPCXPalette`, files/pcx.c).
 
 use super::{malformed, slice_at};
 use q2_common::error::Q2Result;
@@ -33,9 +33,9 @@ impl Palette {
 
     /// C `GL3_Upload8`: RGBA for every pixel of a `width`-wide 8-bit image. A
     /// transparent pixel keeps alpha 0 but takes the RGB of an opaque
-    /// neighbour (above, below, left, right in C's order and bounds, else
+    /// neighbor (above, below, left, right in C's order and bounds, else
     /// index 0), so bilinear filtering and mipmaps do not pull palette 255's
-    /// own colour in as a fringe.
+    /// own color in as a fringe.
     pub fn indexed_to_rgba(&self, pixels: &[u8], width: usize) -> Vec<u8> {
         let count = pixels.len();
         let opaque = |i: usize| Some(pixels[i]).filter(|&p| p != TRANSPARENT_INDEX);
@@ -43,14 +43,14 @@ impl Palette {
         for (i, &index) in pixels.iter().enumerate() {
             let mut color = self.rgba(index);
             if index == TRANSPARENT_INDEX {
-                let neighbour = (i > width)
+                let neighbor = (i > width)
                     .then(|| opaque(i - width))
                     .flatten()
                     .or_else(|| (i + width < count).then(|| opaque(i + width)).flatten())
                     .or_else(|| (i > 0).then(|| opaque(i - 1)).flatten())
                     .or_else(|| (i + 1 < count).then(|| opaque(i + 1)).flatten())
                     .unwrap_or(0);
-                color[..3].copy_from_slice(&self.0[usize::from(neighbour)]);
+                color[..3].copy_from_slice(&self.0[usize::from(neighbor)]);
             }
             rgba.extend_from_slice(&color);
         }
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn transparent_pixels_take_the_colour_of_a_neighbour_like_c_upload8() {
+    fn transparent_pixels_take_the_color_of_a_neighbor_like_c_upload8() {
         let palette = Palette::from_pcx(&pcx_with_palette(1)).unwrap();
         // 3x3, C order: above, below, left, right, else index 0.
         #[rustfmt::skip]
