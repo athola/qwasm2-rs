@@ -208,7 +208,8 @@ pmove are faithful ports, so check changes there against the C source.
 
 ## License
 
-GPL-2.0-or-later; see [LICENSE](LICENSE). qwasm2-rs is a translation of
+GPL-2.0-or-later; see [LICENSE](LICENSE) and
+[THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES). qwasm2-rs is a translation of
 GPL-2.0-or-later C: id Software's Quake II (Copyright (C) 1997-2001 Id
 Software, Inc.), [Yamagi Quake II](https://github.com/yquake2/yquake2) and
 [Qwasm2](https://github.com/GMH-Code/Qwasm2). A port is a derivative work,
