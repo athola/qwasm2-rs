@@ -208,4 +208,13 @@ pmove are faithful ports, so check changes there against the C source.
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0 at your option.
+GPL-2.0-or-later; see [LICENSE](LICENSE). qwasm2-rs is a translation of
+GPL-2.0-or-later C: id Software's Quake II (Copyright (C) 1997-2001 Id
+Software, Inc.), [Yamagi Quake II](https://github.com/yquake2/yquake2) and
+[Qwasm2](https://github.com/GMH-Code/Qwasm2). A port is a derivative work,
+so it carries the same licence.
+
+Quake II game data (the PAK files) is not part of this repository and
+has its own, more restrictive licence. Do not host it publicly. This
+project is not affiliated with id Software, Bethesda Softworks or
+ZeniMax Media.

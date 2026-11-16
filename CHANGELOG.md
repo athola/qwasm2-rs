@@ -14,6 +14,10 @@ All notable changes to qwasm2-rs are documented here.
   argument
 - The workspace denies rustc's `unsafe_code` lint; q2-render allows it
   at its crate root
+- The licence is GPL-2.0-or-later (`LICENSE`, and `license` in every
+  crate's manifest). The C this ports is GPL-2.0-or-later, so the README's
+  earlier "MIT or Apache-2.0" was not a licence the port could carry, and
+  no crate declared one
 
 ### Added
 - The player fires the blaster: `ClientThink` latches the attack button

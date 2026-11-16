@@ -523,3 +523,36 @@ fn unsafe_scan_flags_every_crate_but_q2_render() {
     assert!(unsafe_violations(UNSAFE_CRATE, src).is_empty());
     assert_eq!(unsafe_violations("q2-game", src), [2]);
 }
+
+/// The C this workspace ports (id's Quake II, yquake2, Qwasm2) is
+/// GPL-2.0-or-later, and a translation of it is a derivative work, so no
+/// crate may declare a licence of its own.
+const LICENSE: &str = "GPL-2.0-or-later";
+
+#[test]
+fn every_crate_is_gpl_2_or_later_like_the_c_it_ports() {
+    let root = fs::read_to_string(repo_root().join("Cargo.toml")).unwrap();
+    let package = &root[root
+        .find("[workspace.package]")
+        .expect("root Cargo.toml has [workspace.package]")..];
+    let package = &package[..package[1..].find("\n[").map_or(package.len(), |i| i + 1)];
+    assert!(
+        package.contains(&format!("license = \"{LICENSE}\"")),
+        "[workspace.package] must set license = \"{LICENSE}\""
+    );
+    for (krate, dir) in member_dirs() {
+        let manifest = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+        let lines: Vec<_> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("license"))
+            .collect();
+        assert_eq!(
+            lines,
+            ["license.workspace = true"],
+            "{krate} must inherit the workspace licence"
+        );
+    }
+    let text = fs::read_to_string(repo_root().join("LICENSE")).expect("LICENSE at the root");
+    assert!(text.contains("GNU GENERAL PUBLIC LICENSE") && text.contains("Version 2, June 1991"));
+}

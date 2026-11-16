@@ -20,6 +20,8 @@ members = [
 [workspace.package]
 version = "0.1.3"
 edition = "2021"
+# The C it ports is GPL-2.0-or-later; see LICENSE and the README.
+license = "GPL-2.0-or-later"
 # Matches the toolchain pinned in rust-toolchain.toml; older compilers are untested.
 rust-version = "1.97"
 
