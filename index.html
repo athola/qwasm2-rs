@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qwasm2-rs: Quake 2 engine in Rust and WebAssembly</title>
+<meta name="description" content="qwasm2-rs is a rewrite of the Quake 2 engine in Rust that runs in the browser on WebAssembly, WebGL 2 and WebAudio, ported from the C of Qwasm2 (yquake2).">
+<link rel="canonical" href="https://athola.github.io/qwasm2-rs/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="qwasm2-rs: Quake 2 engine in Rust and WebAssembly">
+<meta property="og:description" content="A rewrite of the Quake 2 engine in Rust, running in the browser on WebAssembly, WebGL 2 and WebAudio.">
+<meta property="og:url" content="https://athola.github.io/qwasm2-rs/">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "qwasm2-rs",
+  "description": "A rewrite of the Quake 2 engine in Rust that runs in the browser on WebAssembly, WebGL 2 and WebAudio.",
+  "codeRepository": "https://github.com/athola/qwasm2-rs",
+  "programmingLanguage": "Rust"
+}
+</script>
+<style>
+  :root {
+    --bg: #f7f6f3; --fg: #1d1c1a; --muted: #5d5a54; --rule: #dedad2;
+    --accent: #8a3b12; --code-bg: #ece9e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161514; --fg: #ebe8e2; --muted: #a29d94; --rule: #34312d;
+      --accent: #e08a5a; --code-bg: #24221f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; padding: 3rem 16px 4rem; }
+  h1 { font-size: 2.2rem; line-height: 1.15; margin: 0 0 .5rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.15rem; margin: 2.5rem 0 .75rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+  .lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; }
+  a { color: var(--accent); }
+  .button {
+    display: inline-block; padding: .6rem 1.1rem; border: 2px solid var(--accent);
+    border-radius: 6px; text-decoration: none; font-weight: 600;
+  }
+  .button:hover, .button:focus-visible { background: var(--accent); color: var(--bg); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  pre { background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  ul { padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>qwasm2-rs</h1>
+  <p class="lead">A rewrite of the Quake 2 engine in Rust that runs in the
+  browser on WebAssembly, WebGL 2 and WebAudio. It is a port of the C of
+  <a href="https://github.com/GMH-Code/Qwasm2">Qwasm2</a> (yquake2), checked
+  against that source.</p>
+  <p><a class="button" href="https://github.com/athola/qwasm2-rs">Source on GitHub</a></p>
+
+  <h2>What runs today</h2>
+  <p>Alpha. The browser loads a map from real Quake 2 game data into an
+  in-process server running the game logic. Expect breaking changes.</p>
+  <ul>
+    <li>All 20 monster types sight, hear, chase, attack and die as in C.</li>
+    <li>Every weapon fires, with the first-person gun, muzzle flashes and gunfire sounds.</li>
+    <li>Doors, platforms, trains and elevators move; triggers fire; level exits load the next map.</li>
+    <li>The world draws textured and lightmapped with sky, warp surfaces and light styles.</li>
+    <li>Explosions, impacts and trails draw with particles, beams and sprites.</li>
+    <li>Player movement is the C <code>pmove</code> port, tracing through the server's collision.</li>
+  </ul>
+
+  <h2>Run it locally</h2>
+  <pre><code>git clone https://github.com/athola/qwasm2-rs.git
+cd qwasm2-rs
+make play</code></pre>
+  <p><code>make play</code> builds the WebAssembly module, downloads the free
+  Quake 2 demo data if it is missing, and serves the game at
+  <code>http://127.0.0.1:8080/qwasm2.html</code>. The repository README lists
+  the prerequisites and the page's URL settings.</p>
+
+  <h2>How it is built</h2>
+  <p>A 14-crate Cargo workspace with a strict dependency graph. Rust traits
+  (<code>Renderer</code>, <code>GameImport</code>, <code>GameExport</code>,
+  <code>PakReader</code>) replace the C function-pointer tables. The network
+  protocol is C protocol 34, byte for byte, and physics follows C's float
+  and double precision so client prediction can match the server. The
+  design records are in the repository's
+  <a href="https://github.com/athola/qwasm2-rs/tree/feat/playable-prototype/docs/adr">ADRs</a>.</p>
+
+  <footer>Dual-licensed under MIT or Apache-2.0. Quake 2 game data is not
+  included. Quake is a trademark of id Software; this project is not
+  affiliated with id Software.</footer>
+</main>
+</body>
+</html>
