@@ -3,8 +3,10 @@
 //! Where C raises `ERR_DROP`/`ERR_FATAL` the server and game log a
 //! `tracing` error and carry on; without a subscriber the browser build
 //! would drop those lines. Errors and warnings are shown, and so are the
-//! game's console prints (`GAME_PRINT_TARGET` at info: C `PF_dprintf`
-//! and `PF_cprintf` to no entity, which call `Com_Printf`). Other info and
+//! game's and the server's console prints (`GAME_PRINT_TARGET` and
+//! `SERVER_PRINT_TARGET` at info: C `PF_dprintf`, `PF_cprintf` to no
+//! entity, and the save commands' prints, which call `Com_Printf`). Other
+//! info and
 //! debug lines stand in for C's developer prints (`Com_DPrintf`), which C
 //! only shows with `developer` set.
 
@@ -80,7 +82,8 @@ where
     use tracing_subscriber::layer::SubscriberExt;
     let shown = tracing_subscriber::filter::Targets::new()
         .with_default(Level::WARN)
-        .with_target(q2_server::game_iface::GAME_PRINT_TARGET, Level::INFO);
+        .with_target(q2_server::game_iface::GAME_PRINT_TARGET, Level::INFO)
+        .with_target(q2_server::local::SERVER_PRINT_TARGET, Level::INFO);
     tracing_subscriber::fmt()
         .with_writer(LineSink(sink))
         .with_max_level(Level::INFO)
@@ -153,6 +156,18 @@ mod tests {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert_eq!(lines[0].0, Level::INFO);
         assert!(lines[0].1.contains("teleporter without a target"));
+    }
+
+    #[test]
+    fn the_servers_console_prints_reach_the_sink_at_info() {
+        // C SV_Savegame_f's "Saving game..." and its refusals: Com_Printf.
+        let (lines, sink) = recording();
+        tracing::subscriber::with_default(console_subscriber(sink), || {
+            tracing::info!(target: q2_server::local::SERVER_PRINT_TARGET, "Can't savegame while dead!");
+        });
+        let lines = lines.lock().expect("lines lock");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].1.contains("Can't savegame while dead!"));
     }
 
     #[test]

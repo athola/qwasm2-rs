@@ -15,7 +15,7 @@ use q2_common::error::{Q2Error, Q2Result};
 use q2_game::traits::GameImport;
 use q2_shared::constants::STAT_HEALTH;
 
-use super::{new_game, LocalGame, LOCAL_PLAYER};
+use super::{new_game, LocalGame, LOCAL_PLAYER, SERVER_PRINT_TARGET};
 use crate::state::ServerState;
 
 /// The cvars C saves as CVAR_LATCH ones: they change only with a new game.
@@ -29,6 +29,9 @@ const REVISIT_FRAMES: usize = 100;
 #[derive(Debug, Default, Clone)]
 pub struct SaveFiles {
     files: BTreeMap<String, Vec<u8>>,
+    /// Paths written or removed since `take_changes`, for the platform's
+    /// copy to follow.
+    changed: std::collections::BTreeSet<String>,
 }
 
 impl SaveFiles {
@@ -44,19 +47,41 @@ impl SaveFiles {
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
     }
 
-    /// Put back a file the platform stored, by its `iter` path.
+    /// Put back a file the platform stored, by its `iter` path. It is
+    /// not a change: the platform has it already.
     pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
         self.files.insert(path.to_string(), bytes);
     }
 
+    /// Each path written or removed since the last call, with its bytes
+    /// or `None` for removed, in path order.
+    pub fn take_changes(&mut self) -> Vec<(String, Option<Vec<u8>>)> {
+        std::mem::take(&mut self.changed)
+            .into_iter()
+            .map(|path| {
+                let bytes = self.files.get(&path).cloned();
+                (path, bytes)
+            })
+            .collect()
+    }
+
     fn put(&mut self, slot: &str, name: &str, bytes: Vec<u8>) {
-        self.files.insert(format!("{slot}/{name}"), bytes);
+        let path = format!("{slot}/{name}");
+        self.changed.insert(path.clone());
+        self.files.insert(path, bytes);
     }
 
     /// C `SV_WipeSavegame`.
     pub(super) fn wipe(&mut self, slot: &str) {
         let prefix = format!("{slot}/");
-        self.files.retain(|path, _| !path.starts_with(&prefix));
+        let changed = &mut self.changed;
+        self.files.retain(|path, _| {
+            let keep = !path.starts_with(&prefix);
+            if !keep {
+                changed.insert(path.clone());
+            }
+            keep
+        });
     }
 
     /// C `SV_CopySaveGame`: `dst` becomes a copy of `src`.
@@ -73,7 +98,10 @@ impl SaveFiles {
                 ))
             })
             .collect();
-        self.files.extend(copies);
+        for (path, bytes) in copies {
+            self.changed.insert(path.clone());
+            self.files.insert(path, bytes);
+        }
     }
 
     /// Slots holding a `server.ssv`, the newest first.
@@ -306,15 +334,15 @@ impl LocalGame {
             None
         };
         if let Some(refusal) = refusal {
-            tracing::info!("{refusal}");
+            tracing::info!(target: SERVER_PRINT_TARGET, "{refusal}");
             return Ok(());
         }
-        tracing::info!("Saving game...");
+        tracing::info!(target: SERVER_PRINT_TARGET, "Saving game...");
         // The player stays in the level: loading it puts them back there.
         self.write_level_file(true)?;
         self.write_server_file(false)?;
         self.saves.copy("current", slot);
-        tracing::info!("Done.");
+        tracing::info!(target: SERVER_PRINT_TARGET, "Done.");
         Ok(())
     }
 
@@ -322,14 +350,14 @@ impl LocalGame {
     /// level's map for `take_map_change` and `change_map` finishes it.
     fn load_game(&mut self, slot: &str) -> Q2Result<()> {
         if bad_slot(slot) {
-            tracing::info!("Bad savedir.");
+            tracing::info!(target: SERVER_PRINT_TARGET, "Bad savedir.");
             return Ok(());
         }
         if self.saves.file(slot, "server.ssv").is_none() {
-            tracing::info!("No such savegame: {slot}");
+            tracing::info!(target: SERVER_PRINT_TARGET, "No such savegame: {slot}");
             return Ok(());
         }
-        tracing::info!("Loading game...");
+        tracing::info!(target: SERVER_PRINT_TARGET, "Loading game...");
         if slot != "current" {
             self.saves.copy(slot, "current");
         }
@@ -351,15 +379,48 @@ impl LocalGame {
                 // C pushes the load menu; with no menu, load the newest save.
                 [cmd] if cmd == "menu_loadgame" => match self.saves.slots().first() {
                     Some(slot) => self.load_game(&slot.clone())?,
-                    None => tracing::info!("No savegame to load"),
+                    None => tracing::info!(target: SERVER_PRINT_TARGET, "No savegame to load"),
                 },
                 // C prints the usage under the long names.
-                [cmd, ..] if cmd == "save" => tracing::info!("USAGE: savegame <directory>"),
-                [cmd, ..] if cmd == "load" => tracing::info!("USAGE: loadgame <directory>"),
-                [cmd, ..] => tracing::info!("USAGE: {cmd}"),
+                [cmd, ..] if cmd == "save" => {
+                    tracing::info!(target: SERVER_PRINT_TARGET, "USAGE: savegame <directory>")
+                }
+                [cmd, ..] if cmd == "load" => {
+                    tracing::info!(target: SERVER_PRINT_TARGET, "USAGE: loadgame <directory>")
+                }
+                [cmd, ..] => tracing::info!(target: SERVER_PRINT_TARGET, "USAGE: {cmd}"),
                 [] => {}
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changes_name_every_path_written_or_removed_since_the_last_take() {
+        let mut saves = SaveFiles::default();
+        saves.insert("quick/server.ssv", vec![1]);
+        assert!(
+            saves.take_changes().is_empty(),
+            "a restored file is not a change"
+        );
+
+        saves.put("current", "base1.sav", vec![2]);
+        saves.copy("current", "save0");
+        saves.copy("quick", "current");
+        let changes = saves.take_changes();
+        assert_eq!(
+            changes,
+            vec![
+                ("current/base1.sav".to_string(), None),
+                ("current/server.ssv".to_string(), Some(vec![1])),
+                ("save0/base1.sav".to_string(), Some(vec![2])),
+            ]
+        );
+        assert!(saves.take_changes().is_empty());
     }
 }

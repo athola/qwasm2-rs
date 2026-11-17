@@ -25,6 +25,10 @@ use crate::init::{LevelKind, MapRequest};
 use crate::state::{ClientState, Server, ServerState, ServerStatic};
 use crate::ServerGameImport;
 
+/// The `tracing` target of the server's console prints (C `Com_Printf` in
+/// `SV_Savegame_f`, `SV_Loadgame_f` and friends), which C always shows.
+pub const SERVER_PRINT_TARGET: &str = "server";
+
 /// Entity number of the local client (client slot 0).
 pub const LOCAL_PLAYER: usize = 1;
 
