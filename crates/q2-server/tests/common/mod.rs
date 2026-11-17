@@ -57,9 +57,7 @@ impl ServerWorld {
     pub fn start(name: &str, bsp: &[u8]) -> Self {
         use q2_game::traits::GameExport;
         let gi = std::rc::Rc::new(q2_server::ServerGameImport::new());
-        let mut game = q2_game::world::GameWorld::new(gi.clone(), q2_shared::constants::MAX_EDICTS);
-        game.set_max_clients(1);
-        game.init();
+        let mut game = new_world(&gi);
         let mut svs = q2_server::state::ServerStatic::default();
         svs.init_game(1);
         let mut sv = q2_server::state::Server::default();
@@ -79,5 +77,63 @@ impl ServerWorld {
         self.sv
             .frame(&mut self.svs, frametime_us, &mut self.game, &self.gi)
             .unwrap();
+    }
+}
+
+/// Map one: the player starts on a jacket armor and picks it up.
+pub fn armor_map() -> Vec<u8> {
+    floor_wall_bsp_with(&format!(
+        "{}{}",
+        ENTSTRING, "{\n\"classname\" \"item_armor_jacket\"\n\"origin\" \"0 0 16\"\n}\n"
+    ))
+}
+
+/// A fresh one-player game, as C InitGame leaves it before a map spawns.
+pub fn new_world(gi: &std::rc::Rc<q2_server::ServerGameImport>) -> q2_game::world::GameWorld {
+    use q2_game::traits::GameExport;
+    let mut game = q2_game::world::GameWorld::new(gi.clone(), q2_shared::constants::MAX_EDICTS);
+    game.set_max_clients(1);
+    game.init();
+    game
+}
+
+/// `frames` game frames of a player standing still.
+pub fn idle(game: &mut q2_server::local::LocalGame, frames: usize) {
+    for _ in 0..frames {
+        game.think(&q2_shared::types::UserCmd {
+            msec: 100,
+            ..Default::default()
+        })
+        .unwrap();
+        game.frame(100_000).unwrap();
+    }
+}
+
+/// The INFO-and-above log lines written while the returned guard lives,
+/// collected from this thread.
+pub fn capture_info_logs() -> (
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    tracing::subscriber::DefaultGuard,
+) {
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = out.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || LogSink(writer.clone()))
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    (out, tracing::subscriber::set_default(subscriber))
+}
+
+struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

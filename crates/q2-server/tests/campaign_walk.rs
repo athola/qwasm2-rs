@@ -15,7 +15,6 @@ use q2_common::filesystem::FileSystem;
 use q2_server::init::{LevelKind, MapRequest};
 use q2_server::local::LocalGame;
 use q2_shared::constants::STAT_HEALTH;
-use q2_shared::types::UserCmd;
 
 /// The `map` keys of `map`'s `target_changelevel`s, after its map fix.
 fn exits(fs: &FileSystem, map: &str) -> Vec<String> {
@@ -72,17 +71,6 @@ fn follow(game: &mut LocalGame, fs: &FileSystem) -> Option<String> {
     reached
 }
 
-fn idle(game: &mut LocalGame, seconds: usize) {
-    for _ in 0..seconds * 10 {
-        game.think(&UserCmd {
-            msec: 100,
-            ..UserCmd::default()
-        })
-        .unwrap();
-        game.frame(100_000).unwrap();
-    }
-}
-
 fn alive(game: &LocalGame) -> bool {
     game.player()
         .is_some_and(|(_, ps)| ps.stats[STAT_HEALTH] > 0)
@@ -131,7 +119,7 @@ fn the_campaign_plays_through_every_exit_with_saves() {
         here = destination(&level).unwrap_or(reached);
         visited.insert(here.clone());
 
-        idle(&mut game, 3);
+        common::idle(&mut game, 30);
         if !alive(&game) {
             dead += 1;
             continue; // C refuses to save a dead player.
@@ -149,7 +137,7 @@ fn the_campaign_plays_through_every_exit_with_saves() {
             before,
             "{here}: loaded player moved"
         );
-        idle(&mut game, 1);
+        common::idle(&mut game, 10);
         saves += 1;
     }
     eprintln!(

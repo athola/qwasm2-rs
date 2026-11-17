@@ -7,10 +7,7 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
 use common::{retail_fs, ServerWorld};
-use q2_game::traits::GameExport;
 use q2_shared::types::UserCmd;
 
 const FRAME_US: u32 = 100_000;
@@ -38,33 +35,12 @@ fn try_start(name: &str, bsp: &[u8]) -> Result<ServerWorld, String> {
     })
 }
 
-#[derive(Default)]
-struct Prints(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Prints {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("print lock").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn every_retail_map_spawns_runs_saves_and_loads() {
     let Some(fs) = retail_fs() else {
         return;
     };
-    let prints = Arc::new(Mutex::new(Vec::new()));
-    let writer = prints.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(move || Prints(writer.clone()))
-        .with_max_level(tracing::Level::INFO)
-        .with_ansi(false)
-        .without_time()
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let (prints, _guard) = common::capture_info_logs();
 
     let mut maps: Vec<String> = fs
         .list_files("bsp")
@@ -103,10 +79,7 @@ fn every_retail_map_spawns_runs_saves_and_loads() {
             }
         }
         if let Some((game, level)) = saved {
-            let mut fresh =
-                q2_game::world::GameWorld::new(world.gi.clone(), q2_shared::constants::MAX_EDICTS);
-            fresh.set_max_clients(1);
-            fresh.init();
+            let mut fresh = common::new_world(&world.gi);
             if let Err(e) = fresh
                 .read_game(&game)
                 .and_then(|()| fresh.read_level(&level))

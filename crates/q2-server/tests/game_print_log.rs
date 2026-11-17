@@ -8,37 +8,18 @@
 //! thread-scoped subscriber registers, dropping the event (about 1 run in 8
 //! when this test lived among the other q2-server unit tests).
 
-use std::io;
-use std::sync::{Arc, Mutex};
+mod common;
 
 use q2_game::traits::GameImport;
 use q2_server::game_iface::GAME_PRINT_TARGET;
 use q2_server::ServerGameImport;
 use q2_shared::constants::PRINT_HIGH;
 
-struct Shared(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for Shared {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().expect("log lock").extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 /// The `target level: message` of each event `run` logs at INFO or above.
 fn logged(run: impl FnOnce()) -> Vec<String> {
-    let out = Arc::new(Mutex::new(Vec::new()));
-    let writer = out.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(move || Shared(writer.clone()))
-        .with_max_level(tracing::Level::INFO)
-        .with_ansi(false)
-        .without_time()
-        .finish();
-    tracing::subscriber::with_default(subscriber, run);
+    let (out, guard) = common::capture_info_logs();
+    run();
+    drop(guard);
     let text = String::from_utf8(out.lock().expect("log lock").clone()).expect("utf-8");
     text.lines().map(|line| line.trim().to_string()).collect()
 }

@@ -373,8 +373,7 @@ mod tests {
 
     #[test]
     fn every_shipped_fix_parses() {
-        for map in crate::mapfixes::MAPS {
-            let text = crate::mapfixes::entity_file(map).unwrap();
+        for (map, text) in crate::mapfixes::FIXES {
             let entities =
                 q2_game::spawn::parse_entity_string(text).unwrap_or_else(|e| panic!("{map}: {e}"));
             assert!(

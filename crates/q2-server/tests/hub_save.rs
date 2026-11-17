@@ -10,35 +10,11 @@ use q2_server::local::LocalGame;
 use q2_shared::constants::{STAT_ARMOR, STAT_HEALTH};
 use q2_shared::types::{UserCmd, Vec3f};
 
-/// Map one: the player starts on a jacket armor and picks it up.
-fn armor_map() -> Vec<u8> {
-    common::floor_wall_bsp_with(&format!(
-        "{}{}",
-        common::ENTSTRING,
-        "{\n\"classname\" \"item_armor_jacket\"\n\"origin\" \"0 0 16\"\n}\n"
-    ))
-}
-
-fn other_map() -> Vec<u8> {
-    common::floor_wall_bsp()
-}
-
 fn play(game: &mut LocalGame, frames: usize, cmd: UserCmd) {
     for _ in 0..frames {
         game.think(&cmd).unwrap();
         game.frame(100_000).unwrap();
     }
-}
-
-fn idle(game: &mut LocalGame, frames: usize) {
-    play(
-        game,
-        frames,
-        UserCmd {
-            msec: 100,
-            ..UserCmd::default()
-        },
-    );
 }
 
 fn stat(game: &LocalGame, stat: usize) -> i16 {
@@ -49,9 +25,9 @@ fn stat(game: &LocalGame, stat: usize) -> i16 {
 fn go(game: &mut LocalGame, level: &str) {
     let request = MapRequest::parse(level);
     let bsp = if request.map == "one" {
-        armor_map()
+        common::armor_map()
     } else {
-        other_map()
+        common::floor_wall_bsp()
     };
     game.change_map(&request, &bsp).expect("level loads");
 }
@@ -65,13 +41,13 @@ fn follow(game: &mut LocalGame) -> String {
 
 #[test]
 fn a_unit_level_keeps_its_state_between_visits() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     assert_eq!(stat(&game, STAT_ARMOR), 25, "picked up the jacket armor");
 
     go(&mut game, "two");
     go(&mut game, "one");
-    idle(&mut game, 5);
+    common::idle(&mut game, 5);
     // The armor was taken on the first visit: picking up a second jacket
     // would raise the 25 to 50.
     assert_eq!(stat(&game, STAT_ARMOR), 25);
@@ -79,18 +55,18 @@ fn a_unit_level_keeps_its_state_between_visits() {
 
 #[test]
 fn a_starred_level_starts_its_unit_afresh() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     go(&mut game, "two");
     go(&mut game, "*one");
-    idle(&mut game, 5);
+    common::idle(&mut game, 5);
     assert_eq!(stat(&game, STAT_ARMOR), 50, "the jacket is back");
 }
 
 #[test]
 fn entering_a_level_writes_the_autosave() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     go(&mut game, "two");
     for file in ["server.ssv", "game.ssv", "one.sav", "one.sv2"] {
         assert!(game.saves().file("save0", file).is_some(), "save0/{file}");
@@ -99,7 +75,7 @@ fn entering_a_level_writes_the_autosave() {
 
 #[test]
 fn loadgame_restores_the_saved_level_and_player() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
     let forward = UserCmd {
         msec: 100,
         forwardmove: 200,
@@ -125,14 +101,14 @@ fn snapshot(game: &LocalGame) -> Vec<(String, Vec<u8>)> {
 
 #[test]
 fn savegame_refuses_current_a_bad_name_and_a_dead_player() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
     let before = snapshot(&game);
     game.console("save current").unwrap();
     assert!(snapshot(&game) == before, "nothing written");
 
     game.client_command("kill");
-    idle(&mut game, 2);
+    common::idle(&mut game, 2);
     assert!(stat(&game, STAT_HEALTH) <= 0);
     game.console("save dead").unwrap();
     assert!(game.saves().file("dead", "server.ssv").is_none());
@@ -142,8 +118,8 @@ fn savegame_refuses_current_a_bad_name_and_a_dead_player() {
 
 #[test]
 fn dying_loads_the_latest_save() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
     game.console("save first").unwrap();
     let saved_at: Vec3f = game.player().unwrap().0;
 
@@ -157,7 +133,7 @@ fn dying_loads_the_latest_save() {
     };
     for _ in 0..60 {
         play(&mut game, 1, attack);
-        idle(&mut game, 1);
+        common::idle(&mut game, 1);
         if let Some(level) = game.take_map_change() {
             go(&mut game, &level);
             assert!(stat(&game, STAT_HEALTH) > 0);
@@ -170,8 +146,8 @@ fn dying_loads_the_latest_save() {
 
 #[test]
 fn loading_the_autosave_restarts_the_level_with_the_entering_inventory() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     go(&mut game, "two");
     game.console("load save0").unwrap();
     assert_eq!(follow(&mut game), "two");
@@ -180,8 +156,8 @@ fn loading_the_autosave_restarts_the_level_with_the_entering_inventory() {
 
 #[test]
 fn a_damaged_save_is_refused_and_play_goes_on() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     game.console("save quick").unwrap();
     let (origin, _) = game.player().unwrap();
     for file in ["game.ssv", "server.ssv", "one.sav", "one.sv2"] {
@@ -193,7 +169,7 @@ fn a_damaged_save_is_refused_and_play_goes_on() {
 
         game.console("load quick").unwrap();
         assert!(game.take_map_change().is_none(), "{file}: no level queued");
-        idle(&mut game, 1);
+        common::idle(&mut game, 1);
         assert_eq!(
             game.player().map(|p| p.0),
             Some(origin),
@@ -205,8 +181,8 @@ fn a_damaged_save_is_refused_and_play_goes_on() {
 
 #[test]
 fn two_loads_before_the_map_change_still_reconnect_the_player() {
-    let mut game = LocalGame::start("one", &armor_map()).unwrap();
-    idle(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
     game.console("save quick").unwrap();
     game.console("load quick").unwrap();
     game.console("load quick").unwrap();

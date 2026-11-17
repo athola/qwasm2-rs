@@ -9,15 +9,6 @@ use q2_server::local::{LocalGame, LOCAL_PLAYER};
 use q2_shared::constants::{CS_MODELS, CS_NAME, STAT_ARMOR};
 use q2_shared::types::{UserCmd, Vec3f};
 
-/// Map one: the player starts on a jacket armor and picks it up.
-fn armor_map() -> Vec<u8> {
-    common::floor_wall_bsp_with(&format!(
-        "{}{}",
-        common::ENTSTRING,
-        "{\n\"classname\" \"item_armor_jacket\"\n\"origin\" \"0 0 16\"\n}\n"
-    ))
-}
-
 /// Map two: an unnamed start and one named "east".
 fn two_start_map() -> Vec<u8> {
     common::floor_wall_bsp_with(concat!(
@@ -27,25 +18,14 @@ fn two_start_map() -> Vec<u8> {
     ))
 }
 
-fn play(game: &mut LocalGame, frames: usize) {
-    for _ in 0..frames {
-        game.think(&UserCmd {
-            msec: 100,
-            ..Default::default()
-        })
-        .unwrap();
-        game.frame(100_000).unwrap();
-    }
-}
-
 fn armor(game: &LocalGame) -> i16 {
     game.player().expect("player in game").1.stats[STAT_ARMOR]
 }
 
 #[test]
 fn a_map_change_keeps_the_pickup_and_starts_at_the_named_spawnpoint() {
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 5);
     assert_eq!(armor(&game), 25, "picked up the jacket armor");
 
     game.change_map(&MapRequest::parse("two$east"), &two_start_map())
@@ -57,7 +37,7 @@ fn a_map_change_keeps_the_pickup_and_starts_at_the_named_spawnpoint() {
     assert_eq!(game.framenum(), 0, "C SV_SpawnServer zeroes sv");
     assert_eq!(game.configstring(CS_NAME), "two");
     assert_eq!(game.configstring(CS_MODELS + 1), "maps/two.bsp");
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     assert_eq!(armor(&game), 25, "inventory carried over");
     assert!(game
         .entity_states()
@@ -67,8 +47,8 @@ fn a_map_change_keeps_the_pickup_and_starts_at_the_named_spawnpoint() {
 
 #[test]
 fn a_picture_level_shows_the_picture_with_no_player_and_the_game_still_runs() {
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 3);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 3);
     assert_eq!(game.picture(), None);
     game.change_map(&MapRequest::parse("victory.pcx"), &[])
         .expect("C SV_SpawnServer(ss_pic) with no map");
@@ -81,7 +61,7 @@ fn a_picture_level_shows_the_picture_with_no_player_and_the_game_still_runs() {
     assert_eq!(game.framenum(), 0);
     // C SV_RunGameFrame calls ge->RunFrame whatever the server state.
     // The first game frame is due at 1000 ms, a frame after the load.
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     assert_eq!(game.framenum(), 1);
 }
 
@@ -89,16 +69,16 @@ fn a_picture_level_shows_the_picture_with_no_player_and_the_game_still_runs() {
 fn the_game_kept_through_a_picture_level_carries_the_inventory_to_the_next_map() {
     // C coop sets nextserver to `gamemap "*base1"` for victory.pcx; the
     // player's game.clients entry survives the picture level.
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 5);
     assert_eq!(armor(&game), 25);
     game.change_map(&MapRequest::parse("victory.pcx"), &[])
         .expect("picture level loads");
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     game.change_map(&MapRequest::parse("two"), &two_start_map())
         .expect("map two loads");
     assert_eq!(game.picture(), None);
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     assert_eq!(armor(&game), 25, "inventory carried over");
 }
 
@@ -124,8 +104,8 @@ fn demo2s_target_changelevel_names_the_victory_picture() {
 
 #[test]
 fn a_cinematic_level_is_refused_and_the_map_keeps_running() {
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 3);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 3);
     let framenum = game.framenum();
     assert!(game.change_map(&MapRequest::parse("end.cin"), &[]).is_err());
     assert!(game
@@ -133,7 +113,7 @@ fn a_cinematic_level_is_refused_and_the_map_keeps_running() {
         .is_err());
     assert_eq!(game.configstring(CS_NAME), "one");
     assert_eq!(game.picture(), None);
-    play(&mut game, 1);
+    common::idle(&mut game, 1);
     assert_eq!(game.framenum(), framenum + 1);
 }
 
@@ -141,7 +121,7 @@ fn a_cinematic_level_is_refused_and_the_map_keeps_running() {
 fn a_cinematic_with_a_next_server_goes_straight_to_it() {
     // C SV_Map sets nextserver to `gamemap "two$east"` and plays the
     // movie; SV_Nextserver runs it once the movie ends.
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
     game.change_map(&MapRequest::parse("intro.cin+two$east"), &[])
         .expect("the movie is skipped");
     assert_eq!(game.take_map_change().as_deref(), Some("two$east"));
@@ -150,15 +130,15 @@ fn a_cinematic_with_a_next_server_goes_straight_to_it() {
 
 #[test]
 fn a_map_that_fails_to_load_is_an_error() {
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 3);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 3);
     assert!(game
         .change_map(&MapRequest::parse("broken"), b"not a bsp")
         .is_err());
     // C drops the server: no command reaches ClientThink, so the player
     // does not fall through the empty collision map.
     let (before, _) = game.player().expect("old player edict");
-    play(&mut game, 5);
+    common::idle(&mut game, 5);
     assert_eq!(game.player().expect("old player edict").0, before);
 }
 
@@ -239,22 +219,22 @@ fn local_game_follows_demo1s_exit_string_into_demo2() {
         return;
     };
     let mut game = LocalGame::start("demo1", &demo1).expect("demo1 loads");
-    play(&mut game, 3);
+    common::idle(&mut game, 3);
     game.change_map(&MapRequest::parse("demo2$base1"), &demo2)
         .expect("demo2 loads");
     assert_eq!(game.player().unwrap().0, demo2_base1_start(&demo2));
     assert_eq!(game.framenum(), 0);
     assert_eq!(game.configstring(CS_MODELS + 1), "maps/demo2.bsp");
     // The first game frame is due at 1000 ms, a frame after the load.
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     assert_eq!(game.framenum(), 1);
     assert!(game.num_edicts() > 100, "demo2 spawned its entities");
 }
 
 #[test]
 fn a_model_both_maps_use_is_registered_again_on_the_new_map() {
-    let mut game = LocalGame::start("one", &armor_map()).expect("map loads");
-    play(&mut game, 5);
+    let mut game = LocalGame::start("one", &common::armor_map()).expect("map loads");
+    common::idle(&mut game, 5);
     let map_two = common::floor_wall_bsp_with(concat!(
         "{\n\"classname\" \"worldspawn\"\n}\n",
         "{\n\"classname\" \"info_player_start\"\n\"origin\" \"0 0 24\"\n}\n",
@@ -262,7 +242,7 @@ fn a_model_both_maps_use_is_registered_again_on_the_new_map() {
     ));
     game.change_map(&MapRequest::parse("two"), &map_two)
         .expect("map two loads");
-    play(&mut game, 2);
+    common::idle(&mut game, 2);
     let jacket = game
         .entity_states()
         .into_iter()

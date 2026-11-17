@@ -4,7 +4,6 @@
 mod common;
 
 use common::{stock_bsp, ServerWorld};
-use q2_game::traits::GameExport;
 use q2_shared::types::UserCmd;
 
 const FRAME_US: u32 = 100_000;
@@ -72,9 +71,7 @@ fn every_demo_map_saves_after_a_minute_of_play() {
 /// and the client connects and begins on the body waiting for it.
 fn load(map: &str, bsp: &[u8], game_file: &[u8], level_file: &[u8]) -> ServerWorld {
     let gi = std::rc::Rc::new(q2_server::ServerGameImport::new());
-    let mut game = q2_game::world::GameWorld::new(gi.clone(), q2_shared::constants::MAX_EDICTS);
-    game.set_max_clients(1);
-    game.init();
+    let mut game = common::new_world(&gi);
     game.read_game(game_file).expect("game loads");
     let mut svs = q2_server::state::ServerStatic::default();
     svs.init_game(1);
@@ -120,7 +117,9 @@ fn a_loaded_level_runs_on_exactly_as_the_original() {
 /// ClientBegin moves the view into the delta angles, which the test
 /// client's angles make up for (`resp.cmd_angles` records those angles).
 fn differences(a: &ServerWorld, b: &ServerWorld) -> Vec<String> {
-    let json = |v: &dyn erased::Ser| v.json();
+    fn json<T: serde::Serialize>(v: &T) -> serde_json::Value {
+        serde_json::to_value(v).expect("game state is JSON")
+    }
     let mut out = Vec::new();
     diff(
         "clients",
@@ -173,16 +172,5 @@ fn diff(path: &str, a: &serde_json::Value, b: &serde_json::Value, out: &mut Vec<
         }
         _ if a != b => out.push(format!("{path}: {a} vs {b}")),
         _ => {}
-    }
-}
-
-mod erased {
-    pub trait Ser {
-        fn json(&self) -> serde_json::Value;
-    }
-    impl<T: serde::Serialize> Ser for T {
-        fn json(&self) -> serde_json::Value {
-            serde_json::to_value(self).expect("game state is JSON")
-        }
     }
 }
