@@ -28,7 +28,42 @@ when one entity's callback touches another.
 `think`, `touch`, `use`, `pain`, `die` and `blocked` are `fn` pointers such
 as `fn(&mut GameWorld, EntityKey)`, not closures. They carry no captured
 state, so they can be stored on entities without lifetime problems and can be
-saved by name when save/load lands (#15).
+saved by name in save files (see Save and load).
+
+### Save and load
+
+The game writes its state as bytes and the server stores them, as C's
+`WriteGame`/`ReadGame` and `WriteLevel`/`ReadLevel` do with files
+(`savegame` module, `GameExport` save calls). The saved types derive serde
+and are encoded with postcard behind a magic, version and kind byte; C's
+files are raw struct dumps tied to one build, so there is no format to be
+compatible with. A field added to a saved type fails to compile until it is
+saved or skipped.
+
+Callbacks and monster moves are saved by name. `build.rs` generates the
+name tables from the sources, as C generates `gamefunc_list.h`: every
+function of a callback signature that the crate uses as a value, and every
+`MonsterMove` static. A copied `currentmove` is named by its frames static,
+range and end function; C's identical insane crawl and runcrawl moves share
+that name and load back the same animation. A callback missing from the
+tables is a save error naming the entity and field.
+
+A level also keeps the game's file statics C does not save (trail, enemy
+check, quad and pain counters), so a loaded level runs on exactly as it
+would have; `q2-server/tests/savegame.rs` pins that against an
+uninterrupted run. Slotmap keys are saved as they are, so references stay
+valid; free entities come back zeroed, as C's ReadLevel leaves them. A
+loaded player takes the body waiting in the level (C ClientConnect and
+ClientBegin); the port spawns bodies in `connect_client`, so a flag set at
+connect tells begin which body came from the save.
+
+The server half (`q2-server` `local/save.rs`) keeps C's `save/<slot>/`
+files in `SaveFiles`: `server.ssv`, `game.ssv`, and each visited level's
+`.sv2` (configstrings and area portals) and `.sav`. A unit's levels keep
+their state between visits, a starred level wipes the unit, entering a
+level writes the `save0` autosave, and `save`, `load` and `menu_loadgame`
+are server commands (F6, F9 and F3 in the browser). The browser keeps the
+files in IndexedDB.
 
 ### Entities
 
@@ -49,8 +84,7 @@ engine I/O goes through `GameImport`.
 In: the base Quake II entity set (107 spawn types), 11 weapons, the item
 table, 10 movement types, the base AI, 20 monster types, triggers, targets,
 functional entities, and the player subsystem. Out: mission packs, CTF, and
-anti-cheat. Deferred with issues: save/load (#15) and `SV_Push` rollback
-(#17).
+anti-cheat. Deferred with an issue: `SV_Push` rollback (#17).
 
 ## Current state (2026-10-27)
 
@@ -170,8 +204,8 @@ effects, and the deathmatch rules end matches through C's intermission.
   game where the browser allows it (Chromium), so Ctrl shortcuts do not
   reach the browser.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
-  refused), savegames (#15; a dead single player's press sends
-  `menu_loadgame`, which nothing handles), the inventory layout and its
+  refused), the save menu (F2 `menu_savegame`; F3's `menu_loadgame`
+  loads the newest save instead of opening a menu), the inventory layout and its
   refresh (`InventoryMessage`), the `fov`/`spectator` userinfo and `ClientUserinfoChanged`'s `Info_Validate` check, the
   spectator and chase-camera stats, `SP_FixCoopSpots`, falling damage
   (`P_FallingDamage`), the dead view turning to the killer

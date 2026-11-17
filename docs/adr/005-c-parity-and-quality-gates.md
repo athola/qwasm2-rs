@@ -41,7 +41,18 @@ on an empty map or from a bad head node ends at `end` where C leaves
 `world_trace` names the world entity only on a hit. Outside collision,
 every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
-missing).
+missing). Saves refuse a slot name holding `..`, `/` or `\\`, which C reports
+as "Bad savedir." and then uses anyway.
+
+Where the port has no C counterpart to match, it picks the nearest
+behavior and says so. With no menu system, `menu_loadgame` (F3, and the
+press after a single-player death) loads the newest save rather than
+listing them. A skipped cinematic writes no autosave of its own; the
+level it leads to writes one. The save/load tests allow exactly the
+differences C's own load shows against an uninterrupted run: `linkcount`
+one ahead after the relink, a SOLID_NOT entity left area-linked coming
+back unlinked, free entities zeroed, and the reconnected client's view in
+its delta angles.
 
 Additions C does not have, on valid input, are allowed only behind an
 opt-in setting that defaults to C's behavior, so the default build stays
