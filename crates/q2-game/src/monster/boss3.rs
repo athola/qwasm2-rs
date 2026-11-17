@@ -2238,13 +2238,14 @@ mod tests {
         jorg_pain(&mut world, key, key, 0.0, 100);
         assert!(plays(&world, key, &JORG_MOVE_PAIN2));
         world.level.time = 30.0;
-        world.level.rand_state = seed_rolls(&[0.0..0.3]);
+        // Two draws in range whether or not a frame check draws first.
+        world.level.rand_state = seed_rolls(&[0.01..0.3, 0.01..0.3]);
         jorg_pain(&mut world, key, key, 0.0, 101);
         assert!(plays(&world, key, &JORG_MOVE_PAIN3));
         assert_eq!(played(&gi).last().unwrap(), JORG_PAIN3);
         jorg_stand(&mut world, key);
         world.level.time = 40.0;
-        world.level.rand_state = seed_rolls(&[0.31..1.01]);
+        world.level.rand_state = seed_rolls(&[0.31..1.01, 0.31..1.01]);
         jorg_pain(&mut world, key, key, 0.0, 101);
         assert!(
             plays(&world, key, &JORG_MOVE_STAND),
