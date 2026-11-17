@@ -207,12 +207,6 @@ fn write_brotli<W: Write>(data: &[u8], w: &mut W) -> Result<()> {
     Ok(())
 }
 
-/// Repack a Q2 PAK, optionally filtering to an extension allowlist.
-///
-/// `allowlist = None` means keep every file.
-/// `allowlist = Some(set)` keeps only files whose lowercase extension is in `set`.
-///
-/// Output is a valid PAK with all offsets recalculated from scratch (no gaps).
 /// One pak holding every file of `paks`, where a later pak's file replaces
 /// an earlier one's of the same name (C searches the highest-numbered pak
 /// first, and compares names without case). Each replaced file keeps the
@@ -259,6 +253,12 @@ pub fn merge(paks: &[Vec<u8>]) -> Result<Vec<u8>> {
     repack(&data, None)
 }
 
+/// Repack a Q2 PAK, optionally filtering to an extension allowlist.
+///
+/// `allowlist = None` means keep every file.
+/// `allowlist = Some(set)` keeps only files whose lowercase extension is in `set`.
+///
+/// Output is a valid PAK with all offsets recalculated from scratch (no gaps).
 pub fn repack(src: &[u8], allowlist: Option<&HashSet<String>>) -> Result<Vec<u8>> {
     repack_with_limit(src, allowlist, u32::MAX as usize)
 }
