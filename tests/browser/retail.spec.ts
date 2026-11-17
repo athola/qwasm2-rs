@@ -40,23 +40,11 @@ function serve(): Promise<http.Server> {
 let server: http.Server;
 let origin = '';
 
-/// The campaign's maps, from the pak directory: every maps/*.bsp but the
-/// deathmatch ones (q2dm*, match1) the patches added.
-function campaignMaps(): string[] {
-  const pak = fs.readFileSync(RETAIL_PAK);
-  const dirOffset = pak.readUInt32LE(4);
-  const dirLength = pak.readUInt32LE(8);
-  const maps: string[] = [];
-  for (let at = dirOffset; at < dirOffset + dirLength; at += 64) {
-    const name = pak.toString('latin1', at, at + 56).replace(/\0.*$/s, '');
-    const map = /^maps\/(.+)\.bsp$/i.exec(name)?.[1].toLowerCase();
-    if (map && !/^(q2dm\d+|match\d+)$/.test(map)) maps.push(map);
-  }
-  return maps.sort();
-}
+let directory: Map<string, [number, number]> | undefined;
 
-/// Every pak file's (offset, size) by lower-cased name.
+/// Every pak file's (offset, size) by lower-cased name, read once.
 function pakDirectory(): Map<string, [number, number]> {
+  if (directory) return directory;
   const pak = fs.readFileSync(RETAIL_PAK);
   const dir = new Map<string, [number, number]>();
   const dirOffset = pak.readUInt32LE(4);
@@ -64,7 +52,16 @@ function pakDirectory(): Map<string, [number, number]> {
     const name = pak.toString('latin1', at, at + 56).replace(/\0.*$/s, '').toLowerCase();
     dir.set(name, [pak.readUInt32LE(at + 56), pak.readUInt32LE(at + 60)]);
   }
-  return dir;
+  return (directory = dir);
+}
+
+/// The campaign's maps: every maps/*.bsp but the deathmatch ones (q2dm*,
+/// match1) the patches added.
+function campaignMaps(): string[] {
+  return [...pakDirectory().keys()]
+    .map(name => /^maps\/(.+)\.bsp$/.exec(name)?.[1])
+    .filter((map): map is string => !!map && !/^(q2dm\d+|match\d+)$/.test(map))
+    .sort();
 }
 
 /// The `map` keys of a map's target_changelevels, from its BSP's entity lump.
@@ -113,44 +110,50 @@ async function press(page: Page, key: string) {
   await frames(page, 2);
 }
 
-/// Open `map` and wait for the engine.
-async function open(page: Page, map: string) {
-  await page.goto(`${origin}/qwasm2?map=${map}`);
+/// Wait for the engine the page just loaded.
+async function ready(page: Page) {
   await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
   await expect(page.locator('#status .fail')).toHaveCount(0);
   await frames(page, 30);
 }
 
-/// The page's console lines, where the engine's prints and the server's
-/// save messages go (C Com_Printf), collected per page.
-const consoles = new WeakMap<Page, string[]>();
-
-function watchConsole(page: Page) {
-  const lines: string[] = [];
-  consoles.set(page, lines);
-  page.on('console', msg => lines.push(msg.text()));
+async function open(page: Page, map: string) {
+  await page.goto(`${origin}/qwasm2?map=${map}`);
+  await ready(page);
 }
 
-/// The console lines logged since `before` lines.
-function linesSince(page: Page, before: number): string {
-  return (consoles.get(page) ?? []).slice(before).join('\n');
+/// The test page's console lines, where the engine's prints and the
+/// server's save messages go (C Com_Printf).
+let lines: string[] = [];
+
+function linesSince(before: number): string {
+  return lines.slice(before).join('\n');
 }
 
-function lineCount(page: Page): number {
-  return (consoles.get(page) ?? []).length;
+/// Run console text in the page.
+async function send(page: Page, text: string) {
+  await page.evaluate(t =>
+    document.dispatchEvent(new CustomEvent('qwasm2-command', { detail: t })), text);
 }
+
+/// Wait for the load that `before` lines started to reach `map`.
+async function arrive(page: Page, map: string, before: number, loading = '') {
+  await expect.poll(() => linesSince(before), { timeout: 60000 })
+    .toMatch(new RegExp(`${loading}Level exit to \\*?${map}\\b`));
+  await frames(page, 20);
+  await expect(page.locator('#status .fail')).toHaveCount(0);
+}
+
+const LOADING = 'Loading game\\.\\.\\.[\\s\\S]*';
 
 /// F6, then F9: the save is written and loaded back into `map`.
 async function quickSaveAndLoad(page: Page, map: string) {
-  let before = lineCount(page);
+  let before = lines.length;
   await press(page, 'F6');
-  await expect.poll(() => linesSince(page, before)).toMatch(/Saving game\.\.\.[\s\S]*Done\./);
-  before = lineCount(page);
+  await expect.poll(() => linesSince(before)).toMatch(/Saving game\.\.\.[\s\S]*Done\./);
+  before = lines.length;
   await press(page, 'F9');
-  await expect.poll(() => linesSince(page, before), { timeout: 60000 })
-    .toMatch(new RegExp(`Loading game\\.\\.\\.[\\s\\S]*Level exit to \\*?${map}\\b`));
-  await frames(page, 30);
-  await expect(page.locator('#status .fail')).toHaveCount(0);
+  await arrive(page, map, before, LOADING);
 }
 
 test.describe('Qwasm2 save and load on the retail campaign', () => {
@@ -160,25 +163,26 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   });
   test.afterAll(() => new Promise<void>(resolve => server.close(() => resolve())));
-  test.beforeEach(({ page }) => watchConsole(page));
+  test.beforeEach(({ page }) => {
+    const pageLines: string[] = [];
+    lines = pageLines;
+    page.on('console', msg => pageLines.push(msg.text()));
+  });
 
   test('a quick save outlives a page reload and loads back', async ({ page }) => {
     test.setTimeout(300000);
     await open(page, 'base1');
-    const before = lineCount(page);
+    const before = lines.length;
     await press(page, 'F6');
-    await expect.poll(() => linesSince(page, before)).toMatch(/Done\./);
+    await expect.poll(() => linesSince(before)).toMatch(/Done\./);
     // Let the page's store finish its background writes.
     await frames(page, 30);
 
     await page.reload();
-    await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
-    await frames(page, 30);
-    const reloaded = lineCount(page);
+    await ready(page);
+    const reloaded = lines.length;
     await press(page, 'F9');
-    await expect.poll(() => linesSince(page, reloaded), { timeout: 60000 })
-      .toMatch(/Loading game\.\.\.[\s\S]*Level exit to base1\b/);
-    await expect(page.locator('#status .fail')).toHaveCount(0);
+    await arrive(page, 'base1', reloaded, LOADING);
   });
 
   test('the autosave outlives a page reload', async ({ page }) => {
@@ -186,33 +190,15 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     // the last visit's save0 (C's map would write over it); F3 loads it.
     test.setTimeout(300000);
     await open(page, 'base1');
-    const before = lineCount(page);
-    await page.evaluate(() =>
-      document.dispatchEvent(new CustomEvent('qwasm2-command', { detail: 'gamemap base2$base1' })));
-    await expect.poll(() => linesSince(page, before), { timeout: 60000 }).toMatch(/Level exit to base2/);
-    await frames(page, 30);
+    const before = lines.length;
+    await send(page, 'gamemap base2$base1');
+    await arrive(page, 'base2', before);
 
     await page.reload();
-    await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
-    await frames(page, 30);
-    const reloaded = lineCount(page);
+    await ready(page);
+    const reloaded = lines.length;
     await press(page, 'F3');
-    await expect.poll(() => linesSince(page, reloaded), { timeout: 60000 })
-      .toMatch(/Loading game\.\.\.[\s\S]*Level exit to base2/);
-    await expect(page.locator('#status .fail')).toHaveCount(0);
-  });
-
-  test('F3 loads the newest save', async ({ page }) => {
-    test.setTimeout(300000);
-    await open(page, 'base2');
-    let before = lineCount(page);
-    await press(page, 'F6');
-    await expect.poll(() => linesSince(page, before)).toMatch(/Done\./);
-    before = lineCount(page);
-    await press(page, 'F3');
-    await expect.poll(() => linesSince(page, before), { timeout: 60000 })
-      .toMatch(/Loading game\.\.\.[\s\S]*Level exit to base2\b/);
-    await expect(page.locator('#status .fail')).toHaveCount(0);
+    await arrive(page, 'base2', reloaded, LOADING);
   });
 
   test('the campaign plays through every exit with saves', async ({ page }) => {
@@ -233,14 +219,6 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     }
     const untaken = new Set([...graph].flatMap(([map, levels]) => levels.map(l => `${map} ${l}`)));
     test.setTimeout(untaken.size * 90000);
-    const send = (text: string) => page.evaluate(t =>
-      document.dispatchEvent(new CustomEvent('qwasm2-command', { detail: t })), text);
-    const arrive = async (map: string, before: number) => {
-      await expect.poll(() => linesSince(page, before), { timeout: 60000 })
-        .toMatch(new RegExp(`Level exit to \\*?${map}\\b`));
-      await frames(page, 20);
-      await expect(page.locator('#status .fail')).toHaveCount(0);
-    };
     const firstStep = (from: string): string | null => {
       // Breadth first toward the nearest level with an exit not taken.
       const first = new Map<string, string>();
@@ -271,15 +249,15 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
       const level = edge ? edge.slice(here.length + 1) : firstStep(here);
       if (!level) break;
       untaken.delete(`${here} ${level}`);
-      const before = lineCount(page);
-      await send(`gamemap ${level}`);
+      const before = lines.length;
+      await send(page, `gamemap ${level}`);
       const next = destination(level);
       if (!next) {
         // The campaign's end picture: nothing to save there.
-        await expect.poll(() => linesSince(page, before), { timeout: 60000 }).toMatch(/Level exit to/);
+        await expect.poll(() => linesSince(before), { timeout: 60000 }).toMatch(/Level exit to/);
         break;
       }
-      await arrive(next, before);
+      await arrive(page, next, before);
       here = next;
       exitsTaken++;
       await quickSaveAndLoad(page, here);
@@ -288,22 +266,21 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
         // C Cmd_Kill_f waits five seconds after a spawn; then a press
         // after the death delay pushes menu_loadgame: the newest save.
         await frames(page, 400);
-        await send('kill');
+        await send(page, 'kill');
         await frames(page, 120);
-        const deadAt = lineCount(page);
+        const deadAt = lines.length;
         await press(page, 'Control');
-        await arrive(here, deadAt);
+        await arrive(page, here, deadAt);
         died = true;
       }
       if (!reloaded && exitsTaken === 6) {
         // A reload starts a new game; the quick save of this level stays.
         await frames(page, 30);
         await page.reload();
-        await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
-        await frames(page, 30);
-        const fresh = lineCount(page);
+        await ready(page);
+        const fresh = lines.length;
         await press(page, 'F9');
-        await arrive(here, fresh);
+        await arrive(page, here, fresh);
         reloaded = true;
       }
     }
