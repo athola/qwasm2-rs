@@ -766,6 +766,8 @@ dependencies = [
  "q2-common",
  "q2-game",
  "q2-shared",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

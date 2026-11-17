@@ -408,19 +408,28 @@ impl ServerGameImport {
     pub fn load_map(&self, bsp: &[u8]) -> Q2Result<u32> {
         let mut inner = self.inner.borrow_mut();
         inner.error = None;
-        inner.links.fill(None);
-        inner.clusters.fill(EntityClusters::List(Vec::new()));
-        inner.areas.fill((0, 0));
         inner.configstrings.fill(String::new());
         inner.dirty.fill(false);
         let loaded = inner.collision.load_map(bsp);
+        drop(inner);
+        self.clear_world();
+        loaded
+    }
+
+    /// Unlink every entity and rebuild the area tree over the loaded map
+    /// (C `SV_ClearWorld`), as before a saved level's entities are linked
+    /// again.
+    pub fn clear_world(&self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.links.fill(None);
+        inner.clusters.fill(EntityClusters::List(Vec::new()));
+        inner.areas.fill((0, 0));
         let (mins, maxs) = inner
             .collision
             .model(0)
             .map(|m| (m.mins, m.maxs))
             .unwrap_or_default();
         inner.world.clear(mins, maxs);
-        loaded
     }
 
     /// C `SV_FatPVS`: what can be seen from the eye at `org`, as one bit
@@ -1092,6 +1101,25 @@ mod tests {
         let gi = ServerGameImport::new();
         gi.set_client_states([ClientState::Spawned]);
         gi
+    }
+
+    #[test]
+    fn clear_world_unlinks_every_entity_but_keeps_the_map() {
+        let gi = one_client();
+        gi.load_map(&[]).expect("an empty map loads");
+        gi.configstring(5, "kept");
+        link(&gi, 3, Solid::Bbox, 0);
+        let everywhere = (Vec3f::splat(-4096.0), Vec3f::splat(4096.0));
+        assert_eq!(
+            gi.box_edicts(everywhere.0, everywhere.1, 8, AREA_SOLID),
+            vec![3]
+        );
+
+        gi.clear_world();
+        assert!(gi
+            .box_edicts(everywhere.0, everywhere.1, 8, AREA_SOLID)
+            .is_empty());
+        assert_eq!(gi.inner.borrow().configstrings[5], "kept");
     }
 
     #[test]

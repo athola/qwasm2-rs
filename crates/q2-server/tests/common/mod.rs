@@ -1,7 +1,7 @@
 //! Shared fixtures for the server integration tests. The synthetic maps
 //! live in `bsp.rs`, which the crate's own unit tests include as well.
 
-#![allow(dead_code)] // each test binary uses a different subset
+#![allow(dead_code, unused_imports)] // each test binary uses a different subset
 
 mod bsp;
 pub use bsp::*;
