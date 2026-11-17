@@ -104,16 +104,17 @@ fn savegame_refuses_current_a_bad_name_and_a_dead_player() {
     let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
     common::idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
     let before = snapshot(&game);
-    game.console("save current").unwrap();
-    assert!(snapshot(&game) == before, "nothing written");
+    // Alive, so only the name refuses these.
+    for slot in ["current", "../escape", "..", "a/b", "a\\b"] {
+        game.console(&format!("save {slot}")).unwrap();
+        assert!(snapshot(&game) == before, "{slot}: nothing written");
+    }
 
     game.client_command("kill");
     common::idle(&mut game, 2);
     assert!(stat(&game, STAT_HEALTH) <= 0);
     game.console("save dead").unwrap();
-    assert!(game.saves().file("dead", "server.ssv").is_none());
-    game.console("save ../escape").unwrap();
-    assert!(snapshot(&game) == before, "nothing written");
+    assert!(snapshot(&game) == before, "dead: nothing written");
 }
 
 #[test]
@@ -177,6 +178,79 @@ fn a_damaged_save_is_refused_and_play_goes_on() {
         );
         game.console("save quick").unwrap();
     }
+}
+
+#[test]
+fn a_save_missing_a_file_is_refused_and_play_goes_on() {
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
+    game.console("save quick").unwrap();
+    let (origin, _) = game.player().unwrap();
+    let complete = game.saves().clone();
+    for file in ["game.ssv", "one.sv2"] {
+        let mut partial = q2_server::local::SaveFiles::default();
+        for (path, bytes) in complete.iter() {
+            if path != format!("quick/{file}") {
+                partial.insert(path, bytes.to_vec());
+            }
+        }
+        *game.saves_mut() = partial;
+        let before = snapshot(&game);
+
+        game.console("load quick").unwrap();
+        assert!(game.take_map_change().is_none(), "{file}: no level queued");
+        assert!(snapshot(&game) == before, "{file}: current kept");
+        common::idle(&mut game, 1);
+        assert_eq!(
+            game.player().map(|p| p.0),
+            Some(origin),
+            "{file}: still playing"
+        );
+    }
+}
+
+/// Map one with a func_rotating spinning at 100 degrees a second.
+fn spinner_map() -> Vec<u8> {
+    common::floor_wall_bsp_with(&format!(
+        "{}{}",
+        common::ENTSTRING,
+        "{\n\"classname\" \"func_rotating\"\n\"model\" \"*1\"\n\"speed\" \"100\"\n\"spawnflags\" \"1\"\n}\n"
+    ))
+}
+
+fn spinner_yaw(game: &LocalGame) -> f32 {
+    game.entity_states()
+        .iter()
+        .find(|s| s.number > 1 && s.modelindex != 0)
+        .expect("the spinner")
+        .angles[1]
+}
+
+#[test]
+fn a_revisited_level_runs_ten_seconds_but_a_loaded_one_does_not() {
+    // C SV_CheckForSavegame runs 100 frames only when not loading.
+    let mut game = LocalGame::start("one", &spinner_map()).unwrap();
+    common::idle(&mut game, 5);
+    game.console("save quick").unwrap();
+    let saved = spinner_yaw(&game);
+
+    let request = MapRequest::parse("two");
+    game.change_map(&request, &common::floor_wall_bsp())
+        .unwrap();
+    game.change_map(&MapRequest::parse("one"), &spinner_map())
+        .unwrap();
+    let revisited = spinner_yaw(&game);
+    // Ten seconds at 100 degrees a second, plus the frame that left.
+    assert!(
+        (revisited - saved).rem_euclid(360.0) > 1.0,
+        "revisit ran frames: {saved} -> {revisited}"
+    );
+
+    game.console("load quick").unwrap();
+    let level = game.take_map_change().unwrap();
+    game.change_map(&MapRequest::parse(&level), &spinner_map())
+        .unwrap();
+    assert_eq!(spinner_yaw(&game), saved, "a load runs no frames");
 }
 
 #[test]

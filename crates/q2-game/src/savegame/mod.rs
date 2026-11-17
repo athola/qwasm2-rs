@@ -120,20 +120,21 @@ impl GameWorld {
     /// C `WriteLevel`: the level locals and its entities.
     pub fn write_level(&self) -> Q2Result<Vec<u8>> {
         self.check_names()?;
-        encode(
-            KIND_LEVEL,
-            &LevelSave {
-                level: self.level.clone(),
-                entities: self.entities.clone(),
-                trail: self.trail.clone(),
-                enemy_check: self.enemy_check,
-                means_of_death: self.means_of_death,
-                friendly_fire: self.friendly_fire,
-                quad_drop_timeout_hack: self.quad_drop_timeout_hack,
-                pain_anim_cycle: self.pain_anim_cycle,
-                is_quad: self.is_quad,
-            },
-        )
+        encode(KIND_LEVEL, &self.level_save())
+    }
+
+    fn level_save(&self) -> LevelSave {
+        LevelSave {
+            level: self.level.clone(),
+            entities: self.entities.clone(),
+            trail: self.trail.clone(),
+            enemy_check: self.enemy_check,
+            means_of_death: self.means_of_death,
+            friendly_fire: self.friendly_fire,
+            quad_drop_timeout_hack: self.quad_drop_timeout_hack,
+            pain_anim_cycle: self.pain_anim_cycle,
+            is_quad: self.is_quad,
+        }
     }
 
     /// C `ReadLevel`. The server has cleared its world links and connected

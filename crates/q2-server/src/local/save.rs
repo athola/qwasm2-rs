@@ -369,8 +369,13 @@ impl LocalGame {
         Ok(())
     }
 
-    /// Every file of `slot` decodes in this build.
+    /// Every file of `slot` decodes in this build, and none the load reads
+    /// is missing: `game.ssv`, and each level's `.sv2` beside its `.sav`.
     fn check_slot(&self, slot: &str) -> Q2Result<()> {
+        let missing = |name: &str| Q2Error::Drop(format!("{name} is missing"));
+        self.saves
+            .file(slot, "game.ssv")
+            .ok_or_else(|| missing("game.ssv"))?;
         let prefix = format!("{slot}/");
         for (path, bytes) in self.saves.iter() {
             let Some(name) = path.strip_prefix(&prefix) else {
@@ -380,7 +385,13 @@ impl LocalGame {
                 _ if name == "server.ssv" => decode::<ServerFile>(bytes).map(drop),
                 _ if name == "game.ssv" => q2_game::savegame::check_game_file(bytes),
                 Some("sv2") => decode::<LevelFile>(bytes).map(drop),
-                Some("sav") => q2_game::savegame::check_level_file(bytes),
+                Some("sav") => {
+                    let sv2 = format!("{}.sv2", &name[..name.len() - 4]);
+                    match self.saves.file(slot, &sv2) {
+                        Some(_) => q2_game::savegame::check_level_file(bytes),
+                        None => Err(missing(&sv2)),
+                    }
+                }
                 _ => Ok(()),
             }
             .map_err(|e| Q2Error::Drop(format!("{name}: {e}")))?;

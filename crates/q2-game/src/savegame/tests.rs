@@ -71,7 +71,51 @@ fn a_level_with_an_unregistered_callback_is_not_saved() {
     let key = spawn(&mut world, "info_null");
     world.entities.get_mut(key).unwrap().think = Some(not_a_game_callback);
     let err = world.write_level().unwrap_err();
-    assert!(err.to_string().contains("callback"), "{err}");
+    assert!(err.to_string().contains("callback in think"), "{err}");
+}
+
+#[test]
+fn an_unregistered_end_move_or_monster_move_is_named_and_not_saved() {
+    let mut world = test_world();
+    let key = spawn(&mut world, "func_door");
+    world.entities.get_mut(key).unwrap().moveinfo = Some(Box::new(crate::entity::MoveInfo {
+        endfunc: Some(not_a_game_callback),
+        ..Default::default()
+    }));
+    let err = world.write_level().unwrap_err();
+    assert!(err.to_string().contains("moveinfo.endfunc"), "{err}");
+
+    world.entities.get_mut(key).unwrap().moveinfo = None;
+    static FRAMES: [crate::entity::MonsterFrame; 0] = [];
+    world.entities.get_mut(key).unwrap().monsterinfo = Some(Box::new(MonsterInfo {
+        currentmove: Some(crate::entity::MonsterMove {
+            frames: &FRAMES,
+            ..Default::default()
+        }),
+        ..MonsterInfo::default()
+    }));
+    let err = world.write_level().unwrap_err();
+    assert!(err.to_string().contains("monsterinfo.currentmove"), "{err}");
+}
+
+#[test]
+fn an_unknown_callback_or_monster_move_name_is_refused_on_load() {
+    #[derive(serde::Deserialize)]
+    struct Fields {
+        #[serde(with = "crate::savegame::fields::callback")]
+        _think: Option<ThinkFn>,
+        #[serde(with = "crate::savegame::fields::monster_move")]
+        _currentmove: Option<crate::entity::MonsterMove>,
+    }
+    let decode = |think: &str, mv: &str| {
+        let bytes = postcard::to_extend(&(Some(think), Some(mv)), Vec::new()).unwrap();
+        postcard::from_bytes::<Fields>(&bytes).is_ok()
+    };
+    let think = registry::name_of(crate::func::move_done as ThinkFn).unwrap();
+    let mv = registry::move_name(&crate::monster::soldier::SOLDIER_MOVE_STAND1).unwrap();
+    assert!(decode(think, mv), "registered names load");
+    assert!(!decode("no_such_think", mv), "unknown callback");
+    assert!(!decode(think, "no_such_move"), "unknown monster move");
 }
 
 #[test]
@@ -160,14 +204,26 @@ fn a_save_of_another_version_or_cut_short_is_refused() {
     let game = world.write_game(false).unwrap();
 
     let mut loaded = test_world();
-    assert!(loaded.read_level(&level[..level.len() / 2]).is_err());
-    assert!(loaded.read_game(&game[..game.len() - 1]).is_err());
-    assert!(
-        loaded.read_level(&game).is_err(),
-        "a game file is not a level"
-    );
+    let refusal = |result: Q2Result<()>| result.unwrap_err().to_string();
+    assert!(refusal(loaded.read_level(&level[..level.len() / 2])).contains("damaged"));
+    assert!(refusal(loaded.read_game(&game[..game.len() - 1])).contains("damaged"));
+    let mut longer = game.clone();
+    longer.push(0);
+    assert!(refusal(loaded.read_game(&longer)).contains("trailing data"));
+    assert!(refusal(loaded.read_level(&game)).contains("another kind"));
+    assert!(refusal(loaded.read_level(&level[1..])).contains("not a savegame"));
     level[MAGIC.len()] ^= 0xff; // version byte
-    assert!(loaded.read_level(&level).is_err());
+    assert!(refusal(loaded.read_level(&level)).contains("incompatible version"));
+
+    let wrong_count = encode(
+        KIND_GAME,
+        &GameSave {
+            game: world.game.clone(),
+            clients: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(refusal(loaded.read_game(&wrong_count)).contains("client count"));
 }
 
 const MAP: &str = "{ \"classname\" \"worldspawn\" }\n{ \"classname\" \"info_player_start\" \"origin\" \"64 0 24\" }";
@@ -255,23 +311,235 @@ fn a_manual_save_without_its_level_starts_the_player_afresh() {
 }
 
 /// FNV-1a: stable across Rust releases, unlike `DefaultHasher`.
-fn fingerprint(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 #[test]
 fn the_save_layout_is_pinned_so_a_change_bumps_version() {
     // postcard writes fields by position, so a saved type that changes
-    // shape misreads older saves. If this fails, bump VERSION and update
-    // the pin.
-    let mut world = world_with_player();
-    let level = fingerprint(&world.write_level().unwrap());
-    let game = fingerprint(&world.write_game(true).unwrap());
+    // shape (a field added, removed, retyped or moved) misreads older
+    // saves. The pin hashes each field's name and kind in write order, not
+    // the values, so it moves only with the shape. If this fails, bump
+    // VERSION and update the pin.
+    let world = world_with_player();
+    let level = schema::fingerprint(&world.level_save());
+    let game = schema::fingerprint(&GameSave {
+        game: world.game.clone(),
+        clients: world.clients.clone(),
+    });
     assert_eq!(
         (VERSION, level, game),
-        (1, 7_902_816_311_037_946_725, 5_231_457_406_819_656_232),
+        (1, 3_385_623_578_859_607_330, 12_624_391_596_431_867_328),
         "a saved type changed: bump VERSION"
     );
+}
+
+#[test]
+fn the_layout_pin_moves_with_a_field_order_but_not_a_value() {
+    #[derive(serde::Serialize)]
+    struct Ab {
+        a: i32,
+        b: i32,
+    }
+    #[derive(serde::Serialize)]
+    struct Ba {
+        b: i32,
+        a: i32,
+    }
+    let ab = schema::fingerprint(&Ab { a: 1, b: 2 });
+    assert_eq!(ab, schema::fingerprint(&Ab { a: 7, b: 9 }));
+    assert_ne!(ab, schema::fingerprint(&Ba { b: 2, a: 1 }));
+}
+
+/// A serializer that hashes a value's shape: struct and field names,
+/// variant names and primitive kinds, in the order postcard writes them.
+mod schema {
+    use serde::ser::{self, Serialize};
+
+    pub fn fingerprint<T: Serialize>(value: &T) -> u64 {
+        let mut shape = Shape(0xcbf2_9ce4_8422_2325);
+        value.serialize(&mut shape).unwrap();
+        shape.0
+    }
+
+    pub struct Shape(u64);
+
+    impl Shape {
+        fn mark(&mut self, text: &str) {
+            for b in text.bytes().chain([0]) {
+                self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Error;
+    impl std::fmt::Display for Error {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("shape")
+        }
+    }
+    impl std::error::Error for Error {}
+    impl ser::Error for Error {
+        fn custom<T: std::fmt::Display>(_: T) -> Self {
+            Error
+        }
+    }
+
+    type R = Result<(), Error>;
+
+    macro_rules! kinds {
+        ($($method:ident: $ty:ty),*) => {
+            $(fn $method(self, _: $ty) -> R {
+                self.mark(stringify!($ty));
+                Ok(())
+            })*
+        };
+    }
+
+    impl ser::Serializer for &mut Shape {
+        type Ok = ();
+        type Error = Error;
+        type SerializeSeq = Self;
+        type SerializeTuple = Self;
+        type SerializeTupleStruct = Self;
+        type SerializeTupleVariant = Self;
+        type SerializeMap = Self;
+        type SerializeStruct = Self;
+        type SerializeStructVariant = Self;
+
+        kinds!(serialize_bool: bool, serialize_i8: i8, serialize_i16: i16,
+            serialize_i32: i32, serialize_i64: i64, serialize_u8: u8,
+            serialize_u16: u16, serialize_u32: u32, serialize_u64: u64,
+            serialize_f32: f32, serialize_f64: f64, serialize_char: char,
+            serialize_str: &str, serialize_bytes: &[u8]);
+
+        fn serialize_none(self) -> R {
+            self.mark("none");
+            Ok(())
+        }
+        fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> R {
+            self.mark("some");
+            v.serialize(self)
+        }
+        fn serialize_unit(self) -> R {
+            self.mark("unit");
+            Ok(())
+        }
+        fn serialize_unit_struct(self, name: &'static str) -> R {
+            self.mark(name);
+            Ok(())
+        }
+        fn serialize_unit_variant(self, name: &'static str, _: u32, variant: &'static str) -> R {
+            self.mark(name);
+            self.mark(variant);
+            Ok(())
+        }
+        fn serialize_newtype_struct<T: ?Sized + Serialize>(self, name: &'static str, v: &T) -> R {
+            self.mark(name);
+            v.serialize(self)
+        }
+        fn serialize_newtype_variant<T: ?Sized + Serialize>(
+            self,
+            name: &'static str,
+            _: u32,
+            variant: &'static str,
+            v: &T,
+        ) -> R {
+            self.mark(name);
+            self.mark(variant);
+            v.serialize(self)
+        }
+        fn serialize_seq(self, _: Option<usize>) -> Result<Self, Error> {
+            self.mark("seq");
+            Ok(self)
+        }
+        fn serialize_tuple(self, _: usize) -> Result<Self, Error> {
+            self.mark("tuple");
+            Ok(self)
+        }
+        fn serialize_tuple_struct(self, name: &'static str, _: usize) -> Result<Self, Error> {
+            self.mark(name);
+            Ok(self)
+        }
+        fn serialize_tuple_variant(
+            self,
+            name: &'static str,
+            _: u32,
+            variant: &'static str,
+            _: usize,
+        ) -> Result<Self, Error> {
+            self.mark(name);
+            self.mark(variant);
+            Ok(self)
+        }
+        fn serialize_map(self, _: Option<usize>) -> Result<Self, Error> {
+            self.mark("map");
+            Ok(self)
+        }
+        fn serialize_struct(self, name: &'static str, _: usize) -> Result<Self, Error> {
+            self.mark(name);
+            Ok(self)
+        }
+        fn serialize_struct_variant(
+            self,
+            name: &'static str,
+            _: u32,
+            variant: &'static str,
+            _: usize,
+        ) -> Result<Self, Error> {
+            self.mark(name);
+            self.mark(variant);
+            Ok(self)
+        }
+    }
+
+    macro_rules! elements {
+        ($($trait:ident :: $method:ident),*) => {
+            $(impl ser::$trait for &mut Shape {
+                type Ok = ();
+                type Error = Error;
+                fn $method<T: ?Sized + Serialize>(&mut self, v: &T) -> R {
+                    v.serialize(&mut **self)
+                }
+                fn end(self) -> R {
+                    Ok(())
+                }
+            })*
+        };
+    }
+    elements!(
+        SerializeSeq::serialize_element,
+        SerializeTuple::serialize_element,
+        SerializeTupleStruct::serialize_field,
+        SerializeTupleVariant::serialize_field
+    );
+
+    impl ser::SerializeMap for &mut Shape {
+        type Ok = ();
+        type Error = Error;
+        fn serialize_key<T: ?Sized + Serialize>(&mut self, k: &T) -> R {
+            k.serialize(&mut **self)
+        }
+        fn serialize_value<T: ?Sized + Serialize>(&mut self, v: &T) -> R {
+            v.serialize(&mut **self)
+        }
+        fn end(self) -> R {
+            Ok(())
+        }
+    }
+
+    macro_rules! fields {
+        ($($trait:ident),*) => {
+            $(impl ser::$trait for &mut Shape {
+                type Ok = ();
+                type Error = Error;
+                fn serialize_field<T: ?Sized + Serialize>(&mut self, name: &'static str, v: &T) -> R {
+                    self.mark(name);
+                    v.serialize(&mut **self)
+                }
+                fn end(self) -> R {
+                    Ok(())
+                }
+            })*
+        };
+    }
+    fields!(SerializeStruct, SerializeStructVariant);
 }
