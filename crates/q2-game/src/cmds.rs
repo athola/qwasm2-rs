@@ -46,6 +46,7 @@ impl GameWorld {
             "weapprev" => self.cmd_weap_cycle(key, 1),
             "weapnext" => self.cmd_weap_cycle(key, MAX_ITEMS - 1),
             "weaplast" => self.cmd_weap_last(key),
+            "kill" => self.cmd_kill(key),
             _ => {}
         }
     }
@@ -223,6 +224,27 @@ impl GameWorld {
     }
 }
 
+impl GameWorld {
+    /// C `Cmd_Kill_f`: suicide, refused in the first five seconds after
+    /// spawning and for a spectator.
+    fn cmd_kill(&mut self, key: EntityKey) {
+        let Some(client) = self.client(key) else {
+            return;
+        };
+        if self.level.time - client.respawn_time < 5.0 || client.resp.spectator {
+            return;
+        }
+        if let Some(ent) = self.entities.get_mut(key) {
+            ent.game
+                .flags
+                .remove(crate::constants::EntityFlags::GODMODE);
+            ent.game.health = 0;
+        }
+        self.means_of_death = crate::constants::MeansOfDeath::Suicide;
+        crate::player::client::player_die(self, key, key, key, 100_000, q2_shared::Vec3f::ZERO);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
@@ -248,6 +270,36 @@ mod tests {
     fn run(world: &mut GameWorld, gi: &MockGameImport, key: EntityKey, text: &str) {
         *gi.command.borrow_mut() = text.split(' ').map(String::from).collect();
         world.client_command(key);
+    }
+
+    #[test]
+    fn kill_suicides_the_player_five_seconds_after_spawning() {
+        let (mut world, key, gi) = player();
+        let spawned = world.client(key).unwrap().respawn_time;
+        world.level.time = spawned + 5.0;
+        world.entities.get_mut(key).unwrap().game.flags |= crate::constants::EntityFlags::GODMODE;
+        run(&mut world, &gi, key, "kill");
+        let ent = world.entities.get(key).unwrap();
+        assert!(ent.game.health <= 0);
+        assert_eq!(ent.game.deadflag, crate::constants::DeadFlag::Dead);
+        assert_eq!(
+            world.means_of_death,
+            crate::constants::MeansOfDeath::Suicide
+        );
+    }
+
+    #[test]
+    fn kill_is_ignored_within_five_seconds_of_spawning_and_for_a_spectator() {
+        let (mut world, key, gi) = player();
+        let spawned = world.client(key).unwrap().respawn_time;
+        world.level.time = spawned + 4.9;
+        run(&mut world, &gi, key, "kill");
+        assert_eq!(world.entities.get(key).unwrap().game.health, 100);
+
+        world.level.time = spawned + 5.0;
+        world.client_mut(key).unwrap().resp.spectator = true;
+        run(&mut world, &gi, key, "kill");
+        assert_eq!(world.entities.get(key).unwrap().game.health, 100);
     }
 
     fn printed(gi: &MockGameImport) -> Vec<String> {
