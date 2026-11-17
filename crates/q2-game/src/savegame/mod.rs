@@ -71,18 +71,84 @@ fn decode<T: for<'de> Deserialize<'de>>(kind: u8, bytes: &[u8]) -> Q2Result<T> {
     }
 }
 
-/// Whether `bytes` is a game file this build can read, without reading it
-/// into a game: a load checks its files before it gives up the running one.
-pub(crate) fn check_game_file(bytes: &[u8]) -> Q2Result<()> {
-    decode::<GameSave>(KIND_GAME, bytes).map(drop)
+impl GameSave {
+    /// Values a decoded save could hold but play would index out of
+    /// range: the client count, and item indices past the item list.
+    fn check(&self, items: usize) -> Q2Result<()> {
+        if self.clients.len() != self.game.maxclients().max(0) as usize {
+            return Err(Q2Error::Drop("savegame client count is damaged".into()));
+        }
+        let item = |index: Option<usize>| index.is_none_or(|i| i < items);
+        for client in &self.clients {
+            for (pers, prefix) in [
+                (&client.pers, ""),
+                (&client.resp.coop_respawn, "coop_respawn."),
+            ] {
+                let bad = if !(-1..items as i32).contains(&pers.selected_item) {
+                    Some("selected_item")
+                } else if !item(pers.weapon) || !item(pers.last_weapon) {
+                    Some("weapon")
+                } else if pers.inventory[items.min(pers.inventory.len())..]
+                    .iter()
+                    .any(|&n| n != 0)
+                {
+                    Some("inventory")
+                } else {
+                    None
+                };
+                if let Some(field) = bad {
+                    return Err(Q2Error::Drop(format!(
+                        "savegame {prefix}{field} is out of range"
+                    )));
+                }
+            }
+            if !item(client.newweapon) {
+                return Err(Q2Error::Drop("savegame newweapon is out of range".into()));
+            }
+            if client.ammo_index >= client.pers.inventory.len() {
+                return Err(Q2Error::Drop("savegame ammo_index is out of range".into()));
+            }
+        }
+        Ok(())
+    }
 }
 
-/// `check_game_file` for a level file.
-pub(crate) fn check_level_file(bytes: &[u8]) -> Q2Result<()> {
-    decode::<LevelSave>(KIND_LEVEL, bytes).map(drop)
+impl LevelSave {
+    fn check(&self) -> Q2Result<()> {
+        self.entities
+            .check()
+            .and_then(|()| self.trail.check())
+            .map_err(|e| Q2Error::Drop(format!("savegame {e}")))
+    }
+}
+
+/// A game file, refused if its values would break play.
+fn decode_game(bytes: &[u8]) -> Q2Result<GameSave> {
+    let save: GameSave = decode(KIND_GAME, bytes)?;
+    // C's item list is static: the same in every game, initialized or not.
+    save.check(crate::items::build_item_list().len())?;
+    Ok(save)
+}
+
+/// A level file, refused if its values would break play.
+fn decode_level(bytes: &[u8]) -> Q2Result<LevelSave> {
+    let save: LevelSave = decode(KIND_LEVEL, bytes)?;
+    save.check()?;
+    Ok(save)
 }
 
 impl GameWorld {
+    /// Whether `bytes` is a game file this game can read, without reading
+    /// it: a load checks its files before it gives up the running game.
+    pub(crate) fn check_game_file(&self, bytes: &[u8]) -> Q2Result<()> {
+        decode_game(bytes).map(drop)
+    }
+
+    /// `check_game_file` for a level file.
+    pub(crate) fn check_level_file(&self, bytes: &[u8]) -> Q2Result<()> {
+        decode_level(bytes).map(drop)
+    }
+
     /// C `WriteGame`: the cross-level state and every client. A manual save
     /// first copies each player's health and flags into `pers`
     /// (`SaveClientData`); an autosave, written on entering a level, keeps
@@ -107,10 +173,7 @@ impl GameWorld {
     /// C `ReadGame`. The entities are the next level's business: the server
     /// spawns a map and then reads its level file.
     pub fn read_game(&mut self, bytes: &[u8]) -> Q2Result<()> {
-        let GameSave { game, clients } = decode(KIND_GAME, bytes)?;
-        if clients.len() != game.maxclients().max(0) as usize {
-            return Err(Q2Error::Drop("savegame client count is damaged".into()));
-        }
+        let GameSave { game, clients } = decode_game(bytes)?;
         self.set_max_clients(game.maxclients().max(0) as usize);
         self.game = game;
         self.clients = clients;
@@ -144,7 +207,7 @@ impl GameWorld {
     /// clients are marked unconnected, and crosslevel targets start their
     /// countdown.
     pub fn read_level(&mut self, bytes: &[u8]) -> Q2Result<()> {
-        let save: LevelSave = decode(KIND_LEVEL, bytes)?;
+        let save = decode_level(bytes)?;
         self.level = save.level;
         self.entities = save.entities;
         self.entities

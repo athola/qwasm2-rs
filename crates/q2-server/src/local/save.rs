@@ -157,6 +157,19 @@ struct LevelFile {
     portals: Vec<bool>,
 }
 
+impl LevelFile {
+    /// Sizes a decoded file could have but a map cannot: reading one would
+    /// fail after the load gave up the running game.
+    fn check(&self) -> Q2Result<()> {
+        if self.configstrings.len() > q2_shared::constants::MAX_CONFIGSTRINGS
+            || self.portals.len() != q2_common::collision::MAX_MAP_AREAPORTALS
+        {
+            return Err(Q2Error::Drop("level file sizes are damaged".into()));
+        }
+        Ok(())
+    }
+}
+
 const MAGIC: &[u8; 8] = b"Q2RS-SRV";
 const VERSION: u8 = 1;
 
@@ -245,7 +258,7 @@ impl LocalGame {
             .map(|file| file.sequence)
             .max()
             .unwrap_or(0)
-            + 1;
+            .saturating_add(1);
         let server = ServerFile {
             comment: match autosave {
                 true => format!("ENTERING {level_name}"),
@@ -411,7 +424,7 @@ impl LocalGame {
             match name.rsplit_once('.').map(|(_, ext)| ext) {
                 _ if name == "server.ssv" => decode::<ServerFile>(bytes).map(drop),
                 _ if name == "game.ssv" => self.game.check_game(bytes),
-                Some("sv2") => decode::<LevelFile>(bytes).map(drop),
+                Some("sv2") => decode::<LevelFile>(bytes).and_then(|level| level.check()),
                 Some("sav") => {
                     let sv2 = format!("{}.sv2", &name[..name.len() - 4]);
                     match self.saves.file(slot, &sv2) {
@@ -512,6 +525,37 @@ mod tests {
             sequence,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_save_after_one_numbered_at_the_limit_stays_at_the_limit() {
+        let mut game =
+            LocalGame::start("floor_wall", &crate::test_bsp::floor_wall_bsp()).expect("map loads");
+        game.saves
+            .insert("odd/server.ssv", server_file(u64::MAX, "floor_wall"));
+        game.write_server_file(false).unwrap();
+        let current: ServerFile =
+            decode(game.saves.file("current", "server.ssv").unwrap()).unwrap();
+        assert_eq!(current.sequence, u64::MAX);
+    }
+
+    #[test]
+    fn a_level_file_sized_for_no_map_is_refused() {
+        let good = LevelFile {
+            configstrings: vec![String::new(); q2_shared::constants::MAX_CONFIGSTRINGS],
+            portals: vec![false; q2_common::collision::MAX_MAP_AREAPORTALS],
+        };
+        assert!(good.check().is_ok());
+        let short_portals = LevelFile {
+            portals: vec![false; 3],
+            ..good
+        };
+        assert!(short_portals.check().is_err());
+        let long_configstrings = LevelFile {
+            configstrings: vec![String::new(); q2_shared::constants::MAX_CONFIGSTRINGS + 1],
+            portals: vec![false; q2_common::collision::MAX_MAP_AREAPORTALS],
+        };
+        assert!(long_configstrings.check().is_err());
     }
 
     #[test]

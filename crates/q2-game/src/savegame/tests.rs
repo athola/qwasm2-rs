@@ -1,5 +1,5 @@
 use super::*;
-use crate::entity::{EntityKey, MonsterInfo, ThinkFn};
+use crate::entity::{ClientData, EntityKey, MonsterInfo, ThinkFn};
 use crate::world::{test_world, test_world_recording, GameWorld};
 
 fn not_a_game_callback(_: &mut GameWorld, _: EntityKey) {}
@@ -542,4 +542,85 @@ mod schema {
         };
     }
     fields!(SerializeStruct, SerializeStructVariant);
+}
+
+/// A game save of `world` after `tamper` changes its first client.
+fn tampered_game(world: &GameWorld, tamper: impl FnOnce(&mut ClientData)) -> Vec<u8> {
+    let mut clients = world.clients.clone();
+    tamper(&mut clients[0]);
+    encode(
+        KIND_GAME,
+        &GameSave {
+            game: world.game.clone(),
+            clients,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_game_save_whose_item_indices_leave_the_item_list_is_refused() {
+    // They index the inventory and item list every frame: a tampered or
+    // corrupt store must not reach that as a panic.
+    use crate::traits::GameExport;
+    let world = world_with_player();
+    let items = world.items.len();
+    type Tamper = Box<dyn Fn(&mut ClientData)>;
+    let cases: [(&str, Tamper); 6] = [
+        (
+            "ammo_index",
+            Box::new(|c| c.ammo_index = crate::constants::MAX_ITEMS),
+        ),
+        (
+            "selected_item",
+            Box::new(move |c| c.pers.selected_item = items as i32),
+        ),
+        ("weapon", Box::new(move |c| c.pers.weapon = Some(items))),
+        ("newweapon", Box::new(move |c| c.newweapon = Some(items))),
+        ("inventory", Box::new(move |c| c.pers.inventory[items] = 1)),
+        (
+            "coop_respawn",
+            Box::new(move |c| c.resp.coop_respawn.last_weapon = Some(items)),
+        ),
+    ];
+    assert!(world.check_game(&tampered_game(&world, |_| {})).is_ok());
+    for (field, tamper) in cases {
+        let bytes = tampered_game(&world, tamper);
+        let err = world.check_game(&bytes).unwrap_err().to_string();
+        assert!(err.contains(field), "{field}: {err}");
+        let mut loaded = world_with_player();
+        assert!(
+            loaded.read_game(&bytes).is_err(),
+            "{field}: read refused too"
+        );
+    }
+}
+
+#[test]
+fn a_level_save_with_a_bad_trail_or_entity_numbering_is_refused() {
+    use crate::traits::GameExport;
+    let world = world_with_player();
+    let level = |tamper: &dyn Fn(&mut LevelSave)| {
+        let mut save = world.level_save();
+        tamper(&mut save);
+        encode(KIND_LEVEL, &save).unwrap()
+    };
+    assert!(world.check_level(&level(&|_| {})).is_ok());
+    let trail = level(&|s| {
+        s.trail
+            .set_head_for_test(crate::player::trail::TRAIL_LENGTH)
+    });
+    assert!(world
+        .check_level(&trail)
+        .unwrap_err()
+        .to_string()
+        .contains("trail"));
+    let numbering = level(&|s| s.entities.break_numbering_for_test());
+    assert!(world
+        .check_level(&numbering)
+        .unwrap_err()
+        .to_string()
+        .contains("numbering"));
+    let mut loaded = world_with_player();
+    assert!(loaded.read_level(&numbering).is_err(), "read refused too");
 }

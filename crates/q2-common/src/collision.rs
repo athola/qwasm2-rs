@@ -24,7 +24,7 @@ use crate::bsp_file::{
 const MAX_MAP_MODELS: usize = 1024;
 const MAX_MAP_BRUSHES: usize = 8192;
 const MAX_MAP_TEXINFO: usize = 8192;
-const MAX_MAP_AREAPORTALS: usize = 1024;
+pub const MAX_MAP_AREAPORTALS: usize = 1024;
 const MAX_MAP_PLANES: usize = 65536;
 const MAX_MAP_NODES: usize = 65536;
 const MAX_MAP_BRUSHSIDES: usize = 65536;

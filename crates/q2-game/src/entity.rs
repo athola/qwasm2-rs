@@ -756,6 +756,32 @@ impl EntityStorage {
         }
     }
 
+    /// Refuse loaded storage whose number table disagrees with its
+    /// entities: every later spawn and lookup indexes it.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let bad = |why: &str| Err(format!("entity numbering is damaged: {why}"));
+        if self.numbers.len() != self.max_entities || self.max_clients >= self.max_entities {
+            return bad("table size");
+        }
+        let mut listed = 0;
+        for (n, key) in self.numbers.iter().enumerate() {
+            let Some(key) = key else { continue };
+            match self.entities.get(*key) {
+                Some(ent) if usize::try_from(ent.state.number) == Ok(n) => listed += 1,
+                _ => return bad(&format!("number {n}")),
+            }
+        }
+        match listed == self.entities.len() {
+            true => Ok(()),
+            false => bad("unnumbered entities"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn break_numbering_for_test(&mut self) {
+        self.numbers.pop();
+    }
+
     /// The key holding entity number `n` (in use or soft-freed), if any.
     /// `state.number` is public, so debug builds check here that it still
     /// names this slot.

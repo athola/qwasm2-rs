@@ -41,6 +41,19 @@ pub struct PlayerTrail {
 }
 
 impl PlayerTrail {
+    /// Refuse a loaded trail whose `head` is off the ring.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        match self.head < TRAIL_LENGTH {
+            true => Ok(()),
+            false => Err(format!("trail head {} is off the ring", self.head)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_head_for_test(&mut self, head: usize) {
+        self.head = head;
+    }
+
     /// Fresh nodes at the map origin with timestamp 0, as C's newly spawned
     /// edicts. C ref: `PlayerTrail_Init`.
     pub fn init(&mut self) {
