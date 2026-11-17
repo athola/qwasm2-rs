@@ -416,6 +416,16 @@ impl ServerGameImport {
         loaded
     }
 
+    /// Which area portals are open (C CM_WritePortalState).
+    pub fn portal_states(&self) -> Vec<bool> {
+        self.inner.borrow().collision.portal_states().to_vec()
+    }
+
+    /// Restore saved portal states (C CM_ReadPortalState).
+    pub fn set_portal_states(&self, open: &[bool]) -> Q2Result<()> {
+        self.inner.borrow_mut().collision.set_portal_states(open)
+    }
+
     /// Unlink every entity and rebuild the area tree over the loaded map
     /// (C `SV_ClearWorld`), as before a saved level's entities are linked
     /// again.

@@ -1,0 +1,362 @@
+//! The server's save files (C `sv_save.c`) for the in-process game.
+//!
+//! Each slot holds what C writes under `save/<slot>/`: `server.ssv` (the
+//! level to load and the latched cvars), `game.ssv` (the game's
+//! cross-level state), and per visited level `<map>.sv2` (configstrings
+//! and area portals) and `<map>.sav` (the game's level). `current` is the
+//! live slot a unit's levels are kept in; `save0` is the autosave written
+//! on entering a level.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use q2_common::error::{Q2Error, Q2Result};
+use q2_game::traits::GameImport;
+use q2_shared::constants::STAT_HEALTH;
+
+use super::{new_game, LocalGame, LOCAL_PLAYER};
+use crate::state::ServerState;
+
+/// The cvars C saves as CVAR_LATCH ones: they change only with a new game.
+const LATCHED: &[&str] = &["skill", "coop", "deathmatch"];
+
+/// Frames a revisited level runs before the player arrives (C
+/// SV_CheckForSavegame: "run it for ten seconds").
+const REVISIT_FRAMES: usize = 100;
+
+/// Every slot's files by `<slot>/<file>`. The platform persists them.
+#[derive(Debug, Default, Clone)]
+pub struct SaveFiles {
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl SaveFiles {
+    /// `<slot>/<name>`, if written.
+    pub fn file(&self, slot: &str, name: &str) -> Option<&[u8]> {
+        self.files.get(&format!("{slot}/{name}")).map(Vec::as_slice)
+    }
+
+    /// Every file as (`<slot>/<file>`, bytes), for the platform to store.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        self.files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+    }
+
+    /// Put back a file the platform stored, by its `iter` path.
+    pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
+        self.files.insert(path.to_string(), bytes);
+    }
+
+    fn put(&mut self, slot: &str, name: &str, bytes: Vec<u8>) {
+        self.files.insert(format!("{slot}/{name}"), bytes);
+    }
+
+    /// C `SV_WipeSavegame`.
+    pub(super) fn wipe(&mut self, slot: &str) {
+        let prefix = format!("{slot}/");
+        self.files.retain(|path, _| !path.starts_with(&prefix));
+    }
+
+    /// C `SV_CopySaveGame`: `dst` becomes a copy of `src`.
+    pub(super) fn copy(&mut self, src: &str, dst: &str) {
+        self.wipe(dst);
+        let prefix = format!("{src}/");
+        let copies: Vec<_> = self
+            .files
+            .iter()
+            .filter_map(|(path, bytes)| {
+                Some((
+                    format!("{dst}/{}", path.strip_prefix(&prefix)?),
+                    bytes.clone(),
+                ))
+            })
+            .collect();
+        self.files.extend(copies);
+    }
+
+    /// Slots holding a `server.ssv`, the newest first.
+    pub fn slots(&self) -> Vec<String> {
+        let mut slots: Vec<(u64, String)> = self
+            .files
+            .iter()
+            .filter_map(|(path, bytes)| {
+                let slot = path.strip_suffix("/server.ssv")?;
+                if slot == "current" {
+                    return None;
+                }
+                Some((decode::<ServerFile>(bytes).ok()?.sequence, slot.to_string()))
+            })
+            .collect();
+        slots.sort_unstable_by(|a, b| b.cmp(a));
+        slots.into_iter().map(|(_, slot)| slot).collect()
+    }
+}
+
+/// C `server.ssv`.
+#[derive(Serialize, Deserialize)]
+struct ServerFile {
+    /// What the load menu shows: the level name, or "ENTERING <level>".
+    comment: String,
+    /// The level string to load (C `svs.mapcmd`).
+    mapcmd: String,
+    latched: Vec<(String, String)>,
+    /// Orders the saves, newest highest, for the death menu stand-in.
+    sequence: u64,
+}
+
+/// C `<map>.sv2`.
+#[derive(Serialize, Deserialize)]
+struct LevelFile {
+    configstrings: Vec<String>,
+    portals: Vec<bool>,
+}
+
+const MAGIC: &[u8; 8] = b"Q2RS-SRV";
+const VERSION: u8 = 1;
+
+fn encode<T: Serialize>(body: &T) -> Q2Result<Vec<u8>> {
+    let mut out = MAGIC.to_vec();
+    out.push(VERSION);
+    postcard::to_extend(body, out).map_err(|e| Q2Error::Drop(format!("save failed: {e}")))
+}
+
+fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Q2Result<T> {
+    match bytes.strip_prefix(MAGIC.as_slice()) {
+        Some([VERSION, rest @ ..]) => postcard::from_bytes(rest)
+            .map_err(|e| Q2Error::Drop(format!("savegame is damaged: {e}"))),
+        _ => Err(Q2Error::Drop(
+            "savegame from an incompatible version".into(),
+        )),
+    }
+}
+
+/// C refuses these as save names ("Bad savedir."), so a name cannot
+/// reach outside its slot.
+fn bad_slot(slot: &str) -> bool {
+    slot.is_empty() || slot.contains("..") || slot.contains('/') || slot.contains('\\')
+}
+
+impl LocalGame {
+    /// The save slots, for the platform to persist and restore.
+    pub fn saves(&self) -> &SaveFiles {
+        &self.saves
+    }
+
+    pub fn saves_mut(&mut self) -> &mut SaveFiles {
+        &mut self.saves
+    }
+
+    /// C `SV_WriteLevelFile`: the running level into `current`. Without
+    /// `client_bodies` the player is saved as gone (a level being left).
+    pub(super) fn write_level_file(&mut self, client_bodies: bool) -> Q2Result<()> {
+        self.sv.sync_configstrings(&self.gi);
+        let level = LevelFile {
+            configstrings: self.sv.configstrings.clone(),
+            portals: self.gi.portal_states(),
+        };
+        let name = self.sv.name.clone();
+        self.saves
+            .put("current", &format!("{name}.sv2"), encode(&level)?);
+        let game_level = self.game.write_level(client_bodies)?;
+        self.saves
+            .put("current", &format!("{name}.sav"), game_level);
+        Ok(())
+    }
+
+    /// C `SV_ReadLevelFile`.
+    fn read_level_file(&mut self) -> Q2Result<()> {
+        let name = self.sv.name.clone();
+        let missing = || Q2Error::Drop(format!("Failed to open save/current/{name}"));
+        let level: LevelFile = decode(
+            self.saves
+                .file("current", &format!("{name}.sv2"))
+                .ok_or_else(missing)?,
+        )?;
+        let game_level = self
+            .saves
+            .file("current", &format!("{name}.sav"))
+            .ok_or_else(missing)?
+            .to_vec();
+        for (index, value) in level.configstrings.iter().enumerate() {
+            if self.sv.configstrings.get(index) != Some(value) {
+                self.gi.configstring(index as i32, value);
+            }
+        }
+        self.sv.sync_configstrings(&self.gi);
+        self.gi.set_portal_states(&level.portals)?;
+        self.game.read_level(&game_level)?;
+        self.sv.drop_on_game_error(&self.gi)
+    }
+
+    /// C `SV_WriteServerFile` and the game's `WriteGame`, into `current`.
+    pub(super) fn write_server_file(&mut self, autosave: bool) -> Q2Result<()> {
+        let level_name = self.sv.configstrings[q2_shared::constants::CS_NAME].clone();
+        let sequence = self
+            .saves
+            .iter()
+            .filter(|(path, _)| path.ends_with("/server.ssv"))
+            .filter_map(|(_, bytes)| decode::<ServerFile>(bytes).ok())
+            .map(|file| file.sequence)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let server = ServerFile {
+            comment: match autosave {
+                true => format!("ENTERING {level_name}"),
+                false => level_name,
+            },
+            mapcmd: self.svs.mapcmd.clone(),
+            latched: LATCHED
+                .iter()
+                .map(|name| (name.to_string(), self.gi.cvar(name, "")))
+                .filter(|(_, value)| !value.is_empty())
+                .collect(),
+            sequence,
+        };
+        self.saves.put("current", "server.ssv", encode(&server)?);
+        let game = self.game.write_game(autosave)?;
+        self.saves.put("current", "game.ssv", game);
+        Ok(())
+    }
+
+    /// C `SV_ReadServerFile`: the latched cvars, a fresh game (C
+    /// `SV_InitGame`, which drops the client to reconnect), and its
+    /// `ReadGame`. Returns the level to load.
+    fn read_server_file(&mut self) -> Q2Result<String> {
+        let missing = || Q2Error::Drop("Couldn't read save/current/server.ssv".into());
+        let server: ServerFile = decode(
+            self.saves
+                .file("current", "server.ssv")
+                .ok_or_else(missing)?,
+        )?;
+        let game = self
+            .saves
+            .file("current", "game.ssv")
+            .ok_or_else(missing)?
+            .to_vec();
+        for (name, value) in &server.latched {
+            self.gi.set_cvar(name, value);
+        }
+        self.userinfo = self
+            .svs
+            .clients
+            .first()
+            .map(|client| client.userinfo.clone())
+            .unwrap_or_default();
+        self.game = new_game(&self.gi);
+        self.svs.init_game(1);
+        self.gi
+            .set_client_states(self.svs.clients.iter().map(|client| client.state));
+        self.svs.mapcmd = server.mapcmd.clone();
+        self.game.read_game(&game)?;
+        self.sv.drop_on_game_error(&self.gi)?;
+        Ok(server.mapcmd)
+    }
+
+    /// C `SV_CheckForSavegame`, after a map spawned: a level the unit
+    /// visited before replaces the fresh one. Coming back to it (not a
+    /// manual load) runs it ten seconds first, as if time passed there.
+    pub(super) fn check_for_savegame(&mut self, loading: Option<bool>) -> Q2Result<()> {
+        let deathmatch = self.gi.cvar("deathmatch", "0") != "0";
+        if deathmatch
+            || self
+                .saves
+                .file("current", &format!("{}.sav", self.sv.name))
+                .is_none()
+        {
+            return Ok(());
+        }
+        self.gi.clear_world();
+        self.read_level_file()?;
+        let revisit = !matches!(loading, Some(false));
+        if revisit {
+            let state = std::mem::replace(&mut self.sv.state, ServerState::Loading);
+            for _ in 0..REVISIT_FRAMES {
+                self.game.run_frame();
+                self.sv.drop_on_game_error(&self.gi)?;
+            }
+            self.sv.state = state;
+            // What those frames sent has no client to go to.
+            self.gi.take_messages();
+            self.gi.take_sounds();
+        }
+        self.sv.sync_configstrings(&self.gi);
+        Ok(())
+    }
+
+    /// C `SV_Savegame_f`.
+    fn save_game(&mut self, slot: &str) -> Q2Result<()> {
+        let dead = self
+            .game
+            .client_player_state(LOCAL_PLAYER)
+            .is_some_and(|ps| ps.stats[STAT_HEALTH] <= 0);
+        let refusal = if self.sv.state != ServerState::Game {
+            Some("You must be in a game to save.")
+        } else if self.gi.cvar("deathmatch", "0") != "0" {
+            Some("Can't savegame in a deathmatch")
+        } else if slot == "current" {
+            Some("Can't save to 'current'")
+        } else if bad_slot(slot) {
+            Some("Bad savedir.")
+        } else if dead {
+            Some("Can't savegame while dead!")
+        } else {
+            None
+        };
+        if let Some(refusal) = refusal {
+            tracing::info!("{refusal}");
+            return Ok(());
+        }
+        tracing::info!("Saving game...");
+        // The player stays in the level: loading it puts them back there.
+        self.write_level_file(true)?;
+        self.write_server_file(false)?;
+        self.saves.copy("current", slot);
+        tracing::info!("Done.");
+        Ok(())
+    }
+
+    /// C `SV_Loadgame_f`, up to the map change: the platform reads the
+    /// level's map for `take_map_change` and `change_map` finishes it.
+    fn load_game(&mut self, slot: &str) -> Q2Result<()> {
+        if bad_slot(slot) {
+            tracing::info!("Bad savedir.");
+            return Ok(());
+        }
+        if self.saves.file(slot, "server.ssv").is_none() {
+            tracing::info!("No such savegame: {slot}");
+            return Ok(());
+        }
+        tracing::info!("Loading game...");
+        if slot != "current" {
+            self.saves.copy(slot, "current");
+        }
+        let mapcmd = self.read_server_file()?;
+        // C sv.state = ss_dead: the level being left is not saved.
+        self.sv.state = ServerState::Dead;
+        self.loading = Some(slot == "save0" || slot == "current");
+        *self.next_map.borrow_mut() = Some(mapcmd);
+        Ok(())
+    }
+
+    /// The console commands queued since the last call, run in order.
+    pub(super) fn run_server_commands(&mut self) -> Q2Result<()> {
+        let commands = std::mem::take(&mut *self.server_commands.borrow_mut());
+        for args in commands {
+            match args.as_slice() {
+                [cmd, slot] if cmd == "savegame" => self.save_game(slot)?,
+                [cmd, slot] if cmd == "loadgame" => self.load_game(slot)?,
+                // C pushes the load menu; with no menu, load the newest save.
+                [cmd] if cmd == "menu_loadgame" => match self.saves.slots().first() {
+                    Some(slot) => self.load_game(&slot.clone())?,
+                    None => tracing::info!("No savegame to load"),
+                },
+                [cmd, ..] => tracing::info!("USAGE: {cmd} <directory>"),
+                [] => {}
+            }
+        }
+        Ok(())
+    }
+}

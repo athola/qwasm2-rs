@@ -146,6 +146,9 @@ impl Server {
 /// What a level string loads (C `SV_Map`'s parsing of its `levelstring`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapRequest {
+    /// The level string as given (C `svs.mapcmd`). A leading `*` starts a
+    /// new unit: `gamemap` then wipes the unit's saved levels.
+    pub level: String,
     /// Map (or cinematic, demo or picture) name, without the `*` new-unit
     /// flag, the `$spawnpoint` or the `+` remainder.
     pub map: String,
@@ -172,10 +175,10 @@ pub enum LevelKind {
 impl MapRequest {
     /// C `SV_Map`: cut at the first `+` (the rest becomes `nextserver`),
     /// then at the first `$` (the rest is the spawnpoint), then drop a
-    /// leading `*`. A `*` only matters to C's savegames, which this port
-    /// does not write. The coop `victory.pcx` hack needs a coop cvar and is
+    /// leading `*`. The coop `victory.pcx` hack needs a coop cvar and is
     /// not ported.
     pub fn parse(level: &str) -> Self {
+        let whole = level.to_string();
         let (level, next_server) = match level.split_once('+') {
             Some((level, rest)) => (level, Some(rest.to_string())),
             None => (level, None),
@@ -193,6 +196,7 @@ impl MapRequest {
             LevelKind::Game
         };
         Self {
+            level: whole,
             map: map.to_string(),
             spawnpoint: spawnpoint.to_string(),
             next_server,
