@@ -540,6 +540,36 @@ mod tests {
     }
 
     #[test]
+    fn the_server_file_layout_is_pinned_so_a_change_bumps_version() {
+        // postcard writes fields by position: a reordered or retyped
+        // field misreads older saves. Every field holds a distinct value,
+        // so any such change moves the bytes. If this fails, bump VERSION
+        // and update the pin.
+        let server = encode(&ServerFile {
+            comment: "ENTERING Outer Base".into(),
+            mapcmd: "*base1$start".into(),
+            latched: vec![("skill".into(), "2".into())],
+            sequence: 7,
+        })
+        .unwrap();
+        let level = encode(&LevelFile {
+            configstrings: vec!["a".into(), String::new(), "b".into()],
+            portals: vec![true, false],
+        })
+        .unwrap();
+        let fingerprint = |bytes: &[u8]| {
+            bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            })
+        };
+        assert_eq!(
+            (VERSION, fingerprint(&server), fingerprint(&level)),
+            (1, 1_676_326_312_022_693_364, 6_933_407_155_205_816_557),
+            "a server save type changed: bump VERSION"
+        );
+    }
+
+    #[test]
     fn a_level_file_sized_for_no_map_is_refused() {
         let good = LevelFile {
             configstrings: vec![String::new(); q2_shared::constants::MAX_CONFIGSTRINGS],

@@ -316,9 +316,15 @@ fn the_save_layout_is_pinned_so_a_change_bumps_version() {
     // postcard writes fields by position, so a saved type that changes
     // shape (a field added, removed, retyped or moved) misreads older
     // saves. The pin hashes each field's name and kind in write order, not
-    // the values, so it moves only with the shape. If this fails, bump
+    // the values, so it moves only with the shape. A variant is hashed with
+    // its index, as postcard writes it. If this fails, bump
     // VERSION and update the pin.
-    let world = world_with_player();
+    let mut world = world_with_player();
+    // A monster and a mover, so their boxed state is walked too.
+    let key = spawn(&mut world, "monster_soldier");
+    let ent = world.entities.get_mut(key).unwrap();
+    ent.monsterinfo = Some(Box::default());
+    ent.moveinfo = Some(Box::default());
     let level = schema::fingerprint(&world.level_save());
     let game = schema::fingerprint(&GameSave {
         game: world.game.clone(),
@@ -326,7 +332,7 @@ fn the_save_layout_is_pinned_so_a_change_bumps_version() {
     });
     assert_eq!(
         (VERSION, level, game),
-        (1, 3_385_623_578_859_607_330, 12_624_391_596_431_867_328),
+        (1, 17_025_363_215_175_163_328, 16_405_783_843_122_185_071),
         "a saved type changed: bump VERSION"
     );
 }
@@ -427,9 +433,14 @@ mod schema {
             self.mark(name);
             Ok(())
         }
-        fn serialize_unit_variant(self, name: &'static str, _: u32, variant: &'static str) -> R {
+        fn serialize_unit_variant(
+            self,
+            name: &'static str,
+            index: u32,
+            variant: &'static str,
+        ) -> R {
             self.mark(name);
-            self.mark(variant);
+            self.mark(&format!("{index}{variant}"));
             Ok(())
         }
         fn serialize_newtype_struct<T: ?Sized + Serialize>(self, name: &'static str, v: &T) -> R {
@@ -439,12 +450,12 @@ mod schema {
         fn serialize_newtype_variant<T: ?Sized + Serialize>(
             self,
             name: &'static str,
-            _: u32,
+            index: u32,
             variant: &'static str,
             v: &T,
         ) -> R {
             self.mark(name);
-            self.mark(variant);
+            self.mark(&format!("{index}{variant}"));
             v.serialize(self)
         }
         fn serialize_seq(self, _: Option<usize>) -> Result<Self, Error> {
@@ -462,12 +473,12 @@ mod schema {
         fn serialize_tuple_variant(
             self,
             name: &'static str,
-            _: u32,
+            index: u32,
             variant: &'static str,
             _: usize,
         ) -> Result<Self, Error> {
             self.mark(name);
-            self.mark(variant);
+            self.mark(&format!("{index}{variant}"));
             Ok(self)
         }
         fn serialize_map(self, _: Option<usize>) -> Result<Self, Error> {
@@ -481,12 +492,12 @@ mod schema {
         fn serialize_struct_variant(
             self,
             name: &'static str,
-            _: u32,
+            index: u32,
             variant: &'static str,
             _: usize,
         ) -> Result<Self, Error> {
             self.mark(name);
-            self.mark(variant);
+            self.mark(&format!("{index}{variant}"));
             Ok(self)
         }
     }

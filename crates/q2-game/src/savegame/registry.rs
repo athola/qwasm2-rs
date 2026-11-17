@@ -165,4 +165,64 @@ mod tests {
     fn a_name_of_another_signature_is_not_found() {
         assert!(by_name::<TouchFn>("func::move_done").is_none());
     }
+
+    /// Every name the tables held when save VERSION 1 was set, which a
+    /// save written then may hold. Regenerate it with
+    /// `Q2_WRITE_SAVE_NAMES=1 cargo test -p q2-game saved_names` when
+    /// VERSION is bumped.
+    const SAVED_NAMES: &str = include_str!("names_v1.txt");
+
+    fn current_names() -> String {
+        fn table<F: Callback>(kind: &str, out: &mut String) {
+            for (name, _) in F::table() {
+                out.push_str(&format!("{kind} {name}\n"));
+            }
+        }
+        let mut out = String::new();
+        table::<ThinkFn>("think", &mut out);
+        table::<MonsterCheckAttackFn>("checkattack", &mut out);
+        table::<BlockedFn>("blocked", &mut out);
+        table::<UseFn>("use", &mut out);
+        table::<MonsterDodgeFn>("dodge", &mut out);
+        table::<PainFn>("pain", &mut out);
+        table::<TouchFn>("touch", &mut out);
+        table::<DieFn>("die", &mut out);
+        for (name, _) in MONSTER_MOVES {
+            out.push_str(&format!("move {name}\n"));
+        }
+        out
+    }
+
+    #[test]
+    fn every_saved_name_of_this_version_still_resolves() {
+        // A rename or removal makes saves of this version fail to load:
+        // bump VERSION and regenerate the list. Additions are harmless.
+        if std::env::var_os("Q2_WRITE_SAVE_NAMES").is_some() {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/savegame/names_v1.txt");
+            std::fs::write(path, current_names()).unwrap();
+            return;
+        }
+        let missing: Vec<&str> = SAVED_NAMES
+            .lines()
+            .filter(|line| {
+                let Some((kind, name)) = line.split_once(' ') else {
+                    return true;
+                };
+                let found = match kind {
+                    "think" => by_name::<ThinkFn>(name).is_some(),
+                    "checkattack" => by_name::<MonsterCheckAttackFn>(name).is_some(),
+                    "blocked" => by_name::<BlockedFn>(name).is_some(),
+                    "use" => by_name::<UseFn>(name).is_some(),
+                    "dodge" => by_name::<MonsterDodgeFn>(name).is_some(),
+                    "pain" => by_name::<PainFn>(name).is_some(),
+                    "touch" => by_name::<TouchFn>(name).is_some(),
+                    "die" => by_name::<DieFn>(name).is_some(),
+                    "move" => move_by_name(name).is_some(),
+                    _ => false,
+                };
+                !found
+            })
+            .collect();
+        assert!(missing.is_empty(), "bump VERSION: {missing:?}");
+    }
 }
