@@ -127,12 +127,19 @@ fn wrap180(d: f32) -> f32 {
     }
 }
 
-/// C's two ifs, not `f32::clamp`: a map's negative `speed` makes the
-/// bounds cross, which would panic `clamp` and leaves C at `-step`.
-fn cap_turn(delta: f32, step: f32) -> f32 {
-    let delta = if delta > step { step } else { delta };
-    if delta < -step {
-        -step
+/// `delta` held within `speed * FRAMETIME`, which C compares and assigns
+/// in double (FRAMETIME is the double 0.1). C's two ifs, not
+/// `f32::clamp`: a map's negative `speed` makes the bounds cross, which
+/// would panic `clamp` and leaves C at `-step`.
+fn cap_turn(delta: f32, speed: f32) -> f32 {
+    let step = f64::from(speed) * C_FRAMETIME;
+    let delta = if f64::from(delta) > step {
+        step as f32
+    } else {
+        delta
+    };
+    if f64::from(delta) < -step {
+        (-step) as f32
     } else {
         delta
     }
@@ -170,10 +177,10 @@ pub fn turret_breach_think(world: &mut GameWorld, key: EntityKey) {
     }
     ent.game.move_angles = aim;
 
-    let step = ent.game.speed * FRAMETIME;
+    let speed = ent.game.speed;
     let mut delta = aim - current_angles;
-    delta.x = cap_turn(wrap180(delta.x), step);
-    delta.y = cap_turn(wrap180(delta.y), step);
+    delta.x = cap_turn(wrap180(delta.x), speed);
+    delta.y = cap_turn(wrap180(delta.y), speed);
     delta.z = 0.0;
     ent.avelocity = delta * (1.0 / FRAMETIME);
     ent.game.nextthink = time + FRAMETIME;
@@ -629,6 +636,14 @@ mod tests {
             base,
             driver,
         }
+    }
+
+    #[test]
+    fn the_turn_cap_is_the_double_speed_step_rounded_once_like_c() {
+        // C compares and assigns self->speed * FRAMETIME in double.
+        assert_eq!(cap_turn(5.0, 9.0).to_bits(), 0x3f66_6666);
+        assert_eq!(cap_turn(-5.0, 9.0).to_bits(), 0xbf66_6666);
+        assert_eq!(cap_turn(0.5, 9.0), 0.5);
     }
 
     #[test]
