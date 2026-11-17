@@ -151,7 +151,7 @@ impl Server {
                 "Game DLL corrupted server configstrings".into(),
             ));
         }
-        // TODO(#10): SV_CreateBaseline once client messages are sent.
+        self.create_baseline(game);
 
         // All precaches complete — go live.
         self.state = serverstate;
@@ -239,6 +239,27 @@ impl MapRequest {
 }
 
 impl Server {
+    /// C `SV_CreateBaseline`: each edict in use that shows a model, a sound
+    /// or effects becomes its number's baseline, `old_origin` at its
+    /// origin. C also writes those two fields back into the edict; the
+    /// game sets `old_origin` itself every frame (G_RunFrame) before any
+    /// client frame is built, so only the server's copy is set here.
+    fn create_baseline(&mut self, game: &dyn GameExport) {
+        for number in 1..game.num_edicts().min(self.baselines.len()) {
+            let Some(edict) = game.edict(number) else {
+                continue;
+            };
+            let s = edict.state;
+            if s.modelindex == 0 && s.sound == 0 && s.effects == 0 {
+                continue;
+            }
+            let mut baseline = s.clone();
+            baseline.number = number as i32;
+            baseline.old_origin = baseline.origin;
+            self.baselines[number] = baseline;
+        }
+    }
+
     /// Copy the configstrings the game wrote through the import's mirror
     /// into `configstrings`. In C the game writes `sv.configstrings`
     /// directly, so this runs after every call into the game that can
