@@ -246,7 +246,7 @@ impl ClientState {
             q2_drop!("parse_frame: expected PlayerInfo (17), got {ps_cmd}");
         }
         let old_ps = old_frame.as_ref().map(|f| &f.playerstate);
-        let playerstate = read_player_state(msg, old_ps);
+        let playerstate = read_player_state(msg, old_ps, self.attractloop);
 
         // svc_packetentities must follow immediately.
         let pe_cmd = msg.read_byte();
@@ -464,7 +464,11 @@ fn pm_type_from_byte(b: i32) -> PmType {
 /// Decode a delta-compressed player state.
 ///
 /// `old` is `None` for an uncompressed (baseline) frame.
-fn read_player_state(msg: &mut NetMsg, old: Option<&PlayerState>) -> PlayerState {
+fn read_player_state(
+    msg: &mut NetMsg,
+    old: Option<&PlayerState>,
+    attractloop: bool,
+) -> PlayerState {
     let zero = PlayerState::default();
     let base = old.unwrap_or(&zero);
     let mut s = base.clone();
@@ -497,6 +501,10 @@ fn read_player_state(msg: &mut NetMsg, old: Option<&PlayerState>) -> PlayerState
         s.pmove.delta_angles[0] = msg.read_short() as i16;
         s.pmove.delta_angles[1] = msg.read_short() as i16;
         s.pmove.delta_angles[2] = msg.read_short() as i16;
+    }
+    // C: a demo's recorded player is not predicted.
+    if attractloop {
+        s.pmove.pm_type = PmType::Freeze;
     }
     if flags.contains(PlayerStateFlags::VIEWOFFSET) {
         s.viewoffset.x = msg.read_char() as f32 * 0.25;
@@ -1055,7 +1063,7 @@ mod tests {
         msg.begin_reading();
         // read_player_state expects the svc_playerinfo byte consumed already
         let _ = msg.read_byte(); // consume PlayerInfo opcode
-        let decoded = read_player_state(&mut msg, None);
+        let decoded = read_player_state(&mut msg, None, false);
 
         assert_eq!(decoded.pmove.origin, new_ps.pmove.origin);
         assert_eq!(decoded.pmove.gravity, new_ps.pmove.gravity);
@@ -1064,6 +1072,23 @@ mod tests {
         // Viewangles are angle16-compressed (lossy); check within quantization error.
         assert!((decoded.viewangles.x - new_ps.viewangles.x).abs() < 0.1);
         assert!((decoded.viewangles.y - new_ps.viewangles.y).abs() < 0.1);
+    }
+
+    #[test]
+    fn a_demo_loops_player_state_is_frozen() {
+        // C CL_ParsePlayerstate: in an attract loop the recorded player
+        // must not be moved by prediction.
+        let new_ps = PlayerState::default();
+        let mut msg = NetMsg::new();
+        msg.write_player_state(&PlayerState::default(), &new_ps);
+        msg.begin_reading();
+        let _ = msg.read_byte();
+        let decoded = read_player_state(&mut msg, None, true);
+        assert_eq!(decoded.pmove.pm_type, q2_shared::types::PmType::Freeze);
+        msg.begin_reading();
+        let _ = msg.read_byte();
+        let decoded = read_player_state(&mut msg, None, false);
+        assert_eq!(decoded.pmove.pm_type, new_ps.pmove.pm_type);
     }
 
     #[test]
@@ -1078,7 +1103,7 @@ mod tests {
         msg.write_player_state(&old_ps, &new_ps);
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PlayerInfo opcode
-        let decoded = read_player_state(&mut msg, None);
+        let decoded = read_player_state(&mut msg, None, false);
         assert_eq!(decoded.stats[31], 42);
     }
 
@@ -1333,7 +1358,7 @@ mod tests {
         msg.write_player_state(&old_ps, &new_ps);
         msg.begin_reading();
         let _ = msg.read_byte(); // consume PlayerInfo opcode
-        let decoded = read_player_state(&mut msg, None);
+        let decoded = read_player_state(&mut msg, None, false);
 
         assert_eq!(decoded.gunframe, 7);
         // gunoffset/gunangles stored as (val * 4) as i8 → 0.25 resolution
