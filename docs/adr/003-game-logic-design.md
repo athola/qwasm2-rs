@@ -73,7 +73,12 @@ files in `SaveFiles`: `server.ssv`, `game.ssv`, and each visited level's
 their state between visits, a starred level wipes the unit, entering a
 level writes the `save0` autosave, and `save`, `load` and `menu_loadgame`
 are server commands (F6, F9 and F3 in the browser). The browser keeps the
-files in IndexedDB.
+files in IndexedDB through a small store in the page template
+(`q2-bundler`, `window.qwasm2Saves`) rather than web-sys bindings in
+`q2-platform`: the engine hands it each changed file and goes on. The
+store is shared by every pak served from one origin, so the platform
+tells `LocalGame` which maps its pak holds and a save of another pak's
+map is refused.
 
 ### Entities
 
@@ -182,7 +187,10 @@ effects, and the deathmatch rules end matches through C's intermission.
   reads, such as `cl_gun` and `g_commanderbody_nogod`, go through
   `GameImport::cvar`, which `LocalGame::set_cvar` fills. Player footsteps play
   (`g_footsteps` 1); monster footsteps read `g_monsterfootsteps`, which
-  defaults to 0 as in C, so they are silent unless it is set.
+  defaults to 0 as in C, so they are silent unless it is set. The
+  server still latches `skill`, `coop` and `deathmatch` into a save and
+  refuses to save in deathmatch from its own cvar, as C's server does,
+  though the game reads its rule fields instead.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.

@@ -51,7 +51,9 @@ Four trait interfaces enforce the key abstraction boundaries:
    C `game_import_t` function-pointer table.
 
 3. **`GameExport`** (q2-game) - Game interface exposed to server: init,
-   spawn_entities, client lifecycle, run_frame. Replaces C `game_export_t`.
+   spawn_entities, client lifecycle, run_frame, the edict read surface
+   (amended 2026-10-27), and the save files (write/read/check of the game
+   and level files). Replaces C `game_export_t`.
 
 4. **`PakReader`** (q2-common) - Byte-range reader for PAK archive backends.
    `DiskPakReader` (native) opens the file per read. `InMemPakReader` slices

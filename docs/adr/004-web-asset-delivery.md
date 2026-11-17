@@ -46,6 +46,9 @@ Repack at build time and compress, with room to transcode later.
 The demo pak goes from about 50 MB to about 28 MB on the wire. The original
 targets (8 MB raw, 3 MB Brotli) assumed filtering out everything except maps,
 which was dropped once the full asset set was kept for upcoming renderer and
-audio work; meeting them needs WAV-to-Opus and texture transcoding steps in
-the repacker when audio and textures land. Revisit Range streaming if the
-retail pak becomes the target.
+audio work. Audio and textures have since landed without transcoding, so
+those targets stay unmet; meeting them needs WAV-to-Opus and texture
+transcoding steps in the repacker. A user's own retail paks merge into one
+web pak of about 196 MB, served whole by `make play-retail` and never
+published; revisit Range streaming or transcoding if a hosted build is ever
+to serve retail data.
