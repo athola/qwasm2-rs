@@ -353,7 +353,10 @@ function storedSaves() {{
   if (!saveDb) return Promise.resolve([]);
   return new Promise((resolve, reject) => {{
     const files = [];
-    const req = saveDb.transaction('files').objectStore('files').openCursor();
+    const tx = saveDb.transaction('files');
+    // An abort (storage evicted) fires no request error.
+    tx.onabort = () => reject(tx.error);
+    const req = tx.objectStore('files').openCursor();
     req.onsuccess = () => {{
       const cursor = req.result;
       if (!cursor) return resolve(files);
@@ -377,7 +380,11 @@ try {{
   // Pages under /qwasm2-rs/play/, with gamedata/ beside it in both.
   const pakUrl = 'gamedata/baseq2/pak0-web.pak';
 
-  await start_game('canvas', pakUrl, await storedSaves());
+  const saves = await storedSaves().catch((e) => {{
+    console.error('[qwasm2-rs] saved games not read:', e);
+    return [];
+  }});
+  await start_game('canvas', pakUrl, saves);
 }} catch (e) {{
   // textContent: error text can carry pak-derived strings; never parse it as HTML.
   const line = document.createElement('span');
@@ -505,7 +512,11 @@ mod tests {
         let html = fs::read_to_string(&out).unwrap();
         let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
         assert!(html.contains(&inlined));
-        assert!(html.contains("await start_game('canvas', pakUrl, await storedSaves());"));
+        assert!(html.contains("await start_game('canvas', pakUrl, saves);"));
+        assert!(
+            html.contains("storedSaves().catch("),
+            "an unreadable store starts a game without saves"
+        );
         assert!(
             html.contains("window.qwasm2Saves = {"),
             "the save store the engine calls"

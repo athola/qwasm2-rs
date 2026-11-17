@@ -447,6 +447,8 @@ impl Engine {
         {
             if let Err(e) = self.local.console(command) {
                 report_error(&format!("ERROR: {e}"));
+                // A save written before the error is still kept.
+                flush_saves(&mut self.local);
                 self.dropped = true;
                 return;
             }
@@ -472,6 +474,7 @@ impl Engine {
             .and_then(|()| self.local.frame(elapsed_us))
         {
             report_error(&format!("ERROR: {e}"));
+            flush_saves(&mut self.local);
             self.dropped = true;
             return;
         }
@@ -1277,14 +1280,68 @@ const BINDS: [(u8, &str); 23] = [
 ];
 
 /// Put back the save files the page kept from earlier visits, except
-/// `current`, which a new game starts over as C SV_Map_f does. The last
-/// visit's `save0` replaces the new game's (ADR-005).
+/// `current`, which a new game starts over as C SV_Map_f does: the page
+/// drops its old copy. The last visit's `save0` replaces the new game's
+/// (ADR-005). A slot whose level is not in this pak (`has_map`) is left
+/// out: the page's store is shared by every pak served from its origin.
 #[cfg(any(target_arch = "wasm32", test))]
-fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
+fn restore_saves(
+    local: &mut q2_server::local::LocalGame,
+    files: Vec<(String, Vec<u8>)>,
+    has_map: impl Fn(&str) -> bool,
+) {
+    let mut stored = q2_server::local::SaveFiles::default();
     for (path, bytes) in files {
-        if !path.starts_with("current/") {
-            local.saves_mut().insert(&path, bytes);
+        stored.insert(&path, bytes);
+    }
+    let playable = |slot: &str| {
+        stored
+            .level(slot)
+            .is_none_or(|level| destination(&level).is_none_or(|map| has_map(&map)))
+    };
+    let slot_of = |path: &str| {
+        path.rsplit_once('/')
+            .map_or("", |(slot, _)| slot)
+            .to_string()
+    };
+    // A restored slot replaces the new game's whole: no mixed save0.
+    let replaced: Vec<String> = local
+        .saves()
+        .iter()
+        .map(|(path, _)| path.to_string())
+        .filter(|path| {
+            let slot = slot_of(path);
+            slot != "current"
+                && stored.iter().any(|(kept, _)| slot_of(kept) == slot)
+                && playable(&slot)
+                && stored.iter().all(|(kept, _)| kept != path)
+        })
+        .collect();
+    for path in replaced {
+        local.saves_mut().discard(&path);
+    }
+    for (path, bytes) in stored.iter() {
+        let slot = slot_of(path);
+        if slot == "current" {
+            if local.saves().iter().all(|(own, _)| own != path) {
+                local.saves_mut().discard(path);
+            }
+        } else if playable(&slot) {
+            local.saves_mut().insert(path, bytes.to_vec());
         }
+    }
+}
+
+/// The game map a level string ends in, following a cinematic's next
+/// server; `None` for a picture or a cinematic with none.
+#[cfg(any(target_arch = "wasm32", test))]
+fn destination(level: &str) -> Option<String> {
+    use q2_server::init::{LevelKind, MapRequest};
+    let request = MapRequest::parse(level);
+    match (request.kind, request.next_server) {
+        (LevelKind::Game, _) => Some(request.map),
+        (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => destination(&next),
+        _ => None,
     }
 }
 
@@ -1933,7 +1990,18 @@ async fn load_engine(
     )
     .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
-    restore_saves(&mut local, saves);
+    restore_saves(&mut local, saves, |map| {
+        let found = fs.file_exists(&format!("maps/{map}.bsp"));
+        if !found {
+            console::warn_1(
+                &format!(
+                    "[qwasm2-rs] a save of {map}, which this pak lacks, is kept but not offered"
+                )
+                .into(),
+            );
+        }
+        found
+    });
     // The new game's own `current` and autosave go to the page too.
     flush_saves(&mut local);
     if let Some((origin, ps)) = local.player() {
@@ -3304,26 +3372,80 @@ mod tests {
     fn a_new_game_restores_the_kept_saves_and_autosave_but_starts_current_over() {
         let map = crate::test_bsp::floor_wall_bsp();
         let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
-        local.saves_mut().take_changes();
+        let quick = local
+            .saves()
+            .file("current", "server.ssv")
+            .unwrap()
+            .to_vec();
+        let new_current: Vec<String> = local
+            .saves()
+            .iter()
+            .filter(|(path, _)| path.starts_with("current/"))
+            .map(|(path, _)| path.to_string())
+            .collect();
         restore_saves(
             &mut local,
             vec![
-                ("quick/server.ssv".into(), vec![1]),
+                ("quick/server.ssv".into(), quick.clone()),
                 ("current/old.sav".into(), vec![2]),
-                ("save0/server.ssv".into(), vec![3]),
+                ("save0/server.ssv".into(), quick.clone()),
             ],
+            |map| map == "floor_wall",
         );
-        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&[1u8][..]));
+        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&quick[..]));
         assert!(local.saves().file("current", "old.sav").is_none());
         assert_eq!(
             local.saves().file("save0", "server.ssv"),
-            Some(&[3u8][..]),
+            Some(&quick[..]),
             "the last visit's autosave survives the reload"
         );
-        assert!(
-            local.saves_mut().take_changes().is_empty(),
-            "the page has them already"
+        let mut changes: Vec<String> = local
+            .saves_mut()
+            .take_changes()
+            .into_iter()
+            .map(|(path, bytes)| format!("{path} {}", bytes.is_some()))
+            .collect();
+        changes.sort();
+        let mut expected: Vec<String> = new_current.iter().map(|p| format!("{p} true")).collect();
+        expected.push("current/old.sav false".into());
+        // The new game's own save0 file the restored save0 lacks.
+        expected.push("save0/game.ssv false".into());
+        expected.sort();
+        assert_eq!(
+            changes, expected,
+            "the page gets the new game's current, loses the old one, keeps its saves"
         );
+    }
+
+    #[test]
+    fn a_save_of_a_map_the_pak_lacks_is_not_restored() {
+        // Another pak's saves share the page's store (demo and retail on
+        // one origin); loading one would end the game on a missing map.
+        let map = crate::test_bsp::floor_wall_bsp();
+        let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
+        let ours = local
+            .saves()
+            .file("current", "server.ssv")
+            .unwrap()
+            .to_vec();
+        let other = q2_server::local::LocalGame::start("their_map", &map).expect("map loads");
+        let theirs = other
+            .saves()
+            .file("current", "server.ssv")
+            .unwrap()
+            .to_vec();
+        restore_saves(
+            &mut local,
+            vec![
+                ("mine/server.ssv".into(), ours),
+                ("mine/game.ssv".into(), vec![1]),
+                ("theirs/server.ssv".into(), theirs),
+                ("theirs/game.ssv".into(), vec![1]),
+            ],
+            |map| map == "floor_wall",
+        );
+        assert!(local.saves().file("mine", "game.ssv").is_some());
+        assert!(local.saves().file("theirs", "game.ssv").is_none());
     }
 
     #[test]

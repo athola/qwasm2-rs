@@ -50,7 +50,22 @@ impl SaveFiles {
     /// Put back a file the platform stored, by its `iter` path. It is
     /// not a change: the platform has it already.
     pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
+        self.changed.remove(path);
         self.files.insert(path.to_string(), bytes);
+    }
+
+    /// Drop a file the platform stored, so its copy is removed too.
+    pub fn discard(&mut self, path: &str) {
+        self.files.remove(path);
+        self.changed.insert(path.to_string());
+    }
+
+    /// The level string `slot` loads (C `svs.mapcmd`), if it holds a
+    /// readable `server.ssv`.
+    pub fn level(&self, slot: &str) -> Option<String> {
+        decode::<ServerFile>(self.file(slot, "server.ssv")?)
+            .ok()
+            .map(|server| server.mapcmd)
     }
 
     /// Each path written or removed since the last call, with its bytes
@@ -111,7 +126,7 @@ impl SaveFiles {
             .iter()
             .filter_map(|(path, bytes)| {
                 let slot = path.strip_suffix("/server.ssv")?;
-                if slot == "current" {
+                if slot == "current" || bad_slot(slot) {
                     return None;
                 }
                 Some((decode::<ServerFile>(bytes).ok()?.sequence, slot.to_string()))
@@ -452,5 +467,49 @@ mod tests {
             ]
         );
         assert!(saves.take_changes().is_empty());
+    }
+
+    #[test]
+    fn restoring_a_file_written_this_visit_takes_back_its_change() {
+        let mut saves = SaveFiles::default();
+        saves.put("save0", "server.ssv", vec![1]);
+        saves.insert("save0/server.ssv", vec![2]);
+        assert!(saves.take_changes().is_empty(), "the platform has it");
+    }
+
+    #[test]
+    fn discarding_a_stored_file_removes_it_from_the_platform() {
+        let mut saves = SaveFiles::default();
+        saves.discard("current/old.sav");
+        assert_eq!(
+            saves.take_changes(),
+            vec![("current/old.sav".to_string(), None)]
+        );
+    }
+
+    fn server_file(sequence: u64, mapcmd: &str) -> Vec<u8> {
+        encode(&ServerFile {
+            comment: String::new(),
+            mapcmd: mapcmd.into(),
+            latched: Vec::new(),
+            sequence,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn slots_skip_a_name_a_save_could_not_have() {
+        let mut saves = SaveFiles::default();
+        saves.insert("good/server.ssv", server_file(1, "base1"));
+        saves.insert("a/b/server.ssv", server_file(2, "base1"));
+        assert_eq!(saves.slots(), ["good"]);
+    }
+
+    #[test]
+    fn a_slot_names_the_level_it_loads() {
+        let mut saves = SaveFiles::default();
+        saves.insert("quick/server.ssv", server_file(1, "*base2$start"));
+        assert_eq!(saves.level("quick").as_deref(), Some("*base2$start"));
+        assert_eq!(saves.level("none"), None);
     }
 }
