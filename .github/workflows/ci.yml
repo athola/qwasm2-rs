@@ -33,7 +33,10 @@ jobs:
       # early without pak0.pak, so fetch the demo pak before running them.
       - name: Read demo pak checksum
         id: demo
-        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)
+          test -n "$sha"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -73,7 +76,10 @@ jobs:
       # The map-loading spec routes the pak request to the demo pak0.pak.
       - name: Read demo pak checksum
         id: demo
-        run: echo "sha256=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha=$(sed -n 's/^DEMO_SHA256 *:= *//p' Makefile)
+          test -n "$sha"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
       - name: Restore demo pak0.pak
         id: pak
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -85,6 +91,9 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y p7zip-full
           make gamedata-demo
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright

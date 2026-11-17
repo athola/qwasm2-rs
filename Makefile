@@ -1,16 +1,19 @@
 .PHONY: help all build build-release wasm wasm-release bundle bundle-release \
-        play play-dev play-release play-retail pak-web-retail devserver clean clean-gamedata \
+        play play-dev play-release play-retail pak-web-retail devserver clean clean-gamedata clean-retail \
         check test test-browser lint fmt fmt-check ci \
         gamedata gamedata-check gamedata-demo pak-web \
         prereqs prereq-rust prereq-wasm-pack prereq-7z prereq-curl
 
 # --- Config ---
 .DEFAULT_GOAL := help
+# A recipe that fails partway (a repack killed mid-write) must not leave a
+# target newer than its inputs.
+.DELETE_ON_ERROR:
 WASM_CRATE   := crates/q2-wasm
 WASM_PKG     := $(WASM_CRATE)/pkg
 DIST         := dist
 GAMEDATA     := gamedata/baseq2
-PORT         := 8080
+PORT         ?= 8080
 WASM_TARGET  := wasm32-unknown-unknown
 
 # Extra cargo flags. CI sets CARGO_FLAGS=--locked so a stale Cargo.lock fails.
@@ -51,11 +54,14 @@ prereq-wasm-pack: ## Check wasm-pack is installed
 		 echo "  Fix: cargo install wasm-pack"; exit 1)
 	@echo "$(OK) wasm-pack"
 
-prereq-7z: ## Check 7z is installed (needed for gamedata-demo)
-	@command -v 7z > /dev/null 2>&1 || \
-		(echo "$(FAIL) 7z not found"; \
-		 echo "  Fix: brew install p7zip"; exit 1)
-	@echo "$(OK) 7z"
+# Homebrew's sevenzip installs 7zz; p7zip installs 7z; some distros ship 7za.
+SEVENZIP     ?= $(firstword $(foreach tool,7z 7zz 7za,$(if $(shell command -v $(tool) 2>/dev/null),$(tool))))
+
+prereq-7z: ## Check 7-Zip is installed (needed for gamedata-demo)
+	@test -n "$(SEVENZIP)" || \
+		(echo "$(FAIL) 7-Zip not found (7z, 7zz or 7za)"; \
+		 echo "  Fix: brew install sevenzip, or apt-get install p7zip-full"; exit 1)
+	@echo "$(OK) $(SEVENZIP)"
 
 prereq-curl: ## Check curl is available (needed for gamedata-demo)
 	@command -v curl > /dev/null 2>&1 || \
@@ -88,7 +94,7 @@ gamedata-demo: prereq-curl prereq-7z ## Download + extract demo pak0.pak (overwr
 		exit 1; \
 	fi; \
 	echo "Extracting pak0.pak..."; \
-	if ! (cd "$$tmpdir" && 7z e -y q2demo.exe Install/Data/baseq2/pak0.pak > /dev/null) || \
+	if ! (cd "$$tmpdir" && $(SEVENZIP) e -y q2demo.exe Install/Data/baseq2/pak0.pak > /dev/null) || \
 	   [ ! -f "$$tmpdir/pak0.pak" ]; then \
 		echo "$(FAIL) Extraction failed"; \
 		echo "  Try manually: download q2-314-demo-x86.exe, extract with 7z,"; \
@@ -116,8 +122,17 @@ pak-web: $(WEB_PAK_BR) ## Build web pak: all assets, Brotli-compressed (~28 MB w
 RETAIL       := gamedata/retail/baseq2
 RETAIL_PAKS  := $(sort $(wildcard $(RETAIL)/pak[0-9].pak))
 RETAIL_WEB_BR := $(RETAIL)/pak0-web.pak.br
+# The pak list, rewritten only when it changes, so removing a pak or adding
+# one with an old mtime (cp -p, unzip) still rebuilds the merged pak.
+RETAIL_LIST  := $(RETAIL)/.pak-list
 
-$(RETAIL_WEB_BR): $(RETAIL_PAKS) $(wildcard crates/q2-pak-repack/src/*.rs) \
+$(RETAIL_LIST): FORCE
+	@test ! -d "$(RETAIL)" || echo "$(RETAIL_PAKS)" | cmp -s - "$@" || echo "$(RETAIL_PAKS)" > "$@"
+
+.PHONY: FORCE
+FORCE:
+
+$(RETAIL_WEB_BR): $(RETAIL_LIST) $(RETAIL_PAKS) $(wildcard crates/q2-pak-repack/src/*.rs) \
 		crates/q2-pak-repack/Cargo.toml Cargo.lock
 	@test -n "$(RETAIL_PAKS)" || { echo "$(FAIL) put your retail pak0.pak... in $(RETAIL)"; exit 1; }
 	cargo run $(CARGO_FLAGS) -p q2-pak-repack --release -- \
@@ -156,7 +171,7 @@ play-retail: prereq-rust bundle-release pak-web-retail ## Release build + devser
 	@echo ""
 	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html?map=base1"
 	@echo ""
-	PORT=$(PORT) Q2_GAMEDATA=gamedata/retail cargo run $(CARGO_FLAGS) -p q2-devserver
+	PORT=$(PORT) Q2_GAMEDATA=gamedata/retail cargo run $(CARGO_FLAGS) --release -p q2-devserver
 
 play-release: prereq-rust bundle-release pak-web ## Release build + devserver
 	@echo ""
@@ -210,3 +225,6 @@ clean: ## Remove build artifacts
 
 clean-gamedata: ## Delete gamedata/baseq2 pak0.pak + web paks (includes a copied retail pak0.pak)
 	rm -f "$(GAMEDATA)/pak0.pak" "$(WEB_PAK)" "$(WEB_PAK_BR)"
+
+clean-retail: ## Delete the web pak built from your retail paks (keeps the paks themselves)
+	rm -f "$(RETAIL)/pak0-web.pak" "$(RETAIL_WEB_BR)" "$(RETAIL_LIST)"
