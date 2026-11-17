@@ -51,7 +51,10 @@ bump the save version.
 Where the port has no C counterpart to match, it picks the nearest
 behavior and says so. With no menu system, `menu_loadgame` (F3, and the
 press after a single-player death) loads the newest save rather than
-listing them. A skipped cinematic writes no autosave of its own; the
+listing them. Opening the page starts a new game, as C's `map` does, but
+it keeps the last visit's `save0` autosave instead of writing over it, so
+closing the tab loses only what was played since the last level entry. A
+skipped cinematic writes no autosave of its own; the
 level it leads to writes one. The save/load tests allow exactly the
 differences C's own load shows against an uninterrupted run: `linkcount`
 one ahead after the relink, a SOLID_NOT entity left area-linked coming

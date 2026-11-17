@@ -181,6 +181,27 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     await expect(page.locator('#status .fail')).toHaveCount(0);
   });
 
+  test('the autosave outlives a page reload', async ({ page }) => {
+    // Entering base2 writes save0. A reload starts a new game, which keeps
+    // the last visit's save0 (C's map would write over it); F3 loads it.
+    test.setTimeout(300000);
+    await open(page, 'base1');
+    const before = lineCount(page);
+    await page.evaluate(() =>
+      document.dispatchEvent(new CustomEvent('qwasm2-command', { detail: 'gamemap base2$base1' })));
+    await expect.poll(() => linesSince(page, before), { timeout: 60000 }).toMatch(/Level exit to base2/);
+    await frames(page, 30);
+
+    await page.reload();
+    await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
+    await frames(page, 30);
+    const reloaded = lineCount(page);
+    await press(page, 'F3');
+    await expect.poll(() => linesSince(page, reloaded), { timeout: 60000 })
+      .toMatch(/Loading game\.\.\.[\s\S]*Level exit to base2/);
+    await expect(page.locator('#status .fail')).toHaveCount(0);
+  });
+
   test('F3 loads the newest save', async ({ page }) => {
     test.setTimeout(300000);
     await open(page, 'base2');

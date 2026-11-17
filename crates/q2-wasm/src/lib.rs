@@ -1277,13 +1277,15 @@ const BINDS: [(u8, &str); 23] = [
 ];
 
 /// Put back the save files the page kept from earlier visits. A new game
-/// starts over `current` and the `save0` autosave, as C `map` does
-/// (SV_Map_f wipes `current`; entering the level writes `save0`), so only
-/// the other slots come back.
+/// starts `current` over, as C `map` does (SV_Map_f wipes it). The
+/// `save0` autosave of the last visit replaces the one the new game just
+/// wrote on entering its first map, so closing the tab without a save
+/// loses only what was played since the last level entry (C would write
+/// over it). F3 and death load it when it is the newest save.
 #[cfg(any(target_arch = "wasm32", test))]
 fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
     for (path, bytes) in files {
-        if !(path.starts_with("current/") || path.starts_with("save0/")) {
+        if !path.starts_with("current/") {
             local.saves_mut().insert(&path, bytes);
         }
     }
@@ -3308,13 +3310,9 @@ mod tests {
     }
 
     #[test]
-    fn a_new_game_restores_the_kept_saves_but_starts_current_and_save0_over() {
+    fn a_new_game_restores_the_kept_saves_and_autosave_but_starts_current_over() {
         let map = crate::test_bsp::floor_wall_bsp();
         let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
-        let fresh_autosave = local
-            .saves()
-            .file("save0", "server.ssv")
-            .map(<[u8]>::to_vec);
         local.saves_mut().take_changes();
         restore_saves(
             &mut local,
@@ -3327,11 +3325,9 @@ mod tests {
         assert_eq!(local.saves().file("quick", "server.ssv"), Some(&[1u8][..]));
         assert!(local.saves().file("current", "old.sav").is_none());
         assert_eq!(
-            local
-                .saves()
-                .file("save0", "server.ssv")
-                .map(<[u8]>::to_vec),
-            fresh_autosave
+            local.saves().file("save0", "server.ssv"),
+            Some(&[3u8][..]),
+            "the last visit's autosave survives the reload"
         );
         assert!(
             local.saves_mut().take_changes().is_empty(),
