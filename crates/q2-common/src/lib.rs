@@ -14,6 +14,7 @@ pub mod collision;
 pub mod cvar;
 pub mod error;
 pub mod filesystem;
+pub mod keys;
 pub mod net_msg;
 pub mod netchan;
 pub mod pmove;
