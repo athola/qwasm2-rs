@@ -313,11 +313,20 @@ async fn a_request_naming_another_host_is_refused_against_dns_rebinding() {
     // A page on evil.example whose name rebinds to 127.0.0.1 reaches the
     // server with its own name in Host; it must not read the game data.
     let root = fixture_root(None);
-    for host in ["evil.example:8080", "evil.example", "127.0.0.1.evil.example"] {
+    for host in [
+        "evil.example:8080",
+        "evil.example",
+        "127.0.0.1.evil.example",
+    ] {
         let resp = get(root.path(), WEB_PAK, &[("host", host)]).await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{host}");
     }
-    for host in ["127.0.0.1:8080", "localhost:8080", "localhost", "[::1]:8080"] {
+    for host in [
+        "127.0.0.1:8080",
+        "localhost:8080",
+        "localhost",
+        "[::1]:8080",
+    ] {
         let resp = get(root.path(), WEB_PAK, &[("host", host)]).await;
         assert_eq!(resp.status(), StatusCode::OK, "{host}");
     }

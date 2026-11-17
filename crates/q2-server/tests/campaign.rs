@@ -85,6 +85,11 @@ fn every_retail_map_spawns_runs_saves_and_loads() {
                 .and_then(|()| fresh.read_level(&level))
             {
                 failures.push(format!("{map}: load: {e}"));
+            } else {
+                // The loaded level runs on.
+                for _ in 0..10 {
+                    q2_game::traits::GameExport::run_frame(&mut fresh);
+                }
             }
         }
         let text = String::from_utf8_lossy(&prints.lock().unwrap()).into_owned();
@@ -98,10 +103,19 @@ fn every_retail_map_spawns_runs_saves_and_loads() {
             .collect();
         missing.sort_unstable();
         missing.dedup();
+        // The shipped map fixes leave no entity without a spawn function.
         if !missing.is_empty() {
-            eprintln!("NOTE {map}: no spawn function for {}", missing.join(", "));
+            failures.push(format!(
+                "{map}: no spawn function for {}",
+                missing.join(", ")
+            ));
         }
     }
     eprintln!("{} maps run", maps.len());
+    let campaign = maps
+        .iter()
+        .filter(|map| !(map.starts_with("q2dm") || map.starts_with("match")))
+        .count();
+    assert_eq!(campaign, 39, "the retail campaign's maps");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

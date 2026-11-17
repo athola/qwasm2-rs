@@ -1384,10 +1384,15 @@ mod tests {
         gi.configstring(0, "base1");
         gi.configstring(1, "models/world.bsp");
 
-        let updates = gi.drain_configstring_updates();
-        let map: std::collections::HashMap<_, _> = updates.into_iter().collect();
-        assert_eq!(map[&0], "base1");
-        assert_eq!(map[&1], "models/world.bsp");
+        assert_eq!(
+            gi.drain_configstring_updates(),
+            [
+                (0, "base1".to_string()),
+                (1, "models/world.bsp".to_string())
+            ],
+            "each written index once, in index order"
+        );
+        assert!(gi.drain_configstring_updates().is_empty(), "drained");
     }
 
     #[test]

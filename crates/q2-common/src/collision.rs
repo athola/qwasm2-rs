@@ -3326,6 +3326,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_leaf_past_the_map_is_in_no_cluster_and_area_0() {
+        // C CM_LeafCluster/CM_LeafArea Com_Error on a bad leaf; callers
+        // here ask with indices from untrusted traces, so they get the
+        // "outside the map" values instead.
+        let mut cm = CollisionMap::new();
+        cm.load_map(&areas_bsp(0)).unwrap();
+        assert_eq!(cm.leaf_cluster(usize::MAX), -1);
+        assert_eq!(cm.leaf_area(usize::MAX), 0);
+    }
+
+    #[test]
     fn saved_portal_states_restore_the_area_connections() {
         // C CM_WritePortalState / CM_ReadPortalState, which floods again.
         let mut cm = CollisionMap::new();

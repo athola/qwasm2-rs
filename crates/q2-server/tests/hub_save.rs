@@ -76,6 +76,7 @@ fn entering_a_level_writes_the_autosave() {
 #[test]
 fn loadgame_restores_the_saved_level_and_player() {
     let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    let (spawn, _) = game.player().unwrap();
     let forward = UserCmd {
         msec: 100,
         forwardmove: 200,
@@ -83,6 +84,10 @@ fn loadgame_restores_the_saved_level_and_player() {
     };
     play(&mut game, 8, forward);
     let (origin, _) = game.player().unwrap();
+    assert_ne!(
+        origin, spawn,
+        "moved off the start, so a restart would show"
+    );
     game.console("save quick").unwrap();
 
     go(&mut game, "two");

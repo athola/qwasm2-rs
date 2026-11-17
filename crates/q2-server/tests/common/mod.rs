@@ -24,6 +24,11 @@ pub fn stock_bsp(name: &str) -> Option<Vec<u8>> {
         .ok()
         .and_then(|_| fs.load_file(&format!("maps/{name}.bsp")).ok());
     if map.is_none() {
+        // CI fetches the demo pak; a broken cache must fail, not skip.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "gamedata/baseq2/pak0.pak missing under CI"
+        );
         eprintln!("SKIPPED: gamedata/baseq2/pak0.pak not installed; {name} test checks nothing");
     }
     map

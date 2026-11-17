@@ -649,9 +649,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_command_no_panic() {
+    fn an_unknown_command_runs_no_handler_and_names_match_in_any_case() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let ran = Rc::new(Cell::new(0));
         let mut cmd = CmdSystem::new();
-        // Should not panic on unknown command
+        let counter = ran.clone();
+        cmd.add_command("known", move |_| counter.set(counter.get() + 1));
         cmd.execute_string("nonexistent_command arg1 arg2");
+        assert_eq!(ran.get(), 0, "unknown: nothing runs");
+        cmd.execute_string("KNOWN");
+        assert_eq!(ran.get(), 1, "C Cmd_ExecuteString compares without case");
     }
 }
