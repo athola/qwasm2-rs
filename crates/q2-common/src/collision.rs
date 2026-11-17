@@ -891,6 +891,22 @@ impl CollisionMap {
         Ok(())
     }
 
+    /// Which area portals are open (C `portalopen`, CM_WritePortalState).
+    pub fn portal_states(&self) -> &[bool] {
+        &self.portal_open
+    }
+
+    /// Restore `portal_states` from a save and recalculate connectivity
+    /// (C CM_ReadPortalState).
+    pub fn set_portal_states(&mut self, open: &[bool]) -> Q2Result<()> {
+        if open.len() != self.portal_open.len() {
+            return Err(Q2Error::Drop("saved portal state is damaged".into()));
+        }
+        self.portal_open.copy_from_slice(open);
+        self.flood_area_connections();
+        Ok(())
+    }
+
     /// Check if two areas are connected (can see / hear each other).
     ///
     /// C CM_AreasConnected raises ERR_DROP for an area past the map's area
@@ -3307,6 +3323,42 @@ pub(crate) mod tests {
         );
         assert_eq!(miss.fraction, 1.0);
         assert_eq!(miss.ent_index, None);
+    }
+
+    #[test]
+    fn saved_portal_states_restore_the_area_connections() {
+        // C CM_WritePortalState / CM_ReadPortalState, which floods again.
+        let mut cm = two_area_map();
+        cm.set_area_portal_state(1, true).unwrap();
+        let saved = cm.portal_states().to_vec();
+
+        let mut loaded = two_area_map();
+        assert!(!loaded.areas_connected(1, 2).unwrap());
+        loaded.set_portal_states(&saved).unwrap();
+        assert!(loaded.areas_connected(1, 2).unwrap());
+        assert!(
+            loaded.set_portal_states(&saved[..3]).is_err(),
+            "wrong length"
+        );
+    }
+
+    /// Areas 1 and 2 joined by portal 1.
+    fn two_area_map() -> CollisionMap {
+        let mut areas = Vec::new();
+        for (num, first) in [(0i32, 0i32), (1, 0), (1, 1)] {
+            areas.extend_from_slice(&num.to_le_bytes());
+            areas.extend_from_slice(&first.to_le_bytes());
+        }
+        let mut portals = Vec::new();
+        for (portal, other) in [(1i32, 2i32), (1, 1)] {
+            portals.extend_from_slice(&portal.to_le_bytes());
+            portals.extend_from_slice(&other.to_le_bytes());
+        }
+        let bsp = with_lump(build_minimal_bsp(), LUMP_AREAS, &areas);
+        let bsp = with_lump(bsp, LUMP_AREAPORTALS, &portals);
+        let mut cm = CollisionMap::new();
+        cm.load_map(&bsp).unwrap();
+        cm
     }
 
     #[test]
