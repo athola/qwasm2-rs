@@ -146,6 +146,12 @@ async function arrive(page: Page, map: string, before: number, loading = '') {
 
 const LOADING = 'Loading game\\.\\.\\.[\\s\\S]*';
 
+/// Wait until the page's save store has finished every write.
+async function stored(page: Page) {
+  await expect.poll(() => page.evaluate(() =>
+    (window as Window & { qwasm2Saves: { pending: number } }).qwasm2Saves.pending)).toBe(0);
+}
+
 /// F6, then F9: the save is written and loaded back into `map`.
 async function quickSaveAndLoad(page: Page, map: string) {
   let before = lines.length;
@@ -175,11 +181,10 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     const before = lines.length;
     await press(page, 'F6');
     await expect.poll(() => linesSince(before)).toMatch(/Done\./);
-    // Let the page's store finish its background writes.
-    await frames(page, 30);
+    await stored(page);
 
-    await page.reload();
-    await ready(page);
+    // A new visit on another map: only the kept save can bring base1 back.
+    await open(page, 'base2');
     const reloaded = lines.length;
     await press(page, 'F9');
     await arrive(page, 'base1', reloaded, LOADING);
@@ -193,6 +198,7 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
     const before = lines.length;
     await send(page, 'gamemap base2$base1');
     await arrive(page, 'base2', before);
+    await stored(page);
 
     await page.reload();
     await ready(page);
@@ -263,24 +269,28 @@ test.describe('Qwasm2 save and load on the retail campaign', () => {
       await quickSaveAndLoad(page, here);
 
       if (!died && exitsTaken === 3) {
-        // C Cmd_Kill_f waits five seconds after a spawn; then a press
-        // after the death delay pushes menu_loadgame: the newest save.
-        await frames(page, 400);
-        await send(page, 'kill');
-        await frames(page, 120);
+        // A press after the death delay pushes menu_loadgame: the newest
+        // save, the quick save just made here. C Cmd_Kill_f ignores kill
+        // for five seconds of game time after a spawn, which frames cannot
+        // measure, so kill and press until the load starts.
         const deadAt = lines.length;
-        await press(page, 'Control');
-        await arrive(page, here, deadAt);
+        await expect.poll(async () => {
+          await send(page, 'kill');
+          await frames(page, 10);
+          await press(page, 'Control');
+          return linesSince(deadAt);
+        }, { timeout: 60000 }).toMatch(/Loading game/);
+        await arrive(page, here, deadAt, LOADING);
         died = true;
       }
       if (!reloaded && exitsTaken === 6) {
         // A reload starts a new game; the quick save of this level stays.
-        await frames(page, 30);
+        await stored(page);
         await page.reload();
         await ready(page);
         const fresh = lines.length;
         await press(page, 'F9');
-        await arrive(page, here, fresh);
+        await arrive(page, here, fresh, LOADING);
         reloaded = true;
       }
     }

@@ -338,16 +338,24 @@ const saveDb = await new Promise((resolve, reject) => {{
   console.error('[qwasm2-rs] saves will last only this visit:', e);
   return null;
 }});
+// Writes not yet finished, so a test can wait for the store to settle.
+let pendingWrites = 0;
 function saveWrite(act) {{
   if (!saveDb) return;
   const tx = saveDb.transaction('files', 'readwrite');
+  pendingWrites++;
   act(tx.objectStore('files'));
-  tx.onerror = () => console.error('[qwasm2-rs] save not kept:', tx.error);
+  tx.oncomplete = () => pendingWrites--;
+  tx.onabort = () => {{
+    pendingWrites--;
+    console.error('[qwasm2-rs] save not kept:', tx.error);
+  }};
 }}
 window.qwasm2Saves = {{
   // `bytes` views the engine's memory: store a copy.
   put(path, bytes) {{ saveWrite((files) => files.put(bytes.slice(), path)); }},
   remove(path) {{ saveWrite((files) => files.delete(path)); }},
+  get pending() {{ return pendingWrites; }},
 }};
 function storedSaves() {{
   if (!saveDb) return Promise.resolve([]);
@@ -520,6 +528,10 @@ mod tests {
         assert!(
             html.contains("window.qwasm2Saves = {"),
             "the save store the engine calls"
+        );
+        assert!(
+            html.contains("get pending() { return pendingWrites; }"),
+            "tests wait on the store's writes, not on frames"
         );
     }
 

@@ -266,9 +266,24 @@ test.describe('Qwasm2 with the demo pak', () => {
     // The engine reports the context's first state; browsers may start it
     // suspended until a user gesture.
     await expect(page.locator('#status')).toContainText(/Audio: context (suspended|running)/);
+    const audioAt = (text: string | null, state: string) =>
+      (text ?? '').lastIndexOf(`Audio: context ${state}`);
+    const first = await page.locator('#status').textContent();
     // Off-center: the "Click to play" prompt sits over the canvas middle.
     await page.locator('#canvas').click({ position: { x: 10, y: 10 } });
-    await expect(page.locator('#status')).toContainText('Audio: context running');
+    if (audioAt(first, 'suspended') >= 0) {
+      // The click is what started it: running is reported after suspended.
+      await expect.poll(async () => {
+        const text = await page.locator('#status').textContent();
+        return audioAt(text, 'running') > audioAt(text, 'suspended');
+      }).toBe(true);
+    } else {
+      test.info().annotations.push({
+        type: 'note',
+        description: 'this browser started audio unsuspended; the click was not needed',
+      });
+      await expect(page.locator('#status')).toContainText('Audio: context running');
+    }
 
     // Frames with sound mixing on.
     await page.evaluate(() => new Promise<void>(resolve => {
