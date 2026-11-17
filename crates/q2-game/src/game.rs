@@ -7,6 +7,7 @@
 use crate::entity::EntityKey;
 use crate::traits::{EdictView, GameExport};
 use crate::world::GameWorld;
+use q2_common::error::Q2Result;
 use q2_shared::types::{PlayerState, UserCmd};
 
 impl GameWorld {
@@ -109,6 +110,38 @@ impl GameExport for GameWorld {
         }
         self.begin_client(key);
         self.finish_client_begin(key);
+    }
+
+    fn write_game(&mut self, autosave: bool) -> Q2Result<Vec<u8>> {
+        GameWorld::write_game(self, autosave)
+    }
+
+    fn read_game(&mut self, bytes: &[u8]) -> Q2Result<()> {
+        GameWorld::read_game(self, bytes)
+    }
+
+    fn write_level(&mut self, client_bodies: bool) -> Q2Result<Vec<u8>> {
+        if client_bodies {
+            return GameWorld::write_level(self);
+        }
+        let keys: Vec<_> = (1..=self.clients.len())
+            .filter_map(|n| self.entities.key_for_number(n))
+            .collect();
+        let bodies: Vec<_> = keys
+            .into_iter()
+            .filter_map(|key| Some((key, std::mem::take(&mut self.entities.get_mut(key)?.in_use))))
+            .collect();
+        let saved = GameWorld::write_level(self);
+        for (key, in_use) in bodies {
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.in_use = in_use;
+            }
+        }
+        saved
+    }
+
+    fn read_level(&mut self, bytes: &[u8]) -> Q2Result<()> {
+        GameWorld::read_level(self, bytes)
     }
 
     fn client_disconnect(&mut self, number: usize) {
@@ -240,6 +273,33 @@ mod tests {
         world.client_begin(3);
         world.client_disconnect(MAX_CLIENTS + 1);
         world.client_think(0, &UserCmd::default());
+    }
+
+    #[test]
+    fn a_level_left_by_gamemap_is_saved_without_its_client_bodies() {
+        // C SV_GameMap_f clears the client edicts' inuse around WriteLevel,
+        // so a revisit spawns the player at a start, not in a body shell.
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(1);
+        world.init();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert!(world.client_connect(1, ""));
+        world.ensure_player_start();
+        world.client_begin(1);
+        let game: &mut dyn GameExport = &mut world;
+        let without = game.write_level(false).unwrap();
+        let with = game.write_level(true).unwrap();
+        assert!(
+            game.edict(1).is_some(),
+            "the body is in use again after the write"
+        );
+
+        let mut loaded = test_world_recording().0;
+        loaded.set_max_clients(1);
+        loaded.read_level(&without).unwrap();
+        assert!(GameExport::edict(&loaded, 1).is_none());
+        loaded.read_level(&with).unwrap();
+        assert!(GameExport::edict(&loaded, 1).is_some());
     }
 
     #[test]

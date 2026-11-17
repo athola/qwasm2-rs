@@ -395,6 +395,18 @@ mod tests {
         fn client_player_state(&self, _: usize) -> Option<&q2_shared::types::PlayerState> {
             None
         }
+        fn write_game(&mut self, _: bool) -> q2_common::error::Q2Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn read_game(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn write_level(&mut self, _: bool) -> q2_common::error::Q2Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn read_level(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
