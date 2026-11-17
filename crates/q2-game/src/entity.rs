@@ -616,6 +616,11 @@ pub struct EntityStorage {
     /// storage; `GameWorld::call_spawn` prints it.
     #[serde(skip)]
     dprints: Vec<String>,
+    /// The key each number held before a spawn reused it: a C edict
+    /// pointer outlives the reuse, so a search continuing after it still
+    /// knows its place (`number_of_retired`).
+    #[serde(skip)]
+    retired: Vec<Option<EntityKey>>,
 }
 
 /// C G_FindFreeEdict policies.
@@ -636,6 +641,7 @@ impl EntityStorage {
             max_clients: 0,
             level_time: 0.0,
             dprints: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -702,6 +708,10 @@ impl EntityStorage {
     fn init_at(&mut self, number: usize) -> Option<EntityKey> {
         if let Some(old) = self.numbers[number].take() {
             self.entities.remove(old);
+            if self.retired.len() <= number {
+                self.retired.resize(number + 1, None);
+            }
+            self.retired[number] = Some(old);
         }
         let ent = Entity {
             in_use: true,
@@ -799,6 +809,12 @@ impl EntityStorage {
     /// (C walks `g_edicts`). Includes soft-freed entities.
     pub fn keys_from(&self, first: usize) -> impl Iterator<Item = EntityKey> + '_ {
         self.numbers.iter().skip(first).filter_map(|k| *k)
+    }
+
+    /// The number `key` held before a spawn reused it, if that is the last
+    /// key the number retired.
+    pub fn number_of_retired(&self, key: EntityKey) -> Option<usize> {
+        self.retired.iter().position(|&k| k == Some(key))
     }
 
     /// Immutable lookup by key.

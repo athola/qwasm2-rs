@@ -443,6 +443,13 @@ impl GameWorld {
 
     // -- Search utilities ----------------------------------------------------
 
+    /// Where a search continuing after `key` resumes: its number, or the
+    /// number it held before a spawn reused it (C's edict pointer).
+    fn search_position(&self, key: EntityKey) -> Option<usize> {
+        self.number_of(key)
+            .or_else(|| self.entities.number_of_retired(key))
+    }
+
     /// Next in-use entity after `start_after` (in entity-number order) whose
     /// `field` matches `value` case-insensitively. An empty field never
     /// matches (C skips NULL strings).
@@ -454,7 +461,7 @@ impl GameWorld {
         field: fn(&crate::entity::Entity) -> &str,
     ) -> Option<EntityKey> {
         let first = match start_after {
-            Some(key) => self.number_of(key)? + 1,
+            Some(key) => self.search_position(key)? + 1,
             None => 0,
         };
         self.entities.keys_from(first).find(|&key| {
@@ -495,7 +502,7 @@ impl GameWorld {
         radius: f32,
     ) -> Option<EntityKey> {
         let first = match start_after {
-            Some(key) => self.number_of(key)? + 1,
+            Some(key) => self.search_position(key)? + 1,
             None => 0,
         };
         self.entities.keys_from(first).find(|&key| {
@@ -3644,6 +3651,35 @@ mod tests {
         );
         assert_eq!(world.find_radius(Some(next), Vec3f::ZERO, 100.0), None);
         assert_eq!(world.find_radius(Some(near), Vec3f::ZERO, 101.0), Some(far));
+    }
+
+    #[test]
+    fn a_search_goes_on_past_an_entity_whose_number_was_reused() {
+        // C G_Find and findradius continue from the edict slot, which a
+        // spawn into the freed number leaves where it was: a barrel that
+        // frees itself mid-blast and debris spawned into its number must
+        // not end T_RadiusDamage's scan.
+        let mut world = test_world();
+        world.level.time = 1.0; // freed before 2 s: reusable at once
+        world.entities.set_level_time(1.0);
+        let barrel = radius_target(&mut world, Vec3f::new(10.0, 0.0, -32.0), Solid::Bbox);
+        let beyond = radius_target(&mut world, Vec3f::new(20.0, 0.0, -32.0), Solid::Bbox);
+        world.free_entity(barrel);
+        let debris = world.spawn().unwrap();
+        assert_eq!(
+            world.number_of(debris),
+            Some(world.number_of(beyond).unwrap() - 1)
+        );
+        assert_eq!(
+            world.find_radius(Some(barrel), Vec3f::ZERO, 100.0),
+            Some(beyond)
+        );
+
+        world.entities.get_mut(beyond).unwrap().game.classname = "beyond".into();
+        assert_eq!(
+            world.find_by_classname(Some(barrel), "beyond"),
+            Some(beyond)
+        );
     }
 
     #[test]
