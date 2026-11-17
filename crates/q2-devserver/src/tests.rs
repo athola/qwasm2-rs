@@ -37,7 +37,7 @@ async fn get(root: &std::path::Path, uri: &str, headers: &[(&str, &str)]) -> Res
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    build_app(root)
+    build_app(root, &root.join("gamedata"))
         .oneshot(req.body(Body::empty()).unwrap())
         .await
         .unwrap()
@@ -172,7 +172,7 @@ async fn missing_files_are_404() {
 #[tokio::test]
 async fn head_returns_headers_without_a_body() {
     let root = fixture_root(None);
-    let resp = build_app(root.path())
+    let resp = build_app(root.path(), &root.path().join("gamedata"))
         .oneshot(
             Request::builder()
                 .method("HEAD")
@@ -184,6 +184,36 @@ async fn head_returns_headers_without_a_body() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(body_bytes(resp).await.is_empty());
+}
+
+#[test]
+fn gamedata_comes_from_q2_gamedata_when_set_relative_to_the_root() {
+    let root = std::path::Path::new("/srv/q2");
+    assert_eq!(gamedata_dir(root, None), root.join("gamedata"));
+    assert_eq!(
+        gamedata_dir(root, Some("gamedata/retail".into())),
+        root.join("gamedata/retail")
+    );
+    assert_eq!(
+        gamedata_dir(root, Some("/data/q2".into())),
+        std::path::PathBuf::from("/data/q2")
+    );
+}
+
+#[tokio::test]
+async fn another_gamedata_directory_is_served_as_gamedata() {
+    // `make play-retail` serves gamedata/retail as /gamedata/, so the page
+    // fetches the retail web pak at the usual path.
+    let root = fixture_root(None);
+    let retail = root.path().join("gamedata/retail/baseq2");
+    std::fs::create_dir_all(&retail).unwrap();
+    std::fs::write(retail.join("pak0-web.pak"), b"PACK-retail").unwrap();
+    let resp = build_app(root.path(), &root.path().join("gamedata/retail"))
+        .oneshot(Request::builder().uri(WEB_PAK).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(resp).await, b"PACK-retail");
 }
 
 #[test]

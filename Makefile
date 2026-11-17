@@ -1,5 +1,5 @@
 .PHONY: help all build build-release wasm wasm-release bundle bundle-release \
-        play play-dev play-release devserver clean clean-gamedata \
+        play play-dev play-release play-retail pak-web-retail devserver clean clean-gamedata \
         check test test-browser lint fmt fmt-check ci \
         gamedata gamedata-check gamedata-demo pak-web \
         prereqs prereq-rust prereq-wasm-pack prereq-7z prereq-curl
@@ -111,6 +111,23 @@ $(WEB_PAK_BR): $(GAMEDATA)/pak0.pak $(wildcard crates/q2-pak-repack/src/*.rs) \
 
 pak-web: $(WEB_PAK_BR) ## Build web pak: all assets, Brotli-compressed (~28 MB wire size)
 
+# Your own retail paks (never committed or published), merged into one web
+# pak beside them; later paks override earlier ones, as in the game.
+RETAIL       := gamedata/retail/baseq2
+RETAIL_PAKS  := $(sort $(wildcard $(RETAIL)/pak[0-9].pak))
+RETAIL_WEB_BR := $(RETAIL)/pak0-web.pak.br
+
+$(RETAIL_WEB_BR): $(RETAIL_PAKS) $(wildcard crates/q2-pak-repack/src/*.rs) \
+		crates/q2-pak-repack/Cargo.toml Cargo.lock
+	@test -n "$(RETAIL_PAKS)" || { echo "$(FAIL) put your retail pak0.pak... in $(RETAIL)"; exit 1; }
+	cargo run $(CARGO_FLAGS) -p q2-pak-repack --release -- \
+		$(foreach pak,$(RETAIL_PAKS),--in "$(pak)") \
+		--out "$(RETAIL)/pak0-web.pak" \
+		--brotli
+	@echo "$(OK) $(RETAIL)/pak0-web.pak ready"
+
+pak-web-retail: $(RETAIL_WEB_BR) ## Build a web pak from your own retail paks in gamedata/retail/baseq2
+
 # --- Build pipeline ---
 wasm: prereq-wasm-pack ## Build WASM module (wasm-pack, debug)
 	wasm-pack build --dev --target web $(WASM_CRATE) -- $(CARGO_FLAGS)
@@ -134,6 +151,12 @@ play-dev: prereq-rust bundle pak-web ## Debug WASM build + devserver (slow frame
 	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html"
 	@echo ""
 	PORT=$(PORT) cargo run $(CARGO_FLAGS) -p q2-devserver
+
+play-retail: prereq-rust bundle-release pak-web-retail ## Release build + devserver on your retail paks (open ?map=base1)
+	@echo ""
+	@echo "  http://127.0.0.1:$(PORT)/qwasm2.html?map=base1"
+	@echo ""
+	PORT=$(PORT) Q2_GAMEDATA=gamedata/retail cargo run $(CARGO_FLAGS) -p q2-devserver
 
 play-release: prereq-rust bundle-release pak-web ## Release build + devserver
 	@echo ""

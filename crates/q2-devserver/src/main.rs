@@ -51,12 +51,12 @@ async fn main() {
     });
 
     let root = repo_root(std::env::var_os("Q2_ROOT"));
-    let app = build_app(&root);
+    let gamedata_dir = gamedata_dir(&root, std::env::var_os("Q2_GAMEDATA"));
+    let app = build_app(&root, &gamedata_dir);
 
     let addr = listen_addr(port);
 
     // Startup asset inventory
-    let gamedata_dir = root.join("gamedata");
     log_asset(
         &gamedata_dir.join("baseq2/pak0.pak"),
         "source pak",
@@ -113,8 +113,18 @@ fn listen_addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-fn build_app(root: &Path) -> Router {
-    let gamedata_dir = root.join("gamedata");
+/// What `/gamedata/` serves: `Q2_GAMEDATA` (relative to the root) when
+/// set, as `make play-retail` sets it to the user's own retail data, else
+/// the checkout's `gamedata/`.
+fn gamedata_dir(root: &Path, overridden: Option<std::ffi::OsString>) -> PathBuf {
+    match overridden {
+        Some(dir) => root.join(dir),
+        None => root.join("gamedata"),
+    }
+}
+
+fn build_app(root: &Path, gamedata_dir: &Path) -> Router {
+    let gamedata_dir = gamedata_dir.to_path_buf();
     let state = AppState {
         gamedata_dir: gamedata_dir.clone(),
     };
