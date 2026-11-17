@@ -441,7 +441,7 @@ impl Engine {
             .iter()
             .map(String::as_str)
             .filter(|c| is_server_command(c));
-        for command in server_bound_commands(&self.last_keys, &input.keys)
+        for command in pressed_binds(&SERVER_BINDS, &self.last_keys, &input.keys)
             .into_iter()
             .chain(page_commands)
         {
@@ -1276,12 +1276,9 @@ const BINDS: [(u8, &str); 23] = [
     (b'p', "use power shield"),
 ];
 
-/// Put back the save files the page kept from earlier visits. A new game
-/// starts `current` over, as C `map` does (SV_Map_f wipes it). The
-/// `save0` autosave of the last visit replaces the one the new game just
-/// wrote on entering its first map, so closing the tab without a save
-/// loses only what was played since the last level entry (C would write
-/// over it). F3 and death load it when it is the newest save.
+/// Put back the save files the page kept from earlier visits, except
+/// `current`, which a new game starts over as C SV_Map_f does. The last
+/// visit's `save0` replaces the new game's (ADR-005).
 #[cfg(any(target_arch = "wasm32", test))]
 fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
     for (path, bytes) in files {
@@ -1360,12 +1357,6 @@ const SERVER_BINDS: [(u8, &str); 3] = [
 #[cfg(any(target_arch = "wasm32", test))]
 fn bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
     pressed_binds(&BINDS, last_keys, keys)
-}
-
-/// `bound_commands` for `SERVER_BINDS`.
-#[cfg(any(target_arch = "wasm32", test))]
-fn server_bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
-    pressed_binds(&SERVER_BINDS, last_keys, keys)
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -3352,20 +3343,20 @@ mod tests {
         use q2_platform::keymap::{K_F3, K_F6, K_F9};
         let none = [false; 256];
         assert_eq!(
-            server_bound_commands(&none, &pressed(&[K_F6])),
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F6])),
             ["save quick"]
         );
         assert_eq!(
-            server_bound_commands(&none, &pressed(&[K_F9])),
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F9])),
             ["load quick"]
         );
         // C's F3 opens the load menu; the stand-in loads the newest save.
         assert_eq!(
-            server_bound_commands(&none, &pressed(&[K_F3])),
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F3])),
             ["menu_loadgame"]
         );
         let held = pressed(&[K_F6]);
-        assert!(server_bound_commands(&held, &held).is_empty());
+        assert!(pressed_binds(&SERVER_BINDS, &held, &held).is_empty());
         assert!(
             bound_commands(&none, &held).is_empty(),
             "not a game command"

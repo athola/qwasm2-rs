@@ -214,8 +214,7 @@ effects, and the deathmatch rules end matches through C's intermission.
   game where the browser allows it (Chromium), so Ctrl shortcuts do not
   reach the browser.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
-  refused), the save menu (F2 `menu_savegame`; F3's `menu_loadgame`
-  loads the newest save instead of opening a menu), the inventory layout and its
+  refused), the save menu (F2 `menu_savegame`; ADR-005 covers F3), the inventory layout and its
   refresh (`InventoryMessage`), the `fov`/`spectator` userinfo and `ClientUserinfoChanged`'s `Info_Validate` check, the
   spectator and chase-camera stats, `SP_FixCoopSpots`, falling damage
   (`P_FallingDamage`), the dead view turning to the killer

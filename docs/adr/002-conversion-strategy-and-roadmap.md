@@ -85,9 +85,8 @@ moves the player with the pmove port through the server's traces. Brush
 entities collide, doors, platforms and buttons work, triggers and items
 react to the player, and entities and the status bar are drawn. The
 player fires every weapon and uses powerups, and the client draws
-explosions, impacts, trails and the other temp entities. Saves work as in
-C: units keep their levels, entering a level autosaves, F6 and F9 quick
-save and load, and death loads the newest save. With the user's own retail
+explosions, impacts, trails and the other temp entities. Save and load
+work (ADR-003). With the user's own retail
 paks the whole campaign is walked through every exit with saves
 (`q2-server/tests/campaign_walk.rs`, `tests/browser/retail.spec.ts`).
 
