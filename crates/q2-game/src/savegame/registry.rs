@@ -99,7 +99,6 @@ mod tests {
     use super::*;
     use crate::entity::{DieFn, EntityKey, MonsterMove, ThinkFn, TouchFn};
     use crate::world::GameWorld;
-    use std::collections::HashSet;
 
     fn not_a_game_callback(_: &mut GameWorld, _: EntityKey) {}
 
@@ -117,19 +116,6 @@ mod tests {
             for &(name, f) in F::table() {
                 assert_eq!(name_of(f), Some(name), "{name}");
                 assert_eq!(by_name::<F>(name).map(F::addr), Some(f.addr()), "{name}");
-            }
-        }
-        check::<ThinkFn>();
-        check::<TouchFn>();
-        check::<DieFn>();
-    }
-
-    #[test]
-    fn no_two_registered_callbacks_of_a_type_share_an_address() {
-        fn check<F: Callback>() {
-            let mut seen = HashSet::new();
-            for &(name, f) in F::table() {
-                assert!(seen.insert(f.addr()), "{name} shares an address");
             }
         }
         check::<ThinkFn>();

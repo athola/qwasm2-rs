@@ -163,12 +163,13 @@ impl GameWorld {
             .map(|(key, ent)| (ent.state.number, key))
             .collect();
         numbered.sort_unstable();
-        let keys: Vec<_> = numbered.into_iter().map(|(_, key)| key).collect();
-        for &key in &keys {
-            let Some(ent) = self.entities.get_mut(key) else {
-                continue;
-            };
+        let time = self.level.time;
+        for (_, key) in numbered {
+            let ent = self.entities.get_mut(key).expect("key just listed");
             if ent.in_use {
+                if ent.game.classname == "target_crosslevel_target" {
+                    ent.game.nextthink = time + ent.game.delay;
+                }
                 ent.area_linked = false;
                 self.link_entity(key);
             } else {
@@ -187,14 +188,6 @@ impl GameWorld {
             }
             self.clients[slot].pers.connected = false;
         }
-        let time = self.level.time;
-        for &key in &keys {
-            if let Some(ent) = self.entities.get_mut(key) {
-                if ent.in_use && ent.game.classname == "target_crosslevel_target" {
-                    ent.game.nextthink = time + ent.game.delay;
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -209,8 +202,7 @@ impl GameWorld {
             f.is_none_or(|f| name_of(f).is_some())
         }
         for (_, ent) in self.entities.iter() {
-            let mut missing = Vec::new();
-            for (field, ok) in [
+            let mut fields = vec![
                 ("prethink", named(ent.prethink)),
                 ("think", named(ent.think)),
                 ("blocked", named(ent.blocked)),
@@ -222,13 +214,9 @@ impl GameWorld {
                     "moveinfo.endfunc",
                     named(ent.moveinfo.as_ref().and_then(|m| m.endfunc)),
                 ),
-            ] {
-                if !ok {
-                    missing.push(field);
-                }
-            }
+            ];
             if let Some(info) = &ent.monsterinfo {
-                for (field, ok) in [
+                fields.extend([
                     ("monsterinfo.stand", named(info.stand)),
                     ("monsterinfo.idle", named(info.idle)),
                     ("monsterinfo.search", named(info.search)),
@@ -245,12 +233,12 @@ impl GameWorld {
                             .as_ref()
                             .is_none_or(|m| move_name(m).is_some()),
                     ),
-                ] {
-                    if !ok {
-                        missing.push(field);
-                    }
-                }
+                ]);
             }
+            let missing: Vec<_> = fields
+                .into_iter()
+                .filter_map(|(field, ok)| (!ok).then_some(field))
+                .collect();
             if !missing.is_empty() {
                 return Err(Q2Error::Drop(format!(
                     "save failed: entity {} ({}) has an unregistered callback in {}",

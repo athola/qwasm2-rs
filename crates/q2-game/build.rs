@@ -165,9 +165,6 @@ fn scan_items(module: &str, items: &[syn::Item], found: &mut Found) {
             syn::Item::Impl(i) if !is_test_only(&i.attrs) => {
                 ValueUses(&mut found.values).visit_item_impl(i)
             }
-            syn::Item::Const(c) if !is_test_only(&c.attrs) => {
-                ValueUses(&mut found.values).visit_item_const(c)
-            }
             _ => {}
         }
     }
@@ -177,9 +174,6 @@ fn scan_items(module: &str, items: &[syn::Item], found: &mut Found) {
 /// `crate::world::GameWorld` and `Option<&'a Plane>` compare equal to the
 /// alias's spelling.
 fn callback_type(sig: &syn::Signature) -> Option<&'static str> {
-    if !sig.generics.params.is_empty() || sig.asyncness.is_some() || sig.unsafety.is_some() {
-        return None;
-    }
     let mut args = Vec::new();
     for input in &sig.inputs {
         match input {
@@ -236,12 +230,6 @@ impl<'ast> Visit<'ast> for ValueUses<'_> {
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
         if let Some(last) = path.path.segments.last() {
             self.0.insert(last.ident.to_string());
-        }
-    }
-
-    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
-        if !is_test_only(&m.attrs) {
-            syn::visit::visit_item_mod(self, m);
         }
     }
 }

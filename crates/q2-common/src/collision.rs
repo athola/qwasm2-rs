@@ -3328,11 +3328,13 @@ pub(crate) mod tests {
     #[test]
     fn saved_portal_states_restore_the_area_connections() {
         // C CM_WritePortalState / CM_ReadPortalState, which floods again.
-        let mut cm = two_area_map();
+        let mut cm = CollisionMap::new();
+        cm.load_map(&areas_bsp(0)).unwrap();
         cm.set_area_portal_state(1, true).unwrap();
         let saved = cm.portal_states().to_vec();
 
-        let mut loaded = two_area_map();
+        let mut loaded = CollisionMap::new();
+        loaded.load_map(&areas_bsp(0)).unwrap();
         assert!(!loaded.areas_connected(1, 2).unwrap());
         loaded.set_portal_states(&saved).unwrap();
         assert!(loaded.areas_connected(1, 2).unwrap());
@@ -3340,25 +3342,6 @@ pub(crate) mod tests {
             loaded.set_portal_states(&saved[..3]).is_err(),
             "wrong length"
         );
-    }
-
-    /// Areas 1 and 2 joined by portal 1.
-    fn two_area_map() -> CollisionMap {
-        let mut areas = Vec::new();
-        for (num, first) in [(0i32, 0i32), (1, 0), (1, 1)] {
-            areas.extend_from_slice(&num.to_le_bytes());
-            areas.extend_from_slice(&first.to_le_bytes());
-        }
-        let mut portals = Vec::new();
-        for (portal, other) in [(1i32, 2i32), (1, 1)] {
-            portals.extend_from_slice(&portal.to_le_bytes());
-            portals.extend_from_slice(&other.to_le_bytes());
-        }
-        let bsp = with_lump(build_minimal_bsp(), LUMP_AREAS, &areas);
-        let bsp = with_lump(bsp, LUMP_AREAPORTALS, &portals);
-        let mut cm = CollisionMap::new();
-        cm.load_map(&bsp).unwrap();
-        cm
     }
 
     #[test]
