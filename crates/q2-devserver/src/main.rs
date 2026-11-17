@@ -133,6 +133,28 @@ fn build_app(root: &Path, gamedata_dir: &Path) -> Router {
         .with_state(state)
         .nest_service("/gamedata", ServeDir::new(&gamedata_dir))
         .fallback_service(ServeDir::new(root.join("dist")))
+        .layer(axum::middleware::from_fn(loopback_host_only))
+}
+
+/// Refuse a request whose `Host` is not a loopback name. Binding to
+/// loopback keeps the network out, but a page whose domain rebinds to
+/// 127.0.0.1 still reaches the server, with its own name in `Host`.
+async fn loopback_host_only(req: Request, next: axum::middleware::Next) -> Response<Body> {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok());
+    let loopback = host.is_none_or(|host| {
+        let name = match host.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or_default(),
+            None => host.split(':').next().unwrap_or_default(),
+        };
+        matches!(name, "localhost" | "127.0.0.1" | "::1")
+    });
+    match loopback {
+        true => next.run(req).await,
+        false => (axum::http::StatusCode::FORBIDDEN, "host not allowed").into_response(),
+    }
 }
 
 /// Serve pak0-web.pak, using the `.br` variant only while it is fresh.
