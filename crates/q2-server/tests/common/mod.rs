@@ -29,6 +29,19 @@ pub fn stock_bsp(name: &str) -> Option<Vec<u8>> {
     map
 }
 
+/// The retail game data the user installs at `gamedata/retail/baseq2`
+/// (never committed), or `None`, printing the skip, as for `demo1_bsp`.
+pub fn retail_fs() -> Option<q2_common::filesystem::FileSystem> {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../gamedata/retail/baseq2");
+    let mut fs = q2_common::filesystem::FileSystem::new("baseq2");
+    let loaded = fs.add_game_directory(std::path::Path::new(dir)).is_ok()
+        && fs.file_exists("maps/base1.bsp");
+    if !loaded {
+        eprintln!("SKIPPED: gamedata/retail/baseq2 not installed; retail test checks nothing");
+    }
+    loaded.then_some(fs)
+}
+
 /// A server and the concrete `GameWorld` it runs, with one client in the
 /// game, for tests that inspect game state `LocalGame` keeps behind
 /// `GameExport`. `frame` and `think` drive it as `LocalGame` does.
