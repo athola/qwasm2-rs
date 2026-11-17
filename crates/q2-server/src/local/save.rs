@@ -267,12 +267,6 @@ impl LocalGame {
         for (name, value) in &server.latched {
             self.gi.set_cvar(name, value);
         }
-        self.userinfo = self
-            .svs
-            .clients
-            .first()
-            .map(|client| client.userinfo.clone())
-            .unwrap_or_default();
         self.game = new_game(&self.gi);
         self.svs.init_game(1);
         self.gi
@@ -357,6 +351,12 @@ impl LocalGame {
             tracing::info!(target: SERVER_PRINT_TARGET, "No such savegame: {slot}");
             return Ok(());
         }
+        // C reads the files only after giving up the running game, so a bad
+        // one ends it; here a bad slot is refused and play goes on.
+        if let Err(e) = self.check_slot(slot) {
+            tracing::info!(target: SERVER_PRINT_TARGET, "Couldn't load {slot}: {e}");
+            return Ok(());
+        }
         tracing::info!(target: SERVER_PRINT_TARGET, "Loading game...");
         if slot != "current" {
             self.saves.copy(slot, "current");
@@ -366,6 +366,25 @@ impl LocalGame {
         self.sv.state = ServerState::Dead;
         self.loading = Some(slot == "save0" || slot == "current");
         *self.next_map.borrow_mut() = Some(mapcmd);
+        Ok(())
+    }
+
+    /// Every file of `slot` decodes in this build.
+    fn check_slot(&self, slot: &str) -> Q2Result<()> {
+        let prefix = format!("{slot}/");
+        for (path, bytes) in self.saves.iter() {
+            let Some(name) = path.strip_prefix(&prefix) else {
+                continue;
+            };
+            match name.rsplit_once('.').map(|(_, ext)| ext) {
+                _ if name == "server.ssv" => decode::<ServerFile>(bytes).map(drop),
+                _ if name == "game.ssv" => q2_game::savegame::check_game_file(bytes),
+                Some("sv2") => decode::<LevelFile>(bytes).map(drop),
+                Some("sav") => q2_game::savegame::check_level_file(bytes),
+                _ => Ok(()),
+            }
+            .map_err(|e| Q2Error::Drop(format!("{name}: {e}")))?;
+        }
         Ok(())
     }
 

@@ -71,6 +71,17 @@ fn decode<T: for<'de> Deserialize<'de>>(kind: u8, bytes: &[u8]) -> Q2Result<T> {
     }
 }
 
+/// Whether `bytes` is a game file this build can read, without reading it
+/// into a game: a load checks its files before it gives up the running one.
+pub fn check_game_file(bytes: &[u8]) -> Q2Result<()> {
+    decode::<GameSave>(KIND_GAME, bytes).map(drop)
+}
+
+/// `check_game_file` for a level file.
+pub fn check_level_file(bytes: &[u8]) -> Q2Result<()> {
+    decode::<LevelSave>(KIND_LEVEL, bytes).map(drop)
+}
+
 impl GameWorld {
     /// C `WriteGame`: the cross-level state and every client. A manual save
     /// first copies each player's health and flags into `pers`

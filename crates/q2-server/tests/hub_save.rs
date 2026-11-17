@@ -177,3 +177,39 @@ fn loading_the_autosave_restarts_the_level_with_the_entering_inventory() {
     assert_eq!(follow(&mut game), "two");
     assert_eq!(stat(&game, STAT_ARMOR), 25, "the armor carried into two");
 }
+
+#[test]
+fn a_damaged_save_is_refused_and_play_goes_on() {
+    let mut game = LocalGame::start("one", &armor_map()).unwrap();
+    idle(&mut game, 5);
+    game.console("save quick").unwrap();
+    let (origin, _) = game.player().unwrap();
+    for file in ["game.ssv", "server.ssv", "one.sav", "one.sv2"] {
+        let mut damaged = game.saves().clone();
+        let path = format!("quick/{file}");
+        let bytes = damaged.file("quick", file).unwrap().to_vec();
+        damaged.insert(&path, bytes[..bytes.len() / 2].to_vec());
+        *game.saves_mut() = damaged;
+
+        game.console("load quick").unwrap();
+        assert!(game.take_map_change().is_none(), "{file}: no level queued");
+        idle(&mut game, 1);
+        assert_eq!(
+            game.player().map(|p| p.0),
+            Some(origin),
+            "{file}: still playing"
+        );
+        game.console("save quick").unwrap();
+    }
+}
+
+#[test]
+fn two_loads_before_the_map_change_still_reconnect_the_player() {
+    let mut game = LocalGame::start("one", &armor_map()).unwrap();
+    idle(&mut game, 5);
+    game.console("save quick").unwrap();
+    game.console("load quick").unwrap();
+    game.console("load quick").unwrap();
+    assert_eq!(follow(&mut game), "one");
+    assert!(stat(&game, q2_shared::constants::STAT_HEALTH) > 0);
+}

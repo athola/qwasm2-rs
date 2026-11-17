@@ -253,3 +253,25 @@ fn a_manual_save_without_its_level_starts_the_player_afresh() {
     let loaded = load(&manual, None);
     assert_eq!(player(&loaded).1.pers.inventory[quad], 0);
 }
+
+/// FNV-1a: stable across Rust releases, unlike `DefaultHasher`.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+#[test]
+fn the_save_layout_is_pinned_so_a_change_bumps_version() {
+    // postcard writes fields by position, so a saved type that changes
+    // shape misreads older saves. If this fails, bump VERSION and update
+    // the pin.
+    let mut world = world_with_player();
+    let level = fingerprint(&world.write_level().unwrap());
+    let game = fingerprint(&world.write_game(true).unwrap());
+    assert_eq!(
+        (VERSION, level, game),
+        (1, 7_902_816_311_037_946_725, 5_231_457_406_819_656_232),
+        "a saved type changed: bump VERSION"
+    );
+}

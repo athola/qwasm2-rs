@@ -42,7 +42,11 @@ on an empty map or from a bad head node ends at `end` where C leaves
 every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
 missing). Saves refuse a slot name holding `..`, `/` or `\\`, which C reports
-as "Bad savedir." and then uses anyway.
+as "Bad savedir." and then uses anyway. A load checks every file of its
+slot before it gives up the running game, so a damaged or older-version
+save is refused with a print and play goes on, where C's ReadGame raises
+ERR_DROP. A test pins the save layout, so a change to a saved type has to
+bump the save version.
 
 Where the port has no C counterpart to match, it picks the nearest
 behavior and says so. With no menu system, `menu_loadgame` (F3, and the
