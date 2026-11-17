@@ -213,7 +213,11 @@ impl MapRequest {
         };
         Self {
             level: whole,
-            map: map.to_string(),
+            map: match kind {
+                // C SV_GameMap_f: the pak's spelling, which is lower case.
+                LevelKind::Game => map.to_ascii_lowercase(),
+                _ => map.to_string(),
+            },
             spawnpoint: spawnpoint.to_string(),
             next_server,
             kind,
@@ -640,6 +644,16 @@ mod tests {
             (level.map.as_str(), level.spawnpoint.as_str()),
             ("base1", "start")
         );
+    }
+
+    #[test]
+    fn a_game_map_in_another_case_takes_the_paks_lower_case_name() {
+        // C SV_GameMap_f takes the pak's spelling, so the map fix and the
+        // unit's saved level are found as for `base2`; paks name maps in
+        // lower case.
+        let level = MapRequest::parse("*BASE2$Start");
+        assert_eq!(level.map, "base2");
+        assert_eq!(level.spawnpoint, "Start");
     }
 
     #[test]
