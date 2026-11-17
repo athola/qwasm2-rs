@@ -220,6 +220,8 @@ pub fn merge(paks: &[Vec<u8>]) -> Result<Vec<u8>> {
     for pak in paks {
         // `repack` validates the pak and packs its files after its header.
         let pak = repack(pak, None)?;
+        // C takes the first of a name repeated within one pak.
+        let mut this_pak = HashSet::new();
         let base = data.len();
         data.extend_from_slice(&pak[HEADER_LEN..]);
         let dir_offset = u32::from_le_bytes(pak[4..8].try_into().unwrap()) as usize;
@@ -231,6 +233,9 @@ pub fn merge(paks: &[Vec<u8>]) -> Result<Vec<u8>> {
             let size = u32::from_le_bytes(entry[NAME_LEN + 4..].try_into().unwrap()) as usize;
             let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
             let key = String::from_utf8_lossy(&raw_name[..name_end]).to_ascii_lowercase();
+            if !this_pak.insert(key.clone()) {
+                continue;
+            }
             if !entries.contains_key(&key) {
                 order.push(key.clone());
             }
@@ -434,6 +439,33 @@ mod tests {
             entries.push((name, offset, size));
         }
         entries
+    }
+
+    /// `name`'s bytes in `pak`, by the first directory entry.
+    fn file<'a>(pak: &'a [u8], name: &str) -> &'a [u8] {
+        let (_, offset, size) = parse_dir(pak)
+            .into_iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+            .expect("file in the pak");
+        &pak[offset as usize..][..size as usize]
+    }
+
+    #[test]
+    fn merge_lets_a_later_pak_replace_a_file_of_any_case() {
+        let pak0 = make_pak(&[("maps/base1.bsp", b"OLD"), ("pics/a.pcx", b"A")]);
+        let pak1 = make_pak(&[("MAPS/BASE1.BSP", b"NEW")]);
+        let merged = merge(&[pak0, pak1]).unwrap();
+        assert_eq!(parse_dir(&merged).len(), 2, "one entry each");
+        assert_eq!(file(&merged, "maps/base1.bsp"), b"NEW");
+        assert_eq!(file(&merged, "pics/a.pcx"), b"A");
+    }
+
+    #[test]
+    fn merge_keeps_the_first_of_a_name_repeated_inside_one_pak() {
+        // C FS_FOpenFile takes the first match in a pak's directory.
+        let pak = make_pak(&[("a.cfg", b"FIRST"), ("a.cfg", b"SECOND")]);
+        let merged = merge(&[pak.clone(), make_pak(&[("b.cfg", b"B")])]).unwrap();
+        assert_eq!(file(&merged, "a.cfg"), b"FIRST");
     }
 
     #[test]
