@@ -42,7 +42,7 @@ const PAUSE_FOREVER: f32 = 100_000_000.0;
 /// What `ai_checkattack` found out about the enemy this frame, for
 /// `ai_run` and the default `checkattack`. C ref: the g_ai.c statics
 /// `enemy_vis`, `enemy_infront`, `enemy_range` and `enemy_yaw`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct EnemyCheck {
     pub vis: bool,
     pub infront: bool,

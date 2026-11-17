@@ -11,6 +11,8 @@ q2-common = { path = "../q2-common" }
 slotmap = { workspace = true }
 tracing = { workspace = true }
 bitflags = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
 
 [build-dependencies]
 syn = { version = "2", features = ["full", "visit"] }

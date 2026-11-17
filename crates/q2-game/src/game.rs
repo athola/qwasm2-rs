@@ -4,6 +4,7 @@
 //! Client calls take the client's entity number (`slot + 1`), as C passes
 //! `EDICT_NUM(slot + 1)`.
 
+use crate::entity::EntityKey;
 use crate::traits::{EdictView, GameExport};
 use crate::world::GameWorld;
 use q2_shared::types::{PlayerState, UserCmd};
@@ -35,11 +36,13 @@ impl GameExport for GameWorld {
         if !self.is_client_number(number) {
             return false;
         }
-        // A reconnect replaces whatever the slot held.
-        if let Some(old) = self.entities.key_for_number(number) {
-            if let Some(ent) = self.entities.get_mut(old) {
-                ent.in_use = false;
-            }
+        // C ClientConnect: a body in use is one a loadgame left waiting.
+        if let Some(key) = self
+            .entities
+            .key_for_number(number)
+            .filter(|&key| self.entities.is_live(key))
+        {
+            return self.take_waiting_body(key, number - 1, userinfo);
         }
         self.connect_client(number, userinfo).is_some()
     }
@@ -49,6 +52,10 @@ impl GameExport for GameWorld {
             return;
         }
         let slot = number - 1;
+        let loadgame_body = self
+            .clients
+            .get_mut(slot)
+            .is_some_and(|c| std::mem::take(&mut c.loadgame_body));
         // C ClientBeginDeathmatch G_InitEdicts even a body waiting for the
         // client.
         if self.game.deathmatch {
@@ -59,6 +66,23 @@ impl GameExport for GameWorld {
             {
                 ent.in_use = false;
             }
+        }
+        // C ClientBegin takes a body a loadgame left waiting as it is. The
+        // client cleared its view angles on connecting, so the delta angles
+        // carry the saved view.
+        let waiting = (loadgame_body && !self.game.deathmatch)
+            .then(|| self.entities.key_for_number(number))
+            .flatten()
+            .filter(|&key| self.entities.is_live(key));
+        if let Some(key) = waiting {
+            if let Some(client) = self.client_mut(key) {
+                for i in 0..3 {
+                    client.ps.pmove.delta_angles[i] =
+                        crate::player::client::angle2short(client.ps.viewangles[i]);
+                }
+            }
+            self.finish_client_begin(key);
+            return;
         }
         // After a map change the new map's entities start empty: C
         // ClientBegin G_InitEdicts the body and attaches `game.clients[i]`.
@@ -75,30 +99,16 @@ impl GameExport for GameWorld {
             return;
         };
         // C runs InitClientResp for every body it spawns here. The live body
-        // `connect_client` leaves counts as one: C sees a live body here only
-        // after a loadgame (not ported). This also takes the coop respawn
-        // snapshot after ClientConnect's InitClientPersistant, as C does.
+        // `connect_client` leaves counts as one (a loadgame's was taken
+        // above). This also takes the coop respawn snapshot after
+        // ClientConnect's InitClientPersistant, as C does.
         if let Some(record) = self.clients.get_mut(slot) {
             let mut client = std::mem::take(record);
             self.init_client_resp(&mut client);
             self.clients[slot] = client;
         }
         self.begin_client(key);
-        let intermission = self.level.intermission_time != 0.0;
-        if intermission {
-            self.move_client_to_intermission(key);
-        }
-        if self.game.deathmatch {
-            if !intermission {
-                self.send_login_effect(key);
-            }
-            self.print_entered_the_game(key);
-        } else if !intermission && self.game.maxclients() > 1 {
-            self.send_login_effect(key);
-            self.print_entered_the_game(key);
-        }
-        // Make sure all view stuff is valid.
-        self.client_end_server_frame(key);
+        self.finish_client_begin(key);
     }
 
     fn client_disconnect(&mut self, number: usize) {
@@ -169,6 +179,27 @@ impl GameExport for GameWorld {
 
     fn client_player_state(&self, number: usize) -> Option<&PlayerState> {
         Some(&self.client(self.entities.key_for_number(number)?)?.ps)
+    }
+}
+
+impl GameWorld {
+    /// The end C ClientBegin runs for a taken and a fresh body alike.
+    fn finish_client_begin(&mut self, key: EntityKey) {
+        let intermission = self.level.intermission_time != 0.0;
+        if intermission {
+            self.move_client_to_intermission(key);
+        }
+        if self.game.deathmatch {
+            if !intermission {
+                self.send_login_effect(key);
+            }
+            self.print_entered_the_game(key);
+        } else if !intermission && self.game.maxclients() > 1 {
+            self.send_login_effect(key);
+            self.print_entered_the_game(key);
+        }
+        // Make sure all view stuff is valid.
+        self.client_end_server_frame(key);
     }
 }
 

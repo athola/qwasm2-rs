@@ -25,7 +25,7 @@ const fn prev(n: usize) -> usize {
 }
 
 /// One breadcrumb: where, when, and the yaw from the previous one.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrailNode {
     pub origin: Vec3f,
     pub timestamp: f32,
@@ -33,7 +33,7 @@ pub struct TrailNode {
 }
 
 /// Ring of trail nodes; `head` is the oldest, the next to be overwritten.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PlayerTrail {
     nodes: [TrailNode; TRAIL_LENGTH],
     head: usize,

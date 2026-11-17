@@ -27,7 +27,7 @@ use std::rc::Rc;
 // ---------------------------------------------------------------------------
 
 /// Level-specific state — reset each map load.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LevelLocals {
     pub framenum: i32,
     pub time: f32,
@@ -80,7 +80,7 @@ pub struct LevelLocals {
 // ---------------------------------------------------------------------------
 
 /// Persistent game state — survives level changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameLocals {
     /// Target name of the start to use (C `game.spawnpoint`), from the
     /// previous level's exit; empty for a fresh map.
@@ -114,6 +114,10 @@ pub struct GameLocals {
     /// How far the view bob cycle advances each frame on the ground; kept
     /// while airborne (C view.c file static `bobmove`).
     pub bobmove: f32,
+    /// Whether the game was just read from an autosave (C
+    /// `game.autosaved`): ClientConnect then keeps the inventory the
+    /// autosave stored instead of starting the player afresh.
+    pub autosaved: bool,
 }
 
 impl GameLocals {
@@ -142,6 +146,7 @@ impl Default for GameLocals {
             helpmessage2: String::new(),
             helpchanged: 0,
             bobmove: 0.0,
+            autosaved: false,
         }
     }
 }

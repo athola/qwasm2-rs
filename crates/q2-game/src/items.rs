@@ -64,7 +64,7 @@ pub const BODY_ARMOR_INFO: ArmorInfo = ArmorInfo {
 // ---------------------------------------------------------------------------
 
 /// Maximum ammo counts (C `client_persistant_t` `max_bullets`..).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AmmoMax {
     pub bullets: i32,
     pub shells: i32,

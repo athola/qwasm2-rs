@@ -49,7 +49,7 @@ fn main() {
         moves: Vec::new(),
         values: BTreeSet::new(),
     };
-    scan_dir(&src, &src, &mut found);
+    scan_file(&src.join("lib.rs"), "", &mut found);
 
     let mut tables: BTreeMap<&str, BTreeSet<String>> = SIGNATURES
         .iter()
@@ -98,39 +98,29 @@ fn table_name(ty: &str) -> String {
     name
 }
 
-fn scan_dir(root: &Path, dir: &Path, found: &mut Found) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .expect("read src")
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            scan_dir(root, &path, found);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let text = std::fs::read_to_string(&path).expect("read source");
-            let file = syn::parse_file(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            scan_items(&module_path(root, &path), &file.items, found);
+/// Scan the module in `file` and every non-test module it declares, as
+/// rustc would: `#[cfg(test)] mod tests;` leaves its file out.
+fn scan_file(file: &Path, module: &str, found: &mut Found) {
+    let text = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+    let parsed = syn::parse_file(&text).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+    // `lib.rs` and `mod.rs` hold their children beside them; `foo.rs` in `foo/`.
+    let dir = match file.file_stem().and_then(|s| s.to_str()) {
+        Some("lib" | "mod") => file.parent().expect("in src").to_path_buf(),
+        Some(stem) => file.with_file_name(stem),
+        None => unreachable!("source files have names"),
+    };
+    scan_items(module, &parsed.items, found);
+    for item in &parsed.items {
+        if let syn::Item::Mod(m) = item {
+            if m.content.is_none() && !is_test_only(&m.attrs) {
+                let name = m.ident.to_string();
+                let flat = dir.join(format!("{name}.rs"));
+                let nested = dir.join(&name).join("mod.rs");
+                let child = if flat.exists() { flat } else { nested };
+                scan_file(&child, &join(module, &name), found);
+            }
         }
     }
-}
-
-/// `src/monster/soldier.rs` -> `monster::soldier`; `lib.rs` and `mod.rs`
-/// name their directory.
-fn module_path(root: &Path, file: &Path) -> String {
-    let rel = file
-        .strip_prefix(root)
-        .expect("under src")
-        .with_extension("");
-    let mut parts: Vec<String> = rel
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    if matches!(parts.last().map(String::as_str), Some("mod" | "lib")) {
-        parts.pop();
-    }
-    parts.join("::")
 }
 
 fn join(module: &str, name: &str) -> String {
