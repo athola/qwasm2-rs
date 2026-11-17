@@ -326,6 +326,44 @@ window.clearLog = function() {{
   document.getElementById('status').innerHTML = '';
 }};
 
+// Save slots (the server's save/ files) kept in IndexedDB between visits.
+// The engine hands each changed file to qwasm2Saves and goes on; the
+// writes finish in the background, in the order they were made.
+const saveDb = await new Promise((resolve, reject) => {{
+  const req = indexedDB.open('qwasm2-saves', 1);
+  req.onupgradeneeded = () => req.result.createObjectStore('files');
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+}}).catch((e) => {{
+  console.error('[qwasm2-rs] saves will last only this visit:', e);
+  return null;
+}});
+function saveWrite(act) {{
+  if (!saveDb) return;
+  const tx = saveDb.transaction('files', 'readwrite');
+  act(tx.objectStore('files'));
+  tx.onerror = () => console.error('[qwasm2-rs] save not kept:', tx.error);
+}}
+window.qwasm2Saves = {{
+  // `bytes` views the engine's memory: store a copy.
+  put(path, bytes) {{ saveWrite((files) => files.put(bytes.slice(), path)); }},
+  remove(path) {{ saveWrite((files) => files.delete(path)); }},
+}};
+function storedSaves() {{
+  if (!saveDb) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {{
+    const files = [];
+    const req = saveDb.transaction('files').objectStore('files').openCursor();
+    req.onsuccess = () => {{
+      const cursor = req.result;
+      if (!cursor) return resolve(files);
+      files.push([cursor.key, new Uint8Array(cursor.value)]);
+      cursor.continue();
+    }};
+    req.onerror = () => reject(req.error);
+  }});
+}}
+
 // Initialize and start game
 try {{
   await init();
@@ -339,7 +377,7 @@ try {{
   // Pages under /qwasm2-rs/play/, with gamedata/ beside it in both.
   const pakUrl = 'gamedata/baseq2/pak0-web.pak';
 
-  await start_game('canvas', pakUrl);
+  await start_game('canvas', pakUrl, await storedSaves());
 }} catch (e) {{
   // textContent: error text can carry pak-derived strings; never parse it as HTML.
   const line = document.createElement('span');
@@ -467,7 +505,11 @@ mod tests {
         let html = fs::read_to_string(&out).unwrap();
         let inlined = format!(r#"const __q2_wasm_base64 = "{}";"#, BASE64.encode(wasm));
         assert!(html.contains(&inlined));
-        assert!(html.contains("await start_game('canvas', pakUrl);"));
+        assert!(html.contains("await start_game('canvas', pakUrl, await storedSaves());"));
+        assert!(
+            html.contains("window.qwasm2Saves = {"),
+            "the save store the engine calls"
+        );
     }
 
     #[test]

@@ -431,6 +431,13 @@ impl Engine {
         for command in bound_commands(&self.last_keys, &input.keys) {
             self.local.client_command(command);
         }
+        for command in server_bound_commands(&self.last_keys, &input.keys) {
+            if let Err(e) = self.local.console(command) {
+                report_error(&format!("ERROR: {e}"));
+                self.dropped = true;
+                return;
+            }
+        }
         self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
@@ -467,6 +474,7 @@ impl Engine {
             view_angles: &mut self.input.view_angles,
         };
         let output = frame_output(&mut self.local, &mut client, |path| fs.load_file(path));
+        flush_saves(&mut self.local);
         let (sounds, messages) = (output.sounds, output.messages);
         if let Some((level, change)) = output.level {
             log(&format!("Level exit to {level}"));
@@ -1255,11 +1263,93 @@ const BINDS: [(u8, &str); 23] = [
     (b'p', "use power shield"),
 ];
 
-/// The bound commands whose keys went down since `last_keys`, in key
-/// order.
+/// Put back the save files the page kept from earlier visits. A new game
+/// starts over `current` and the `save0` autosave, as C `map` does
+/// (SV_Map_f wipes `current`; entering the level writes `save0`), so only
+/// the other slots come back.
+#[cfg(any(target_arch = "wasm32", test))]
+fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
+    for (path, bytes) in files {
+        if !(path.starts_with("current/") || path.starts_with("save0/")) {
+            local.saves_mut().insert(&path, bytes);
+        }
+    }
+}
+
+// The page's save store (`window.qwasm2Saves`), which keeps each file in
+// IndexedDB. The calls return at once; the store writes in the background.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = put)]
+    fn saves_put(path: &str, bytes: &[u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = remove)]
+    fn saves_remove(path: &str) -> Result<(), JsValue>;
+}
+
+/// Hand the save files changed since the last call to the page's store.
+/// A page without one (an embed or test page) keeps saves for the visit.
+#[cfg(target_arch = "wasm32")]
+fn flush_saves(local: &mut q2_server::local::LocalGame) {
+    for (path, bytes) in local.saves_mut().take_changes() {
+        let stored = match &bytes {
+            Some(bytes) => saves_put(&path, bytes),
+            None => saves_remove(&path),
+        };
+        if let Err(e) = stored {
+            console::warn_1(&format!("[qwasm2-rs] save {path} not kept: {e:?}").into());
+        }
+    }
+}
+
+/// The page's stored files as `[path, Uint8Array]` pairs.
+#[cfg(target_arch = "wasm32")]
+fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
+    let Some(saves) = saves else {
+        return Vec::new();
+    };
+    saves
+        .iter()
+        .filter_map(|entry| {
+            let pair = js_sys::Array::from(&entry);
+            let path = pair.get(0).as_string()?;
+            let bytes = pair.get(1).dyn_into::<js_sys::Uint8Array>().ok()?.to_vec();
+            Some((path, bytes))
+        })
+        .collect()
+}
+
+/// default.cfg's save keys, which run server commands (C SV_Savegame_f
+/// and SV_Loadgame_f): F6 quick save, F9 quick load, and F3 the load menu
+/// (`menu_loadgame`), for which `LocalGame` loads the newest save. F2's
+/// save menu is not ported.
+#[cfg(any(target_arch = "wasm32", test))]
+const SERVER_BINDS: [(u8, &str); 3] = [
+    (q2_platform::keymap::K_F3, "menu_loadgame"),
+    (q2_platform::keymap::K_F6, "save quick"),
+    (q2_platform::keymap::K_F9, "load quick"),
+];
+
+/// The bound game commands whose keys went down since `last_keys`, in
+/// key order.
 #[cfg(any(target_arch = "wasm32", test))]
 fn bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
-    let mut commands: Vec<(u8, &str)> = BINDS
+    pressed_binds(&BINDS, last_keys, keys)
+}
+
+/// `bound_commands` for `SERVER_BINDS`.
+#[cfg(any(target_arch = "wasm32", test))]
+fn server_bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
+    pressed_binds(&SERVER_BINDS, last_keys, keys)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn pressed_binds(
+    binds: &[(u8, &'static str)],
+    last_keys: &[bool; 256],
+    keys: &[bool; 256],
+) -> Vec<&'static str> {
+    let mut commands: Vec<(u8, &str)> = binds
         .iter()
         .filter(|&&(k, _)| keys[k as usize] && !last_keys[k as usize])
         .copied()
@@ -1459,6 +1549,9 @@ fn key_legend() -> Vec<(String, String)> {
         }
     }
     for (label, key) in [
+        ("load game", "F3"),
+        ("quick save", "F6"),
+        ("quick load", "F9"),
         ("gamma darker", "F7"),
         ("gamma brighter", "F8"),
         ("keys", "F4"),
@@ -1693,7 +1786,11 @@ const ENGINE_MARK: &str = "data-qwasm2-engine";
 /// requestAnimationFrame loop on the same canvas.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+pub async fn start_game(
+    canvas_id: String,
+    pak_url: String,
+    saves: Option<js_sys::Array>,
+) -> Result<(), JsValue> {
     let canvas_el = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(&canvas_id))
@@ -1705,7 +1802,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
     canvas_el.set_attribute(ENGINE_MARK, "")?;
 
-    let (engine, map_name) = match load_engine(canvas_id, pak_url).await {
+    let (engine, map_name) = match load_engine(canvas_id, pak_url, saves_from_js(saves)).await {
         Ok(loaded) => loaded,
         Err(e) => {
             // Nothing is attached to the page yet: allow a retry after a
@@ -1726,7 +1823,11 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
 /// context, the pak, the renderer, the server and the client. Returns the
 /// engine and the map it loaded.
 #[cfg(target_arch = "wasm32")]
-async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, String), JsValue> {
+async fn load_engine(
+    canvas_id: String,
+    pak_url: String,
+    saves: Vec<(String, Vec<u8>)>,
+) -> Result<(Engine, String), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
@@ -1809,13 +1910,16 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
     // 8. Server and game: load collision, spawn the map's entities, and put
     //    the local player in at the player start.
     let hand = hand_from_query(&search);
-    let local = q2_server::local::LocalGame::start_with_userinfo(
+    let mut local = q2_server::local::LocalGame::start_with_userinfo(
         short_name,
         &bsp_data,
         &local_userinfo(hand),
     )
     .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
+    restore_saves(&mut local, saves);
+    // The new game's own `current` and autosave go to the page too.
+    flush_saves(&mut local);
     if let Some((origin, ps)) = local.player() {
         log(&format!(
             "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
@@ -3176,6 +3280,75 @@ mod tests {
                     .iter()
                     .any(|(_, keys)| keys.split(", ").any(|k| k == name)),
                 "{name} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_game_restores_the_kept_saves_but_starts_current_and_save0_over() {
+        let map = crate::test_bsp::floor_wall_bsp();
+        let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
+        let fresh_autosave = local
+            .saves()
+            .file("save0", "server.ssv")
+            .map(<[u8]>::to_vec);
+        local.saves_mut().take_changes();
+        restore_saves(
+            &mut local,
+            vec![
+                ("quick/server.ssv".into(), vec![1]),
+                ("current/old.sav".into(), vec![2]),
+                ("save0/server.ssv".into(), vec![3]),
+            ],
+        );
+        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&[1u8][..]));
+        assert!(local.saves().file("current", "old.sav").is_none());
+        assert_eq!(
+            local
+                .saves()
+                .file("save0", "server.ssv")
+                .map(<[u8]>::to_vec),
+            fresh_autosave
+        );
+        assert!(
+            local.saves_mut().take_changes().is_empty(),
+            "the page has them already"
+        );
+    }
+
+    #[test]
+    fn the_save_keys_run_default_cfgs_server_commands_once_per_press() {
+        use q2_platform::keymap::{K_F3, K_F6, K_F9};
+        let none = [false; 256];
+        assert_eq!(
+            server_bound_commands(&none, &pressed(&[K_F6])),
+            ["save quick"]
+        );
+        assert_eq!(
+            server_bound_commands(&none, &pressed(&[K_F9])),
+            ["load quick"]
+        );
+        // C's F3 opens the load menu; the stand-in loads the newest save.
+        assert_eq!(
+            server_bound_commands(&none, &pressed(&[K_F3])),
+            ["menu_loadgame"]
+        );
+        let held = pressed(&[K_F6]);
+        assert!(server_bound_commands(&held, &held).is_empty());
+        assert!(
+            bound_commands(&none, &held).is_empty(),
+            "not a game command"
+        );
+
+        let legend = key_legend();
+        for (label, key) in [
+            ("quick save", "F6"),
+            ("quick load", "F9"),
+            ("load game", "F3"),
+        ] {
+            assert!(
+                legend.iter().any(|(l, k)| l == label && k == key),
+                "{label}"
             );
         }
     }
