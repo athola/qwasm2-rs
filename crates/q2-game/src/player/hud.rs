@@ -314,6 +314,7 @@ impl GameWorld {
         if self.level.intermission_time != 0.0 {
             return; // already activated
         }
+        self.game.autosaved = false;
         let clients: Vec<EntityKey> = (1..=self.game.maxclients().max(0) as usize)
             .filter_map(|n| self.entities.key_for_number(n))
             .filter(|&k| self.entities.get(k).is_some_and(|e| e.in_use))
@@ -736,6 +737,17 @@ mod tests {
             PmType::Normal,
             "not moved"
         );
+    }
+
+    #[test]
+    fn the_intermission_forgets_that_the_game_came_from_an_autosave() {
+        // C BeginIntermission clears game.autosaved, so the next level's
+        // connect does not take its pers for an autosave's.
+        let (mut world, _, _) = armed_player();
+        world.game.autosaved = true;
+        let exit = exit_to(&mut world, "base2");
+        world.begin_intermission(exit);
+        assert!(!world.game.autosaved);
     }
 
     #[test]
