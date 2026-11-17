@@ -431,7 +431,20 @@ impl Engine {
         for command in bound_commands(&self.last_keys, &input.keys) {
             self.local.client_command(command);
         }
-        for command in server_bound_commands(&self.last_keys, &input.keys) {
+        for command in &input.commands {
+            if !is_server_command(command) {
+                self.local.client_command(command);
+            }
+        }
+        let page_commands = input
+            .commands
+            .iter()
+            .map(String::as_str)
+            .filter(|c| is_server_command(c));
+        for command in server_bound_commands(&self.last_keys, &input.keys)
+            .into_iter()
+            .chain(page_commands)
+        {
             if let Err(e) = self.local.console(command) {
                 report_error(&format!("ERROR: {e}"));
                 self.dropped = true;
@@ -1317,6 +1330,16 @@ fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
             Some((path, bytes))
         })
         .collect()
+}
+
+/// Whether page command `text` is one of the server's (C
+/// SV_InitOperatorCommands: `gamemap`, `save`, `load`) or the load menu
+/// stand-in. Anything else goes to the game as a client command, as C's
+/// console forwards a command it does not know.
+#[cfg(any(target_arch = "wasm32", test))]
+fn is_server_command(text: &str) -> bool {
+    let name = text.split_whitespace().next().unwrap_or_default();
+    matches!(name, "gamemap" | "save" | "load" | "menu_loadgame")
 }
 
 /// default.cfg's save keys, which run server commands (C SV_Savegame_f
@@ -3314,6 +3337,18 @@ mod tests {
             local.saves_mut().take_changes().is_empty(),
             "the page has them already"
         );
+    }
+
+    #[test]
+    fn page_commands_go_to_the_server_or_on_to_the_game_like_cs_console() {
+        for server in ["gamemap base2", "save quick", "load quick", "menu_loadgame"] {
+            assert!(is_server_command(server), "{server}");
+        }
+        // C's console forwards what it does not know to the server, which
+        // hands it to the game's ClientCommand.
+        for game in ["kill", "use Shotgun", "savegames"] {
+            assert!(!is_server_command(game), "{game}");
+        }
     }
 
     #[test]

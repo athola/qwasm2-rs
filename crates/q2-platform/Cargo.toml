@@ -23,6 +23,7 @@ web-sys = { workspace = true, features = [
     "ChannelMergerNode",
     "GainNode",
     "console",
+    "CustomEvent",
     "Document",
     "Element",
     "HtmlCanvasElement",

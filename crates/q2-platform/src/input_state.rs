@@ -11,6 +11,9 @@ pub struct WasmInputState {
     pub mouse_buttons: u8,
     /// The page's Keys button was pressed since the last frame.
     pub legend_requested: bool,
+    /// Console commands the page sent (`qwasm2-command` events) since the
+    /// last frame, in order: the browser has no typed console.
+    pub commands: Vec<String>,
     /// Keys and buttons that went down since the last `take_frame` (C
     /// `kbutton_t` state bit 2), so a tap released before the frame
     /// samples the input still counts once.
@@ -73,6 +76,7 @@ impl WasmInputState {
         self.mouse_dx = 0.0;
         self.mouse_dy = 0.0;
         self.legend_requested = false;
+        self.commands.clear();
         frame
     }
 
@@ -120,6 +124,7 @@ impl Default for WasmInputState {
             mouse_dy: 0.0,
             mouse_buttons: 0,
             legend_requested: false,
+            commands: Vec::new(),
             pressed_keys: [false; 256],
             pressed_buttons: 0,
             pointer_locked: false,
@@ -193,6 +198,15 @@ mod tests {
         assert_eq!((state.mouse_dx, state.mouse_dy), (0.0, 0.0));
         assert!(!state.legend_requested, "one toggle per click");
         assert!(state.keys[b'w' as usize] && state.mouse_buttons == 1);
+    }
+
+    #[test]
+    fn a_frame_takes_the_pages_commands_once() {
+        let mut state = WasmInputState::default();
+        state.commands.push("kill".into());
+        state.commands.push("gamemap base2".into());
+        assert_eq!(state.take_frame().commands, ["kill", "gamemap base2"]);
+        assert!(state.take_frame().commands.is_empty());
     }
 
     #[test]
