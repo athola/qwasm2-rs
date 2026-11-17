@@ -17,14 +17,18 @@ use q2_server::local::LocalGame;
 use q2_shared::constants::STAT_HEALTH;
 use q2_shared::types::UserCmd;
 
-/// The `map` keys of `map`'s `target_changelevel`s.
+/// The `map` keys of `map`'s `target_changelevel`s, after its map fix.
 fn exits(fs: &FileSystem, map: &str) -> Vec<String> {
     let bsp = fs
         .load_file(&format!("maps/{map}.bsp"))
         .expect("map in the paks");
     let header = q2_common::bsp_file::BspHeader::parse(&bsp).expect("a BSP");
-    let entities =
-        q2_game::spawn::parse_entity_string(&header.entity_string(&bsp).unwrap()).unwrap();
+    // The entities the game spawns: a shipped map fix replaces the BSP's.
+    let text = match q2_server::mapfixes::entity_file(map) {
+        Some(fixed) => fixed.to_string(),
+        None => header.entity_string(&bsp).unwrap(),
+    };
+    let entities = q2_game::spawn::parse_entity_string(&text).unwrap();
     let mut levels: Vec<String> = entities
         .iter()
         .filter(|e| {

@@ -30,6 +30,16 @@ as `fn(&mut GameWorld, EntityKey)`, not closures. They carry no captured
 state, so they can be stored on entities without lifetime problems and can be
 saved by name in save files (see Save and load).
 
+### Map fixes
+
+yquake2 ships fixed entity files for 12 retail maps (`stuff/mapfixes`),
+which C's `CMod_LoadEntityString` loads in place of a map's own entities
+when `sv_entfile` is set, its default. The port embeds them in `q2-server`
+(`mapfixes`), so every platform loads them; `sv_entfile 0` turns them
+off. They fix monster counts, spawn chains, deathmatch items in single
+player, and remove biggun's `target_actor`, for which yquake2 has no code.
+An `.ent` file in a pak is not read: only the shipped fixes apply.
+
 ### Save and load
 
 The game writes its state as bytes and the server stores them, as C's

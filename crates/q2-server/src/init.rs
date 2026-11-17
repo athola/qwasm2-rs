@@ -116,7 +116,23 @@ impl Server {
             gi.configstring((CS_MODELS + 1 + i) as i32, &format!("*{i}"));
         }
 
-        game.spawn_entities(map_name, &gi.entity_string(), spawnpoint);
+        // C CMod_LoadEntityString: with `sv_entfile` set (its default), a
+        // map's .ent file replaces the entities in its BSP.
+        let entities = match gi.cvar("sv_entfile", "1").parse::<f32>().unwrap_or(0.0) != 0.0 {
+            true => crate::mapfixes::entity_file(map_name),
+            false => None,
+        };
+        let entities = match entities {
+            Some(fixed) => {
+                tracing::info!(
+                    target: crate::local::SERVER_PRINT_TARGET,
+                    "CMod_LoadEntityString: .ent file maps/{map_name}.ent loaded."
+                );
+                fixed.to_string()
+            }
+            None => gi.entity_string(),
+        };
+        game.spawn_entities(map_name, &entities, spawnpoint);
         self.drop_on_game_error(gi)?;
         game.run_frame();
         self.drop_on_game_error(gi)?;
@@ -331,6 +347,43 @@ mod tests {
         });
         sv.map(&mut svs, "base1", &[], "", &gi, &mut game).unwrap();
         assert_eq!(gi.take_messages().len(), 1);
+    }
+
+    #[test]
+    fn a_map_with_a_shipped_fix_spawns_the_fixed_entities_unless_sv_entfile_is_0() {
+        // C CMod_LoadEntityString with yquake2's stuff/mapfixes installed.
+        let gi = ServerGameImport::new();
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        let mut game = NullGame::default();
+        sv.map(&mut svs, "biggun", &[], "", &gi, &mut game).unwrap();
+        assert!(game.entities.starts_with("// FIXED ENTITY STRING"));
+        let spawned = q2_game::spawn::parse_entity_string(&game.entities).unwrap();
+        assert!(!spawned.iter().any(|e| e["classname"] == "target_actor"));
+
+        gi.set_cvar("sv_entfile", "0");
+        sv.map(&mut svs, "biggun", &[], "", &gi, &mut game).unwrap();
+        assert_eq!(game.entities, gi.entity_string(), "the map's own entities");
+
+        gi.set_cvar("sv_entfile", "1");
+        sv.map(&mut svs, "base1", &[], "", &gi, &mut game).unwrap();
+        assert_eq!(game.entities, gi.entity_string(), "base1 has no fix");
+    }
+
+    #[test]
+    fn every_shipped_fix_parses() {
+        for map in crate::mapfixes::MAPS {
+            let text = crate::mapfixes::entity_file(map).unwrap();
+            let entities =
+                q2_game::spawn::parse_entity_string(text).unwrap_or_else(|e| panic!("{map}: {e}"));
+            assert!(
+                entities
+                    .first()
+                    .is_some_and(|e| e["classname"] == "worldspawn"),
+                "{map}"
+            );
+        }
     }
 
     #[test]

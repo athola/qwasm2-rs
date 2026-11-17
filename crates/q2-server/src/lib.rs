@@ -12,6 +12,7 @@ pub mod frame;
 pub mod game_iface;
 pub mod init;
 pub mod local;
+pub mod mapfixes;
 pub mod state;
 pub mod vis;
 pub mod world;
@@ -37,6 +38,8 @@ pub(crate) mod test_support {
         pub(crate) refuse_connect: bool,
         /// Spawnpoint of the last `spawn_entities`.
         pub(crate) spawnpoint: String,
+        /// Entity string of the last `spawn_entities`.
+        pub(crate) entities: String,
         pub(crate) connects: u32,
         /// The userinfo of the last `client_connect`.
         pub(crate) userinfo: String,
@@ -52,8 +55,9 @@ pub(crate) mod test_support {
     impl GameExport for NullGame {
         fn init(&mut self) {}
         fn shutdown(&mut self) {}
-        fn spawn_entities(&mut self, _: &str, _: &str, spawnpoint: &str) {
+        fn spawn_entities(&mut self, _: &str, entities: &str, spawnpoint: &str) {
             self.spawnpoint = spawnpoint.to_string();
+            self.entities = entities.to_string();
         }
         fn client_connect(&mut self, _: usize, userinfo: &str) -> bool {
             self.connects += 1;
