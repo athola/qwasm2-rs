@@ -37,6 +37,12 @@ q2-bundler      Bundles WASM + JS into a single HTML file (standalone)
 q2-pak-repack   Repacks a PAK and writes a Brotli variant for web delivery (standalone)
 ```
 
+The client's input and view calculations (C CL_AdjustAngles, CL_BaseMove's
+keys, CL_FinishMove, CalcFov) live in q2-client, reading the key numbers in
+`q2_common::keys`. What turns client data into renderer calls (C
+CL_PrepRefresh, V_AddEntity and the like) stays in q2-wasm: q2-client may not
+depend on q2-render-api, and the entry point is where the two meet.
+
 ### Trait Boundaries
 
 Four trait interfaces enforce the key abstraction boundaries:

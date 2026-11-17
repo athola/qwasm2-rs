@@ -109,12 +109,196 @@ fn angle_to_short(angle: f32) -> i16 {
     ((angle * 65536.0 / 360.0) as i32 & 0xFFFF) as i16
 }
 
+/// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
+/// this port, not C's default (`sensitivity 3` times `m_yaw 0.022` is
+/// 0.066 deg/px); there is no sensitivity cvar yet.
+pub const MOUSE_SENSITIVITY: f32 = 0.15;
+
+/// C `cl_yawspeed` / `cl_pitchspeed` defaults: keyboard turning, deg/s.
+pub const CL_YAWSPEED: f32 = 140.0;
+pub const CL_PITCHSPEED: f32 = 150.0;
+/// C `cl_anglespeedkey` default: the turn speed factor while +speed is held.
+pub const CL_ANGLESPEEDKEY: f32 = 1.5;
+
+/// Move time for a user command (C CL_FinishMove): the frame time in whole
+/// milliseconds, or 100 when it is over 250 ("time was unreasonable").
+pub fn cmd_msec(dt_seconds: f32) -> u8 {
+    let ms = (dt_seconds * 1000.0) as i32;
+    if ms > 250 {
+        100
+    } else {
+        ms.max(0) as u8
+    }
+}
+
+/// The light level a user command carries (C CL_FinishMove's
+/// `(byte)cl_lightlevel->value`): truncated, keeping the low 8 bits as the
+/// C conversion does on wasm and x86.
+pub fn cmd_lightlevel(r_lightlevel: f32) -> u8 {
+    r_lightlevel as i32 as u8
+}
+
+/// Key and mouse-button state into movement and button input, with
+/// Quake 2's default bindings (WASD and arrows, alt+arrows strafe, space
+/// jump, c crouch, shift run, ctrl or mouse1 attack).
+pub fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut InputState) {
+    use q2_common::keys::*;
+    let down = |k: u8| keys[k as usize];
+    let axis = |pos: bool, neg: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
+    let strafe = down(K_ALT);
+    input.forward_move = axis(
+        down(b'w') || down(K_UPARROW),
+        down(b's') || down(K_DOWNARROW),
+    );
+    input.side_move = axis(
+        down(b'd') || down(b'.') || (strafe && down(K_RIGHTARROW)),
+        down(b'a') || down(b',') || (strafe && down(K_LEFTARROW)),
+    );
+    input.jump = down(K_SPACE);
+    input.crouch = down(b'c');
+    input.run = down(K_SHIFT);
+    input.attack = down(K_CTRL) || mouse_buttons & 1 != 0;
+    input.keys = *keys;
+}
+
+/// Turn the view by mouse movement and the turn keys (C CL_AdjustAngles and
+/// the mouse move), then clamp pitch as C CL_ClampPitch does against the
+/// player's `delta_pitch` (degrees, already in -180..180).
+pub fn turn_view(
+    input: &mut InputState,
+    keys: &[bool; 256],
+    mouse_dx: f32,
+    mouse_dy: f32,
+    dt: f32,
+    delta_pitch: f32,
+) {
+    use q2_common::keys::*;
+    let down = |k: u8| keys[k as usize];
+    let angles = &mut input.view_angles;
+    angles.y -= mouse_dx * MOUSE_SENSITIVITY;
+    angles.x += mouse_dy * MOUSE_SENSITIVITY;
+    // +speed (shift) turns faster too.
+    let speed = if down(K_SHIFT) {
+        dt * CL_ANGLESPEEDKEY
+    } else {
+        dt
+    };
+    if !down(K_ALT) {
+        if down(K_LEFTARROW) {
+            angles.y += CL_YAWSPEED * speed;
+        }
+        if down(K_RIGHTARROW) {
+            angles.y -= CL_YAWSPEED * speed;
+        }
+    }
+    if down(K_PGDN) {
+        angles.x -= CL_PITCHSPEED * speed; // +lookup
+    }
+    if down(K_DEL) {
+        angles.x += CL_PITCHSPEED * speed; // +lookdown
+    }
+
+    if angles.x + delta_pitch < -360.0 {
+        angles.x += 360.0;
+    }
+    if angles.x + delta_pitch > 360.0 {
+        angles.x -= 360.0;
+    }
+    if angles.x + delta_pitch > 89.0 {
+        angles.x = 89.0 - delta_pitch;
+    }
+    if angles.x + delta_pitch < -89.0 {
+        angles.x = -89.0 - delta_pitch;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // C CL_BaseMove: cl_forwardspeed/cl_sidespeed/cl_upspeed default to 200
     // (cl_main.c) and running doubles them.
+    #[test]
+    fn cmd_lightlevel_is_the_renderers_light_level_cast_to_a_byte_like_c() {
+        assert_eq!(cmd_lightlevel(150.0), 150);
+        assert_eq!(cmd_lightlevel(5.9), 5, "truncated toward zero");
+        assert_eq!(cmd_lightlevel(0.0), 0);
+        // C `(byte)cl_lightlevel->value` keeps the low 8 bits.
+        assert_eq!(cmd_lightlevel(300.0), 44);
+    }
+
+    #[test]
+    fn cmd_msec_is_the_frame_time_with_c_unreasonable_time_rule() {
+        assert_eq!(cmd_msec(0.016), 16);
+        assert_eq!(cmd_msec(0.25), 250);
+        // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
+        assert_eq!(cmd_msec(0.4), 100);
+        assert_eq!(cmd_msec(-1.0), 0);
+    }
+
+    #[test]
+    fn apply_keys_maps_wasd_jump_crouch_run_and_attack() {
+        use q2_common::keys::{K_CTRL, K_SHIFT, K_SPACE};
+        let mut keys = [false; 256];
+        keys[b'w' as usize] = true;
+        keys[b'd' as usize] = true;
+        keys[K_SPACE as usize] = true;
+        keys[K_SHIFT as usize] = true;
+        let mut input = InputState::default();
+        apply_keys(&keys, 0, &mut input);
+        assert_eq!((input.forward_move, input.side_move), (1.0, 1.0));
+        assert!(input.jump && input.run && !input.crouch && !input.attack);
+
+        keys[K_CTRL as usize] = true;
+        apply_keys(&keys, 0, &mut input);
+        assert!(input.attack, "ctrl is +attack");
+        apply_keys(&[false; 256], 1, &mut input);
+        assert!(input.attack, "mouse1 is +attack");
+        assert_eq!(input.forward_move, 0.0);
+    }
+
+    #[test]
+    fn turn_view_follows_c_mouse_signs_and_clamps_pitch() {
+        let mut input = InputState::default();
+        // Mouse right turns right (yaw down), mouse down looks down (+pitch).
+        turn_view(&mut input, &[false; 256], 10.0, 10.0, 0.0, 0.0);
+        assert!(input.view_angles.y < 0.0 && input.view_angles.x > 0.0);
+
+        // CL_ClampPitch: pitch + delta pitch stays within +-89.
+        turn_view(&mut input, &[false; 256], 0.0, 100_000.0, 0.0, 0.0);
+        assert_eq!(input.view_angles.x, 89.0);
+        turn_view(&mut input, &[false; 256], 0.0, -100_000.0, 0.0, 10.0);
+        assert_eq!(input.view_angles.x, -99.0);
+    }
+
+    #[test]
+    fn turn_view_arrow_keys_turn_at_cl_yawspeed() {
+        use q2_common::keys::K_LEFTARROW;
+        let mut input = InputState::default();
+        let mut keys = [false; 256];
+        keys[K_LEFTARROW as usize] = true;
+        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
+        assert!(
+            (input.view_angles.y - 70.0).abs() < 1e-4,
+            "140 deg/s for 0.5 s"
+        );
+    }
+
+    #[test]
+    fn turn_view_speed_key_turns_at_cl_anglespeedkey_times_the_speed() {
+        use q2_common::keys::{K_LEFTARROW, K_SHIFT};
+        let mut input = InputState::default();
+        let mut keys = [false; 256];
+        keys[K_LEFTARROW as usize] = true;
+        keys[K_SHIFT as usize] = true;
+        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
+        assert!(
+            (input.view_angles.y - 105.0).abs() < 1e-4,
+            "140 deg/s * 1.5 for 0.5 s, got {}",
+            input.view_angles.y
+        );
+    }
+
     #[test]
     fn build_cmd_full_forward_is_200_and_run_is_400() {
         let mut input = InputState {

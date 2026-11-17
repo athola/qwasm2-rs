@@ -54,7 +54,7 @@ struct Engine {
     /// Client-side input and view angles (C `cl.viewangles`).
     input: q2_client::input::InputState,
     canvas: web_sys::HtmlCanvasElement,
-    view: ViewSize,
+    view: q2_client::view::ViewSize,
     last_time: f64,
     models: ModelTable,
     /// The last two server frames and the client clock (C `cl.frame`,
@@ -104,7 +104,7 @@ impl Engine {
         fs: Rc<q2_common::filesystem::FileSystem>,
         models: ModelTable,
         canvas: web_sys::HtmlCanvasElement,
-        view: ViewSize,
+        view: q2_client::view::ViewSize,
     ) -> Self {
         let mut engine = Self {
             renderer,
@@ -415,7 +415,7 @@ impl Engine {
             .player()
             .map(|(_, ps)| f32::from(ps.pmove.delta_angles[0]) * (360.0 / 65536.0))
             .unwrap_or(0.0);
-        turn_view(
+        q2_client::input::turn_view(
             &mut self.input,
             &input.keys,
             input.mouse_dx,
@@ -423,7 +423,7 @@ impl Engine {
             dt,
             delta_pitch,
         );
-        apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
+        q2_client::input::apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
         self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
         if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
             self.show_legend = !self.show_legend;
@@ -455,9 +455,9 @@ impl Engine {
             }
         }
         self.last_keys = input.keys;
-        let mut cmd = self.input.build_cmd(cmd_msec(dt));
+        let mut cmd = self.input.build_cmd(q2_client::input::cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
-        cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
+        cmd.lightlevel = q2_client::input::cmd_lightlevel(self.renderer.light_level());
 
         // C's func_clock reads localtime: the page's clock.
         let now = js_sys::Date::new_0();
@@ -509,9 +509,9 @@ impl Engine {
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
-        // ViewSize dimensions are always positive, so the casts are lossless.
+        // q2_client::view::ViewSize dimensions are always positive, so the casts are lossless.
         if (canvas_w, canvas_h) != (self.view.width as u32, self.view.height as u32) {
-            match ViewSize::for_canvas(canvas_w, canvas_h) {
+            match q2_client::view::ViewSize::for_canvas(canvas_w, canvas_h) {
                 Ok(Some(view)) => self.view = view,
                 // Zero-area canvas: keep drawing at the last usable size.
                 Ok(None) => {}
@@ -558,7 +558,7 @@ impl Engine {
             y: 0,
             width: self.view.width,
             height: self.view.height,
-            fov_x: FOV_X,
+            fov_x: q2_client::view::FOV_X,
             fov_y: self.view.fov_y,
             vieworg,
             viewangles,
@@ -1189,65 +1189,6 @@ fn gun_entity(
     })
 }
 
-/// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
-/// this port, not C's default (`sensitivity 3` times `m_yaw 0.022` is
-/// 0.066 deg/px); there is no sensitivity cvar yet.
-#[cfg(any(target_arch = "wasm32", test))]
-const MOUSE_SENSITIVITY: f32 = 0.15;
-
-/// C `cl_yawspeed` / `cl_pitchspeed` defaults: keyboard turning, deg/s.
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_YAWSPEED: f32 = 140.0;
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_PITCHSPEED: f32 = 150.0;
-/// C `cl_anglespeedkey` default: the turn speed factor while +speed is held.
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_ANGLESPEEDKEY: f32 = 1.5;
-
-/// Move time for a user command (C CL_FinishMove): the frame time in whole
-/// milliseconds, or 100 when it is over 250 ("time was unreasonable").
-#[cfg(any(target_arch = "wasm32", test))]
-fn cmd_msec(dt_seconds: f32) -> u8 {
-    let ms = (dt_seconds * 1000.0) as i32;
-    if ms > 250 {
-        100
-    } else {
-        ms.max(0) as u8
-    }
-}
-
-/// The light level a user command carries (C CL_FinishMove's
-/// `(byte)cl_lightlevel->value`): truncated, keeping the low 8 bits as the
-/// C conversion does on wasm and x86.
-#[cfg(any(target_arch = "wasm32", test))]
-fn cmd_lightlevel(r_lightlevel: f32) -> u8 {
-    r_lightlevel as i32 as u8
-}
-
-/// Browser key and mouse-button state into movement and button input, with
-/// Quake 2's default bindings (WASD and arrows, alt+arrows strafe, space
-/// jump, c crouch, shift run, ctrl or mouse1 attack).
-#[cfg(any(target_arch = "wasm32", test))]
-fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::input::InputState) {
-    use q2_platform::keymap::*;
-    let down = |k: u8| keys[k as usize];
-    let axis = |pos: bool, neg: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
-    let strafe = down(K_ALT);
-    input.forward_move = axis(
-        down(b'w') || down(K_UPARROW),
-        down(b's') || down(K_DOWNARROW),
-    );
-    input.side_move = axis(
-        down(b'd') || down(b'.') || (strafe && down(K_RIGHTARROW)),
-        down(b'a') || down(b',') || (strafe && down(K_LEFTARROW)),
-    );
-    input.jump = down(K_SPACE);
-    input.crouch = down(b'c');
-    input.run = down(K_SHIFT);
-    input.attack = down(K_CTRL) || mouse_buttons & 1 != 0;
-    input.keys = *keys;
-}
-
 /// Command keys from Q2's default.cfg: weapons on the number row, the
 /// inventory keys, hand grenades, the next weapon and the powerups. Each
 /// fires on the frame the key goes down (C key binds run on the down
@@ -1656,92 +1597,6 @@ fn gamma_key_step(last_keys: &[bool; 256], keys: &[bool; 256]) -> i32 {
     pressed(K_F8) - pressed(K_F7)
 }
 
-/// Turn the view by mouse movement and the turn keys (C CL_AdjustAngles and
-/// the mouse move), then clamp pitch as C CL_ClampPitch does against the
-/// player's `delta_pitch` (degrees, already in -180..180).
-#[cfg(any(target_arch = "wasm32", test))]
-fn turn_view(
-    input: &mut q2_client::input::InputState,
-    keys: &[bool; 256],
-    mouse_dx: f32,
-    mouse_dy: f32,
-    dt: f32,
-    delta_pitch: f32,
-) {
-    use q2_platform::keymap::*;
-    let down = |k: u8| keys[k as usize];
-    let angles = &mut input.view_angles;
-    angles.y -= mouse_dx * MOUSE_SENSITIVITY;
-    angles.x += mouse_dy * MOUSE_SENSITIVITY;
-    // +speed (shift) turns faster too.
-    let speed = if down(K_SHIFT) {
-        dt * CL_ANGLESPEEDKEY
-    } else {
-        dt
-    };
-    if !down(K_ALT) {
-        if down(K_LEFTARROW) {
-            angles.y += CL_YAWSPEED * speed;
-        }
-        if down(K_RIGHTARROW) {
-            angles.y -= CL_YAWSPEED * speed;
-        }
-    }
-    if down(K_PGDN) {
-        angles.x -= CL_PITCHSPEED * speed; // +lookup
-    }
-    if down(K_DEL) {
-        angles.x += CL_PITCHSPEED * speed; // +lookdown
-    }
-
-    if angles.x + delta_pitch < -360.0 {
-        angles.x += 360.0;
-    }
-    if angles.x + delta_pitch > 360.0 {
-        angles.x -= 360.0;
-    }
-    if angles.x + delta_pitch > 89.0 {
-        angles.x = 89.0 - delta_pitch;
-    }
-    if angles.x + delta_pitch < -89.0 {
-        angles.x = -89.0 - delta_pitch;
-    }
-}
-
-/// Horizontal fov the view is fitted to (C `fov` cvar default).
-#[cfg(any(target_arch = "wasm32", test))]
-const FOV_X: f32 = 90.0;
-
-/// Render size and the vertical fov that fits it, refreshed whenever the
-/// page resizes the canvas so the picture is not stretched.
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ViewSize {
-    width: i32,
-    height: i32,
-    fov_y: f32,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-impl ViewSize {
-    /// `Ok(None)` when the canvas has no usable area (hidden, collapsed or
-    /// too large for GL's i32 viewport): there is no aspect ratio to fit.
-    fn for_canvas(width: u32, height: u32) -> q2_common::error::Q2Result<Option<Self>> {
-        let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {
-            return Ok(None);
-        };
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-        let fov_y = q2_client::view::calc_fov(FOV_X, width as f32, height as f32)?;
-        Ok(Some(Self {
-            width,
-            height,
-            fov_y,
-        }))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // WASM entry points
 // ---------------------------------------------------------------------------
@@ -1876,7 +1731,7 @@ async fn load_engine(
         q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id).map_err(q2err_to_js)?;
     log("WebGL2 context created");
 
-    let view = ViewSize::for_canvas(canvas.width(), canvas.height())
+    let view = q2_client::view::ViewSize::for_canvas(canvas.width(), canvas.height())
         .map_err(q2err_to_js)?
         .ok_or_else(|| JsValue::from_str("canvas has no usable size"))?;
     let (width, height) = (view.width, view.height);
@@ -2240,6 +2095,14 @@ mod tests {
     }
 
     #[test]
+    fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
+        assert_eq!(
+            q2_client::input::cmd_msec(frame_dt_seconds(1300.0, 1000.0)),
+            100
+        );
+    }
+
+    #[test]
     fn prep_refresh_registers_the_new_map_in_cl_prep_refresh_order() {
         let mut renderer = Recorder::default();
         let mut models = ModelTable::default();
@@ -2443,28 +2306,13 @@ mod tests {
     }
 
     #[test]
-    fn cmd_lightlevel_is_the_renderers_light_level_cast_to_a_byte_like_c() {
-        assert_eq!(cmd_lightlevel(150.0), 150);
-        assert_eq!(cmd_lightlevel(5.9), 5, "truncated toward zero");
-        assert_eq!(cmd_lightlevel(0.0), 0);
-        // C `(byte)cl_lightlevel->value` keeps the low 8 bits.
-        assert_eq!(cmd_lightlevel(300.0), 44);
-    }
-
-    #[test]
     fn renderer_without_light_data_reports_the_player_lit() {
         use q2_render_api::Renderer;
         let renderer = Recorder::default();
-        assert_eq!(cmd_lightlevel(renderer.light_level()), 150);
-    }
-
-    #[test]
-    fn cmd_msec_is_the_frame_time_with_c_unreasonable_time_rule() {
-        assert_eq!(cmd_msec(0.016), 16);
-        assert_eq!(cmd_msec(0.25), 250);
-        // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
-        assert_eq!(cmd_msec(0.4), 100);
-        assert_eq!(cmd_msec(-1.0), 0);
+        assert_eq!(
+            q2_client::input::cmd_lightlevel(renderer.light_level()),
+            150
+        );
     }
 
     #[test]
@@ -3529,73 +3377,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_keys_maps_wasd_jump_crouch_run_and_attack() {
-        use q2_platform::keymap::{K_CTRL, K_SHIFT, K_SPACE};
-        let mut keys = [false; 256];
-        keys[b'w' as usize] = true;
-        keys[b'd' as usize] = true;
-        keys[K_SPACE as usize] = true;
-        keys[K_SHIFT as usize] = true;
-        let mut input = q2_client::input::InputState::default();
-        apply_keys(&keys, 0, &mut input);
-        assert_eq!((input.forward_move, input.side_move), (1.0, 1.0));
-        assert!(input.jump && input.run && !input.crouch && !input.attack);
-
-        keys[K_CTRL as usize] = true;
-        apply_keys(&keys, 0, &mut input);
-        assert!(input.attack, "ctrl is +attack");
-        apply_keys(&[false; 256], 1, &mut input);
-        assert!(input.attack, "mouse1 is +attack");
-        assert_eq!(input.forward_move, 0.0);
-    }
-
-    #[test]
-    fn turn_view_follows_c_mouse_signs_and_clamps_pitch() {
-        let mut input = q2_client::input::InputState::default();
-        // Mouse right turns right (yaw down), mouse down looks down (+pitch).
-        turn_view(&mut input, &[false; 256], 10.0, 10.0, 0.0, 0.0);
-        assert!(input.view_angles.y < 0.0 && input.view_angles.x > 0.0);
-
-        // CL_ClampPitch: pitch + delta pitch stays within +-89.
-        turn_view(&mut input, &[false; 256], 0.0, 100_000.0, 0.0, 0.0);
-        assert_eq!(input.view_angles.x, 89.0);
-        turn_view(&mut input, &[false; 256], 0.0, -100_000.0, 0.0, 10.0);
-        assert_eq!(input.view_angles.x, -99.0);
-    }
-
-    #[test]
-    fn turn_view_arrow_keys_turn_at_cl_yawspeed() {
-        use q2_platform::keymap::K_LEFTARROW;
-        let mut input = q2_client::input::InputState::default();
-        let mut keys = [false; 256];
-        keys[K_LEFTARROW as usize] = true;
-        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
-        assert!(
-            (input.view_angles.y - 70.0).abs() < 1e-4,
-            "140 deg/s for 0.5 s"
-        );
-    }
-
-    #[test]
-    fn view_size_fits_vertical_fov_to_canvas_aspect() {
-        let view = ViewSize::for_canvas(640, 480).unwrap().unwrap();
-        assert_eq!((view.width, view.height), (640, 480));
-        assert!((view.fov_y - 73.74).abs() < 0.01, "fov_y {}", view.fov_y);
-
-        // A wider canvas keeps fov_x 90 and narrows fov_y, as C CalcFov does.
-        let wide = ViewSize::for_canvas(1920, 1080).unwrap().unwrap();
-        assert!((wide.fov_y - 58.72).abs() < 0.01, "fov_y {}", wide.fov_y);
-    }
-
-    #[test]
-    fn view_size_has_no_fit_for_zero_or_unrepresentable_canvas() {
-        // A hidden or collapsed canvas has no aspect ratio to fit.
-        assert_eq!(ViewSize::for_canvas(0, 480).unwrap(), None);
-        assert_eq!(ViewSize::for_canvas(640, 0).unwrap(), None);
-        assert_eq!(ViewSize::for_canvas(u32::MAX, 480).unwrap(), None);
-    }
-
-    #[test]
     fn engine_version_contains_pkg_version() {
         let v = engine_version();
         assert!(v.starts_with("qwasm2-rs "));
@@ -3628,30 +3409,10 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
-        assert_eq!(cmd_msec(frame_dt_seconds(1300.0, 1000.0)), 100);
-    }
-
-    #[test]
     fn elapsed_microseconds_is_uncapped_and_never_negative() {
         assert_eq!(elapsed_microseconds(1006.944, 1000.0), 6944);
         assert_eq!(elapsed_microseconds(3000.0, 1000.0), 2_000_000);
         assert_eq!(elapsed_microseconds(1000.0, 1010.0), 0);
-    }
-
-    #[test]
-    fn turn_view_speed_key_turns_at_cl_anglespeedkey_times_the_speed() {
-        use q2_platform::keymap::{K_LEFTARROW, K_SHIFT};
-        let mut input = q2_client::input::InputState::default();
-        let mut keys = [false; 256];
-        keys[K_LEFTARROW as usize] = true;
-        keys[K_SHIFT as usize] = true;
-        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
-        assert!(
-            (input.view_angles.y - 105.0).abs() < 1e-4,
-            "140 deg/s * 1.5 for 0.5 s, got {}",
-            input.view_angles.y
-        );
     }
 
     #[test]
