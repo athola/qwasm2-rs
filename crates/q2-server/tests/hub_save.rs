@@ -107,10 +107,10 @@ fn loadgame_restores_the_saved_level_and_player() {
     };
     play(&mut game, 8, forward);
     let (origin, _) = game.player().unwrap();
-    game.console("savegame quick").unwrap();
+    game.console("save quick").unwrap();
 
     go(&mut game, "two");
-    game.console("loadgame quick").unwrap();
+    game.console("load quick").unwrap();
     assert_eq!(follow(&mut game), "one");
     assert_eq!(stat(&game, STAT_ARMOR), 25);
     assert_eq!(game.player().unwrap().0, origin);
@@ -128,15 +128,15 @@ fn savegame_refuses_current_a_bad_name_and_a_dead_player() {
     let mut game = LocalGame::start("one", &armor_map()).unwrap();
     idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
     let before = snapshot(&game);
-    game.console("savegame current").unwrap();
+    game.console("save current").unwrap();
     assert!(snapshot(&game) == before, "nothing written");
 
     game.client_command("kill");
     idle(&mut game, 2);
     assert!(stat(&game, STAT_HEALTH) <= 0);
-    game.console("savegame dead").unwrap();
+    game.console("save dead").unwrap();
     assert!(game.saves().file("dead", "server.ssv").is_none());
-    game.console("savegame ../escape").unwrap();
+    game.console("save ../escape").unwrap();
     assert!(snapshot(&game) == before, "nothing written");
 }
 
@@ -144,7 +144,7 @@ fn savegame_refuses_current_a_bad_name_and_a_dead_player() {
 fn dying_loads_the_latest_save() {
     let mut game = LocalGame::start("one", &armor_map()).unwrap();
     idle(&mut game, 55); // C Cmd_Kill_f waits five seconds after a spawn
-    game.console("savegame first").unwrap();
+    game.console("save first").unwrap();
     let saved_at: Vec3f = game.player().unwrap().0;
 
     game.client_command("kill");
@@ -173,7 +173,7 @@ fn loading_the_autosave_restarts_the_level_with_the_entering_inventory() {
     let mut game = LocalGame::start("one", &armor_map()).unwrap();
     idle(&mut game, 5);
     go(&mut game, "two");
-    game.console("loadgame save0").unwrap();
+    game.console("load save0").unwrap();
     assert_eq!(follow(&mut game), "two");
     assert_eq!(stat(&game, STAT_ARMOR), 25, "the armor carried into two");
 }

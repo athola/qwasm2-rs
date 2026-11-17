@@ -53,9 +53,9 @@ pub struct LocalGame {
     sent_sounds: Vec<crate::game_iface::SoundEvent>,
     /// The save slots (C `save/`).
     saves: SaveFiles,
-    /// A `loadgame` waiting for its map: whether it loads an autosave.
+    /// A `load` waiting for its map: whether it loads an autosave.
     loading: Option<bool>,
-    /// `savegame`, `loadgame` and `menu_loadgame`, as the console queued
+    /// `save`, `load` and `menu_loadgame`, as the console queued
     /// them, for `run_server_commands`.
     server_commands: Rc<RefCell<Vec<Vec<String>>>>,
     /// The local client's userinfo, kept for its reconnect after a load.
@@ -93,7 +93,7 @@ impl LocalGame {
                 *requested.borrow_mut() = Some((*map).to_string());
             }
         });
-        for name in ["savegame", "loadgame", "menu_loadgame"] {
+        for name in ["save", "load", "menu_loadgame"] {
             let queue = server_commands.clone();
             cmd.add_command(name, move |args: &[&str]| {
                 let mut command = vec![name.to_string()];
@@ -149,7 +149,8 @@ impl LocalGame {
     }
 
     /// Run console text (C `Cbuf_AddText` then `Cbuf_Execute`): the
-    /// server's `savegame <slot>` and `loadgame <slot>`, and `gamemap`. A
+    /// server's `save <slot>` and `load <slot>` (C SV_Savegame_f and
+    /// SV_Loadgame_f, which default.cfg binds to F6 and F9), and `gamemap`. A
     /// load queues its level for `take_map_change`. A `Com_Error` while
     /// saving or loading ends the server and is returned.
     pub fn console(&mut self, text: &str) -> Q2Result<()> {

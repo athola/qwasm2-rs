@@ -133,8 +133,8 @@ fn the_campaign_plays_through_every_exit_with_saves() {
             continue; // C refuses to save a dead player.
         }
         let before = game.player().unwrap().0;
-        game.console("savegame walk").unwrap();
-        game.console("loadgame walk").unwrap();
+        game.console("save walk").unwrap();
+        game.console("load walk").unwrap();
         assert_eq!(
             follow(&mut game, &fs).as_deref(),
             Some(here.as_str()),

@@ -346,14 +346,17 @@ impl LocalGame {
         let commands = std::mem::take(&mut *self.server_commands.borrow_mut());
         for args in commands {
             match args.as_slice() {
-                [cmd, slot] if cmd == "savegame" => self.save_game(slot)?,
-                [cmd, slot] if cmd == "loadgame" => self.load_game(slot)?,
+                [cmd, slot] if cmd == "save" => self.save_game(slot)?,
+                [cmd, slot] if cmd == "load" => self.load_game(slot)?,
                 // C pushes the load menu; with no menu, load the newest save.
                 [cmd] if cmd == "menu_loadgame" => match self.saves.slots().first() {
                     Some(slot) => self.load_game(&slot.clone())?,
                     None => tracing::info!("No savegame to load"),
                 },
-                [cmd, ..] => tracing::info!("USAGE: {cmd} <directory>"),
+                // C prints the usage under the long names.
+                [cmd, ..] if cmd == "save" => tracing::info!("USAGE: savegame <directory>"),
+                [cmd, ..] if cmd == "load" => tracing::info!("USAGE: loadgame <directory>"),
+                [cmd, ..] => tracing::info!("USAGE: {cmd}"),
                 [] => {}
             }
         }
