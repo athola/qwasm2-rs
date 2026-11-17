@@ -97,7 +97,10 @@ pub fn move_by_name(name: &str) -> Option<&'static MonsterMove> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{DieFn, EntityKey, MonsterMove, ThinkFn, TouchFn};
+    use crate::entity::{
+        BlockedFn, DieFn, EntityKey, MonsterCheckAttackFn, MonsterDodgeFn, MonsterMove, PainFn,
+        ThinkFn, TouchFn, UseFn,
+    };
     use crate::world::GameWorld;
 
     fn not_a_game_callback(_: &mut GameWorld, _: EntityKey) {}
@@ -119,6 +122,11 @@ mod tests {
             }
         }
         check::<ThinkFn>();
+        check::<MonsterCheckAttackFn>();
+        check::<BlockedFn>();
+        check::<UseFn>();
+        check::<MonsterDodgeFn>();
+        check::<PainFn>();
         check::<TouchFn>();
         check::<DieFn>();
     }

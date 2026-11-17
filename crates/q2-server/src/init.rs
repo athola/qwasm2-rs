@@ -225,6 +225,19 @@ impl MapRequest {
     }
 }
 
+impl MapRequest {
+    /// The game map `level` ends in, following a cinematic's next server;
+    /// `None` for a picture or a cinematic with none.
+    pub fn destination(level: &str) -> Option<String> {
+        let request = Self::parse(level);
+        match (request.kind, request.next_server) {
+            (LevelKind::Game, _) => Some(request.map),
+            (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => Self::destination(&next),
+            _ => None,
+        }
+    }
+}
+
 impl Server {
     /// Copy the configstrings the game wrote through the import's mirror
     /// into `configstrings`. In C the game writes `sv.configstrings`
@@ -467,6 +480,12 @@ mod tests {
         fn read_level(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
             Ok(())
         }
+        fn check_game(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn check_level(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -654,6 +673,20 @@ mod tests {
         let level = MapRequest::parse("*BASE2$Start");
         assert_eq!(level.map, "base2");
         assert_eq!(level.spawnpoint, "Start");
+    }
+
+    #[test]
+    fn a_level_string_ends_in_its_game_map_through_any_cinematic() {
+        assert_eq!(
+            MapRequest::destination("*base2$x").as_deref(),
+            Some("base2")
+        );
+        assert_eq!(
+            MapRequest::destination("ntro.cin+base1").as_deref(),
+            Some("base1")
+        );
+        assert_eq!(MapRequest::destination("end.cin"), None);
+        assert_eq!(MapRequest::destination("victory.pcx"), None);
     }
 
     #[test]

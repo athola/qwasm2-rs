@@ -32,7 +32,7 @@ fn a_level_loads_back_entities_their_references_and_callbacks() {
         }));
     }
     world.level.sight_entity = Some(soldier);
-    let saved = world.write_level().expect("saves");
+    let saved = world.encode_level().expect("saves");
 
     let mut loaded = test_world();
     loaded.read_level(&saved).expect("loads");
@@ -70,7 +70,7 @@ fn a_level_with_an_unregistered_callback_is_not_saved() {
     let mut world = test_world();
     let key = spawn(&mut world, "info_null");
     world.entities.get_mut(key).unwrap().think = Some(not_a_game_callback);
-    let err = world.write_level().unwrap_err();
+    let err = world.encode_level().unwrap_err();
     assert!(err.to_string().contains("callback in think"), "{err}");
 }
 
@@ -82,7 +82,7 @@ fn an_unregistered_end_move_or_monster_move_is_named_and_not_saved() {
         endfunc: Some(not_a_game_callback),
         ..Default::default()
     }));
-    let err = world.write_level().unwrap_err();
+    let err = world.encode_level().unwrap_err();
     assert!(err.to_string().contains("moveinfo.endfunc"), "{err}");
 
     world.entities.get_mut(key).unwrap().moveinfo = None;
@@ -94,7 +94,7 @@ fn an_unregistered_end_move_or_monster_move_is_named_and_not_saved() {
         }),
         ..MonsterInfo::default()
     }));
-    let err = world.write_level().unwrap_err();
+    let err = world.encode_level().unwrap_err();
     assert!(err.to_string().contains("monsterinfo.currentmove"), "{err}");
 }
 
@@ -127,7 +127,7 @@ fn a_freed_entity_loads_back_free_and_reusable_like_c() {
     world.level.time = 30.0;
     let gib = spawn(&mut world, "gib");
     world.free_entity(gib);
-    let saved = world.write_level().unwrap();
+    let saved = world.encode_level().unwrap();
 
     let mut loaded = test_world();
     loaded.read_level(&saved).unwrap();
@@ -142,7 +142,7 @@ fn read_level_relinks_every_entity_in_use() {
     let mut world = test_world();
     let lamp = spawn(&mut world, "light");
     let number = world.number_of(lamp).unwrap();
-    let saved = world.write_level().unwrap();
+    let saved = world.encode_level().unwrap();
 
     let (mut loaded, gi) = test_world_recording();
     loaded.read_level(&saved).unwrap();
@@ -153,7 +153,7 @@ fn read_level_relinks_every_entity_in_use() {
 fn read_level_marks_clients_unconnected() {
     let mut world = test_world();
     world.clients[0].pers.connected = true;
-    let saved_level = world.write_level().unwrap();
+    let saved_level = world.encode_level().unwrap();
     let saved_game = world.write_game(false).unwrap();
 
     let mut loaded = test_world();
@@ -168,7 +168,7 @@ fn read_level_starts_crosslevel_targets_after_their_delay() {
     world.level.time = 4.0;
     let target = spawn(&mut world, "target_crosslevel_target");
     world.entities.get_mut(target).unwrap().game.delay = 1.5;
-    let saved = world.write_level().unwrap();
+    let saved = world.encode_level().unwrap();
 
     let mut loaded = test_world();
     loaded.read_level(&saved).unwrap();
@@ -200,7 +200,7 @@ fn a_game_loads_back_clients_and_cross_level_state() {
 #[test]
 fn a_save_of_another_version_or_cut_short_is_refused() {
     let mut world = test_world();
-    let mut level = world.write_level().unwrap();
+    let mut level = world.encode_level().unwrap();
     let game = world.write_game(false).unwrap();
 
     let mut loaded = test_world();
@@ -270,7 +270,7 @@ fn a_loaded_player_takes_the_body_waiting_in_the_level() {
     world.entities.get_mut(key).unwrap().state.origin = q2_shared::Vec3f::new(300.0, -20.0, 40.0);
     world.client_mut(key).unwrap().ps.viewangles = q2_shared::Vec3f::new(10.0, 90.0, 0.0);
     let game_file = world.write_game(false).unwrap();
-    let level_file = world.write_level().unwrap();
+    let level_file = world.encode_level().unwrap();
 
     let loaded = load(&game_file, Some(&level_file));
     let (ent, client) = player(&loaded);

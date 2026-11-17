@@ -70,7 +70,7 @@ fn every_retail_map_spawns_runs_saves_and_loads() {
         let mut saved = None;
         for second in 0..30 {
             walk_a_second(&mut world);
-            match (world.game.write_game(true), world.game.write_level()) {
+            match (world.game.write_game(true), world.game.encode_level()) {
                 (Ok(game), Ok(level)) => saved = Some((game, level)),
                 (Err(e), _) | (_, Err(e)) => {
                     failures.push(format!("{map}: save at {second} s: {e}"));

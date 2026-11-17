@@ -432,7 +432,7 @@ impl Engine {
             self.local.client_command(command);
         }
         for command in &input.commands {
-            if !is_server_command(command) {
+            if !self.local.is_server_command(command) {
                 self.local.client_command(command);
             }
         }
@@ -440,7 +440,8 @@ impl Engine {
             .commands
             .iter()
             .map(String::as_str)
-            .filter(|c| is_server_command(c));
+            .filter(|c| self.local.is_server_command(c))
+            .collect::<Vec<_>>();
         for command in pressed_binds(&SERVER_BINDS, &self.last_keys, &input.keys)
             .into_iter()
             .chain(page_commands)
@@ -1282,23 +1283,13 @@ const BINDS: [(u8, &str); 23] = [
 /// Put back the save files the page kept from earlier visits, except
 /// `current`, which a new game starts over as C SV_Map_f does: the page
 /// drops its old copy. The last visit's `save0` replaces the new game's
-/// (ADR-005). A slot whose level is not in this pak (`has_map`) is left
-/// out: the page's store is shared by every pak served from its origin.
+/// (ADR-005).
 #[cfg(any(target_arch = "wasm32", test))]
-fn restore_saves(
-    local: &mut q2_server::local::LocalGame,
-    files: Vec<(String, Vec<u8>)>,
-    has_map: impl Fn(&str) -> bool,
-) {
+fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
     let mut stored = q2_server::local::SaveFiles::default();
     for (path, bytes) in files {
         stored.insert(&path, bytes);
     }
-    let playable = |slot: &str| {
-        stored
-            .level(slot)
-            .is_none_or(|level| destination(&level).is_none_or(|map| has_map(&map)))
-    };
     let slot_of = |path: &str| {
         path.rsplit_once('/')
             .map_or("", |(slot, _)| slot)
@@ -1313,7 +1304,6 @@ fn restore_saves(
             let slot = slot_of(path);
             slot != "current"
                 && stored.iter().any(|(kept, _)| slot_of(kept) == slot)
-                && playable(&slot)
                 && stored.iter().all(|(kept, _)| kept != path)
         })
         .collect();
@@ -1326,22 +1316,9 @@ fn restore_saves(
             if local.saves().iter().all(|(own, _)| own != path) {
                 local.saves_mut().discard(path);
             }
-        } else if playable(&slot) {
+        } else {
             local.saves_mut().insert(path, bytes.to_vec());
         }
-    }
-}
-
-/// The game map a level string ends in, following a cinematic's next
-/// server; `None` for a picture or a cinematic with none.
-#[cfg(any(target_arch = "wasm32", test))]
-fn destination(level: &str) -> Option<String> {
-    use q2_server::init::{LevelKind, MapRequest};
-    let request = MapRequest::parse(level);
-    match (request.kind, request.next_server) {
-        (LevelKind::Game, _) => Some(request.map),
-        (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => destination(&next),
-        _ => None,
     }
 }
 
@@ -1386,16 +1363,6 @@ fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
             Some((path, bytes))
         })
         .collect()
-}
-
-/// Whether page command `text` is one of the server's (C
-/// SV_InitOperatorCommands: `gamemap`, `save`, `load`) or the load menu
-/// stand-in. Anything else goes to the game as a client command, as C's
-/// console forwards a command it does not know.
-#[cfg(any(target_arch = "wasm32", test))]
-fn is_server_command(text: &str) -> bool {
-    let name = text.split_whitespace().next().unwrap_or_default();
-    matches!(name, "gamemap" | "save" | "load" | "menu_loadgame")
 }
 
 /// default.cfg's save keys, which run server commands (C SV_Savegame_f
@@ -1990,18 +1957,21 @@ async fn load_engine(
     )
     .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
-    restore_saves(&mut local, saves, |map| {
-        let found = fs.file_exists(&format!("maps/{map}.bsp"));
-        if !found {
-            console::warn_1(
-                &format!(
-                    "[qwasm2-rs] a save of {map}, which this pak lacks, is kept but not offered"
-                )
-                .into(),
-            );
-        }
-        found
-    });
+    // The page's store is shared by every pak on its origin: the server
+    // refuses a save of a map this pak lacks.
+    let maps: std::collections::HashSet<String> = fs
+        .list_files("bsp")
+        .into_iter()
+        .filter_map(|path| {
+            Some(
+                path.strip_prefix("maps/")?
+                    .strip_suffix(".bsp")?
+                    .to_string(),
+            )
+        })
+        .collect();
+    local.set_has_map(move |map| maps.contains(map));
+    restore_saves(&mut local, saves);
     // The new game's own `current` and autosave go to the page too.
     flush_saves(&mut local);
     if let Some((origin, ps)) = local.player() {
@@ -3390,7 +3360,6 @@ mod tests {
                 ("current/old.sav".into(), vec![2]),
                 ("save0/server.ssv".into(), quick.clone()),
             ],
-            |map| map == "floor_wall",
         );
         assert_eq!(local.saves().file("quick", "server.ssv"), Some(&quick[..]));
         assert!(local.saves().file("current", "old.sav").is_none());
@@ -3415,49 +3384,6 @@ mod tests {
             changes, expected,
             "the page gets the new game's current, loses the old one, keeps its saves"
         );
-    }
-
-    #[test]
-    fn a_save_of_a_map_the_pak_lacks_is_not_restored() {
-        // Another pak's saves share the page's store (demo and retail on
-        // one origin); loading one would end the game on a missing map.
-        let map = crate::test_bsp::floor_wall_bsp();
-        let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
-        let ours = local
-            .saves()
-            .file("current", "server.ssv")
-            .unwrap()
-            .to_vec();
-        let other = q2_server::local::LocalGame::start("their_map", &map).expect("map loads");
-        let theirs = other
-            .saves()
-            .file("current", "server.ssv")
-            .unwrap()
-            .to_vec();
-        restore_saves(
-            &mut local,
-            vec![
-                ("mine/server.ssv".into(), ours),
-                ("mine/game.ssv".into(), vec![1]),
-                ("theirs/server.ssv".into(), theirs),
-                ("theirs/game.ssv".into(), vec![1]),
-            ],
-            |map| map == "floor_wall",
-        );
-        assert!(local.saves().file("mine", "game.ssv").is_some());
-        assert!(local.saves().file("theirs", "game.ssv").is_none());
-    }
-
-    #[test]
-    fn page_commands_go_to_the_server_or_on_to_the_game_like_cs_console() {
-        for server in ["gamemap base2", "save quick", "load quick", "menu_loadgame"] {
-            assert!(is_server_command(server), "{server}");
-        }
-        // C's console forwards what it does not know to the server, which
-        // hands it to the game's ClientCommand.
-        for game in ["kill", "use Shotgun", "savegames"] {
-            assert!(!is_server_command(game), "{game}");
-        }
     }
 
     #[test]

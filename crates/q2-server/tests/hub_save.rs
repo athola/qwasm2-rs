@@ -263,3 +263,41 @@ fn two_loads_before_the_map_change_still_reconnect_the_player() {
     assert_eq!(follow(&mut game), "one");
     assert!(stat(&game, q2_shared::constants::STAT_HEALTH) > 0);
 }
+
+#[test]
+fn a_save_of_a_map_the_game_data_lacks_is_refused_and_the_death_menu_passes_it() {
+    // The browser's save store is shared by every pak on the page's origin.
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
+    game.console("save mine").unwrap();
+    let mut other = LocalGame::start("elsewhere", &common::floor_wall_bsp()).unwrap();
+    common::idle(&mut other, 5);
+    other.console("save theirs").unwrap();
+    for (path, bytes) in other.saves().iter() {
+        if path.starts_with("theirs/") {
+            game.saves_mut().insert(path, bytes.to_vec());
+        }
+    }
+    game.set_has_map(|map| map != "elsewhere");
+
+    game.console("load theirs").unwrap();
+    assert!(game.take_map_change().is_none(), "refused");
+    game.console("menu_loadgame").unwrap();
+    assert_eq!(
+        game.take_map_change().as_deref(),
+        Some("one"),
+        "the newest save it can load"
+    );
+}
+
+#[test]
+fn console_text_goes_to_the_server_only_for_its_own_commands() {
+    let game = LocalGame::start("one", &common::armor_map()).unwrap();
+    for server in ["gamemap base2", "save quick", "load quick", "menu_loadgame"] {
+        assert!(game.is_server_command(server), "{server}");
+    }
+    // C's console forwards what it does not know to the game.
+    for client in ["kill", "use Shotgun", "savegames", ""] {
+        assert!(!game.is_server_command(client), "{client}");
+    }
+}

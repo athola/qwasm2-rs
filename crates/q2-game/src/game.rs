@@ -122,7 +122,7 @@ impl GameExport for GameWorld {
 
     fn write_level(&mut self, client_bodies: bool) -> Q2Result<Vec<u8>> {
         if client_bodies {
-            return GameWorld::write_level(self);
+            return self.encode_level();
         }
         let keys: Vec<_> = (1..=self.clients.len())
             .filter_map(|n| self.entities.key_for_number(n))
@@ -131,7 +131,7 @@ impl GameExport for GameWorld {
             .into_iter()
             .filter_map(|key| Some((key, std::mem::take(&mut self.entities.get_mut(key)?.in_use))))
             .collect();
-        let saved = GameWorld::write_level(self);
+        let saved = self.encode_level();
         for (key, in_use) in bodies {
             if let Some(ent) = self.entities.get_mut(key) {
                 ent.in_use = in_use;
@@ -142,6 +142,14 @@ impl GameExport for GameWorld {
 
     fn read_level(&mut self, bytes: &[u8]) -> Q2Result<()> {
         GameWorld::read_level(self, bytes)
+    }
+
+    fn check_game(&self, bytes: &[u8]) -> Q2Result<()> {
+        crate::savegame::check_game_file(bytes)
+    }
+
+    fn check_level(&self, bytes: &[u8]) -> Q2Result<()> {
+        crate::savegame::check_level_file(bytes)
     }
 
     fn client_disconnect(&mut self, number: usize) {

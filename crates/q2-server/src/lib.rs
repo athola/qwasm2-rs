@@ -100,5 +100,11 @@ pub(crate) mod test_support {
         fn read_level(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
             Ok(())
         }
+        fn check_game(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn check_level(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
     }
 }

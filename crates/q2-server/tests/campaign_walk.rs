@@ -41,17 +41,6 @@ fn exits(fs: &FileSystem, map: &str) -> Vec<String> {
     levels
 }
 
-/// The game map a level string ends up in, following a cinematic's next
-/// server; `None` for a picture level.
-fn destination(level: &str) -> Option<String> {
-    let request = MapRequest::parse(level);
-    match (request.kind, request.next_server) {
-        (LevelKind::Game, _) => Some(request.map),
-        (LevelKind::Cinematic, Some(next)) => destination(&next),
-        _ => None,
-    }
-}
-
 /// Load what `take_map_change` hands out until nothing is pending (a
 /// skipped cinematic queues its next server). Returns where it ended.
 fn follow(game: &mut LocalGame, fs: &FileSystem) -> Option<String> {
@@ -88,7 +77,11 @@ fn the_campaign_plays_through_every_exit_with_saves() {
             continue;
         }
         let levels = exits(&fs, &map);
-        queue.extend(levels.iter().filter_map(|level| destination(level)));
+        queue.extend(
+            levels
+                .iter()
+                .filter_map(|level| MapRequest::destination(level)),
+        );
         graph.insert(map, levels);
     }
     let mut untaken: BTreeSet<(String, String)> = graph
@@ -116,7 +109,7 @@ fn the_campaign_plays_through_every_exit_with_saves() {
             panic!("{here} -> {level}: nothing loaded");
         };
         eprintln!("{here} -> {level}");
-        here = destination(&level).unwrap_or(reached);
+        here = MapRequest::destination(&level).unwrap_or(reached);
         visited.insert(here.clone());
 
         common::idle(&mut game, 30);
@@ -164,7 +157,7 @@ fn path_to_untaken(
             return first.get(&map).cloned();
         }
         for level in graph.get(&map).into_iter().flatten() {
-            let Some(next) = destination(level) else {
+            let Some(next) = MapRequest::destination(level) else {
                 continue;
             };
             if seen.insert(next.clone()) {

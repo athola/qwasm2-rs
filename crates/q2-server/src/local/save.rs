@@ -16,6 +16,7 @@ use q2_game::traits::GameImport;
 use q2_shared::constants::STAT_HEALTH;
 
 use super::{new_game, LocalGame, LOCAL_PLAYER, SERVER_PRINT_TARGET};
+use crate::init::MapRequest;
 use crate::state::ServerState;
 
 /// The cvars C saves as CVAR_LATCH ones: they change only with a new game.
@@ -384,10 +385,21 @@ impl LocalGame {
         Ok(())
     }
 
-    /// Every file of `slot` decodes in this build, and none the load reads
-    /// is missing: `game.ssv`, and each level's `.sv2` beside its `.sav`.
+    /// Every file of `slot` decodes in this build, none the load reads is
+    /// missing (`game.ssv`, and each level's `.sv2` beside its `.sav`),
+    /// and the game data has the map it loads.
     fn check_slot(&self, slot: &str) -> Q2Result<()> {
         let missing = |name: &str| Q2Error::Drop(format!("{name} is missing"));
+        if let Some(map) = self
+            .saves
+            .level(slot)
+            .and_then(|level| MapRequest::destination(&level))
+            .filter(|map| !(self.has_map)(map))
+        {
+            return Err(Q2Error::Drop(format!(
+                "maps/{map}.bsp is not in the game data"
+            )));
+        }
         self.saves
             .file(slot, "game.ssv")
             .ok_or_else(|| missing("game.ssv"))?;
@@ -398,12 +410,12 @@ impl LocalGame {
             };
             match name.rsplit_once('.').map(|(_, ext)| ext) {
                 _ if name == "server.ssv" => decode::<ServerFile>(bytes).map(drop),
-                _ if name == "game.ssv" => q2_game::savegame::check_game_file(bytes),
+                _ if name == "game.ssv" => self.game.check_game(bytes),
                 Some("sv2") => decode::<LevelFile>(bytes).map(drop),
                 Some("sav") => {
                     let sv2 = format!("{}.sv2", &name[..name.len() - 4]);
                     match self.saves.file(slot, &sv2) {
-                        Some(_) => q2_game::savegame::check_level_file(bytes),
+                        Some(_) => self.game.check_level(bytes),
                         None => Err(missing(&sv2)),
                     }
                 }
@@ -422,7 +434,12 @@ impl LocalGame {
                 [cmd, slot] if cmd == "save" => self.save_game(slot)?,
                 [cmd, slot] if cmd == "load" => self.load_game(slot)?,
                 // C pushes the load menu; with no menu, load the newest save.
-                [cmd] if cmd == "menu_loadgame" => match self.saves.slots().first() {
+                [cmd] if cmd == "menu_loadgame" => match self
+                    .saves
+                    .slots()
+                    .into_iter()
+                    .find(|slot| self.check_slot(slot).is_ok())
+                {
                     Some(slot) => self.load_game(&slot.clone())?,
                     None => tracing::info!(target: SERVER_PRINT_TARGET, "No savegame to load"),
                 },

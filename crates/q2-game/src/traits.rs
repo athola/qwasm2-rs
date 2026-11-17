@@ -355,6 +355,11 @@ pub trait GameExport {
     fn write_level(&mut self, client_bodies: bool) -> Q2Result<Vec<u8>>;
     /// C `ReadLevel`.
     fn read_level(&mut self, bytes: &[u8]) -> Q2Result<()>;
+    /// Whether `bytes` is a game file `read_game` can read, without
+    /// reading it: a load checks its files before giving up the game.
+    fn check_game(&self, bytes: &[u8]) -> Q2Result<()>;
+    /// `check_game` for a level file.
+    fn check_level(&self, bytes: &[u8]) -> Q2Result<()>;
 }
 
 // ---------------------------------------------------------------------------

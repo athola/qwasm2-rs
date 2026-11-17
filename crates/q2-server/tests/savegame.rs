@@ -58,7 +58,7 @@ fn every_demo_map_saves_after_a_minute_of_play() {
         let mut world = ServerWorld::start(map, &bsp);
         for second in 0..60 {
             play(&mut world, 10);
-            if let Err(e) = world.game.write_level() {
+            if let Err(e) = world.game.encode_level() {
                 panic!("{map} at {second} s: {e}");
             }
         }
@@ -93,7 +93,7 @@ fn a_loaded_level_runs_on_exactly_as_the_original() {
     let mut original = ServerWorld::start("demo1", &bsp);
     play(&mut original, 150);
     let game_file = original.game.write_game(false).unwrap();
-    let level_file = original.game.write_level().unwrap();
+    let level_file = original.game.encode_level().unwrap();
 
     let mut loaded = load("demo1", &bsp, &game_file, &level_file);
     // The loaded client connected anew, its angles restarting from zero,

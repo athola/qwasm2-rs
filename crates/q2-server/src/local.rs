@@ -57,6 +57,9 @@ pub struct LocalGame {
     sent_sounds: Vec<crate::game_iface::SoundEvent>,
     /// The save slots (C `save/`).
     saves: SaveFiles,
+    /// Whether the game data has `maps/<map>.bsp`, as the platform tells
+    /// it; a load of a save for a missing map is refused.
+    has_map: Box<dyn Fn(&str) -> bool>,
     /// A `load` waiting for its map: whether it loads an autosave.
     loading: Option<bool>,
     /// `save`, `load` and `menu_loadgame`, as the console queued
@@ -117,6 +120,7 @@ impl LocalGame {
             sent_messages: Vec::new(),
             sent_sounds: Vec::new(),
             saves: SaveFiles::default(),
+            has_map: Box::new(|_| true),
             loading: None,
             server_commands,
             userinfo: userinfo.to_string(),
@@ -161,6 +165,21 @@ impl LocalGame {
         self.cmd.cbuf_add_text(&format!("{text}\n"));
         self.cmd.cbuf_execute();
         self.run_server_commands()
+    }
+
+    /// Whether console `text` is a server command (`gamemap`, `save`,
+    /// `load`, `menu_loadgame`) for `console`. C's console forwards any
+    /// other to the game, as `client_command`.
+    pub fn is_server_command(&self, text: &str) -> bool {
+        text.split_whitespace()
+            .next()
+            .is_some_and(|name| self.cmd.exists(name))
+    }
+
+    /// Tell the server which maps the game data holds (C reads the
+    /// filesystem), so a load of another game data's save is refused.
+    pub fn set_has_map(&mut self, has_map: impl Fn(&str) -> bool + 'static) {
+        self.has_map = Box::new(has_map);
     }
 
     /// Run a console command as the local player's (C
@@ -473,6 +492,7 @@ mod tests {
             sent_messages: Vec::new(),
             sent_sounds: Vec::new(),
             saves: SaveFiles::default(),
+            has_map: Box::new(|_| true),
             loading: None,
             server_commands: Rc::default(),
             userinfo: String::new(),
