@@ -22,7 +22,9 @@ WebGL2, and runs player movement in the browser.
 > for gamma), with the first-person gun, gunfire sounds and muzzle
 > flashes; powerups, drowning and lava work. Explosions, impacts, trails
 > and the other temp entities are drawn with particles, beams and
-> sprites. A dead player cannot restart until savegames (#15).
+> sprites. F6 quick-saves, F9 quick-loads and F3 loads the newest save
+> (also the press after a death); saves and the last autosave are kept
+> in IndexedDB across page reloads.
 > Expect breaking changes.
 
 ## Progress
@@ -35,11 +37,11 @@ WebGL2, and runs player movement in the browser.
 | CP-3 Server | Frame loop runs the game; map loading, SV_Trace and entity links; the browser runs it in-process | done |
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | done |
-| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (a dead player cannot restart until saves, #15) |
+| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress |
 | CP-5c Sound | Sound through Web Audio | in progress (game sounds play; no PHS culling) |
-| CP-6 Saves | Saves persist across a browser refresh | not started |
+| CP-6 Saves | Saves persist across a browser refresh | done |
 | CP-7 Multiplayer | Two browser tabs connect via Matchbox | not started |
-| CP-8 Campaign | Single-player campaign map loads and plays | not started |
+| CP-8 Campaign | Single-player campaign map loads and plays | in progress (every retail map loads, saves and loads back; the browser test walks each exit) |
 
 ## Features
 
@@ -114,6 +116,7 @@ Run `make prereqs` to verify all tools are present.
 | `make play` | Full optimized build + dev server (recommended) |
 | `make play-release` | Same as `make play` |
 | `make play-dev` | Debug WASM build + dev server (slow frames, symbolized panics) |
+| `make play-retail` | Release build + dev server on your own retail paks in `gamedata/retail/baseq2` |
 | `make wasm` | Build WASM module only |
 | `make bundle` | WASM + single-file HTML bundle |
 | `make build` | Native build (all crates) |
@@ -173,11 +176,14 @@ otherwise or when the `.br` is older than the pak. `make pak-web` only
 reruns when `pak0.pak` or the repacker (including its `Cargo.toml` and
 `Cargo.lock`) changes.
 
-To use the full game, copy your `pak0.pak` from a Quake 2 installation
-into `gamedata/baseq2/`, then run `make pak-web` to produce the
-web-optimized variant. Only `pak0.pak` is used for now: `make pak-web`
-repacks that one file and the page fetches only `pak0-web.pak`, so the
-contents of `pak1.pak` and `pak2.pak` are not loaded.
+To play the full game, copy the `.pak` files from your own Quake 2
+installation into `gamedata/retail/baseq2/` and run `make play-retail`,
+then open `?map=base1`. It merges every pak there into one web pak
+(a later pak's file replaces an earlier one's, as C searches the
+highest-numbered pak first) and serves it from
+`gamedata/retail`; that directory is gitignored and nothing from it is
+copied into `dist/`. `make clean-retail` deletes the merged web pak and
+keeps your paks.
 
 ## Development
 
