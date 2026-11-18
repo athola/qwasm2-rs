@@ -209,7 +209,9 @@ pub fn load_md2(data: &[u8]) -> Q2Result<Md2Model> {
             ])
         };
         let verts = raw[FRAME_HEADER_SIZE..FRAME_HEADER_SIZE + num_xyz * FRAME_VERTEX_SIZE]
-            .chunks_exact(FRAME_VERTEX_SIZE)
+            .as_chunks::<FRAME_VERTEX_SIZE>()
+            .0
+            .iter()
             .map(|quad| Md2Vertex {
                 v: [quad[0], quad[1], quad[2]],
                 normal_index: quad[3],

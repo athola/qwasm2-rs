@@ -98,7 +98,7 @@ Settings are query parameters, such as
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| Rust 1.97.1 | Compilation (pinned in `rust-toolchain.toml`) | [rustup.rs](https://rustup.rs); rustup installs the pinned toolchain |
+| Rust 1.100.0 | Compilation (pinned in `rust-toolchain.toml`) | [rustup.rs](https://rustup.rs); rustup installs the pinned toolchain |
 | `wasm32-unknown-unknown` target | WASM builds | Installed by rustup from `rust-toolchain.toml` |
 | wasm-pack | WASM packaging | `cargo install wasm-pack` |
 | 7z | Demo data extraction (only when pak0.pak is missing) | `brew install p7zip` / `apt install p7zip-full` |

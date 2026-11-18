@@ -548,9 +548,9 @@ fn read_player_state(
 
     // Stats: always present; u32 to avoid signed shift-overflow on bit 31.
     let statbits = msg.read_long() as u32;
-    for i in 0..MAX_STATS {
+    for (i, stat) in s.stats.iter_mut().enumerate() {
         if statbits & (1u32 << i) != 0 {
-            s.stats[i] = msg.read_short() as i16;
+            *stat = msg.read_short() as i16;
         }
     }
 

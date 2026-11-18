@@ -206,7 +206,7 @@ pub fn sprite_vertices(
         (origin - up * oy + right * (w - ox), [1.0, 1.0]),
     ];
     let mut out = [0.0; 4 * FX_FLOATS];
-    for (slot, (p, uv)) in out.chunks_exact_mut(FX_FLOATS).zip(corners) {
+    for (slot, (p, uv)) in out.as_chunks_mut::<FX_FLOATS>().0.iter_mut().zip(corners) {
         slot[..3].copy_from_slice(&p.to_array());
         slot[3..].copy_from_slice(&uv);
     }

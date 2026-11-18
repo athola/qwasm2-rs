@@ -1899,10 +1899,10 @@ fn md4_digest(data: &[u8]) -> [u32; 4] {
     const MD4_INIT_D: u32 = 0x1032_5476;
     let mut state: [u32; 4] = [MD4_INIT_A, MD4_INIT_B, MD4_INIT_C, MD4_INIT_D];
 
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0 {
         let mut x = [0u32; 16];
-        for (i, chunk) in block.chunks_exact(4).enumerate() {
-            x[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            x[i] = u32::from_le_bytes(*word);
         }
 
         let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
