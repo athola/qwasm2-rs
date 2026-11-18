@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-brotli = "7"
+brotli = "9"
 
 [lints]
 workspace = true
