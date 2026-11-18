@@ -132,8 +132,6 @@ function __q2_decode_wasm() {{
         ],
         "__q2_decode_wasm()",
     )?;
-    // Exposes the raw wasm exports to importers; nothing imports this page.
-    let patched = patched.replace("export { wasm as __wasm }", "");
 
     ensure!(
         !patched.contains("import.meta.url"),
@@ -422,7 +420,7 @@ try {{
 mod tests {
     use super::*;
 
-    /// Trimmed wasm-pack 0.14.0 / wasm-bindgen 0.2.114 `--target web` output.
+    /// Trimmed wasm-pack 0.15.1 / wasm-bindgen 0.2.130 `--target web` output.
     const GLUE: &str = include_str!("../fixtures/wasm_bindgen_glue.js");
 
     #[test]
