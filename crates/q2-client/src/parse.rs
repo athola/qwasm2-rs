@@ -1108,6 +1108,28 @@ mod tests {
     }
 
     #[test]
+    fn changed_stats_land_in_their_slots_and_unsent_stats_keep_the_old_value() {
+        // GIVEN a previous state with stat 2 set, and a new state that
+        // changes the first (0), a middle (1) and the last (31) stat
+        let mut old_ps = PlayerState::default();
+        old_ps.stats[2] = 7;
+        let mut new_ps = old_ps.clone();
+        new_ps.stats[0] = 11;
+        new_ps.stats[1] = -3;
+        new_ps.stats[31] = 42;
+
+        // WHEN the delta is written and read back against the old state
+        let mut msg = NetMsg::new();
+        msg.write_player_state(&old_ps, &new_ps);
+        msg.begin_reading();
+        let _ = msg.read_byte(); // consume PlayerInfo opcode
+        let decoded = read_player_state(&mut msg, Some(&old_ps), false);
+
+        // THEN every stat matches the new state, the unsent one included
+        assert_eq!(decoded.stats, new_ps.stats);
+    }
+
+    #[test]
     fn entity_delta_roundtrip() {
         let old_ent = EntityState {
             number: 3,
