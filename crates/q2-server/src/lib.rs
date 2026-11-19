@@ -18,6 +18,10 @@ pub mod vis;
 pub mod world;
 
 pub use game_iface::ServerGameImport;
+/// Saved callback and move names that share one function in this build, so
+/// the platform's self test can check the binary it ships. Here because the
+/// platform may not depend on `q2-game` (ADR-001).
+pub use q2_game::savegame::registry::aliased_names as aliased_save_names;
 
 /// The integration tests' synthetic maps, for unit tests that need a map
 /// with a player start.

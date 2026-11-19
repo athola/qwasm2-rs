@@ -1765,7 +1765,7 @@ pub fn self_test() -> String {
 
     // The shipped binary is past every optimizer that could merge saved
     // callbacks; native tests cannot see what wasm-opt did.
-    if let Some(failure) = alias_failure(&q2_game::savegame::registry::aliased_names()) {
+    if let Some(failure) = alias_failure(&q2_server::aliased_save_names()) {
         return failure;
     }
 
