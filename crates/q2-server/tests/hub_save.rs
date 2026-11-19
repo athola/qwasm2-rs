@@ -165,6 +165,7 @@ fn a_damaged_save_is_refused_and_play_goes_on() {
     let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
     common::idle(&mut game, 5);
     game.console("save quick").unwrap();
+    assert!(game.check_slot("quick").is_ok());
     let (origin, _) = game.player().unwrap();
     for file in ["game.ssv", "server.ssv", "one.sav", "one.sv2"] {
         let mut damaged = game.saves().clone();
@@ -173,6 +174,7 @@ fn a_damaged_save_is_refused_and_play_goes_on() {
         damaged.insert(&path, bytes[..bytes.len() / 2].to_vec());
         *game.saves_mut() = damaged;
 
+        assert!(game.check_slot("quick").is_err(), "{file}: checked damaged");
         game.console("load quick").unwrap();
         assert!(game.take_map_change().is_none(), "{file}: no level queued");
         common::idle(&mut game, 1);

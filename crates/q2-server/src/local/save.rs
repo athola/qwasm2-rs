@@ -400,8 +400,10 @@ impl LocalGame {
 
     /// Every file of `slot` decodes in this build, none the load reads is
     /// missing (`game.ssv`, and each level's `.sv2` beside its `.sav`),
-    /// and the game data has the map it loads.
-    fn check_slot(&self, slot: &str) -> Q2Result<()> {
+    /// and the game data has the map it loads. `load` runs it before it
+    /// gives up the running game; the platform runs it on a slot it
+    /// restored, to drop one no load could read.
+    pub fn check_slot(&self, slot: &str) -> Q2Result<()> {
         let missing = |name: &str| Q2Error::Drop(format!("{name} is missing"));
         if let Some(map) = self
             .saves
