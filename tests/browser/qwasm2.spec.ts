@@ -388,13 +388,13 @@ test.describe('Qwasm2 saves with the demo pak', () => {
     test.setTimeout(120000);
     await page.goto(HTML_PATH);
     await ready(page);
-    // The next put fails as a full disk does.
+    // The next two puts fail as a full disk does, each in its own batch.
     await page.evaluate(() => {
       const put = IDBObjectStore.prototype.put;
-      let refuse = true;
+      let refusals = 2;
       IDBObjectStore.prototype.put = function (this: IDBObjectStore, ...args: [unknown, IDBValidKey?]) {
-        if (refuse) {
-          refuse = false;
+        if (refusals > 0) {
+          refusals--;
           throw new DOMException('disk full', 'QuotaExceededError');
         }
         return put.apply(this, args);
@@ -404,11 +404,41 @@ test.describe('Qwasm2 saves with the demo pak', () => {
     await stored(page);
     await expect(page.locator('#status .fail')).toHaveCount(1);
     await expect(page.locator('#status .fail')).toHaveText(/saves not kept.*disk full/i);
-
-    // Another slot's save carries the refused quick save with it.
+    // Refused again: still one report.
     await save(page, () => send(page, 'save other'));
     await stored(page);
     await expect(page.locator('#status .fail')).toHaveCount(1);
+
+    // A later slot's save carries the refused quick save with it.
+    await save(page, () => send(page, 'save third'));
+    await stored(page);
+    await expect(page.locator('#status .fail')).toHaveCount(1);
+
+    await page.reload();
+    await ready(page);
+    await quickLoad(page);
+  });
+
+  test('CP-6: Saves a throwing commit missed go with the next one', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto(HTML_PATH);
+    await ready(page);
+    await page.evaluate(() => {
+      const saves = (window as Window & { qwasm2Saves: { commit: (ops: unknown) => void } }).qwasm2Saves;
+      const commit = saves.commit;
+      let thrown = false;
+      saves.commit = function (ops: unknown) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('store busy');
+        }
+        return commit.call(this, ops);
+      };
+    });
+    await save(page, () => press(page, 'F6'));
+    // The engine sends the changes again with the next frame's flush.
+    await frames(page, 2);
+    await stored(page);
 
     await page.reload();
     await ready(page);
