@@ -1763,7 +1763,21 @@ pub fn self_test() -> String {
         return "FAIL: NetMsg read_string".to_string();
     }
 
+    // The shipped binary is past every optimizer that could merge saved
+    // callbacks; native tests cannot see what wasm-opt did.
+    if let Some(failure) = alias_failure(&q2_game::savegame::registry::aliased_names()) {
+        return failure;
+    }
+
     "PASS".to_string()
+}
+
+/// The self test's failure for saved names a save cannot tell apart,
+/// naming the first pair.
+fn alias_failure(aliases: &[(&str, &str)]) -> Option<String> {
+    aliases
+        .first()
+        .map(|(a, b)| format!("FAIL: saved names {a} and {b} share one function"))
 }
 
 /// Canvas attribute marking that an engine owns the canvas. The marker lives
@@ -3639,5 +3653,16 @@ mod tests {
     #[test]
     fn self_test_passes() {
         assert_eq!(self_test(), "PASS");
+    }
+
+    #[test]
+    fn the_self_test_fails_on_saved_names_that_share_a_body() {
+        assert_eq!(alias_failure(&[]), None);
+        let failure = alias_failure(&[("a_die", "b_die"), ("c_pain", "d_pain")]).unwrap();
+        assert!(failure.starts_with("FAIL: "), "{failure}");
+        assert!(
+            failure.contains("a_die") && failure.contains("b_die"),
+            "{failure}"
+        );
     }
 }

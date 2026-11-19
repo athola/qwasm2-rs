@@ -698,6 +698,7 @@ dependencies = [
  "js-sys",
  "q2-client",
  "q2-common",
+ "q2-game",
  "q2-platform",
  "q2-render",
  "q2-render-api",
