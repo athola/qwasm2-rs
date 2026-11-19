@@ -31,6 +31,13 @@ use q2_render::gl3::Gl3Renderer;
 #[cfg(target_arch = "wasm32")]
 use q2_render_api::*;
 
+#[cfg(target_arch = "wasm32")]
+use q2_client::input::{apply_keys, turn_view, InputState};
+#[cfg(any(target_arch = "wasm32", test))]
+use q2_client::input::{cmd_lightlevel, cmd_msec};
+#[cfg(target_arch = "wasm32")]
+use q2_client::view::{ViewSize, FOV_X};
+
 // ---------------------------------------------------------------------------
 // Error bridging: Q2Error → JsValue
 // ---------------------------------------------------------------------------
@@ -52,9 +59,9 @@ struct Engine {
     /// The pak filesystem the renderer also reads, for the next map's BSP.
     fs: Rc<q2_common::filesystem::FileSystem>,
     /// Client-side input and view angles (C `cl.viewangles`).
-    input: q2_client::input::InputState,
+    input: InputState,
     canvas: web_sys::HtmlCanvasElement,
-    view: q2_client::view::ViewSize,
+    view: ViewSize,
     last_time: f64,
     models: ModelTable,
     /// The last two server frames and the client clock (C `cl.frame`,
@@ -104,13 +111,13 @@ impl Engine {
         fs: Rc<q2_common::filesystem::FileSystem>,
         models: ModelTable,
         canvas: web_sys::HtmlCanvasElement,
-        view: q2_client::view::ViewSize,
+        view: ViewSize,
     ) -> Self {
         let mut engine = Self {
             renderer,
             local,
             fs,
-            input: q2_client::input::InputState::default(),
+            input: InputState::default(),
             canvas,
             view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
@@ -418,7 +425,7 @@ impl Engine {
             .player()
             .map(|(_, ps)| f32::from(ps.pmove.delta_angles[0]) * (360.0 / 65536.0))
             .unwrap_or(0.0);
-        q2_client::input::turn_view(
+        turn_view(
             &mut self.input,
             &input.keys,
             input.mouse_dx,
@@ -426,7 +433,7 @@ impl Engine {
             dt,
             delta_pitch,
         );
-        q2_client::input::apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
+        apply_keys(&input.keys, input.mouse_buttons, &mut self.input);
         self.step_gamma(gamma_key_step(&self.last_keys, &input.keys));
         if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
             self.show_legend = !self.show_legend;
@@ -458,9 +465,9 @@ impl Engine {
             }
         }
         self.last_keys = input.keys;
-        let mut cmd = self.input.build_cmd(q2_client::input::cmd_msec(dt));
+        let mut cmd = self.input.build_cmd(cmd_msec(dt));
         // From the last rendered frame, as C reads `r_lightlevel`.
-        cmd.lightlevel = q2_client::input::cmd_lightlevel(self.renderer.light_level());
+        cmd.lightlevel = cmd_lightlevel(self.renderer.light_level());
 
         // C's func_clock reads localtime: the page's clock.
         let now = js_sys::Date::new_0();
@@ -512,9 +519,9 @@ impl Engine {
 
         // The page resizes the canvas with the window; refit before drawing.
         let (canvas_w, canvas_h) = (self.canvas.width(), self.canvas.height());
-        // q2_client::view::ViewSize dimensions are always positive, so the casts are lossless.
+        // ViewSize dimensions are always positive, so the casts are lossless.
         if (canvas_w, canvas_h) != (self.view.width as u32, self.view.height as u32) {
-            match q2_client::view::ViewSize::for_canvas(canvas_w, canvas_h) {
+            match ViewSize::for_canvas(canvas_w, canvas_h) {
                 Ok(Some(view)) => self.view = view,
                 // Zero-area canvas: keep drawing at the last usable size.
                 Ok(None) => {}
@@ -561,7 +568,7 @@ impl Engine {
             y: 0,
             width: self.view.width,
             height: self.view.height,
-            fov_x: q2_client::view::FOV_X,
+            fov_x: FOV_X,
             fov_y: self.view.fov_y,
             vieworg,
             viewangles,
@@ -1734,7 +1741,7 @@ async fn load_engine(
         q2_platform::wasm::gl_context::create_webgl2_context(&canvas_id).map_err(q2err_to_js)?;
     log("WebGL2 context created");
 
-    let view = q2_client::view::ViewSize::for_canvas(canvas.width(), canvas.height())
+    let view = ViewSize::for_canvas(canvas.width(), canvas.height())
         .map_err(q2err_to_js)?
         .ok_or_else(|| JsValue::from_str("canvas has no usable size"))?;
     let (width, height) = (view.width, view.height);
@@ -2099,10 +2106,7 @@ mod tests {
 
     #[test]
     fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
-        assert_eq!(
-            q2_client::input::cmd_msec(frame_dt_seconds(1300.0, 1000.0)),
-            100
-        );
+        assert_eq!(cmd_msec(frame_dt_seconds(1300.0, 1000.0)), 100);
     }
 
     #[test]
@@ -2312,10 +2316,7 @@ mod tests {
     fn renderer_without_light_data_reports_the_player_lit() {
         use q2_render_api::Renderer;
         let renderer = Recorder::default();
-        assert_eq!(
-            q2_client::input::cmd_lightlevel(renderer.light_level()),
-            150
-        );
+        assert_eq!(cmd_lightlevel(renderer.light_level()), 150);
     }
 
     #[test]
