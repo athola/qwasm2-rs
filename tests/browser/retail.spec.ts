@@ -3,6 +3,7 @@ import fs from 'fs';
 import http from 'http';
 import { AddressInfo } from 'net';
 import path from 'path';
+import { frames, LOADING, press, send, stored } from './helpers';
 
 // The browser half of the save/load dogfood (#15), on the user's own retail
 // paks merged by `make pak-web-retail` (never committed or published). It
@@ -94,22 +95,6 @@ function destination(level: string): string | null {
   return map.endsWith('.pcx') || map.endsWith('.dm2') ? null : map;
 }
 
-async function frames(page: Page, count: number) {
-  await page.evaluate(n => new Promise<void>(resolve => {
-    let seen = 0;
-    const step = () => (++seen >= n ? resolve() : requestAnimationFrame(step));
-    requestAnimationFrame(step);
-  }), count);
-}
-
-/// Hold `key` across frames so the game loop sees it go down once.
-async function press(page: Page, key: string) {
-  await page.keyboard.down(key);
-  await frames(page, 5);
-  await page.keyboard.up(key);
-  await frames(page, 2);
-}
-
 /// Wait for the engine the page just loaded.
 async function ready(page: Page) {
   await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 120000 });
@@ -130,26 +115,12 @@ function linesSince(before: number): string {
   return lines.slice(before).join('\n');
 }
 
-/// Run console text in the page.
-async function send(page: Page, text: string) {
-  await page.evaluate(t =>
-    document.dispatchEvent(new CustomEvent('qwasm2-command', { detail: t })), text);
-}
-
 /// Wait for the load that `before` lines started to reach `map`.
 async function arrive(page: Page, map: string, before: number, loading = '') {
   await expect.poll(() => linesSince(before), { timeout: 60000 })
     .toMatch(new RegExp(`${loading}Level exit to \\*?${map}\\b`));
   await frames(page, 20);
   await expect(page.locator('#status .fail')).toHaveCount(0);
-}
-
-const LOADING = 'Loading game\\.\\.\\.[\\s\\S]*';
-
-/// Wait until the page's save store has finished every write.
-async function stored(page: Page) {
-  await expect.poll(() => page.evaluate(() =>
-    (window as Window & { qwasm2Saves: { pending: number } }).qwasm2Saves.pending)).toBe(0);
 }
 
 /// F6, then F9: the save is written and loaded back into `map`.
