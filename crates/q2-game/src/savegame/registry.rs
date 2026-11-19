@@ -15,7 +15,7 @@ include!(concat!(env!("OUT_DIR"), "/save_tables.rs"));
 /// (`ThinkFn`, `PreThinkFn`, `EndMoveFn`, `MonsterStandFn`; `BlockedFn`,
 /// `MonsterSightFn`) are one type and share a table.
 pub trait Callback: Copy + 'static {
-    /// The table's name in the saved-name list (`names_v1.txt`).
+    /// The table's name in the saved-name list (`names_v2.txt`).
     const KIND: &'static str;
     /// Every registered function of this type, sorted by name.
     fn table() -> &'static [(&'static str, Self)];
@@ -223,11 +223,11 @@ mod tests {
         assert!(by_name::<TouchFn>("func::move_done").is_none());
     }
 
-    /// Every name the tables held when save VERSION 1 was set, which a
+    /// Every name the tables held when save VERSION 2 was set, which a
     /// save written then may hold. Regenerate it with
     /// `Q2_WRITE_SAVE_NAMES=1 cargo test -p q2-game saved_names` when
     /// VERSION is bumped.
-    const SAVED_NAMES: &str = include_str!("names_v1.txt");
+    const SAVED_NAMES: &str = include_str!("names_v2.txt");
 
     fn current_names() -> String {
         struct Names(String);
@@ -251,7 +251,7 @@ mod tests {
         // A rename or removal makes saves of this version fail to load:
         // bump VERSION and regenerate the list. Additions are harmless.
         if std::env::var_os("Q2_WRITE_SAVE_NAMES").is_some() {
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/savegame/names_v1.txt");
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/savegame/names_v2.txt");
             std::fs::write(path, current_names()).unwrap();
             return;
         }

@@ -538,6 +538,8 @@ pub struct Entity {
 
     /// Slot in `GameWorld::clients` (entity number - 1), only `Some` for
     /// player entities: C `ent->client` pointing into `game.clients`.
+    /// Not saved: `read_level` sets it on the client numbers, as C does.
+    #[serde(skip)]
     pub client: Option<usize>,
 
     /// Game-specific data from `local.h`.

@@ -26,7 +26,7 @@ use crate::world::{GameLocals, GameWorld, LevelLocals};
 const MAGIC: &[u8; 8] = b"Q2RS-SAV";
 /// Bumped whenever a saved type changes shape; older files are refused
 /// (C `SAVEGAMEVER`).
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const KIND_GAME: u8 = b'G';
 const KIND_LEVEL: u8 = b'L';
 

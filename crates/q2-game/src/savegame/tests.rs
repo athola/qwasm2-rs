@@ -163,6 +163,21 @@ fn read_level_marks_clients_unconnected() {
 }
 
 #[test]
+fn only_client_numbers_get_a_client_slot_on_load() {
+    // C ReadLevel points the client edicts at game.clients; the slot is
+    // not read from the file, so a tampered one cannot reach a monster.
+    let mut world = world_with_player();
+    let monster = spawn(&mut world, "monster_soldier");
+    world.entities.get_mut(monster).unwrap().client = Some(0);
+    let saved = world.encode_level().unwrap();
+
+    let mut loaded = world_with_player();
+    loaded.read_level(&saved).unwrap();
+    assert_eq!(loaded.entities.get(monster).unwrap().client, None);
+    assert_eq!(player(&loaded).0.client, Some(0));
+}
+
+#[test]
 fn read_level_starts_crosslevel_targets_after_their_delay() {
     let mut world = test_world();
     world.level.time = 4.0;
@@ -378,7 +393,6 @@ fn layout_sample() -> GameWorld {
         *slot = player;
     }
     ent.game.item = Some(0);
-    ent.client = Some(0);
     ent.prethink = some_callback();
     ent.think = some_callback();
     ent.blocked = some_callback();
@@ -456,8 +470,8 @@ fn the_save_layout_is_pinned_so_a_change_bumps_version() {
     assert_eq!(
         (VERSION, level.hash, game.hash, variants.hash()),
         (
-            1,
-            14_405_780_714_890_241_194,
+            2,
+            1_354_541_255_063_874_597,
             6_009_515_770_261_010_828,
             14_912_028_327_610_841_453
         ),
