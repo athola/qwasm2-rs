@@ -42,8 +42,9 @@ pub struct LocalGame {
     /// Frame time not yet handed to the server: under a millisecond, which
     /// `SV_Frame`'s `usec / 1000` would drop.
     pending_us: u32,
-    /// Runs the console text the game queues (C `Cbuf_Execute`); only
-    /// `gamemap` is registered.
+    /// Runs the console text the game queues (C `Cbuf_Execute`); the
+    /// server's `gamemap`, `save`, `load` and `menu_loadgame` are
+    /// registered.
     cmd: CmdSystem,
     /// Map a `gamemap` command asked for, until the caller takes it.
     next_map: Rc<RefCell<Option<String>>>,

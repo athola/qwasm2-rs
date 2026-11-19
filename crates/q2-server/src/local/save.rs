@@ -19,7 +19,8 @@ use super::{new_game, Load, LocalGame, LOCAL_PLAYER, SERVER_PRINT_TARGET};
 use crate::init::MapRequest;
 use crate::state::ServerState;
 
-/// The cvars C saves as CVAR_LATCH ones: they change only with a new game.
+/// The latched cvars a save keeps. C writes every CVAR_LATCH cvar; only
+/// these three matter to the local single-player game.
 const LATCHED: &[&str] = &["skill", "coop", "deathmatch"];
 
 /// Frames a revisited level runs before the player arrives (C
@@ -224,8 +225,8 @@ fn stored_path(path: &str) -> bool {
         .is_some_and(|(slot, name)| !bad_slot(slot) && !name.is_empty() && !name.contains('/'))
 }
 
-/// C refuses these as save names ("Bad savedir."), so a name cannot
-/// reach outside its slot.
+/// Save names refused here so a name cannot reach outside its slot. C
+/// prints "Bad savedir." for the same names but carries on.
 fn bad_slot(slot: &str) -> bool {
     slot.is_empty() || slot.contains("..") || slot.contains('/') || slot.contains('\\')
 }
@@ -346,8 +347,9 @@ impl LocalGame {
     }
 
     /// C `SV_CheckForSavegame`, after a map spawned: a level the unit
-    /// visited before replaces the fresh one. Coming back to it (not a
-    /// manual load) runs it ten seconds first, as if time passed there.
+    /// visited before replaces the fresh one. A revisit, or loading an
+    /// autosave (`save0` or `current`), runs it ten seconds first, as if
+    /// time passed there; loading another slot does not.
     pub(super) fn check_for_savegame(&mut self, loading: Option<Load>) -> Q2Result<()> {
         // C reads `sv_noreload->value`: a string that is not a number is 0.
         let noreload = self
