@@ -13,14 +13,15 @@ All notable changes to qwasm2-rs are documented here.
 ### Added
 - Save and load (#15): `save <slot>` and `load <slot>` as C registers
   them, the death menu's `menu_loadgame`, a unit's levels keeping their
-  state between visits, and the autosave written on entering a level. Files are postcard with a version header; entity
-  callbacks and monster moves are saved by name from tables `build.rs`
-  generates, so a save survives a rebuild. A damaged or incomplete save
-  is refused with a message instead of ending the game
+  state between visits, and the autosave written on entering a level.
+  Files are postcard with a version header; entity callbacks and monster
+  moves are saved by name from tables `build.rs` generates, so a save
+  survives a rebuild. A damaged or incomplete save is refused with a
+  message instead of ending the game
 - In the browser, F6 quick-saves, F9 quick-loads and F3 loads the newest
-  save (#21). Saves live in
-  IndexedDB, so they and the last autosave outlive a page reload; the
-  page restores only slots the current pak can load
+  save (#21). Saves live in IndexedDB, so they and the last autosave
+  outlive a page reload; the page restores only slots the current pak
+  can load
 - `make play-retail` builds one web pak from your own retail paks in
   `gamedata/retail/baseq2` (`q2-pak-repack` merges several paks) and the
   devserver serves that directory; nothing from it is committed or
