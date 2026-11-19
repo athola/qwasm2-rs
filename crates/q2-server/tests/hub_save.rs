@@ -47,6 +47,18 @@ fn a_unit_level_keeps_its_state_between_visits() {
 }
 
 #[test]
+fn sv_noreload_enters_a_visited_level_afresh() {
+    // C SV_CheckForSavegame returns first thing when sv_noreload is set.
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    game.set_cvar("sv_noreload", "1");
+    common::idle(&mut game, 5);
+    go(&mut game, "two");
+    go(&mut game, "one");
+    common::idle(&mut game, 5);
+    assert_eq!(stat(&game, STAT_ARMOR), 50, "the jacket is back");
+}
+
+#[test]
 fn a_starred_level_starts_its_unit_afresh() {
     let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
     common::idle(&mut game, 5);

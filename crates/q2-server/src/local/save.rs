@@ -345,8 +345,16 @@ impl LocalGame {
     /// visited before replaces the fresh one. Coming back to it (not a
     /// manual load) runs it ten seconds first, as if time passed there.
     pub(super) fn check_for_savegame(&mut self, loading: Option<Load>) -> Q2Result<()> {
+        // C reads `sv_noreload->value`: a string that is not a number is 0.
+        let noreload = self
+            .gi
+            .cvar("sv_noreload", "0")
+            .parse::<f32>()
+            .unwrap_or(0.0)
+            != 0.0;
         let deathmatch = self.gi.cvar("deathmatch", "0") != "0";
-        if deathmatch
+        if noreload
+            || deathmatch
             || self
                 .saves
                 .file("current", &format!("{}.sav", self.sv.name))
