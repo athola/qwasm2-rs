@@ -56,7 +56,11 @@ pub fn name_of<F: Callback>(f: F) -> Option<&'static str> {
 
 /// The function registered as `name` with type `F`.
 pub fn by_name<F: Callback>(name: &str) -> Option<F> {
-    let table = F::table();
+    lookup(F::table(), name)
+}
+
+/// The entry named `name` in a table sorted by name.
+fn lookup<T: Copy>(table: &[(&'static str, T)], name: &str) -> Option<T> {
     table
         .binary_search_by(|(n, _)| (*n).cmp(name))
         .ok()
@@ -88,10 +92,7 @@ pub fn move_name(mv: &MonsterMove) -> Option<&'static str> {
 
 /// The static move registered as `name`.
 pub fn move_by_name(name: &str) -> Option<&'static MonsterMove> {
-    MONSTER_MOVES
-        .binary_search_by(|(n, _)| (*n).cmp(name))
-        .ok()
-        .map(|i| MONSTER_MOVES[i].1)
+    lookup(MONSTER_MOVES, name)
 }
 
 #[cfg(test)]
