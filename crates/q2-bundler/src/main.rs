@@ -340,6 +340,7 @@ function showFailure(text) {{
 // The engine hands each frame's changed files to qwasm2Saves.commit and
 // goes on. Each batch is written in one transaction, one at a time, so a
 // reload mid-write leaves every slot as it was before a batch or after it.
+const ONLY_THIS_VISIT = 'Saves will last only this visit: ';
 const saveDb = await new Promise((resolve, reject) => {{
   const req = indexedDB.open('qwasm2-saves', 1);
   req.onupgradeneeded = () => req.result.createObjectStore('files');
@@ -347,8 +348,12 @@ const saveDb = await new Promise((resolve, reject) => {{
   req.onerror = () => reject(req.error);
 }}).catch((err) => {{
   console.error('[qwasm2-rs] saves will last only this visit:', err);
+  showFailure(ONLY_THIS_VISIT + err);
   return null;
 }});
+// Set once the stored saves are read: a store that could not be read is
+// not written over.
+let saveWritable = false;
 // Ops not yet in a transaction, by path; a refused batch waits here for
 // the next commit, whose ops for the same path win.
 let queued = new Map();
@@ -400,7 +405,7 @@ window.qwasm2Saves = {{
   // `ops` holds [path, bytes or null to remove] pairs; the bytes are the
   // engine's copies, not views of its memory.
   commit(ops) {{
-    if (!saveDb) return;
+    if (!saveWritable) return;
     for (const [path, bytes] of ops) queued.set(path, bytes);
     writeSaves();
   }},
@@ -438,10 +443,16 @@ try {{
   // Pages under /qwasm2-rs/play/, with gamedata/ beside it in both.
   const pakUrl = 'gamedata/baseq2/pak0-web.pak';
 
-  const saves = await storedSaves().catch((e) => {{
-    console.error('[qwasm2-rs] saved games not read:', e);
-    return [];
-  }});
+  const saves = await storedSaves().then(
+    (files) => {{
+      saveWritable = saveDb !== null;
+      return files;
+    }},
+    (err) => {{
+      console.error('[qwasm2-rs] saved games not read:', err);
+      showFailure('Saved games not read, so ' + ONLY_THIS_VISIT.toLowerCase() + err);
+      return [];
+    }});
   await start_game('canvas', pakUrl, saves);
 }} catch (e) {{
   showFailure('ERROR: ' + e);
@@ -564,7 +575,7 @@ mod tests {
         assert!(html.contains(&inlined));
         assert!(html.contains("await start_game('canvas', pakUrl, saves);"));
         assert!(
-            html.contains("storedSaves().catch("),
+            html.contains("storedSaves().then("),
             "an unreadable store starts a game without saves"
         );
         assert!(
@@ -600,6 +611,27 @@ mod tests {
         let put = write.find("files.put(").expect("put");
         assert!(oncomplete < put && write.find("tx.onabort").unwrap() < put);
         assert!(write.contains("tx.abort();"), "{write}");
+    }
+
+    #[test]
+    fn a_store_that_will_not_open_or_be_read_is_reported_and_not_written() {
+        let html = generate_html("");
+        let open = html
+            .split("indexedDB.open('qwasm2-saves', 1)")
+            .nth(1)
+            .and_then(|s| s.split("\n});").next())
+            .expect("store open");
+        assert!(open.contains("showFailure(ONLY_THIS_VISIT + err);"), "{open}");
+        // Commits wait until the stored saves are read.
+        assert!(html.contains("let saveWritable = false;"));
+        assert!(html.contains("if (!saveWritable) return;"));
+        let read = html
+            .split("const saves = await storedSaves().then(")
+            .nth(1)
+            .and_then(|s| s.split("\n  });").next())
+            .expect("stored saves read");
+        assert!(read.contains("saveWritable = saveDb !== null;"), "{read}");
+        assert!(read.contains("showFailure("), "{read}");
     }
 
     #[test]
