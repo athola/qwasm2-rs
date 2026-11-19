@@ -184,7 +184,10 @@ mod tests {
         visit_tables(&mut RoundTrip);
     }
 
-    /// Run by CI in release too, where LLVM merges identical bodies.
+    /// Only an optimized build merges bodies, and which ones depends on how
+    /// the crate is split: run it with
+    /// `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 cargo test --release`, as
+    /// the default sixteen units hide most merges.
     #[test]
     fn no_two_registered_names_share_a_callback_or_move() {
         assert_eq!(aliased_names(), Vec::<(&str, &str)>::new());
@@ -225,7 +228,7 @@ mod tests {
 
     /// Every name the tables held when save VERSION 2 was set, which a
     /// save written then may hold. Regenerate it with
-    /// `Q2_WRITE_SAVE_NAMES=1 cargo test -p q2-game saved_names` when
+    /// `Q2_WRITE_SAVE_NAMES=1 cargo test -p q2-game saved_name` when
     /// VERSION is bumped.
     const SAVED_NAMES: &str = include_str!("names_v2.txt");
 
