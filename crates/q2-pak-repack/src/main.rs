@@ -229,11 +229,8 @@ pub fn merge(paks: &[(&Path, Vec<u8>)]) -> Result<Vec<u8>> {
         data.extend_from_slice(&pak[HEADER_LEN..]);
         let dir_offset = u32::from_le_bytes(pak[4..8].try_into().unwrap()) as usize;
         for i in 0..entry_count(&pak) {
-            let entry = &pak[dir_offset + i * ENTRY_SIZE..][..ENTRY_SIZE];
-            let raw_name: [u8; NAME_LEN] = entry[..NAME_LEN].try_into().unwrap();
-            let offset =
-                u32::from_le_bytes(entry[NAME_LEN..NAME_LEN + 4].try_into().unwrap()) as usize;
-            let size = u32::from_le_bytes(entry[NAME_LEN + 4..].try_into().unwrap()) as usize;
+            let (raw_name, offset, size) = dir_entry(&pak, dir_offset, i);
+            let (offset, size) = (offset as usize, size as usize);
             let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
             let key = String::from_utf8_lossy(&raw_name[..name_end]).to_ascii_lowercase();
             if !this_pak.insert(key.clone()) {
@@ -302,18 +299,7 @@ fn repack_with_limit(
     let mut out_len = HEADER_LEN;
 
     for i in 0..num_files {
-        let base = dir_offset + i * ENTRY_SIZE;
-        let raw_name: [u8; NAME_LEN] = src[base..base + NAME_LEN].try_into().unwrap();
-        let offset = u32::from_le_bytes(
-            src[base + NAME_LEN..base + NAME_LEN + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let size = u32::from_le_bytes(
-            src[base + NAME_LEN + 4..base + ENTRY_SIZE]
-                .try_into()
-                .unwrap(),
-        );
+        let (raw_name, offset, size) = dir_entry(src, dir_offset, i);
 
         let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
         let name = String::from_utf8_lossy(&raw_name[..name_end]);
@@ -371,6 +357,16 @@ fn repack_with_limit(
     Ok(out)
 }
 
+/// Directory entry `i` of `pak` as (name, offset, size). The caller has
+/// checked that the directory at `dir_offset` lies inside `pak`.
+fn dir_entry(pak: &[u8], dir_offset: usize, i: usize) -> ([u8; NAME_LEN], u32, u32) {
+    let entry = &pak[dir_offset + i * ENTRY_SIZE..][..ENTRY_SIZE];
+    let raw_name = entry[..NAME_LEN].try_into().unwrap();
+    let offset = u32::from_le_bytes(entry[NAME_LEN..NAME_LEN + 4].try_into().unwrap());
+    let size = u32::from_le_bytes(entry[NAME_LEN + 4..].try_into().unwrap());
+    (raw_name, offset, size)
+}
+
 fn entry_count(pak: &[u8]) -> usize {
     if pak.len() < HEADER_LEN {
         return 0;
@@ -425,20 +421,9 @@ mod tests {
         let num = dir_len / ENTRY_SIZE;
         let mut entries = Vec::new();
         for i in 0..num {
-            let base = dir_offset + i * ENTRY_SIZE;
-            let name_bytes = &pak[base..base + NAME_LEN];
+            let (name_bytes, offset, size) = dir_entry(pak, dir_offset, i);
             let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
             let name = std::str::from_utf8(&name_bytes[..end]).unwrap().to_string();
-            let offset = u32::from_le_bytes(
-                pak[base + NAME_LEN..base + NAME_LEN + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let size = u32::from_le_bytes(
-                pak[base + NAME_LEN + 4..base + NAME_LEN + 8]
-                    .try_into()
-                    .unwrap(),
-            );
             entries.push((name, offset, size));
         }
         entries
