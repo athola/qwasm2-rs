@@ -29,7 +29,7 @@ const KIND_GAME: u8 = b'G';
 const KIND_LEVEL: u8 = b'L';
 
 #[derive(Serialize, Deserialize)]
-struct GameSave {
+pub(crate) struct GameSave {
     game: GameLocals,
     clients: Vec<ClientData>,
 }
@@ -37,7 +37,7 @@ struct GameSave {
 /// One level. Besides C's `level` and edicts this keeps the game's file
 /// statics, so a loaded level runs on exactly as it would have.
 #[derive(Serialize, Deserialize)]
-struct LevelSave {
+pub(crate) struct LevelSave {
     level: LevelLocals,
     entities: EntityStorage,
     trail: PlayerTrail,
@@ -137,7 +137,7 @@ impl LevelSave {
 }
 
 /// A game file, refused if its values would break play.
-fn decode_game(bytes: &[u8]) -> Q2Result<GameSave> {
+pub(crate) fn decode_game(bytes: &[u8]) -> Q2Result<GameSave> {
     let save: GameSave = decode(KIND_GAME, bytes)?;
     // C's item list is static: the same in every game, initialized or not.
     save.check(crate::items::build_item_list().len())?;
@@ -145,24 +145,13 @@ fn decode_game(bytes: &[u8]) -> Q2Result<GameSave> {
 }
 
 /// A level file, refused if its values would break play.
-fn decode_level(bytes: &[u8]) -> Q2Result<LevelSave> {
+pub(crate) fn decode_level(bytes: &[u8]) -> Q2Result<LevelSave> {
     let save: LevelSave = decode(KIND_LEVEL, bytes)?;
     save.check()?;
     Ok(save)
 }
 
 impl GameWorld {
-    /// Whether `bytes` is a game file this game can read, without reading
-    /// it: a load checks its files before it gives up the running game.
-    pub(crate) fn check_game_file(&self, bytes: &[u8]) -> Q2Result<()> {
-        decode_game(bytes).map(drop)
-    }
-
-    /// `check_game_file` for a level file.
-    pub(crate) fn check_level_file(&self, bytes: &[u8]) -> Q2Result<()> {
-        decode_level(bytes).map(drop)
-    }
-
     /// C `WriteGame`: the cross-level state and every client. A manual save
     /// first copies each player's health and flags into `pers`
     /// (`SaveClientData`); an autosave, written on entering a level, keeps

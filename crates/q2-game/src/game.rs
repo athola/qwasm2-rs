@@ -145,11 +145,11 @@ impl GameExport for GameWorld {
     }
 
     fn check_game(&self, bytes: &[u8]) -> Q2Result<()> {
-        self.check_game_file(bytes)
+        crate::savegame::decode_game(bytes).map(drop)
     }
 
     fn check_level(&self, bytes: &[u8]) -> Q2Result<()> {
-        self.check_level_file(bytes)
+        crate::savegame::decode_level(bytes).map(drop)
     }
 
     fn client_disconnect(&mut self, number: usize) {
