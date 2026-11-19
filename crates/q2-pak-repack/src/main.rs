@@ -50,10 +50,13 @@ fn run(args: &Args) -> Result<()> {
     let paks = args
         .r#in
         .iter()
-        .map(|path| fs::read(path).with_context(|| format!("reading {}", path.display())))
+        .map(|path| {
+            let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            Ok((path.as_path(), bytes))
+        })
         .collect::<Result<Vec<_>>>()?;
     let src = match paks.as_slice() {
-        [one] => one.clone(),
+        [(_, one)] => one.clone(),
         _ => merge(&paks)?,
     };
     let inputs = args
@@ -210,16 +213,16 @@ fn write_brotli<W: Write>(data: &[u8], w: &mut W) -> Result<()> {
 /// One pak holding every file of `paks`, where a later pak's file replaces
 /// an earlier one's of the same name (C searches the highest-numbered pak
 /// first, and compares names without case). Each replaced file keeps the
-/// place of the first.
-pub fn merge(paks: &[Vec<u8>]) -> Result<Vec<u8>> {
+/// place of the first. Each pak's path names it in errors.
+pub fn merge(paks: &[(&Path, Vec<u8>)]) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     data.extend_from_slice(PAK_MAGIC);
     data.extend_from_slice(&[0u8; 8]);
     let mut order: Vec<String> = Vec::new();
     let mut entries: HashMap<String, ([u8; NAME_LEN], usize, usize)> = HashMap::new();
-    for pak in paks {
+    for (path, pak) in paks {
         // `repack` validates the pak and packs its files after its header.
-        let pak = repack(pak, None)?;
+        let pak = repack(pak, None).with_context(|| format!("reading {}", path.display()))?;
         // C takes the first of a name repeated within one pak.
         let mut this_pak = HashSet::new();
         let base = data.len();
@@ -454,7 +457,8 @@ mod tests {
     fn merge_lets_a_later_pak_replace_a_file_of_any_case() {
         let pak0 = make_pak(&[("maps/base1.bsp", b"OLD"), ("pics/a.pcx", b"A")]);
         let pak1 = make_pak(&[("MAPS/BASE1.BSP", b"NEW")]);
-        let merged = merge(&[pak0, pak1]).unwrap();
+        let merged =
+            merge(&[(Path::new("pak0.pak"), pak0), (Path::new("pak1.pak"), pak1)]).unwrap();
         assert_eq!(parse_dir(&merged).len(), 2, "one entry each");
         assert_eq!(file(&merged, "maps/base1.bsp"), b"NEW");
         assert_eq!(file(&merged, "pics/a.pcx"), b"A");
@@ -464,7 +468,11 @@ mod tests {
     fn merge_keeps_the_first_of_a_name_repeated_inside_one_pak() {
         // C FS_FOpenFile takes the first match in a pak's directory.
         let pak = make_pak(&[("a.cfg", b"FIRST"), ("a.cfg", b"SECOND")]);
-        let merged = merge(&[pak.clone(), make_pak(&[("b.cfg", b"B")])]).unwrap();
+        let merged = merge(&[
+            (Path::new("pak0.pak"), pak),
+            (Path::new("pak1.pak"), make_pak(&[("b.cfg", b"B")])),
+        ])
+        .unwrap();
         assert_eq!(file(&merged, "a.cfg"), b"FIRST");
     }
 
@@ -868,6 +876,18 @@ mod tests {
         args.r#in = vec![dir.path().join("absent.pak")];
         let err = format!("{:#}", run(&args).unwrap_err());
         assert!(err.contains("absent.pak"), "{err}");
+    }
+
+    #[test]
+    fn run_names_the_bad_pak_among_several_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = cli(dir.path(), &[("a.cfg", b"A")], &[]);
+        let bad = dir.path().join("bad.pak");
+        fs::write(&bad, b"not a pak").unwrap();
+        args.r#in.push(bad);
+        let err = format!("{:#}", run(&args).unwrap_err());
+        assert!(err.contains("bad.pak"), "{err}");
+        assert!(err.contains("bad magic"), "{err}");
     }
 
     #[test]
