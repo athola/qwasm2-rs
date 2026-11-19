@@ -185,6 +185,14 @@ impl LevelFile {
     }
 }
 
+/// A `<map>.sv2` decoded and its sizes checked, on every path that reads
+/// one.
+fn decode_level_file(bytes: &[u8]) -> Q2Result<LevelFile> {
+    let level: LevelFile = decode(bytes)?;
+    level.check()?;
+    Ok(level)
+}
+
 const MAGIC: &[u8; 8] = b"Q2RS-SRV";
 const VERSION: u8 = 1;
 
@@ -253,7 +261,7 @@ impl LocalGame {
     fn read_level_file(&mut self) -> Q2Result<()> {
         let name = self.sv.name.clone();
         let missing = || Q2Error::Drop(format!("Failed to open save/current/{name}"));
-        let level: LevelFile = decode(
+        let level = decode_level_file(
             self.saves
                 .file("current", &format!("{name}.sv2"))
                 .ok_or_else(missing)?,
@@ -455,7 +463,7 @@ impl LocalGame {
             match name.rsplit_once('.').map(|(_, ext)| ext) {
                 _ if name == "server.ssv" => decode::<ServerFile>(bytes).map(drop),
                 _ if name == "game.ssv" => self.game.check_game(bytes),
-                Some("sv2") => decode::<LevelFile>(bytes).and_then(|level| level.check()),
+                Some("sv2") => decode_level_file(bytes).map(drop),
                 Some("sav") => {
                     let sv2 = format!("{}.sv2", &name[..name.len() - 4]);
                     match self.saves.file(slot, &sv2) {
@@ -617,6 +625,25 @@ mod tests {
             portals: vec![false; q2_common::collision::MAX_MAP_AREAPORTALS],
         };
         assert!(long_configstrings.check().is_err());
+    }
+
+    #[test]
+    fn a_revisit_refuses_a_level_file_sized_for_no_map() {
+        let bsp = crate::test_bsp::floor_wall_bsp();
+        let mut game = LocalGame::start("floor_wall", &bsp).expect("map loads");
+        game.change_map(&MapRequest::parse("other"), &bsp).unwrap();
+        let damaged = LevelFile {
+            configstrings: vec![String::new(); q2_shared::constants::MAX_CONFIGSTRINGS + 1],
+            portals: vec![false; q2_common::collision::MAX_MAP_AREAPORTALS],
+        };
+        game.saves
+            .put("current", "floor_wall.sv2", encode(&damaged).unwrap());
+        // Refused by its sizes before any of it is applied, not by the
+        // first configstring past the end.
+        let error = game
+            .change_map(&MapRequest::parse("floor_wall"), &bsp)
+            .unwrap_err();
+        assert!(error.to_string().contains("damaged"), "{error}");
     }
 
     #[test]
