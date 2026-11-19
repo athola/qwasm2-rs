@@ -645,6 +645,26 @@ mod tests {
     }
 
     #[test]
+    fn a_save_entering_a_cinematic_loads_with_the_player_in_the_next_map() {
+        // C SV_GameMap_f keeps `intro.cin+<map>` as `svs.mapcmd`, so a save
+        // can load through the movie to the map after it.
+        let bsp = crate::test_bsp::floor_wall_bsp();
+        let mut game = LocalGame::start("floor_wall", &bsp).expect("map loads");
+        game.svs.mapcmd = "intro.cin+floor_wall".into();
+        game.console("save quick").unwrap();
+        game.console("load quick").unwrap();
+        let movie = game.take_map_change().expect("the load's level");
+        game.change_map(&MapRequest::parse(&movie), &[]).unwrap();
+        let next = game.take_map_change().expect("the movie's next server");
+        game.change_map(&MapRequest::parse(&next), &bsp).unwrap();
+        assert_eq!(
+            game.svs.clients[0].state,
+            crate::state::ClientState::Spawned
+        );
+        assert!(game.player().is_some());
+    }
+
+    #[test]
     fn a_slot_names_the_level_it_loads() {
         let mut saves = SaveFiles::default();
         saves.insert("quick/server.ssv", server_file(1, "*base2$start"));

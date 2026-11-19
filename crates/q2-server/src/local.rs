@@ -392,15 +392,21 @@ impl LocalGame {
             self.autosave()?;
         }
         if level.kind == LevelKind::Game {
-            match loading {
-                // C SV_InitGame dropped the client; it connects again and
-                // takes the body the level kept for it.
-                Some(_) => {
-                    let userinfo = self.userinfo.clone();
-                    self.svs
-                        .connect_local_client(self.game.as_mut(), &userinfo)?;
-                }
-                None => self.svs.begin_connected_clients(self.game.as_mut()),
+            // A load's C SV_InitGame dropped the client; it connects again
+            // and takes the body the level kept for it. Its level can be a
+            // movie first (C plays it and its `gamemap` is a plain one), so
+            // the drop is read from the slot, not from `loading`.
+            let dropped = self
+                .svs
+                .clients
+                .first()
+                .is_some_and(|client| client.state == ClientState::Free);
+            if dropped {
+                let userinfo = self.userinfo.clone();
+                self.svs
+                    .connect_local_client(self.game.as_mut(), &userinfo)?;
+            } else {
+                self.svs.begin_connected_clients(self.game.as_mut());
             }
             self.sv.drop_on_game_error(&self.gi)?;
             self.gi
