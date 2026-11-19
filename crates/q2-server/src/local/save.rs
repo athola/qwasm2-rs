@@ -48,15 +48,32 @@ impl SaveFiles {
             .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
     }
 
+    /// The slot of a `<slot>/<file>` path: the text before its first
+    /// slash, or "" for a path with none. Every split of a path goes
+    /// through `split`, so the server and the platform agree on it.
+    pub fn slot_of(path: &str) -> &str {
+        split(path).map_or("", |(slot, _)| slot)
+    }
+
     /// Put back a file the platform stored, by its `iter` path. It is
-    /// not a change: the platform has it already.
+    /// not a change: the platform has it already. A path no save could
+    /// have is ignored.
     pub fn insert(&mut self, path: &str, bytes: Vec<u8>) {
+        if !stored_path(path) {
+            tracing::warn!("save file {path:?} ignored: not <slot>/<file>");
+            return;
+        }
         self.changed.remove(path);
         self.files.insert(path.to_string(), bytes);
     }
 
-    /// Drop a file the platform stored, so its copy is removed too.
+    /// Drop a file the platform stored, so its copy is removed too. A
+    /// path no save could have is ignored, as `insert` ignores it.
     pub fn discard(&mut self, path: &str) {
+        if !stored_path(path) {
+            tracing::warn!("save file {path:?} not discarded: not <slot>/<file>");
+            return;
+        }
         self.files.remove(path);
         self.changed.insert(path.to_string());
     }
@@ -89,10 +106,9 @@ impl SaveFiles {
 
     /// C `SV_WipeSavegame`.
     pub(super) fn wipe(&mut self, slot: &str) {
-        let prefix = format!("{slot}/");
         let changed = &mut self.changed;
         self.files.retain(|path, _| {
-            let keep = !path.starts_with(&prefix);
+            let keep = Self::slot_of(path) != slot;
             if !keep {
                 changed.insert(path.clone());
             }
@@ -103,15 +119,12 @@ impl SaveFiles {
     /// C `SV_CopySaveGame`: `dst` becomes a copy of `src`.
     pub(super) fn copy(&mut self, src: &str, dst: &str) {
         self.wipe(dst);
-        let prefix = format!("{src}/");
         let copies: Vec<_> = self
             .files
             .iter()
-            .filter_map(|(path, bytes)| {
-                Some((
-                    format!("{dst}/{}", path.strip_prefix(&prefix)?),
-                    bytes.clone(),
-                ))
+            .filter_map(|(path, bytes)| match split(path)? {
+                (slot, name) if slot == src => Some((format!("{dst}/{name}"), bytes.clone())),
+                _ => None,
             })
             .collect();
         for (path, bytes) in copies {
@@ -126,8 +139,8 @@ impl SaveFiles {
             .files
             .iter()
             .filter_map(|(path, bytes)| {
-                let slot = path.strip_suffix("/server.ssv")?;
-                if slot == "current" || bad_slot(slot) {
+                let (slot, name) = split(path)?;
+                if slot == "current" || name != "server.ssv" {
                     return None;
                 }
                 Some((decode::<ServerFile>(bytes).ok()?.sequence, slot.to_string()))
@@ -187,6 +200,18 @@ fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Q2Result<T> {
             "savegame from an incompatible version".into(),
         )),
     }
+}
+
+/// `<slot>/<file>` split at the first slash.
+fn split(path: &str) -> Option<(&str, &str)> {
+    path.split_once('/')
+}
+
+/// Whether `path` is one a save writes: a good slot and a file name
+/// with no slash, so `split` reads back the slot it was written under.
+fn stored_path(path: &str) -> bool {
+    split(path)
+        .is_some_and(|(slot, name)| !bad_slot(slot) && !name.is_empty() && !name.contains('/'))
 }
 
 /// C refuses these as save names ("Bad savedir."), so a name cannot
@@ -253,7 +278,7 @@ impl LocalGame {
         let sequence = self
             .saves
             .iter()
-            .filter(|(path, _)| path.ends_with("/server.ssv"))
+            .filter(|(path, _)| split(path).is_some_and(|(_, name)| name == "server.ssv"))
             .filter_map(|(_, bytes)| decode::<ServerFile>(bytes).ok())
             .map(|file| file.sequence)
             .max()
@@ -418,9 +443,8 @@ impl LocalGame {
         self.saves
             .file(slot, "game.ssv")
             .ok_or_else(|| missing("game.ssv"))?;
-        let prefix = format!("{slot}/");
         for (path, bytes) in self.saves.iter() {
-            let Some(name) = path.strip_prefix(&prefix) else {
+            let Some((_, name)) = split(path).filter(|(owner, _)| *owner == slot) else {
                 continue;
             };
             match name.rsplit_once('.').map(|(_, ext)| ext) {
@@ -591,11 +615,28 @@ mod tests {
     }
 
     #[test]
-    fn slots_skip_a_name_a_save_could_not_have() {
+    fn a_path_a_save_could_not_have_is_not_stored() {
         let mut saves = SaveFiles::default();
         saves.insert("good/server.ssv", server_file(1, "base1"));
-        saves.insert("a/b/server.ssv", server_file(2, "base1"));
+        for bad in [
+            "a/b/server.ssv",
+            "../server.ssv",
+            "/server.ssv",
+            "server.ssv",
+            "x/",
+        ] {
+            saves.insert(bad, server_file(2, "base1"));
+            saves.discard(bad);
+        }
         assert_eq!(saves.slots(), ["good"]);
+        assert_eq!(saves.iter().count(), 1);
+        assert!(saves.take_changes().is_empty());
+    }
+
+    #[test]
+    fn slot_of_names_the_slot_before_the_slash() {
+        assert_eq!(SaveFiles::slot_of("quick/base1.sav"), "quick");
+        assert_eq!(SaveFiles::slot_of("server.ssv"), "");
     }
 
     #[test]
