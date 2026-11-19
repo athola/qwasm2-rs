@@ -63,6 +63,17 @@ one ahead after the relink, a SOLID_NOT entity left area-linked coming
 back unlinked, free entities zeroed, and the reconnected client's view in
 its delta angles.
 
+The game's random sequence is another stand-in. C `randk()` is a KISS
+generator whose 16 MB state has no place in a save, so
+`GameWorld::random_u32` steps a 32-bit LCG kept in the level state and
+returns that state passed through the murmur3 finalizer
+(`random_output` in `q2-game/src/world.rs`), shifted into C's 0..2^31
+range. Callers take `& 1`, `& 3` or `% n` of it, as C does of `randk()`,
+and a bare LCG's low bits cycle every 2^k calls; the finalizer makes every
+state bit reach the low output bits. Adding it changed every random
+sequence from the one 0.1.3 produced, so a given seed no longer yields
+the same draws. Neither sequence is C's.
+
 Additions C does not have, on valid input, are allowed only behind an
 opt-in setting that defaults to C's behavior, so the default build stays
 comparable to C and tests pin both. Each one is listed in ADR-003. The
