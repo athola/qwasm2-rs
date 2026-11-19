@@ -325,29 +325,142 @@ fn a_manual_save_without_its_level_starts_the_player_afresh() {
     assert_eq!(player(&loaded).1.pers.inventory[quad], 0);
 }
 
+/// The first registered callback of type `F`: any will do for the pin.
+fn some_callback<F: registry::Callback>() -> Option<F> {
+    Some(F::table()[0].1)
+}
+
+/// A world whose saves hold `Some` in every `Option` and an element in
+/// every `Vec`, so the pin walks the type inside each.
+fn layout_sample() -> GameWorld {
+    let mut world = world_with_player();
+    let player = world.entities.key_for_number(1);
+    // A number reused after a free, so the storage lists a retired key.
+    let gib = spawn(&mut world, "gib");
+    let number = world.number_of(gib).unwrap();
+    world.entities.soft_free(gib);
+    world.entities.spawn_numbered(number).unwrap();
+    world.entities.dprintf("held\n".to_string());
+    for slot in [
+        &mut world.level.sight_client_key,
+        &mut world.level.sight_entity,
+        &mut world.level.sound_entity,
+        &mut world.level.sound2_entity,
+        &mut world.level.current_entity,
+    ] {
+        *slot = player;
+    }
+    let client = &mut world.clients[0];
+    client.newweapon = Some(0);
+    for pers in [&mut client.pers, &mut client.resp.coop_respawn] {
+        pers.weapon = Some(0);
+        pers.last_weapon = Some(0);
+    }
+
+    let key = spawn(&mut world, "monster_soldier");
+    let ent = world.entities.get_mut(key).unwrap();
+    let game = &mut ent.game;
+    for slot in [
+        &mut game.target_ent,
+        &mut game.ground_entity,
+        &mut game.enemy,
+        &mut game.oldenemy,
+        &mut game.activator,
+        &mut game.movetarget,
+        &mut game.goalentity,
+        &mut game.chain,
+        &mut game.teamchain,
+        &mut game.teammaster,
+        &mut game.mynoise,
+        &mut game.mynoise2,
+        &mut ent.owner,
+    ] {
+        *slot = player;
+    }
+    ent.game.item = Some(0);
+    ent.client = Some(0);
+    ent.prethink = some_callback();
+    ent.think = some_callback();
+    ent.blocked = some_callback();
+    ent.touch = some_callback();
+    ent.use_fn = some_callback();
+    ent.pain = some_callback();
+    ent.die = some_callback();
+    ent.moveinfo = Some(Box::new(crate::entity::MoveInfo {
+        endfunc: some_callback(),
+        ..Default::default()
+    }));
+    ent.monsterinfo = Some(Box::new(MonsterInfo {
+        currentmove: Some(crate::monster::soldier::SOLDIER_MOVE_STAND1.clone()),
+        stand: some_callback(),
+        idle: some_callback(),
+        search: some_callback(),
+        walk: some_callback(),
+        run: some_callback(),
+        dodge: some_callback(),
+        attack: some_callback(),
+        melee: some_callback(),
+        sight: some_callback(),
+        checkattack: some_callback(),
+        ..MonsterInfo::default()
+    }));
+    world
+}
+
 /// FNV-1a: stable across Rust releases, unlike `DefaultHasher`.
 #[test]
 fn the_save_layout_is_pinned_so_a_change_bumps_version() {
     // postcard writes fields by position, so a saved type that changes
     // shape (a field added, removed, retyped or moved) misreads older
     // saves. The pin hashes each field's name and kind in write order, not
-    // the values, so it moves only with the shape. A variant is hashed with
-    // its index, as postcard writes it. If this fails, bump
-    // VERSION and update the pin.
-    let mut world = world_with_player();
-    // A monster and a mover, so their boxed state is walked too.
-    let key = spawn(&mut world, "monster_soldier");
-    let ent = world.entities.get_mut(key).unwrap();
-    ent.monsterinfo = Some(Box::default());
-    ent.moveinfo = Some(Box::default());
-    let level = schema::fingerprint(&world.level_save());
-    let game = schema::fingerprint(&GameSave {
+    // the values, so it moves only with the shape. The sample fills every
+    // Option and Vec, and the walk fails on one it finds empty, so the
+    // type inside each is hashed too. postcard writes a variant as its
+    // index: the active one is hashed with it, and every saved enum's
+    // variant list besides. If this fails, bump VERSION and update the pin.
+    use crate::constants::{AttackState, DeadFlag, MoveType, Range, TakeDamage};
+    use crate::entity::WeaponState;
+    use q2_shared::types::{PmType, Solid};
+    let world = layout_sample();
+    let level = schema::survey(&world.level_save());
+    let game = schema::survey(&GameSave {
         game: world.game.clone(),
         clients: world.clients.clone(),
     });
+    for survey in [&level, &game] {
+        assert!(
+            survey.gaps.is_empty(),
+            "fill these in layout_sample: {:?}",
+            survey.gaps
+        );
+    }
+    let enums = [
+        schema::variants::<AttackState>(),
+        schema::variants::<DeadFlag>(),
+        schema::variants::<MeansOfDeath>(),
+        schema::variants::<MoveType>(),
+        schema::variants::<PmType>(),
+        schema::variants::<Range>(),
+        schema::variants::<Solid>(),
+        schema::variants::<TakeDamage>(),
+        schema::variants::<WeaponState>(),
+    ];
+    let saved: std::collections::BTreeSet<_> = level.enums.union(&game.enums).copied().collect();
+    let listed: std::collections::BTreeSet<_> = enums.iter().map(|&(name, _)| name).collect();
+    assert_eq!(saved, listed, "list every saved enum here");
+    let mut variants = schema::Shape::new();
+    for (name, names) in enums {
+        variants.mark(name);
+        names.iter().for_each(|v| variants.mark(v));
+    }
     assert_eq!(
-        (VERSION, level, game),
-        (1, 17_025_363_215_175_163_328, 16_405_783_843_122_185_071),
+        (VERSION, level.hash, game.hash, variants.hash()),
+        (
+            1,
+            14_405_780_714_890_241_194,
+            6_009_515_770_261_010_828,
+            14_912_028_327_610_841_453
+        ),
         "a saved type changed: bump VERSION"
     );
 }
@@ -372,22 +485,117 @@ fn the_layout_pin_moves_with_a_field_order_but_not_a_value() {
 /// A serializer that hashes a value's shape: struct and field names,
 /// variant names and primitive kinds, in the order postcard writes them.
 mod schema {
+    use std::collections::BTreeSet;
+
+    use serde::de::{self, Deserialize};
     use serde::ser::{self, Serialize};
 
     pub fn fingerprint<T: Serialize>(value: &T) -> u64 {
-        let mut shape = Shape(0xcbf2_9ce4_8422_2325);
-        value.serialize(&mut shape).unwrap();
-        shape.0
+        survey(value).hash
     }
 
-    pub struct Shape(u64);
+    /// What one walk of a value saw.
+    pub struct Survey {
+        pub hash: u64,
+        /// Field paths that held only `None` or empty sequences: the walk
+        /// never reached the type inside, so a change there is not hashed.
+        pub gaps: Vec<String>,
+        /// The enums whose variant the walk hashed.
+        pub enums: BTreeSet<&'static str>,
+    }
+
+    pub fn survey<T: Serialize>(value: &T) -> Survey {
+        let mut shape = Shape::new();
+        value.serialize(&mut shape).unwrap();
+        Survey {
+            hash: shape.hash,
+            gaps: shape.empty.difference(&shape.filled).cloned().collect(),
+            enums: shape.enums,
+        }
+    }
+
+    pub struct Shape {
+        hash: u64,
+        path: Vec<&'static str>,
+        filled: BTreeSet<String>,
+        empty: BTreeSet<String>,
+        enums: BTreeSet<&'static str>,
+    }
 
     impl Shape {
-        fn mark(&mut self, text: &str) {
-            for b in text.bytes().chain([0]) {
-                self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        pub fn new() -> Self {
+            Shape {
+                hash: 0xcbf2_9ce4_8422_2325,
+                path: Vec::new(),
+                filled: BTreeSet::new(),
+                empty: BTreeSet::new(),
+                enums: BTreeSet::new(),
             }
         }
+
+        pub fn hash(&self) -> u64 {
+            self.hash
+        }
+
+        pub fn mark(&mut self, text: &str) {
+            for b in text.bytes().chain([0]) {
+                self.hash = (self.hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+
+        /// Note whether the value at the current path held something.
+        fn reached(&mut self, inside: bool) {
+            let path = self.path.join(".");
+            match inside {
+                true => self.filled.insert(path),
+                false => self.empty.insert(path),
+            };
+        }
+
+        fn variant(&mut self, name: &'static str, index: u32, variant: &'static str) {
+            self.enums.insert(name);
+            self.mark(name);
+            self.mark(&format!("{index}{variant}"));
+        }
+
+        fn nested<T: ?Sized + Serialize>(&mut self, step: &'static str, v: &T) -> R {
+            self.path.push(step);
+            let walked = v.serialize(&mut *self);
+            self.path.pop();
+            walked
+        }
+    }
+
+    /// Enum `T`'s name and every variant in declaration order: serde
+    /// hands them to `deserialize_enum`, where this stops.
+    pub fn variants<T: for<'de> Deserialize<'de>>() -> (&'static str, &'static [&'static str]) {
+        struct Probe((&'static str, &'static [&'static str]));
+        impl<'de> de::Deserializer<'de> for &mut Probe {
+            type Error = Error;
+            fn deserialize_any<V: de::Visitor<'de>>(self, _: V) -> Result<V::Value, Error> {
+                Err(Error)
+            }
+            fn deserialize_enum<V: de::Visitor<'de>>(
+                self,
+                name: &'static str,
+                variants: &'static [&'static str],
+                _: V,
+            ) -> Result<V::Value, Error> {
+                self.0 = (name, variants);
+                Err(Error)
+            }
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
+                string bytes byte_buf option unit unit_struct newtype_struct seq
+                tuple tuple_struct map struct identifier ignored_any
+            }
+        }
+        let mut probe = Probe(("", &[]));
+        assert!(
+            T::deserialize(&mut probe).is_err(),
+            "the probe makes no value"
+        );
+        probe.0
     }
 
     #[derive(Debug)]
@@ -399,6 +607,11 @@ mod schema {
     }
     impl std::error::Error for Error {}
     impl ser::Error for Error {
+        fn custom<T: std::fmt::Display>(_: T) -> Self {
+            Error
+        }
+    }
+    impl de::Error for Error {
         fn custom<T: std::fmt::Display>(_: T) -> Self {
             Error
         }
@@ -434,10 +647,12 @@ mod schema {
 
         fn serialize_none(self) -> R {
             self.mark("none");
+            self.reached(false);
             Ok(())
         }
         fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> R {
             self.mark("some");
+            self.reached(true);
             v.serialize(self)
         }
         fn serialize_unit(self) -> R {
@@ -454,8 +669,7 @@ mod schema {
             index: u32,
             variant: &'static str,
         ) -> R {
-            self.mark(name);
-            self.mark(&format!("{index}{variant}"));
+            self.variant(name, index, variant);
             Ok(())
         }
         fn serialize_newtype_struct<T: ?Sized + Serialize>(self, name: &'static str, v: &T) -> R {
@@ -469,12 +683,12 @@ mod schema {
             variant: &'static str,
             v: &T,
         ) -> R {
-            self.mark(name);
-            self.mark(&format!("{index}{variant}"));
+            self.variant(name, index, variant);
             v.serialize(self)
         }
-        fn serialize_seq(self, _: Option<usize>) -> Result<Self, Error> {
+        fn serialize_seq(self, len: Option<usize>) -> Result<Self, Error> {
             self.mark("seq");
+            self.reached(len != Some(0));
             Ok(self)
         }
         fn serialize_tuple(self, _: usize) -> Result<Self, Error> {
@@ -492,12 +706,12 @@ mod schema {
             variant: &'static str,
             _: usize,
         ) -> Result<Self, Error> {
-            self.mark(name);
-            self.mark(&format!("{index}{variant}"));
+            self.variant(name, index, variant);
             Ok(self)
         }
-        fn serialize_map(self, _: Option<usize>) -> Result<Self, Error> {
+        fn serialize_map(self, len: Option<usize>) -> Result<Self, Error> {
             self.mark("map");
+            self.reached(len != Some(0));
             Ok(self)
         }
         fn serialize_struct(self, name: &'static str, _: usize) -> Result<Self, Error> {
@@ -511,8 +725,7 @@ mod schema {
             variant: &'static str,
             _: usize,
         ) -> Result<Self, Error> {
-            self.mark(name);
-            self.mark(&format!("{index}{variant}"));
+            self.variant(name, index, variant);
             Ok(self)
         }
     }
@@ -523,7 +736,7 @@ mod schema {
                 type Ok = ();
                 type Error = Error;
                 fn $method<T: ?Sized + Serialize>(&mut self, v: &T) -> R {
-                    v.serialize(&mut **self)
+                    self.nested("[]", v)
                 }
                 fn end(self) -> R {
                     Ok(())
@@ -542,10 +755,10 @@ mod schema {
         type Ok = ();
         type Error = Error;
         fn serialize_key<T: ?Sized + Serialize>(&mut self, k: &T) -> R {
-            k.serialize(&mut **self)
+            self.nested("{key}", k)
         }
         fn serialize_value<T: ?Sized + Serialize>(&mut self, v: &T) -> R {
-            v.serialize(&mut **self)
+            self.nested("{value}", v)
         }
         fn end(self) -> R {
             Ok(())
@@ -559,7 +772,7 @@ mod schema {
                 type Error = Error;
                 fn serialize_field<T: ?Sized + Serialize>(&mut self, name: &'static str, v: &T) -> R {
                     self.mark(name);
-                    v.serialize(&mut **self)
+                    self.nested(name, v)
                 }
                 fn end(self) -> R {
                     Ok(())
