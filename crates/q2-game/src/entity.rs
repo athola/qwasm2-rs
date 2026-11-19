@@ -1093,4 +1093,28 @@ mod tests {
         assert_eq!(gl.maxclients(), 1);
         assert_eq!(gl.maxentities, 1024);
     }
+
+    #[test]
+    fn a_number_table_out_of_step_with_its_entities_is_refused() {
+        type Tamper = fn(&mut EntityStorage, usize, usize);
+        let cases: [(&str, Tamper); 3] = [
+            ("swapped", |s, a, b| s.numbers.swap(a, b)),
+            ("cleared", |s, a, _| s.numbers[a] = None),
+            ("removed", |s, a, _| {
+                let key = s.numbers[a].expect("spawned");
+                s.entities.remove(key);
+            }),
+        ];
+        for (case, tamper) in cases {
+            let mut storage = EntityStorage::new(16);
+            let a = storage.spawn().unwrap();
+            let b = storage.spawn().unwrap();
+            assert_eq!(storage.check(), Ok(()), "{case}");
+            let number = |key| storage.get(key).unwrap().state.number as usize;
+            let (a, b) = (number(a), number(b));
+            tamper(&mut storage, a, b);
+            let err = storage.check().unwrap_err();
+            assert!(err.contains("numbering"), "{case}: {err}");
+        }
+    }
 }
