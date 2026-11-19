@@ -52,6 +52,22 @@ jobs:
       - run: test -f gamedata/baseq2/pak0.pak
       - run: make test
 
+  # Cargo.toml declares rust-version; check the libraries build on it, not
+  # only on the newer toolchain rust-toolchain.toml pins.
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+      - run: cargo +${{ steps.msrv.outputs.version }} check --workspace --locked --lib
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
