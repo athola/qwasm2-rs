@@ -724,6 +724,23 @@ mod tests {
     }
 
     #[test]
+    fn a_load_restores_the_saved_configstrings_and_area_portals() {
+        // C SV_ReadLevelFile: a fresh spawn closes portal 1 and leaves
+        // the light style unset; the level file puts both back.
+        let bsp = crate::test_bsp::two_area_bsp_with(crate::test_bsp::ENTSTRING);
+        let mut game = LocalGame::start("two_area", &bsp).expect("map loads");
+        let style = (q2_shared::constants::CS_LIGHTS + 32) as i32;
+        game.gi.set_area_portal_state(1, true);
+        game.gi.configstring(style, "a");
+        game.console("save quick").unwrap();
+        game.console("load quick").unwrap();
+        let level = game.take_map_change().expect("the load's level");
+        game.change_map(&MapRequest::parse(&level), &bsp).unwrap();
+        assert!(game.gi.portal_states()[1], "portal 1 open again");
+        assert_eq!(game.configstring(style as usize), "a");
+    }
+
+    #[test]
     fn a_slot_names_the_level_it_loads() {
         let mut saves = SaveFiles::default();
         saves.insert("quick/server.ssv", server_file(1, "*base2$start"));
