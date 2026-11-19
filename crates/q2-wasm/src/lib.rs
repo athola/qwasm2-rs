@@ -1223,12 +1223,22 @@ const BINDS: [(u8, &str); 23] = [
 /// (ADR-005). A stored slot no load could read (another pak's map, a file
 /// this build cannot decode) is left out: the new game keeps its own slot
 /// in memory and the page's copy is not touched.
+///
+/// Returns the stored paths no save could have, which `SaveFiles` refuses:
+/// the page removes them, or they would stay in its store for good.
 #[cfg(any(target_arch = "wasm32", test))]
-fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
+fn restore_saves(
+    local: &mut q2_server::local::LocalGame,
+    files: Vec<(String, Vec<u8>)>,
+) -> Vec<String> {
     use q2_server::local::SaveFiles;
     let mut stored = SaveFiles::default();
+    let mut refused = Vec::new();
     for (path, bytes) in files {
         stored.insert(&path, bytes);
+        if saved_file(&stored, &path).is_none() {
+            refused.push(path);
+        }
     }
     let old_current: Vec<&str> = stored
         .iter()
@@ -1280,6 +1290,7 @@ fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Ve
             }
         }
     }
+    refused
 }
 
 /// `saves`' file at a `<slot>/<file>` path, split as the server splits it.
@@ -1882,9 +1893,14 @@ async fn load_engine(
         })
         .collect();
     local.set_has_map(move |map| maps.contains(map));
-    restore_saves(&mut local, saves);
+    let refused = restore_saves(&mut local, saves);
     // Send the page the new game's `current`, its autosave if the page had
-    // none, and the removal of the files the restore replaced.
+    // none, and the removal of the files the restore replaced or refused.
+    for path in refused {
+        if let Err(e) = saves_remove(&path) {
+            console::warn_1(&format!("[qwasm2-rs] save {path} not removed: {e:?}").into());
+        }
+    }
     flush_saves(&mut local);
     if let Some((origin, ps)) = local.player() {
         log(&format!(
@@ -3334,6 +3350,24 @@ mod tests {
             save0_changes,
             Vec::<String>::new(),
             "the stored save0 is neither removed nor written over"
+        );
+    }
+
+    #[test]
+    fn stored_paths_no_save_could_have_are_returned_for_the_page_to_remove() {
+        let mut local = floor_wall_game();
+        let refused = restore_saves(
+            &mut local,
+            vec![
+                ("server.ssv".into(), vec![1]),
+                ("quick/maps/base1.sav".into(), vec![2]),
+                ("../quick/game.ssv".into(), vec![3]),
+                ("save0/game.ssv".into(), vec![4]),
+            ],
+        );
+        assert_eq!(
+            refused,
+            ["server.ssv", "quick/maps/base1.sav", "../quick/game.ssv"]
         );
     }
 
