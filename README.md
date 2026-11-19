@@ -4,27 +4,16 @@
 
 Quake 2 engine rewrite in Rust, targeting WebAssembly.
 
-Loads real Quake 2 game data (PAK files, BSP maps), renders with
-WebGL2, and runs player movement in the browser.
+Loads real Quake 2 game data (PAK files, BSP maps) and runs the
+single-player game in the browser: ports of the C game logic, server
+and pmove run in one WASM process, drawn with WebGL2, with sound through
+WebAudio.
 
-> **Status: alpha.** The browser build loads a demo map into an
-> in-process server running the game logic (`q2-game`: physics, combat,
-> items, triggers; all 20 monster types sight, hear, chase, attack and
-> die as in C) and moves the player with the C pmove port through the
-> server's collision. Doors, platforms, buttons, trains and elevators
-> move with their sounds, shut doors hide the areas behind them, triggers
-> fire on the player, items can be picked up, and level exits load the
-> next map with the player's inventory. The renderer draws the world
-> textured and lightmapped with sky and warp surfaces, flickering light
-> styles and animated textures, brush entities and MD2 models, and the
-> status bar; game sounds play through WebAudio. The player carries,
-> switches and fires every weapon (number keys, `[` `]` `'` Enter, F7/F8
-> for gamma), with the first-person gun, gunfire sounds and muzzle
-> flashes; powerups, drowning and lava work. Explosions, impacts, trails
-> and the other temp entities are drawn with particles, beams and
-> sprites. F6 quick-saves, F9 quick-loads and F3 loads the newest save
-> (also the press after a death); saves and the last autosave are kept
-> in IndexedDB across page reloads.
+> **Status: alpha.** Every weapon, powerup and all 20 monster types work
+> as in C, and saves persist across page reloads. With your own retail
+> paks, every campaign map loads, saves and loads back. Multiplayer,
+> client prediction and the menus are not ported yet; per-phase status
+> is in [ADR-002](docs/adr/002-conversion-strategy-and-roadmap.md).
 > Expect breaking changes.
 
 ## Progress
@@ -95,6 +84,19 @@ Settings are query parameters, such as
 | `vid_fullscreen` | 1: the click to play also goes fullscreen and locks the keyboard (Chromium) | off |
 | `game` | C `game`; `rogue` applies the mission pack's color shells (client only) | baseq2 |
 | `cl_fxextra` | 1: explosion smoke C does not draw ([ADR-003](docs/adr/003-game-logic-design.md)) | off |
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| WASD or arrows, mouse | Move, look (click the canvas to lock the pointer) |
+| Ctrl or left mouse | Fire |
+| Space, C, Shift | Jump, crouch, run |
+| 1 to 0, `/` | Pick a weapon, next weapon |
+| `[` `]` Enter `'` | Inventory: previous, next, use, drop |
+| F6, F9, F3 | Quick save, quick load, load the newest save |
+| F7, F8 | Gamma darker, brighter |
+| F4 | Show every key in game |
 
 ### Prerequisites
 
