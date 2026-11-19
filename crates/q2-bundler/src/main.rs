@@ -414,7 +414,7 @@ function writeSaves() {{
   }}
   let failure = null;
   tx.oncomplete = () => settle(null);
-  tx.onabort = () => settle(failure || tx.error);
+  tx.onabort = () => settle(failure || tx.error || new Error('save transaction aborted'));
   try {{
     const files = tx.objectStore('files');
     for (const [path, bytes] of batch) {{
@@ -637,6 +637,13 @@ mod tests {
         let put = write.find("files.put(").expect("put");
         assert!(oncomplete < put && write.find("tx.onabort").unwrap() < put);
         assert!(write.contains("tx.abort();"), "{write}");
+        // An abort with no error is still a refusal, never a success.
+        assert!(
+            write.contains(
+                "tx.onabort = () => settle(failure || tx.error || new Error('save transaction aborted'));"
+            ),
+            "{write}"
+        );
     }
 
     #[test]
