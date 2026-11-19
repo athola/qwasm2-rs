@@ -1220,7 +1220,9 @@ const BINDS: [(u8, &str); 23] = [
 /// Put back the save files the page kept from earlier visits, except
 /// `current`, which a new game starts over as C SV_Map_f does: the page
 /// drops its old copy. The last visit's `save0` replaces the new game's
-/// (ADR-005).
+/// (ADR-005). A stored slot no load could read (another pak's map, a file
+/// this build cannot decode) is left out: the new game keeps its own slot
+/// in memory and the page's copy is not touched.
 #[cfg(any(target_arch = "wasm32", test))]
 fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
     use q2_server::local::SaveFiles;
@@ -1228,31 +1230,54 @@ fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Ve
     for (path, bytes) in files {
         stored.insert(&path, bytes);
     }
+    let old_current: Vec<&str> = stored
+        .iter()
+        .map(|(path, _)| path)
+        .filter(|path| SaveFiles::slot_of(path) == "current")
+        .collect();
+    for path in old_current {
+        if saved_file(local.saves(), path).is_none() {
+            local.saves_mut().discard(path);
+        }
+    }
     let slots: std::collections::BTreeSet<&str> = stored
         .iter()
         .map(|(path, _)| SaveFiles::slot_of(path))
         .filter(|&slot| slot != "current")
         .collect();
-    // A restored slot replaces the new game's whole: no mixed save0.
-    let replaced: Vec<String> = local
-        .saves()
-        .iter()
-        .map(|(path, _)| path)
-        .filter(|path| {
-            slots.contains(SaveFiles::slot_of(path)) && saved_file(&stored, path).is_none()
-        })
-        .map(str::to_string)
-        .collect();
-    for path in replaced {
-        local.saves_mut().discard(&path);
-    }
-    for (path, bytes) in stored.iter() {
-        if SaveFiles::slot_of(path) == "current" {
-            if saved_file(local.saves(), path).is_none() {
-                local.saves_mut().discard(path);
-            }
-        } else {
+    for slot in slots {
+        let fresh = local.saves().clone();
+        // A restored slot replaces the new game's whole: no mixed save0.
+        let replaced: Vec<String> = local
+            .saves()
+            .iter()
+            .map(|(path, _)| path)
+            .filter(|path| SaveFiles::slot_of(path) == slot && saved_file(&stored, path).is_none())
+            .map(str::to_string)
+            .collect();
+        for path in replaced {
+            local.saves_mut().discard(&path);
+        }
+        for (path, bytes) in stored
+            .iter()
+            .filter(|(path, _)| SaveFiles::slot_of(path) == slot)
+        {
             local.saves_mut().insert(path, bytes.to_vec());
+        }
+        if let Err(e) = local.check_slot(slot) {
+            tracing::warn!("saved game {slot} not restored: {e}");
+            *local.saves_mut() = fresh;
+            // The new game's own files stay off the page, whose copy of
+            // the slot is kept for a pak that can load it.
+            let own: Vec<(String, Vec<u8>)> = local
+                .saves()
+                .iter()
+                .filter(|(path, _)| SaveFiles::slot_of(path) == slot)
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+                .collect();
+            for (path, bytes) in own {
+                local.saves_mut().insert(&path, bytes);
+            }
         }
     }
 }
@@ -1858,7 +1883,8 @@ async fn load_engine(
         .collect();
     local.set_has_map(move |map| maps.contains(map));
     restore_saves(&mut local, saves);
-    // The new game's own `current` and autosave go to the page too.
+    // Send the page the new game's `current`, its autosave if the page had
+    // none, and the removal of the files the restore replaced.
     flush_saves(&mut local);
     if let Some((origin, ps)) = local.player() {
         log(&format!(
@@ -3213,32 +3239,39 @@ mod tests {
 
     #[test]
     fn a_new_game_restores_the_kept_saves_and_autosave_but_starts_current_over() {
-        let map = crate::test_bsp::floor_wall_bsp();
-        let mut local = q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads");
-        let quick = local
-            .saves()
-            .file("current", "server.ssv")
-            .unwrap()
-            .to_vec();
-        let new_current: Vec<String> = local
-            .saves()
-            .iter()
-            .filter(|(path, _)| path.starts_with("current/"))
-            .map(|(path, _)| path.to_string())
-            .collect();
+        let mut local = floor_wall_game();
+        local.console("save quick").unwrap();
+        let file = |local: &q2_server::local::LocalGame, name| {
+            local.saves().file("current", name).unwrap().to_vec()
+        };
+        let (server, game) = (file(&local, "server.ssv"), file(&local, "game.ssv"));
+        let paths = |local: &q2_server::local::LocalGame, slot: &str| -> Vec<String> {
+            local
+                .saves()
+                .iter()
+                .map(|(path, _)| path)
+                .filter(|path| q2_server::local::SaveFiles::slot_of(path) == slot)
+                .map(str::to_string)
+                .collect()
+        };
+        let new_current = paths(&local, "current");
+        let new_quick = paths(&local, "quick");
+        // Whole slots: a stored slot is restored only if a load can read it.
         restore_saves(
             &mut local,
             vec![
-                ("quick/server.ssv".into(), quick.clone()),
+                ("quick/server.ssv".into(), server.clone()),
+                ("quick/game.ssv".into(), game.clone()),
                 ("current/old.sav".into(), vec![2]),
-                ("save0/server.ssv".into(), quick.clone()),
+                ("save0/server.ssv".into(), server.clone()),
+                ("save0/game.ssv".into(), game.clone()),
             ],
         );
-        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&quick[..]));
+        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&server[..]));
         assert!(local.saves().file("current", "old.sav").is_none());
         assert_eq!(
             local.saves().file("save0", "server.ssv"),
-            Some(&quick[..]),
+            Some(&server[..]),
             "the last visit's autosave survives the reload"
         );
         let mut changes: Vec<String> = local
@@ -3250,12 +3283,57 @@ mod tests {
         changes.sort();
         let mut expected: Vec<String> = new_current.iter().map(|p| format!("{p} true")).collect();
         expected.push("current/old.sav false".into());
-        // The new game's own save0 file the restored save0 lacks.
-        expected.push("save0/game.ssv false".into());
+        // The new game's own quick files the restored quick lacks.
+        for path in &new_quick {
+            if !path.ends_with("/server.ssv") && !path.ends_with("/game.ssv") {
+                expected.push(format!("{path} false"));
+            }
+        }
         expected.sort();
         assert_eq!(
             changes, expected,
             "the page gets the new game's current, loses the old one, keeps its saves"
+        );
+    }
+
+    #[test]
+    fn a_stored_slot_no_load_can_read_leaves_the_new_games_slot_and_the_stored_copy() {
+        let map = crate::test_bsp::floor_wall_bsp();
+        // Another pak's autosave: it names a map this game data lacks.
+        let other = q2_server::local::LocalGame::start("other_map", &map).expect("map loads");
+        let stored: Vec<(String, Vec<u8>)> = other
+            .saves()
+            .iter()
+            .filter(|(path, _)| path.starts_with("save0/"))
+            .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+            .collect();
+        let mut local = floor_wall_game();
+        local.set_has_map(|map| map == "floor_wall");
+        let own_save0 = |local: &q2_server::local::LocalGame| -> Vec<(String, Vec<u8>)> {
+            local
+                .saves()
+                .iter()
+                .filter(|(path, _)| path.starts_with("save0/"))
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+                .collect()
+        };
+        let fresh = own_save0(&local);
+        assert!(!fresh.is_empty() && fresh != stored);
+
+        restore_saves(&mut local, stored);
+
+        assert_eq!(own_save0(&local), fresh, "the new game keeps its own save0");
+        let save0_changes: Vec<String> = local
+            .saves_mut()
+            .take_changes()
+            .into_iter()
+            .map(|(path, _)| path)
+            .filter(|path| path.starts_with("save0/"))
+            .collect();
+        assert_eq!(
+            save0_changes,
+            Vec::<String>::new(),
+            "the stored save0 is neither removed nor written over"
         );
     }
 
