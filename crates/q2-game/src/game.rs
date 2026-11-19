@@ -124,12 +124,11 @@ impl GameExport for GameWorld {
         if client_bodies {
             return self.encode_level();
         }
-        let keys: Vec<_> = (1..=self.clients.len())
-            .filter_map(|n| self.entities.key_for_number(n))
-            .collect();
-        let bodies: Vec<_> = keys
-            .into_iter()
-            .filter_map(|key| Some((key, std::mem::take(&mut self.entities.get_mut(key)?.in_use))))
+        let bodies: Vec<_> = (1..=self.clients.len())
+            .filter_map(|n| {
+                let key = self.entities.key_for_number(n)?;
+                Some((key, std::mem::take(&mut self.entities.get_mut(key)?.in_use)))
+            })
             .collect();
         let saved = self.encode_level();
         for (key, in_use) in bodies {
