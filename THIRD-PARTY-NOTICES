@@ -12,9 +12,12 @@ individuals, projects and organizations, all under the same license:
   and zeq2.
 - Qwasm2 (https://github.com/GMH-Code/Qwasm2), Copyright (C) 2024
   Gregory Maynard-Hoare.
-- The fixed entity files in crates/q2-server/mapfixes/baseq2/ are
-  Yamagi Quake II's stuff/mapfixes, by BjossiAlfreds; each file's
-  header lists its fixes.
+
+The fixed entity files in crates/q2-server/mapfixes/baseq2/ are not a
+translation. They are Yamagi Quake II's stuff/mapfixes, by
+BjossiAlfreds, distributed there under GPL-2.0: edited copies of the
+entity data in id Software's retail maps. The copies here are
+byte-identical to that source, and each file's header lists its fixes.
 
 It also follows two pieces of permissively licensed code:
 
