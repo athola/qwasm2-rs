@@ -195,9 +195,44 @@ impl MapRequest {
     /// leading `*`. The coop `victory.pcx` hack needs a coop cvar and is
     /// not ported.
     pub fn parse(level: &str) -> Self {
-        let whole = level.to_string();
+        let cut = Cut::of(level);
+        Self {
+            level: level.to_string(),
+            map: cut.map(),
+            spawnpoint: cut.spawnpoint.to_string(),
+            next_server: cut.next_server.map(str::to_string),
+            kind: cut.kind,
+        }
+    }
+
+    /// The game map `level` ends in, following a cinematic's next server;
+    /// `None` for a picture or a cinematic with none.
+    pub fn destination(mut level: &str) -> Option<String> {
+        // A loop over borrowed cuts: a saved level string can chain any
+        // number of movies.
+        loop {
+            let cut = Cut::of(level);
+            match (cut.kind, cut.next_server) {
+                (LevelKind::Game, _) => return Some(cut.map()),
+                (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => level = next,
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// One level string cut as `parse` documents, borrowing from it.
+struct Cut<'a> {
+    map: &'a str,
+    spawnpoint: &'a str,
+    next_server: Option<&'a str>,
+    kind: LevelKind,
+}
+
+impl<'a> Cut<'a> {
+    fn of(level: &'a str) -> Self {
         let (level, next_server) = match level.split_once('+') {
-            Some((level, rest)) => (level, Some(rest.to_string())),
+            Some((level, rest)) => (level, Some(rest)),
             None => (level, None),
         };
         let (level, spawnpoint) = level.split_once('$').unwrap_or((level, ""));
@@ -213,26 +248,18 @@ impl MapRequest {
             LevelKind::Game
         };
         Self {
-            level: whole,
-            map: match kind {
-                // C SV_GameMap_f: the pak's spelling, which is lower case.
-                LevelKind::Game => map.to_ascii_lowercase(),
-                _ => map.to_string(),
-            },
-            spawnpoint: spawnpoint.to_string(),
+            map,
+            spawnpoint,
             next_server,
             kind,
         }
     }
 
-    /// The game map `level` ends in, following a cinematic's next server;
-    /// `None` for a picture or a cinematic with none.
-    pub fn destination(level: &str) -> Option<String> {
-        let request = Self::parse(level);
-        match (request.kind, request.next_server) {
-            (LevelKind::Game, _) => Some(request.map),
-            (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => Self::destination(&next),
-            _ => None,
+    fn map(&self) -> String {
+        match self.kind {
+            // C SV_GameMap_f: the pak's spelling, which is lower case.
+            LevelKind::Game => self.map.to_ascii_lowercase(),
+            _ => self.map.to_string(),
         }
     }
 }
@@ -707,6 +734,18 @@ mod tests {
         );
         assert_eq!(MapRequest::destination("end.cin"), None);
         assert_eq!(MapRequest::destination("victory.pcx"), None);
+    }
+
+    #[test]
+    fn a_long_chain_of_cinematics_is_followed_without_recursing() {
+        // A saved mapcmd is read back from the platform's store, so it can
+        // be any length.
+        let chain = "a.cin+".repeat(100_000);
+        assert_eq!(
+            MapRequest::destination(&format!("{chain}base1")).as_deref(),
+            Some("base1")
+        );
+        assert_eq!(MapRequest::destination(&format!("{chain}end.cin")), None);
     }
 
     #[test]
