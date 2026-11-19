@@ -41,7 +41,7 @@ on an empty map or from a bad head node ends at `end` where C leaves
 `world_trace` names the world entity only on a hit. Outside collision,
 every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
-missing). Saves refuse a slot name holding `..`, `/` or `\\`, which C reports
+missing). Saves refuse a slot name holding `..`, `/` or `\`, which C reports
 as "Bad savedir." and then uses anyway. A load checks every file of its
 slot before it gives up the running game, so a damaged, older-version or
 incomplete save, one whose values (item indices, entity numbering, sizes)
