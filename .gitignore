@@ -23,6 +23,7 @@ reviews/
 
 # Local agent tooling state
 .attune/
+docs/knowledge-corpus/
 .claude/*
 !.claude/commands/
 **/.claude/context-archive/
