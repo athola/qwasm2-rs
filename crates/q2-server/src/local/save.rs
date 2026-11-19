@@ -99,6 +99,15 @@ impl SaveFiles {
             .collect()
     }
 
+    /// Hand back a path from `take_changes` the platform could not store,
+    /// so the next call returns it again with its bytes then. A path no
+    /// save could have is ignored, as `insert` ignores it.
+    pub fn unsent(&mut self, path: &str) {
+        if stored_path(path) {
+            self.changed.insert(path.to_string());
+        }
+    }
+
     fn put(&mut self, slot: &str, name: &str, bytes: Vec<u8>) {
         self.put_path(format!("{slot}/{name}"), bytes);
     }
@@ -571,6 +580,24 @@ mod tests {
         assert_eq!(
             saves.take_changes(),
             vec![("current/old.sav".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn a_change_the_platform_could_not_take_is_sent_again() {
+        let mut saves = SaveFiles::default();
+        saves.put("quick", "server.ssv", vec![1]);
+        saves.discard("quick/old.sav");
+        for (path, _) in saves.take_changes() {
+            saves.unsent(&path);
+        }
+        saves.unsent("no-slot");
+        assert_eq!(
+            saves.take_changes(),
+            vec![
+                ("quick/old.sav".to_string(), None),
+                ("quick/server.ssv".to_string(), Some(vec![1])),
+            ]
         );
     }
 
