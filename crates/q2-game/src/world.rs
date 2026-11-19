@@ -125,6 +125,12 @@ impl GameLocals {
     pub fn maxclients(&self) -> i32 {
         self.maxclients
     }
+
+    /// A value `set_max_clients` would clamp, as a tampered save holds.
+    #[cfg(test)]
+    pub(crate) fn set_maxclients_unclamped_for_test(&mut self, maxclients: i32) {
+        self.maxclients = maxclients;
+    }
 }
 
 impl Default for GameLocals {

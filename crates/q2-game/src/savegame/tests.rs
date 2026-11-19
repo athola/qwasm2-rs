@@ -635,3 +635,56 @@ fn a_level_save_with_a_bad_trail_or_entity_numbering_is_refused() {
     let mut loaded = world_with_player();
     assert!(loaded.read_level(&numbering).is_err(), "read refused too");
 }
+
+#[test]
+fn a_level_save_whose_pain_cycle_or_body_queue_slot_leaves_its_range_is_refused() {
+    // The pain cycle indexes a three-entry table and the body queue slot
+    // picks an entity number past the clients.
+    use crate::constants::BODY_QUEUE_SIZE;
+    use crate::traits::GameExport;
+    let world = world_with_player();
+    type Tamper = fn(&mut LevelSave);
+    let level = |tamper: Tamper| {
+        let mut save = world.level_save();
+        tamper(&mut save);
+        encode(KIND_LEVEL, &save).unwrap()
+    };
+    let cases: [(&str, Tamper); 4] = [
+        ("pain_anim_cycle", |s| s.pain_anim_cycle = -3),
+        ("pain_anim_cycle", |s| s.pain_anim_cycle = 3),
+        ("body_que", |s| s.level.body_que = -1),
+        ("body_que", |s| s.level.body_que = BODY_QUEUE_SIZE as i32),
+    ];
+    for (field, tamper) in cases {
+        let bytes = level(tamper);
+        let err = world.check_level(&bytes).unwrap_err().to_string();
+        assert!(err.contains(field), "{field}: {err}");
+        assert!(world_with_player().read_level(&bytes).is_err(), "{field}");
+    }
+    let last = level(|s| {
+        s.pain_anim_cycle = 2;
+        s.level.body_que = BODY_QUEUE_SIZE as i32 - 1;
+    });
+    assert!(world.check_level(&last).is_ok());
+}
+
+#[test]
+fn a_game_save_with_more_clients_than_the_server_allows_is_refused() {
+    use crate::traits::GameExport;
+    use q2_shared::constants::MAX_CLIENTS;
+    let world = world_with_player();
+    let game_save = |maxclients: i32| {
+        let mut game = world.game.clone();
+        game.set_maxclients_unclamped_for_test(maxclients);
+        let clients = vec![ClientData::default(); maxclients.max(0) as usize];
+        encode(KIND_GAME, &GameSave { game, clients }).unwrap()
+    };
+    assert!(world.check_game(&game_save(MAX_CLIENTS as i32)).is_ok());
+    for maxclients in [MAX_CLIENTS as i32 + 1, -1] {
+        let err = world.check_game(&game_save(maxclients)).unwrap_err();
+        assert!(
+            err.to_string().contains("maxclients"),
+            "{maxclients}: {err}"
+        );
+    }
+}

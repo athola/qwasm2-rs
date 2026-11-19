@@ -12,9 +12,10 @@ pub mod registry;
 use serde::{Deserialize, Serialize};
 
 use q2_common::error::{Q2Error, Q2Result};
+use q2_shared::constants::MAX_CLIENTS;
 
 use crate::ai::EnemyCheck;
-use crate::constants::MeansOfDeath;
+use crate::constants::{MeansOfDeath, BODY_QUEUE_SIZE};
 use crate::entity::{ClientData, Entity, EntityStorage};
 use crate::player::trail::PlayerTrail;
 use crate::world::{GameLocals, GameWorld, LevelLocals};
@@ -73,9 +74,13 @@ fn decode<T: for<'de> Deserialize<'de>>(kind: u8, bytes: &[u8]) -> Q2Result<T> {
 
 impl GameSave {
     /// Values a decoded save could hold but play would index out of
-    /// range: the client count, and item indices past the item list.
+    /// range: a client count the server cannot hold or that disagrees with
+    /// the clients, and item indices past the item list.
     fn check(&self, items: usize) -> Q2Result<()> {
-        if self.clients.len() != self.game.maxclients().max(0) as usize {
+        if !(0..=MAX_CLIENTS as i32).contains(&self.game.maxclients()) {
+            return Err(Q2Error::Drop("savegame maxclients is out of range".into()));
+        }
+        if self.clients.len() != self.game.maxclients() as usize {
             return Err(Q2Error::Drop("savegame client count is damaged".into()));
         }
         let item = |index: Option<usize>| index.is_none_or(|i| i < items);
@@ -114,10 +119,19 @@ impl GameSave {
 }
 
 impl LevelSave {
+    /// Values play would index out of range: the entity numbering, the
+    /// trail, the pain cycle (a three-entry table) and the body queue slot
+    /// (an entity number past the clients).
     fn check(&self) -> Q2Result<()> {
+        let range = |field: &str, value: i32, end: usize| match (0..end as i32).contains(&value) {
+            true => Ok(()),
+            false => Err(format!("{field} is out of range")),
+        };
         self.entities
             .check()
             .and_then(|()| self.trail.check())
+            .and_then(|()| range("pain_anim_cycle", self.pain_anim_cycle, 3))
+            .and_then(|()| range("body_que", self.level.body_que, BODY_QUEUE_SIZE))
             .map_err(|e| Q2Error::Drop(format!("savegame {e}")))
     }
 }
