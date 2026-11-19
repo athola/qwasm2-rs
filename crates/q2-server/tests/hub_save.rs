@@ -266,6 +266,32 @@ fn a_revisited_level_runs_ten_seconds_but_a_loaded_one_does_not() {
 }
 
 #[test]
+fn loading_the_autosave_runs_the_revisit_ten_seconds() {
+    // C SV_CheckForSavegame: a load of save0 or current runs the 100
+    // frames as a revisit does.
+    let mut game = LocalGame::start("one", &spinner_map()).unwrap();
+    common::idle(&mut game, 5);
+    let left = spinner_yaw(&game);
+    game.change_map(&MapRequest::parse("two"), &common::floor_wall_bsp())
+        .unwrap();
+    game.change_map(&MapRequest::parse("one"), &spinner_map())
+        .unwrap();
+    let revisited = spinner_yaw(&game);
+
+    // Entering one again wrote save0, holding one as it was left.
+    game.console("load save0").unwrap();
+    let level = game.take_map_change().unwrap();
+    game.change_map(&MapRequest::parse(&level), &spinner_map())
+        .unwrap();
+    let loaded = spinner_yaw(&game);
+    assert!(
+        (loaded - left).rem_euclid(360.0) > 1.0,
+        "the load ran frames: {left} -> {loaded}"
+    );
+    assert_eq!(loaded, revisited, "the same ten seconds as the revisit");
+}
+
+#[test]
 fn two_loads_before_the_map_change_still_reconnect_the_player() {
     let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
     common::idle(&mut game, 5);
