@@ -477,7 +477,7 @@ impl LocalGame {
                 _ if name == "game.ssv" => self.game.check_game(bytes),
                 Some("sv2") => decode_level_file(bytes).map(drop),
                 Some("sav") => {
-                    let sv2 = format!("{}.sv2", &name[..name.len() - 4]);
+                    let sv2 = format!("{}.sv2", name.strip_suffix(".sav").unwrap_or(name));
                     match self.saves.file(slot, &sv2) {
                         Some(_) => self.game.check_level(bytes),
                         None => Err(missing(&sv2)),
