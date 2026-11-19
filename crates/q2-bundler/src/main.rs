@@ -341,7 +341,7 @@ function showFailure(text) {{
 // goes on. Each batch is written in one transaction, one at a time, so a
 // reload mid-write leaves every slot as it was before a batch or after it.
 const ONLY_THIS_VISIT = 'Saves will last only this visit: ';
-const saveDb = await new Promise((resolve, reject) => {{
+let saveDb = await new Promise((resolve, reject) => {{
   const req = indexedDB.open('qwasm2-saves', 1);
   req.onupgradeneeded = () => req.result.createObjectStore('files');
   req.onsuccess = () => resolve(req.result);
@@ -351,6 +351,31 @@ const saveDb = await new Promise((resolve, reject) => {{
   showFailure(ONLY_THIS_VISIT + err);
   return null;
 }});
+// Two tabs writing one store would mix their slots: the first tab holds
+// the store for its lifetime, and a later one plays without it. Resolves
+// to null once held, else to why not.
+function saveLock() {{
+  if (!navigator.locks) {{
+    console.warn('[qwasm2-rs] no Web Locks: another tab could write the same saves');
+    return Promise.resolve(null);
+  }}
+  return new Promise((resolve) => {{
+    navigator.locks.request('qwasm2-saves', {{ ifAvailable: true }}, (lock) => {{
+      resolve(lock ? null : 'the game is open in another tab');
+      // Never settles, so the lock is held until the page goes away.
+      return lock && new Promise(() => {{}});
+    }}).catch((err) => resolve(String(err)));
+  }});
+}}
+if (saveDb) {{
+  const refused = await saveLock();
+  if (refused) {{
+    console.warn('[qwasm2-rs] saves will last only this visit:', refused);
+    showFailure(ONLY_THIS_VISIT + refused);
+    saveDb.close();
+    saveDb = null;
+  }}
+}}
 // Set once the stored saves are read: a store that could not be read is
 // not written over.
 let saveWritable = false;
@@ -632,6 +657,30 @@ mod tests {
             .expect("stored saves read");
         assert!(read.contains("saveWritable = saveDb !== null;"), "{read}");
         assert!(read.contains("showFailure("), "{read}");
+    }
+
+    #[test]
+    fn only_the_tab_holding_the_save_lock_uses_the_store() {
+        // Two tabs writing one store would mix their slots.
+        let html = generate_html("");
+        let lock = html
+            .split("function saveLock() {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .expect("saveLock");
+        assert!(
+            lock.contains("navigator.locks.request('qwasm2-saves', { ifAvailable: true }"),
+            "{lock}"
+        );
+        assert!(lock.contains("console.warn("), "no Web Locks: {lock}");
+        assert!(lock.contains(".catch("), "{lock}");
+        let refused = html
+            .split("const refused = await saveLock();")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .expect("lock check");
+        assert!(refused.contains("showFailure(ONLY_THIS_VISIT + refused);"));
+        assert!(refused.contains("saveDb = null;"), "{refused}");
     }
 
     #[test]
