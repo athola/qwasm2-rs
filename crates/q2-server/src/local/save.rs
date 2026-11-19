@@ -328,8 +328,12 @@ impl LocalGame {
             .file("current", "game.ssv")
             .ok_or_else(missing)?
             .to_vec();
+        // The file is read back from the platform's store: a name this
+        // build does not latch is not set.
         for (name, value) in &server.latched {
-            self.gi.set_cvar(name, value);
+            if LATCHED.contains(&name.as_str()) {
+                self.gi.set_cvar(name, value);
+            }
         }
         self.game = new_game(&self.gi);
         self.svs.init_game(1);
@@ -701,6 +705,20 @@ mod tests {
             crate::state::ClientState::Spawned
         );
         assert!(game.player().is_some());
+    }
+
+    #[test]
+    fn a_load_sets_only_the_latched_cvars_its_server_file_names() {
+        let bsp = crate::test_bsp::floor_wall_bsp();
+        let mut game = LocalGame::start("floor_wall", &bsp).expect("map loads");
+        game.console("save quick").unwrap();
+        let mut server: ServerFile =
+            decode(game.saves.file("quick", "server.ssv").unwrap()).unwrap();
+        server.latched.push(("sv_noreload".into(), "1".into()));
+        game.saves
+            .put("quick", "server.ssv", encode(&server).unwrap());
+        game.console("load quick").unwrap();
+        assert_eq!(game.gi.cvar("sv_noreload", ""), "");
     }
 
     #[test]
