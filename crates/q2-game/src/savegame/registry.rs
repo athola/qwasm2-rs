@@ -15,6 +15,8 @@ include!(concat!(env!("OUT_DIR"), "/save_tables.rs"));
 /// (`ThinkFn`, `PreThinkFn`, `EndMoveFn`, `MonsterStandFn`; `BlockedFn`,
 /// `MonsterSightFn`) are one type and share a table.
 pub trait Callback: Copy + 'static {
+    /// The table's name in the saved-name list (`names_v1.txt`).
+    const KIND: &'static str;
     /// Every registered function of this type, sorted by name.
     fn table() -> &'static [(&'static str, Self)];
     /// The function's address, for comparing pointers.
@@ -27,12 +29,13 @@ pub(crate) trait TableVisitor {
 }
 
 macro_rules! callback {
-    ($($ty:ty => $table:ident),* $(,)?) => {
+    ($($ty:ty => $table:ident, $kind:literal),* $(,)?) => {
         /// Run `visitor` on every callback type.
         pub(crate) fn visit_tables(visitor: &mut impl TableVisitor) {
             $(visitor.visit::<$ty>();)*
         }
         $(impl Callback for $ty {
+            const KIND: &'static str = $kind;
             fn table() -> &'static [(&'static str, Self)] {
                 $table
             }
@@ -44,14 +47,14 @@ macro_rules! callback {
 }
 
 callback! {
-    ThinkFn => THINK_FN,
-    MonsterCheckAttackFn => MONSTER_CHECK_ATTACK_FN,
-    BlockedFn => BLOCKED_FN,
-    UseFn => USE_FN,
-    MonsterDodgeFn => MONSTER_DODGE_FN,
-    PainFn => PAIN_FN,
-    TouchFn => TOUCH_FN,
-    DieFn => DIE_FN,
+    ThinkFn => THINK_FN, "think",
+    MonsterCheckAttackFn => MONSTER_CHECK_ATTACK_FN, "checkattack",
+    BlockedFn => BLOCKED_FN, "blocked",
+    UseFn => USE_FN, "use",
+    MonsterDodgeFn => MONSTER_DODGE_FN, "dodge",
+    PainFn => PAIN_FN, "pain",
+    TouchFn => TOUCH_FN, "touch",
+    DieFn => DIE_FN, "die",
 }
 
 /// Makes a callback's body unlike every other, so no optimizer merges it
@@ -148,10 +151,7 @@ pub fn move_by_name(name: &str) -> Option<&'static MonsterMove> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{
-        BlockedFn, DieFn, EntityKey, MonsterCheckAttackFn, MonsterDodgeFn, MonsterMove, PainFn,
-        ThinkFn, TouchFn, UseFn,
-    };
+    use crate::entity::{EntityKey, MonsterMove, ThinkFn, TouchFn};
     use crate::world::GameWorld;
 
     fn not_a_game_callback(_: &mut GameWorld, _: EntityKey) {}
@@ -172,20 +172,16 @@ mod tests {
 
     #[test]
     fn every_registered_callback_round_trips_by_name() {
-        fn check<F: Callback>() {
-            for &(name, f) in F::table() {
-                assert_eq!(name_of(f), Some(name), "{name}");
-                assert_eq!(by_name::<F>(name).map(F::addr), Some(f.addr()), "{name}");
+        struct RoundTrip;
+        impl TableVisitor for RoundTrip {
+            fn visit<F: Callback>(&mut self) {
+                for &(name, f) in F::table() {
+                    assert_eq!(name_of(f), Some(name), "{name}");
+                    assert_eq!(by_name::<F>(name).map(F::addr), Some(f.addr()), "{name}");
+                }
             }
         }
-        check::<ThinkFn>();
-        check::<MonsterCheckAttackFn>();
-        check::<BlockedFn>();
-        check::<UseFn>();
-        check::<MonsterDodgeFn>();
-        check::<PainFn>();
-        check::<TouchFn>();
-        check::<DieFn>();
+        visit_tables(&mut RoundTrip);
     }
 
     /// Run by CI in release too, where LLVM merges identical bodies.
@@ -234,24 +230,20 @@ mod tests {
     const SAVED_NAMES: &str = include_str!("names_v1.txt");
 
     fn current_names() -> String {
-        fn table<F: Callback>(kind: &str, out: &mut String) {
-            for (name, _) in F::table() {
-                out.push_str(&format!("{kind} {name}\n"));
+        struct Names(String);
+        impl TableVisitor for Names {
+            fn visit<F: Callback>(&mut self) {
+                for (name, _) in F::table() {
+                    self.0.push_str(&format!("{} {name}\n", F::KIND));
+                }
             }
         }
-        let mut out = String::new();
-        table::<ThinkFn>("think", &mut out);
-        table::<MonsterCheckAttackFn>("checkattack", &mut out);
-        table::<BlockedFn>("blocked", &mut out);
-        table::<UseFn>("use", &mut out);
-        table::<MonsterDodgeFn>("dodge", &mut out);
-        table::<PainFn>("pain", &mut out);
-        table::<TouchFn>("touch", &mut out);
-        table::<DieFn>("die", &mut out);
+        let mut names = Names(String::new());
+        visit_tables(&mut names);
         for (name, _) in MONSTER_MOVES {
-            out.push_str(&format!("move {name}\n"));
+            names.0.push_str(&format!("move {name}\n"));
         }
-        out
+        names.0
     }
 
     #[test]
@@ -263,26 +255,11 @@ mod tests {
             std::fs::write(path, current_names()).unwrap();
             return;
         }
+        let current = current_names();
+        let current: std::collections::HashSet<&str> = current.lines().collect();
         let missing: Vec<&str> = SAVED_NAMES
             .lines()
-            .filter(|line| {
-                let Some((kind, name)) = line.split_once(' ') else {
-                    return true;
-                };
-                let found = match kind {
-                    "think" => by_name::<ThinkFn>(name).is_some(),
-                    "checkattack" => by_name::<MonsterCheckAttackFn>(name).is_some(),
-                    "blocked" => by_name::<BlockedFn>(name).is_some(),
-                    "use" => by_name::<UseFn>(name).is_some(),
-                    "dodge" => by_name::<MonsterDodgeFn>(name).is_some(),
-                    "pain" => by_name::<PainFn>(name).is_some(),
-                    "touch" => by_name::<TouchFn>(name).is_some(),
-                    "die" => by_name::<DieFn>(name).is_some(),
-                    "move" => move_by_name(name).is_some(),
-                    _ => false,
-                };
-                !found
-            })
+            .filter(|line| !current.contains(line))
             .collect();
         assert!(missing.is_empty(), "bump VERSION: {missing:?}");
     }
