@@ -17,7 +17,7 @@ fn stat(game: &LocalGame, stat: usize) -> i16 {
 /// Go to `level`, reading its map as the platform does.
 fn go(game: &mut LocalGame, level: &str) {
     let request = MapRequest::parse(level);
-    let bsp = if request.map == "one" {
+    let bsp = if request.map() == "one" {
         common::armor_map()
     } else {
         common::floor_wall_bsp()

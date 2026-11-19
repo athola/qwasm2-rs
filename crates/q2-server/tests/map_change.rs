@@ -189,9 +189,9 @@ fn demo1s_exit_to_demo2_base1_keeps_the_inventory_at_the_base1_start() {
     let level = MapRequest::parse("demo2$base1");
     w.sv.map(
         &mut w.svs,
-        &level.map,
+        level.map(),
         &demo2,
-        &level.spawnpoint,
+        level.spawnpoint(),
         &w.gi,
         &mut w.game,
     )

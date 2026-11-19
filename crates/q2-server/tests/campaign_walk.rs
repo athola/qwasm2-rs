@@ -47,15 +47,15 @@ fn follow(game: &mut LocalGame, fs: &FileSystem) -> Option<String> {
     let mut reached = None;
     while let Some(level) = game.take_map_change() {
         let request = MapRequest::parse(&level);
-        let bsp = match request.kind {
+        let bsp = match request.kind() {
             LevelKind::Game => fs
-                .load_file(&format!("maps/{}.bsp", request.map))
+                .load_file(&format!("maps/{}.bsp", request.map()))
                 .expect("map in the paks"),
             _ => Vec::new(),
         };
         game.change_map(&request, &bsp)
             .unwrap_or_else(|e| panic!("{level}: {e}"));
-        reached = Some(request.map);
+        reached = Some(request.map().to_string());
     }
     reached
 }

@@ -161,20 +161,14 @@ impl Server {
 }
 
 /// What a level string loads (C `SV_Map`'s parsing of its `levelstring`).
+/// Built only by `parse`, so its parts always agree with its level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapRequest {
-    /// The level string as given (C `svs.mapcmd`). A leading `*` starts a
-    /// new unit: `gamemap` then wipes the unit's saved levels.
-    pub level: String,
-    /// Map (or cinematic, demo or picture) name, without the `*` new-unit
-    /// flag, the `$spawnpoint` or the `+` remainder.
-    pub map: String,
-    /// Target name of the player start to use (after `$`), "" for none.
-    pub spawnpoint: String,
-    /// What C stores as `nextserver` (`gamemap "<rest>"`) to run once a
-    /// cinematic ends: the text after the first `+`.
-    pub next_server: Option<String>,
-    pub kind: LevelKind,
+    level: String,
+    map: String,
+    spawnpoint: String,
+    next_server: Option<String>,
+    kind: LevelKind,
 }
 
 /// The server state `SV_Map` spawns for a level, from its suffix.
@@ -203,6 +197,33 @@ impl MapRequest {
             next_server: cut.next_server.map(str::to_string),
             kind: cut.kind,
         }
+    }
+
+    /// The level string as given (C `svs.mapcmd`). A leading `*` starts a
+    /// new unit: `gamemap` then wipes the unit's saved levels.
+    pub fn level(&self) -> &str {
+        &self.level
+    }
+
+    /// Map (or cinematic, demo or picture) name, without the `*` new-unit
+    /// flag, the `$spawnpoint` or the `+` remainder.
+    pub fn map(&self) -> &str {
+        &self.map
+    }
+
+    /// Target name of the player start to use (after `$`), "" for none.
+    pub fn spawnpoint(&self) -> &str {
+        &self.spawnpoint
+    }
+
+    /// What C stores as `nextserver` (`gamemap "<rest>"`) to run once a
+    /// cinematic ends: the text after the first `+`.
+    pub fn next_server(&self) -> Option<&str> {
+        self.next_server.as_deref()
+    }
+
+    pub fn kind(&self) -> LevelKind {
+        self.kind
     }
 
     /// The game map `level` ends in, following a cinematic's next server;

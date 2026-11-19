@@ -338,11 +338,14 @@ impl Engine {
         request: &q2_server::init::MapRequest,
     ) -> q2_common::error::Q2Result<()> {
         use q2_server::init::LevelKind;
-        match request.kind {
+        match request.kind() {
             LevelKind::Cinematic | LevelKind::Demo => {
-                log(&format!("{}: skipped, no cinematic playback", request.map));
+                log(&format!(
+                    "{}: skipped, no cinematic playback",
+                    request.map()
+                ));
             }
-            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map)),
+            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map())),
             LevelKind::Game => {
                 self.register_sounds();
                 let local = &self.local;
@@ -351,7 +354,7 @@ impl Engine {
                     |i| local.configstring(i),
                     &mut self.models,
                 )?;
-                log(&format!("Map: maps/{}.bsp loaded", request.map));
+                log(&format!("Map: maps/{}.bsp loaded", request.map()));
             }
         }
         Ok(())
@@ -687,12 +690,12 @@ fn frame_output(
         // level with no map or player, which `tick` draws (C
         // SCR_PlayCinematic). There is no cinematic or demo playback:
         // LocalGame refuses one, or skips it to its next server.
-        let change = match request.kind {
-            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map)),
+        let change = match request.kind() {
+            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map())),
             LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Ok(Vec::new()),
         }
         .and_then(|bsp| local.change_map(&request, &bsp));
-        if change.is_ok() && matches!(request.kind, LevelKind::Game | LevelKind::Pic) {
+        if change.is_ok() && matches!(request.kind(), LevelKind::Game | LevelKind::Pic) {
             client.clear();
             sounds.clear();
         }

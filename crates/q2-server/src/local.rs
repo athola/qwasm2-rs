@@ -338,13 +338,13 @@ impl LocalGame {
         if loading.is_none() {
             // C SV_GameMap_f: a new unit wipes the levels kept in `current`;
             // otherwise the level being left is kept, without the player.
-            if level.level.starts_with('*') {
+            if level.level().starts_with('*') {
                 self.saves.wipe("current");
             } else if self.sv.state == ServerState::Game {
                 self.write_level_file(false)?;
             }
         }
-        if matches!(level.kind, LevelKind::Game | LevelKind::Pic) {
+        if matches!(level.kind(), LevelKind::Game | LevelKind::Pic) {
             // C's client parses the old level's last messages before the
             // new `svc_serverdata`, and CL_ClearState then clears the
             // effects they started (CL_ClearEffects, CL_ClearTEnts) and
@@ -354,44 +354,44 @@ impl LocalGame {
             self.gi.take_messages();
             self.gi.take_sounds();
         }
-        match level.kind {
+        match level.kind() {
             LevelKind::Game => self.sv.map(
                 &mut self.svs,
-                &level.map,
+                level.map(),
                 bsp,
-                &level.spawnpoint,
+                level.spawnpoint(),
                 &self.gi,
                 self.game.as_mut(),
             )?,
             LevelKind::Pic => self.sv.pic(
                 &mut self.svs,
-                &level.map,
-                &level.spawnpoint,
+                level.map(),
+                level.spawnpoint(),
                 &self.gi,
                 self.game.as_mut(),
             )?,
             LevelKind::Cinematic | LevelKind::Demo => {
-                if let Some(next) = &level.next_server {
-                    *self.next_map.borrow_mut() = Some(next.clone());
+                if let Some(next) = level.next_server() {
+                    *self.next_map.borrow_mut() = Some(next.to_string());
                     return Ok(());
                 }
                 return Err(Q2Error::Drop(format!(
                     "{}: cinematic and demo playback is not supported",
-                    level.map
+                    level.map()
                 )));
             }
         }
         // C SV_SpawnServer resets `svs.realtime`; the old map's leftover
         // sub-millisecond time goes with it.
         self.pending_us = 0;
-        if level.kind == LevelKind::Game {
+        if level.kind() == LevelKind::Game {
             self.check_for_savegame(loading)?;
         }
         if loading.is_none() {
-            self.svs.mapcmd = level.level.clone();
+            self.svs.mapcmd = level.level().to_string();
             self.autosave()?;
         }
-        if level.kind == LevelKind::Game {
+        if level.kind() == LevelKind::Game {
             // A load's C SV_InitGame dropped the client; it connects again
             // and takes the body the level kept for it. Its level can be a
             // movie first (C plays it and its `gamemap` is a plain one), so
