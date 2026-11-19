@@ -414,6 +414,7 @@ pub fn gladiator_pain(
 
 /// The corpse box, then stop. C ref: `gladiator_dead`.
 pub fn gladiator_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     if let Some(ent) = world.entities.get_mut(key) {
         ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
         ent.maxs = Vec3f::new(16.0, 16.0, -8.0);

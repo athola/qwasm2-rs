@@ -2057,6 +2057,7 @@ pub fn drop_make_touchable(world: &mut GameWorld, key: EntityKey) {
 
 /// C `G_FreeEdict` as a dropped item's think.
 pub fn free_drop(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(key);
 }
 

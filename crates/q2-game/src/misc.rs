@@ -274,6 +274,7 @@ const SM_MEAT_MODEL: &str = "models/objects/gibs/sm_meat/tris.md2";
 
 /// C `think = G_FreeEdict`.
 pub(crate) fn free_think(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(key);
 }
 

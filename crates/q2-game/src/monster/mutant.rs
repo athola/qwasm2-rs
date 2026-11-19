@@ -620,6 +620,7 @@ pub fn mutant_pain(
 /// `nextthink` alone, so the corpse keeps thinking and rerolls
 /// `M_FlyCheck` each frame until the flies come. C ref: `mutant_dead`.
 pub fn mutant_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };

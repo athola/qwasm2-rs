@@ -1066,6 +1066,7 @@ pub fn soldier_attack2_refire2(world: &mut GameWorld, key: EntityKey) {
 /// Crouch: 32 units shorter and hittable but no longer aimed at, for a
 /// second. C ref: `soldier_duck_down`.
 pub fn soldier_duck_down(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -1085,6 +1086,7 @@ pub fn soldier_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `soldier_duck_up`.
 pub fn soldier_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -1178,6 +1180,7 @@ pub fn soldier_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) {
 
 /// C ref: `soldier_duck_hold`.
 pub fn soldier_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     hold_until_pausetime(world, key);
 }
 

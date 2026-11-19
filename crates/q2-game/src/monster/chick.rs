@@ -677,6 +677,7 @@ pub fn chick_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// Hold the crouch frame until `pausetime`. C ref: `chick_duck_hold`.
 pub fn chick_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(mi) = monsterinfo_mut(world, key) else {
         return;
@@ -690,6 +691,7 @@ pub fn chick_duck_hold(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `chick_duck_up`.
 pub fn chick_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };

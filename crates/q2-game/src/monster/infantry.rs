@@ -525,6 +525,7 @@ pub fn infantry_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) 
 /// Unlike `ai::monster_dead` it leaves `nextthink` alone, so a failed
 /// fly check is retried on the next frame.
 pub fn infantry_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -575,6 +576,7 @@ pub fn infantry_die(
 /// Crouch: 32 units shorter and hittable but no longer aimed at, for a
 /// second. C ref: `infantry_duck_down`.
 pub fn infantry_duck_down(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -594,11 +596,13 @@ pub fn infantry_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `infantry_duck_hold`.
 pub fn infantry_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     hold_until_pausetime(world, key);
 }
 
 /// C ref: `infantry_duck_up`.
 pub fn infantry_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
