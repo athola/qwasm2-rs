@@ -32,6 +32,7 @@ const SIGNATURES: &[(&str, &str)] = &[
     ),
 ];
 
+#[derive(Default)]
 struct Found {
     /// (callback type, crate-relative path).
     fns: Vec<(&'static str, String)>,
@@ -44,11 +45,7 @@ fn main() {
     let src =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it")).join("src");
     println!("cargo:rerun-if-changed=src");
-    let mut found = Found {
-        fns: Vec::new(),
-        moves: Vec::new(),
-        values: BTreeSet::new(),
-    };
+    let mut found = Found::default();
     scan_file(&src.join("lib.rs"), "", &mut found);
 
     let mut tables: BTreeMap<&str, BTreeSet<String>> = SIGNATURES
