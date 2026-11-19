@@ -438,31 +438,17 @@ impl Engine {
         if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
             self.show_legend = !self.show_legend;
         }
-        for command in bound_commands(&self.last_keys, &input.keys) {
-            self.local.client_command(command);
-        }
-        for command in &input.commands {
-            if !self.local.is_server_command(command) {
-                self.local.client_command(command);
-            }
-        }
-        let page_commands = input
-            .commands
-            .iter()
-            .map(String::as_str)
-            .filter(|c| self.local.is_server_command(c))
-            .collect::<Vec<_>>();
-        for command in pressed_binds(&SERVER_BINDS, &self.last_keys, &input.keys)
-            .into_iter()
-            .chain(page_commands)
-        {
-            if let Err(e) = self.local.console(command) {
-                report_error(&format!("ERROR: {e}"));
-                // A save written before the error is still kept.
-                flush_saves(&mut self.local);
-                self.dropped = true;
-                return;
-            }
+        if let Err(e) = run_commands(
+            &mut self.local,
+            &self.last_keys,
+            &input.keys,
+            &input.commands,
+        ) {
+            report_error(&format!("ERROR: {e}"));
+            // A save written before the error is still kept.
+            flush_saves(&mut self.local);
+            self.dropped = true;
+            return;
         }
         self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
@@ -1331,6 +1317,36 @@ const SERVER_BINDS: [(u8, &str); 3] = [
     (q2_platform::keymap::K_F6, "save quick"),
     (q2_platform::keymap::K_F9, "load quick"),
 ];
+
+/// Run one frame's commands: the bound game keys and the page's game
+/// commands as the player's (C `SV_ExecuteUserCommand`), then the save keys
+/// and the page's server commands on the server's console. Stops at the
+/// first console error, which ends the server (C `Com_Error`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn run_commands(
+    local: &mut q2_server::local::LocalGame,
+    last_keys: &[bool; 256],
+    keys: &[bool; 256],
+    page_commands: &[String],
+) -> q2_common::Q2Result<()> {
+    for command in bound_commands(last_keys, keys) {
+        local.client_command(command);
+    }
+    let (server, game): (Vec<&str>, Vec<&str>) = page_commands
+        .iter()
+        .map(String::as_str)
+        .partition(|command| local.is_server_command(command));
+    for command in game {
+        local.client_command(command);
+    }
+    for command in pressed_binds(&SERVER_BINDS, last_keys, keys)
+        .into_iter()
+        .chain(server)
+    {
+        local.console(command)?;
+    }
+    Ok(())
+}
 
 /// The bound game commands whose keys went down since `last_keys`, in
 /// key order.
@@ -3241,6 +3257,59 @@ mod tests {
             changes, expected,
             "the page gets the new game's current, loses the old one, keeps its saves"
         );
+    }
+
+    fn floor_wall_game() -> q2_server::local::LocalGame {
+        let map = crate::test_bsp::floor_wall_bsp();
+        q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads")
+    }
+
+    #[test]
+    fn a_page_save_command_writes_its_slot() {
+        let mut local = floor_wall_game();
+        let none = [false; 256];
+        run_commands(&mut local, &none, &none, &["save quick".into()]).unwrap();
+        assert!(local.saves().file("quick", "server.ssv").is_some());
+    }
+
+    #[test]
+    fn a_page_kill_reaches_the_game() {
+        let mut local = floor_wall_game();
+        // C Cmd_Kill_f ignores kill for five seconds after a spawn.
+        for _ in 0..60 {
+            local.frame(100_000).unwrap();
+        }
+        let none = [false; 256];
+        run_commands(&mut local, &none, &none, &["kill".into()]).unwrap();
+        // The player state the client sees is built at the frame's end.
+        local.frame(100_000).unwrap();
+        let (_, ps) = local.player().expect("player in game");
+        assert!(ps.stats[q2_shared::constants::STAT_HEALTH] <= 0);
+    }
+
+    #[test]
+    fn a_save_key_and_a_page_command_in_one_frame_each_run_once() {
+        use std::sync::{Arc, Mutex};
+        let mut local = floor_wall_game();
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink_lines = lines.clone();
+        let sink = move |_: tracing::Level, line: &str| {
+            sink_lines.lock().unwrap().push(line.to_string());
+        };
+        let subscriber = crate::console_log::console_subscriber(sink);
+        tracing::subscriber::with_default(subscriber, || {
+            let keys = pressed(&[q2_platform::keymap::K_F6]);
+            run_commands(&mut local, &[false; 256], &keys, &["save page".into()]).unwrap();
+        });
+        let saving = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains("Saving game..."))
+            .count();
+        assert_eq!(saving, 2, "{:?}", lines.lock().unwrap());
+        assert!(local.saves().file("quick", "server.ssv").is_some());
+        assert!(local.saves().file("page", "server.ssv").is_some());
     }
 
     #[test]
