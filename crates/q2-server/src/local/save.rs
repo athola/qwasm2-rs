@@ -741,6 +741,19 @@ mod tests {
     }
 
     #[test]
+    fn a_load_puts_back_the_skill_it_was_saved_at() {
+        let bsp = crate::test_bsp::floor_wall_bsp();
+        let mut game = LocalGame::start("floor_wall", &bsp).expect("map loads");
+        game.set_cvar("skill", "2");
+        game.console("save quick").unwrap();
+        game.set_cvar("skill", "0");
+        game.console("load quick").unwrap();
+        let level = game.take_map_change().expect("the load's level");
+        game.change_map(&MapRequest::parse(&level), &bsp).unwrap();
+        assert_eq!(game.gi.cvar("skill", ""), "2");
+    }
+
+    #[test]
     fn a_slot_names_the_level_it_loads() {
         let mut saves = SaveFiles::default();
         saves.insert("quick/server.ssv", server_file(1, "*base2$start"));
