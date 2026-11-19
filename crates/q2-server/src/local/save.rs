@@ -99,7 +99,10 @@ impl SaveFiles {
     }
 
     fn put(&mut self, slot: &str, name: &str, bytes: Vec<u8>) {
-        let path = format!("{slot}/{name}");
+        self.put_path(format!("{slot}/{name}"), bytes);
+    }
+
+    fn put_path(&mut self, path: String, bytes: Vec<u8>) {
         self.changed.insert(path.clone());
         self.files.insert(path, bytes);
     }
@@ -128,8 +131,7 @@ impl SaveFiles {
             })
             .collect();
         for (path, bytes) in copies {
-            self.changed.insert(path.clone());
-            self.files.insert(path, bytes);
+            self.put_path(path, bytes);
         }
     }
 
