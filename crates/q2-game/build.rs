@@ -1,5 +1,5 @@
 //! Generates the save-file name tables (C `savegame/tables/gamefunc_list.h`
-//! and `gamemmove_list.h`, which C also generates from its sources).
+//! and `gamemmove_list.h`, which C checks in and edits by hand).
 //!
 //! A function is registered when its signature is one of the entity
 //! callback types and the crate uses it as a value somewhere (assigns or
