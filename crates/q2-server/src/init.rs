@@ -118,9 +118,10 @@ impl Server {
 
         // C CMod_LoadEntityString: with `sv_entfile` set (its default), a
         // map's .ent file replaces the entities in its BSP.
-        let entities = match gi.cvar("sv_entfile", "1").parse::<f32>().unwrap_or(0.0) != 0.0 {
-            true => crate::mapfixes::entity_file(map_name),
-            false => None,
+        let entities = if gi.cvar("sv_entfile", "1").parse::<f32>().unwrap_or(0.0) != 0.0 {
+            crate::mapfixes::entity_file(map_name)
+        } else {
+            None
         };
         let entities = match entities {
             Some(fixed) => {
@@ -223,9 +224,7 @@ impl MapRequest {
             kind,
         }
     }
-}
 
-impl MapRequest {
     /// The game map `level` ends in, following a cinematic's next server;
     /// `None` for a picture or a cinematic with none.
     pub fn destination(level: &str) -> Option<String> {
