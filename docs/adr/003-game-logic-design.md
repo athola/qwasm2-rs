@@ -28,7 +28,57 @@ when one entity's callback touches another.
 `think`, `touch`, `use`, `pain`, `die` and `blocked` are `fn` pointers such
 as `fn(&mut GameWorld, EntityKey)`, not closures. They carry no captured
 state, so they can be stored on entities without lifetime problems and can be
-saved by name when save/load lands (#15).
+saved by name in save files (see Save and load).
+
+### Map fixes
+
+yquake2 ships fixed entity files for 12 retail maps (`stuff/mapfixes`),
+which C's `CMod_LoadEntityString` loads in place of a map's own entities
+when `sv_entfile` is set, its default. The port embeds them in `q2-server`
+(`mapfixes`), so every platform loads them; `sv_entfile 0` turns them
+off. They fix monster counts, spawn chains, deathmatch items in single
+player, and remove biggun's `target_actor`, for which yquake2 has no code.
+An `.ent` file in a pak is not read: only the shipped fixes apply.
+
+### Save and load
+
+The game writes its state as bytes and the server stores them, as C's
+`WriteGame`/`ReadGame` and `WriteLevel`/`ReadLevel` do with files
+(`savegame` module, `GameExport` save calls). The saved types derive serde
+and are encoded with postcard behind a magic, version and kind byte; C's
+files are raw struct dumps tied to one build, so there is no format to be
+compatible with. A field added to a saved type fails to compile until it is
+saved or skipped.
+
+Callbacks and monster moves are saved by name. `build.rs` generates the
+name tables from the sources, as C generates `gamefunc_list.h`: every
+function of a callback signature that the crate uses as a value, and every
+`MonsterMove` static. A copied `currentmove` is named by its frames static,
+range and end function; C's identical insane crawl and runcrawl moves share
+that name and load back the same animation. A callback missing from the
+tables is a save error naming the entity and field.
+
+A level also keeps the game's file statics C does not save (trail, enemy
+check, quad and pain counters), so a loaded level runs on exactly as it
+would have; `q2-server/tests/savegame.rs` pins that against an
+uninterrupted run. Slotmap keys are saved as they are, so references stay
+valid; free entities come back zeroed, as C's ReadLevel leaves them. A
+loaded player takes the body waiting in the level (C ClientConnect and
+ClientBegin); the port spawns bodies in `connect_client`, so a flag set at
+connect tells begin which body came from the save.
+
+The server half (`q2-server` `local/save.rs`) keeps C's `save/<slot>/`
+files in `SaveFiles`: `server.ssv`, `game.ssv`, and each visited level's
+`.sv2` (configstrings and area portals) and `.sav`. A unit's levels keep
+their state between visits, a starred level wipes the unit, entering a
+level writes the `save0` autosave, and `save`, `load` and `menu_loadgame`
+are server commands (F6, F9 and F3 in the browser). The browser keeps the
+files in IndexedDB through a small store in the page template
+(`q2-bundler`, `window.qwasm2Saves`) rather than web-sys bindings in
+`q2-platform`: the engine hands it each changed file and goes on. The
+store is shared by every pak served from one origin, so the platform
+tells `LocalGame` which maps its pak holds and a save of another pak's
+map is refused.
 
 ### Entities
 
@@ -49,8 +99,7 @@ engine I/O goes through `GameImport`.
 In: the base Quake II entity set (107 spawn types), 11 weapons, the item
 table, 10 movement types, the base AI, 20 monster types, triggers, targets,
 functional entities, and the player subsystem. Out: mission packs, CTF, and
-anti-cheat. Deferred with issues: save/load (#15) and `SV_Push` rollback
-(#17).
+anti-cheat. Deferred with an issue: `SV_Push` rollback (#17).
 
 ## Current state (2026-10-27)
 
@@ -138,7 +187,10 @@ effects, and the deathmatch rules end matches through C's intermission.
   reads, such as `cl_gun` and `g_commanderbody_nogod`, go through
   `GameImport::cvar`, which `LocalGame::set_cvar` fills. Player footsteps play
   (`g_footsteps` 1); monster footsteps read `g_monsterfootsteps`, which
-  defaults to 0 as in C, so they are silent unless it is set.
+  defaults to 0 as in C, so they are silent unless it is set. The
+  server still latches `skill`, `coop` and `deathmatch` into a save and
+  refuses to save in deathmatch from its own cvar, as C's server does,
+  though the game reads its rule fields instead.
 - **Sound routing.** One local client hears every sound (no PHS or
   reliable routing); `timeofs` is a start delay. Music, OGG and the
   underwater filter are not ported.
@@ -170,8 +222,7 @@ effects, and the deathmatch rules end matches through C's intermission.
   game where the browser allows it (Chromium), so Ctrl shortcuts do not
   reach the browser.
 - **Not ported:** cinematic and demo playback (`.cin`/`.dm2` levels are
-  refused), savegames (#15; a dead single player's press sends
-  `menu_loadgame`, which nothing handles), the inventory layout and its
+  refused), the save menu (F2 `menu_savegame`; ADR-005 covers F3), the inventory layout and its
   refresh (`InventoryMessage`), the `fov`/`spectator` userinfo and `ClientUserinfoChanged`'s `Info_Validate` check, the
   spectator and chase-camera stats, `SP_FixCoopSpots`, falling damage
   (`P_FallingDamage`), the dead view turning to the killer

@@ -41,7 +41,7 @@ fn angles_forward(angles: Vec3f) -> Vec3f {
 // ---------------------------------------------------------------------------
 
 /// The wait is over: the trigger can fire again. C ref: `multi_wait`.
-fn multi_wait(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn multi_wait(world: &mut GameWorld, key: EntityKey) {
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.nextthink = 0.0;
     }
@@ -77,7 +77,12 @@ fn multi_trigger(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// C ref: `Use_Multi`.
-fn use_multi(world: &mut GameWorld, key: EntityKey, _other: EntityKey, activator: EntityKey) {
+pub(crate) fn use_multi(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    activator: EntityKey,
+) {
     if let Some(ent) = world.entities.get_mut(key) {
         ent.game.activator = Some(activator);
     }
@@ -87,7 +92,7 @@ fn use_multi(world: &mut GameWorld, key: EntityKey, _other: EntityKey, activator
 /// Players (unless flagged off) and flagged monsters fire the trigger,
 /// only when facing along `movedir` if one is set.
 /// C ref: `Touch_Multi`.
-fn touch_multi(
+pub(crate) fn touch_multi(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -123,7 +128,12 @@ fn touch_multi(
 
 /// A TRIGGERED trigger_multiple becomes touchable when used.
 /// C ref: `trigger_enable`.
-fn trigger_enable(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+pub(crate) fn trigger_enable(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
     if let Some(ent) = world.entities.get_mut(key) {
         ent.solid = Solid::Trigger;
         ent.use_fn = Some(use_multi);
@@ -132,7 +142,7 @@ fn trigger_enable(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _act
 }
 
 /// trigger_relay / generic relay use. C ref: `trigger_relay_use`.
-fn trigger_relay_use(
+pub(crate) fn trigger_relay_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -147,7 +157,7 @@ fn trigger_relay_use(
 
 /// Fire the targets once the activator has the key, consuming it.
 /// C ref: `trigger_key_use` (single player).
-fn trigger_key_use(
+pub(crate) fn trigger_key_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -208,7 +218,7 @@ fn trigger_key_use(
 
 /// Count uses down to zero, then fire like a trigger_once.
 /// C ref: `trigger_counter_use`.
-fn trigger_counter_use(
+pub(crate) fn trigger_counter_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -250,7 +260,7 @@ fn trigger_counter_use(
 
 /// Launch grenades and living entities along `movedir` at `speed * 10`.
 /// C ref: `trigger_push_touch`.
-fn trigger_push_touch(
+pub(crate) fn trigger_push_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -292,7 +302,7 @@ fn trigger_push_touch(
 
 /// Damage a touching damageable entity every frame (every second when
 /// SLOW). C ref: `hurt_touch`.
-fn trigger_hurt_touch(
+pub(crate) fn trigger_hurt_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -358,7 +368,7 @@ fn trigger_hurt_touch(
 
 /// Toggle a START_OFF/TOGGLE trigger_hurt; turning on hurts whatever is
 /// already inside. C ref: `hurt_use`.
-fn trigger_hurt_use(
+pub(crate) fn trigger_hurt_use(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -393,7 +403,7 @@ fn trigger_hurt_use(
 }
 
 /// C ref: `trigger_gravity_touch`.
-fn trigger_gravity_touch(
+pub(crate) fn trigger_gravity_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -410,7 +420,7 @@ fn trigger_gravity_touch(
 
 /// Make walking monsters jump along `movedir` (height in `movedir.z`).
 /// C ref: `trigger_monsterjump_touch`.
-fn trigger_monsterjump_touch(
+pub(crate) fn trigger_monsterjump_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,

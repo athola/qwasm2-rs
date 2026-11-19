@@ -66,7 +66,7 @@ const FRAME_DEATH101: i32 = 222;
 const FRAME_DEATH132: i32 = 253;
 
 static TANK_FRAMES_STAND: [MonsterFrame; 30] = [frame(ai::ai_stand, 0.0, None); 30];
-static TANK_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND01,
     lastframe: FRAME_STAND30,
     frames: &TANK_FRAMES_STAND,
@@ -105,7 +105,7 @@ static TANK_FRAMES_WALK: [MonsterFrame; 16] = [
     frame(ai::ai_walk, 6.0, None),
     frame(ai::ai_walk, 6.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK05,
     lastframe: FRAME_WALK20,
     frames: &TANK_FRAMES_WALK,
@@ -133,7 +133,7 @@ static TANK_FRAMES_START_RUN: [MonsterFrame; 4] = [
     frame(ai::ai_run, 6.0, None),
     frame(ai::ai_run, 11.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_START_RUN: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_START_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK01,
     lastframe: FRAME_WALK04,
     frames: &TANK_FRAMES_START_RUN,
@@ -158,7 +158,7 @@ static TANK_FRAMES_RUN: [MonsterFrame; 16] = [
     frame(ai::ai_run, 6.0, None),
     frame(ai::ai_run, 6.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK05,
     lastframe: FRAME_WALK20,
     frames: &TANK_FRAMES_RUN,
@@ -181,7 +181,7 @@ pub static TANK_MOVE_STOP_RUN: MonsterMove = MonsterMove {
 };
 
 static TANK_FRAMES_PAIN1: [MonsterFrame; 4] = [frame(ai::ai_move, 0.0, None); 4];
-static TANK_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN104,
     frames: &TANK_FRAMES_PAIN1,
@@ -189,7 +189,7 @@ static TANK_MOVE_PAIN1: MonsterMove = MonsterMove {
 };
 
 static TANK_FRAMES_PAIN2: [MonsterFrame; 5] = [frame(ai::ai_move, 0.0, None); 5];
-static TANK_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN205,
     frames: &TANK_FRAMES_PAIN2,
@@ -214,7 +214,7 @@ static TANK_FRAMES_PAIN3: [MonsterFrame; 16] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN316,
     frames: &TANK_FRAMES_PAIN3,
@@ -239,7 +239,7 @@ static TANK_FRAMES_ATTACK_BLAST: [MonsterFrame; 16] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, Some(tank_blaster)),
 ];
-static TANK_MOVE_ATTACK_BLAST: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_BLAST: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK116,
     frames: &TANK_FRAMES_ATTACK_BLAST,
@@ -254,7 +254,7 @@ static TANK_FRAMES_REATTACK_BLAST: [MonsterFrame; 6] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, Some(tank_blaster)),
 ];
-static TANK_MOVE_REATTACK_BLAST: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_REATTACK_BLAST: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK111,
     lastframe: FRAME_ATTAK116,
     frames: &TANK_FRAMES_REATTACK_BLAST,
@@ -269,7 +269,7 @@ static TANK_FRAMES_ATTACK_POST_BLAST: [MonsterFrame; 6] = [
     frame(ai::ai_move, 2.0, None),
     frame(ai::ai_move, -2.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_ATTACK_POST_BLAST: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_POST_BLAST: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK117,
     lastframe: FRAME_ATTAK122,
     frames: &TANK_FRAMES_ATTACK_POST_BLAST,
@@ -316,7 +316,7 @@ static TANK_FRAMES_ATTACK_STRIKE: [MonsterFrame; 38] = [
     frame(ai::ai_move, -3.0, None),
     frame(ai::ai_move, -2.0, Some(tank_footstep)),
 ];
-static TANK_MOVE_ATTACK_STRIKE: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_STRIKE: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK238,
     frames: &TANK_FRAMES_ATTACK_STRIKE,
@@ -346,7 +346,7 @@ static TANK_FRAMES_ATTACK_PRE_ROCKET: [MonsterFrame; 21] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, -3.0, None),
 ];
-static TANK_MOVE_ATTACK_PRE_ROCKET: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_PRE_ROCKET: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK301,
     lastframe: FRAME_ATTAK321,
     frames: &TANK_FRAMES_ATTACK_PRE_ROCKET,
@@ -364,7 +364,7 @@ static TANK_FRAMES_ATTACK_FIRE_ROCKET: [MonsterFrame; 9] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, -1.0, Some(tank_rocket)),
 ];
-static TANK_MOVE_ATTACK_FIRE_ROCKET: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_FIRE_ROCKET: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK322,
     lastframe: FRAME_ATTAK330,
     frames: &TANK_FRAMES_ATTACK_FIRE_ROCKET,
@@ -396,7 +396,7 @@ static TANK_FRAMES_ATTACK_POST_ROCKET: [MonsterFrame; 23] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static TANK_MOVE_ATTACK_POST_ROCKET: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_POST_ROCKET: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK331,
     lastframe: FRAME_ATTAK353,
     frames: &TANK_FRAMES_ATTACK_POST_ROCKET,
@@ -510,7 +510,7 @@ static TANK_FRAMES_ATTACK_CHAIN: [MonsterFrame; 29] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, None),
 ];
-static TANK_MOVE_ATTACK_CHAIN: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_ATTACK_CHAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK401,
     lastframe: FRAME_ATTAK429,
     frames: &TANK_FRAMES_ATTACK_CHAIN,
@@ -551,7 +551,7 @@ static TANK_FRAMES_DEATH1: [MonsterFrame; 32] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static TANK_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static TANK_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH132,
     frames: &TANK_FRAMES_DEATH1,

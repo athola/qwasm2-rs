@@ -13,9 +13,9 @@
 //! - Performance: 0 (vertex floats are viewed as bytes with `bytemuck`)
 //! - Inherent: 0
 
-// The one crate CLAUDE.md lets use unsafe; the workspace denies `unsafe_code`.
-#![allow(unsafe_code)]
-
 pub mod bsp;
 pub mod files;
+// The one module CLAUDE.md lets use unsafe (glow's FFI); the workspace
+// denies `unsafe_code`, so the byte parsers in `bsp` and `files` stay safe.
+#[allow(unsafe_code)]
 pub mod gl3;

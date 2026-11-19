@@ -31,6 +31,13 @@ use q2_render::gl3::Gl3Renderer;
 #[cfg(target_arch = "wasm32")]
 use q2_render_api::*;
 
+#[cfg(target_arch = "wasm32")]
+use q2_client::input::{apply_keys, turn_view, InputState};
+#[cfg(any(target_arch = "wasm32", test))]
+use q2_client::input::{cmd_lightlevel, cmd_msec};
+#[cfg(target_arch = "wasm32")]
+use q2_client::view::{ViewSize, FOV_X};
+
 // ---------------------------------------------------------------------------
 // Error bridging: Q2Error → JsValue
 // ---------------------------------------------------------------------------
@@ -52,7 +59,7 @@ struct Engine {
     /// The pak filesystem the renderer also reads, for the next map's BSP.
     fs: Rc<q2_common::filesystem::FileSystem>,
     /// Client-side input and view angles (C `cl.viewangles`).
-    input: q2_client::input::InputState,
+    input: InputState,
     canvas: web_sys::HtmlCanvasElement,
     view: ViewSize,
     last_time: f64,
@@ -110,7 +117,7 @@ impl Engine {
             renderer,
             local,
             fs,
-            input: q2_client::input::InputState::default(),
+            input: InputState::default(),
             canvas,
             view,
             last_time: q2_platform::wasm::game_loop::performance_now(),
@@ -338,11 +345,14 @@ impl Engine {
         request: &q2_server::init::MapRequest,
     ) -> q2_common::error::Q2Result<()> {
         use q2_server::init::LevelKind;
-        match request.kind {
+        match request.kind() {
             LevelKind::Cinematic | LevelKind::Demo => {
-                log(&format!("{}: skipped, no cinematic playback", request.map));
+                log(&format!(
+                    "{}: skipped, no cinematic playback",
+                    request.map()
+                ));
             }
-            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map)),
+            LevelKind::Pic => log(&format!("Picture: pics/{} shown", request.map())),
             LevelKind::Game => {
                 self.register_sounds();
                 let local = &self.local;
@@ -351,7 +361,7 @@ impl Engine {
                     |i| local.configstring(i),
                     &mut self.models,
                 )?;
-                log(&format!("Map: maps/{}.bsp loaded", request.map));
+                log(&format!("Map: maps/{}.bsp loaded", request.map()));
             }
         }
         Ok(())
@@ -428,8 +438,17 @@ impl Engine {
         if legend_key_pressed(&self.last_keys, &input.keys) || input.legend_requested {
             self.show_legend = !self.show_legend;
         }
-        for command in bound_commands(&self.last_keys, &input.keys) {
-            self.local.client_command(command);
+        if let Err(e) = run_commands(
+            &mut self.local,
+            &self.last_keys,
+            &input.keys,
+            &input.commands,
+        ) {
+            report_error(&format!("ERROR: {e}"));
+            // A save written before the error is still kept.
+            flush_saves(&mut self.local);
+            self.dropped = true;
+            return;
         }
         self.last_keys = input.keys;
         let mut cmd = self.input.build_cmd(cmd_msec(dt));
@@ -452,6 +471,7 @@ impl Engine {
             .and_then(|()| self.local.frame(elapsed_us))
         {
             report_error(&format!("ERROR: {e}"));
+            flush_saves(&mut self.local);
             self.dropped = true;
             return;
         }
@@ -467,6 +487,7 @@ impl Engine {
             view_angles: &mut self.input.view_angles,
         };
         let output = frame_output(&mut self.local, &mut client, |path| fs.load_file(path));
+        flush_saves(&mut self.local);
         let (sounds, messages) = (output.sounds, output.messages);
         if let Some((level, change)) = output.level {
             log(&format!("Level exit to {level}"));
@@ -662,12 +683,12 @@ fn frame_output(
         // level with no map or player, which `tick` draws (C
         // SCR_PlayCinematic). There is no cinematic or demo playback:
         // LocalGame refuses one, or skips it to its next server.
-        let change = match request.kind {
-            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map)),
+        let change = match request.kind() {
+            LevelKind::Game => load_file(&format!("maps/{}.bsp", request.map())),
             LevelKind::Pic | LevelKind::Cinematic | LevelKind::Demo => Ok(Vec::new()),
         }
         .and_then(|bsp| local.change_map(&request, &bsp));
-        if change.is_ok() && matches!(request.kind, LevelKind::Game | LevelKind::Pic) {
+        if change.is_ok() && matches!(request.kind(), LevelKind::Game | LevelKind::Pic) {
             client.clear();
             sounds.clear();
         }
@@ -1164,65 +1185,6 @@ fn gun_entity(
     })
 }
 
-/// Mouse sensitivity (degrees per pixel of mouse movement). A choice of
-/// this port, not C's default (`sensitivity 3` times `m_yaw 0.022` is
-/// 0.066 deg/px); there is no sensitivity cvar yet.
-#[cfg(any(target_arch = "wasm32", test))]
-const MOUSE_SENSITIVITY: f32 = 0.15;
-
-/// C `cl_yawspeed` / `cl_pitchspeed` defaults: keyboard turning, deg/s.
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_YAWSPEED: f32 = 140.0;
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_PITCHSPEED: f32 = 150.0;
-/// C `cl_anglespeedkey` default: the turn speed factor while +speed is held.
-#[cfg(any(target_arch = "wasm32", test))]
-const CL_ANGLESPEEDKEY: f32 = 1.5;
-
-/// Move time for a user command (C CL_FinishMove): the frame time in whole
-/// milliseconds, or 100 when it is over 250 ("time was unreasonable").
-#[cfg(any(target_arch = "wasm32", test))]
-fn cmd_msec(dt_seconds: f32) -> u8 {
-    let ms = (dt_seconds * 1000.0) as i32;
-    if ms > 250 {
-        100
-    } else {
-        ms.max(0) as u8
-    }
-}
-
-/// The light level a user command carries (C CL_FinishMove's
-/// `(byte)cl_lightlevel->value`): truncated, keeping the low 8 bits as the
-/// C conversion does on wasm and x86.
-#[cfg(any(target_arch = "wasm32", test))]
-fn cmd_lightlevel(r_lightlevel: f32) -> u8 {
-    r_lightlevel as i32 as u8
-}
-
-/// Browser key and mouse-button state into movement and button input, with
-/// Quake 2's default bindings (WASD and arrows, alt+arrows strafe, space
-/// jump, c crouch, shift run, ctrl or mouse1 attack).
-#[cfg(any(target_arch = "wasm32", test))]
-fn apply_keys(keys: &[bool; 256], mouse_buttons: u8, input: &mut q2_client::input::InputState) {
-    use q2_platform::keymap::*;
-    let down = |k: u8| keys[k as usize];
-    let axis = |pos: bool, neg: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
-    let strafe = down(K_ALT);
-    input.forward_move = axis(
-        down(b'w') || down(K_UPARROW),
-        down(b's') || down(K_DOWNARROW),
-    );
-    input.side_move = axis(
-        down(b'd') || down(b'.') || (strafe && down(K_RIGHTARROW)),
-        down(b'a') || down(b',') || (strafe && down(K_LEFTARROW)),
-    );
-    input.jump = down(K_SPACE);
-    input.crouch = down(b'c');
-    input.run = down(K_SHIFT);
-    input.attack = down(K_CTRL) || mouse_buttons & 1 != 0;
-    input.keys = *keys;
-}
-
 /// Command keys from Q2's default.cfg: weapons on the number row, the
 /// inventory keys, hand grenades, the next weapon and the powerups. Each
 /// fires on the frame the key goes down (C key binds run on the down
@@ -1255,11 +1217,218 @@ const BINDS: [(u8, &str); 23] = [
     (b'p', "use power shield"),
 ];
 
-/// The bound commands whose keys went down since `last_keys`, in key
-/// order.
+/// Put back the save files the page kept from earlier visits, except
+/// `current`, which a new game starts over as C SV_Map_f does: the page
+/// drops its old copy. The last visit's `save0` replaces the new game's
+/// (ADR-005). A stored slot no load could read (another pak's map, a file
+/// this build cannot decode) is left out: the new game keeps its own slot
+/// in memory and the page's copy is not touched.
+///
+/// Returns the stored paths no save could have, which `SaveFiles` refuses:
+/// the page removes them, or they would stay in its store for good.
+#[cfg(any(target_arch = "wasm32", test))]
+fn restore_saves(
+    local: &mut q2_server::local::LocalGame,
+    files: Vec<(String, Vec<u8>)>,
+) -> Vec<String> {
+    use q2_server::local::SaveFiles;
+    let mut stored = SaveFiles::default();
+    let mut refused = Vec::new();
+    for (path, bytes) in files {
+        stored.insert(&path, bytes);
+        if saved_file(&stored, &path).is_none() {
+            refused.push(path);
+        }
+    }
+    let old_current: Vec<&str> = stored
+        .iter()
+        .map(|(path, _)| path)
+        .filter(|path| SaveFiles::slot_of(path) == "current")
+        .collect();
+    for path in old_current {
+        if saved_file(local.saves(), path).is_none() {
+            local.saves_mut().discard(path);
+        }
+    }
+    let slots: std::collections::BTreeSet<&str> = stored
+        .iter()
+        .map(|(path, _)| SaveFiles::slot_of(path))
+        .filter(|&slot| slot != "current")
+        .collect();
+    for slot in slots {
+        let fresh = local.saves().clone();
+        // A restored slot replaces the new game's whole: no mixed save0.
+        let replaced: Vec<String> = local
+            .saves()
+            .iter()
+            .map(|(path, _)| path)
+            .filter(|path| SaveFiles::slot_of(path) == slot && saved_file(&stored, path).is_none())
+            .map(str::to_string)
+            .collect();
+        for path in replaced {
+            local.saves_mut().discard(&path);
+        }
+        for (path, bytes) in stored
+            .iter()
+            .filter(|(path, _)| SaveFiles::slot_of(path) == slot)
+        {
+            local.saves_mut().insert(path, bytes.to_vec());
+        }
+        if let Err(e) = local.check_slot(slot) {
+            tracing::warn!("saved game {slot} not restored: {e}");
+            *local.saves_mut() = fresh;
+            // The new game's own files stay off the page, whose copy of
+            // the slot is kept for a pak that can load it.
+            let own: Vec<(String, Vec<u8>)> = local
+                .saves()
+                .iter()
+                .filter(|(path, _)| SaveFiles::slot_of(path) == slot)
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+                .collect();
+            for (path, bytes) in own {
+                local.saves_mut().insert(&path, bytes);
+            }
+        }
+    }
+    refused
+}
+
+/// `saves`' file at a `<slot>/<file>` path, split as the server splits it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn saved_file<'a>(saves: &'a q2_server::local::SaveFiles, path: &str) -> Option<&'a [u8]> {
+    let slot = q2_server::local::SaveFiles::slot_of(path);
+    saves.file(slot, path.get(slot.len() + 1..)?)
+}
+
+// The page's save store (`window.qwasm2Saves`), which keeps the files in
+// IndexedDB. The call returns at once; the store writes in the background.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = commit)]
+    fn saves_commit(ops: &js_sys::Array) -> Result<(), JsValue>;
+}
+
+/// Hand the save files changed since the last call to the page's store.
+#[cfg(target_arch = "wasm32")]
+fn flush_saves(local: &mut q2_server::local::LocalGame) {
+    send_saves(local, Vec::new());
+}
+
+/// Hand the page's store the save files changed since the last call and
+/// the removal of `removed`, as one batch of `[path, bytes or null]` ops it
+/// writes whole. A page without a store (an embed or test page) keeps
+/// saves for the visit. If the store throws, the changes go again with the
+/// next batch.
+#[cfg(target_arch = "wasm32")]
+fn send_saves(local: &mut q2_server::local::LocalGame, removed: Vec<String>) {
+    let changes = local.saves_mut().take_changes();
+    if changes.is_empty() && removed.is_empty() {
+        return;
+    }
+    // Reflect::has fails only on a non-object target, and the global is one.
+    if !js_sys::Reflect::has(&js_sys::global(), &"qwasm2Saves".into()).unwrap_or(false) {
+        return;
+    }
+    let ops: js_sys::Array = changes
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.as_deref()))
+        .chain(removed.iter().map(|path| (path.as_str(), None)))
+        .map(|(path, bytes)| {
+            // A copy in JS memory: the store may keep it past this frame.
+            let bytes = bytes.map_or(JsValue::NULL, |b| js_sys::Uint8Array::from(b).into());
+            js_sys::Array::of2(&path.into(), &bytes)
+        })
+        .collect();
+    if let Err(e) = saves_commit(&ops) {
+        console::warn_1(&format!("[qwasm2-rs] saves not handed to the page: {e:?}").into());
+        for (path, _) in &changes {
+            local.saves_mut().unsent(path);
+        }
+    }
+}
+
+/// The page's stored files as `[path, Uint8Array]` pairs. An entry that is
+/// not one is skipped with a warning naming its key.
+#[cfg(target_arch = "wasm32")]
+fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
+    let Some(saves) = saves else {
+        return Vec::new();
+    };
+    saves
+        .iter()
+        .filter_map(|entry| {
+            let pair = js_sys::Array::from(&entry);
+            let (key, bytes) = (pair.get(0), pair.get(1));
+            match (key.as_string(), bytes.dyn_into::<js_sys::Uint8Array>()) {
+                (Some(path), Ok(bytes)) => Some((path, bytes.to_vec())),
+                _ => {
+                    console::warn_2(
+                        &"[qwasm2-rs] stored save skipped, not a path and bytes:".into(),
+                        &key,
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// default.cfg's save keys, which run server commands (C SV_Savegame_f
+/// and SV_Loadgame_f): F6 quick save, F9 quick load, and F3 the load menu
+/// (`menu_loadgame`), for which `LocalGame` loads the newest save. F2's
+/// save menu is not ported.
+#[cfg(any(target_arch = "wasm32", test))]
+const SERVER_BINDS: [(u8, &str); 3] = [
+    (q2_platform::keymap::K_F3, "menu_loadgame"),
+    (q2_platform::keymap::K_F6, "save quick"),
+    (q2_platform::keymap::K_F9, "load quick"),
+];
+
+/// Run one frame's commands: the bound game keys and the page's game
+/// commands as the player's (C `SV_ExecuteUserCommand`), then the save keys
+/// and the page's server commands on the server's console. Stops at the
+/// first console error, which ends the server (C `Com_Error`).
+#[cfg(any(target_arch = "wasm32", test))]
+fn run_commands(
+    local: &mut q2_server::local::LocalGame,
+    last_keys: &[bool; 256],
+    keys: &[bool; 256],
+    page_commands: &[String],
+) -> q2_common::Q2Result<()> {
+    for command in bound_commands(last_keys, keys) {
+        local.client_command(command);
+    }
+    let (server, game): (Vec<&str>, Vec<&str>) = page_commands
+        .iter()
+        .map(String::as_str)
+        .partition(|command| local.is_server_command(command));
+    for command in game {
+        local.client_command(command);
+    }
+    for command in pressed_binds(&SERVER_BINDS, last_keys, keys)
+        .into_iter()
+        .chain(server)
+    {
+        local.console(command)?;
+    }
+    Ok(())
+}
+
+/// The bound game commands whose keys went down since `last_keys`, in
+/// key order.
 #[cfg(any(target_arch = "wasm32", test))]
 fn bound_commands(last_keys: &[bool; 256], keys: &[bool; 256]) -> Vec<&'static str> {
-    let mut commands: Vec<(u8, &str)> = BINDS
+    pressed_binds(&BINDS, last_keys, keys)
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn pressed_binds(
+    binds: &[(u8, &'static str)],
+    last_keys: &[bool; 256],
+    keys: &[bool; 256],
+) -> Vec<&'static str> {
+    let mut commands: Vec<(u8, &str)> = binds
         .iter()
         .filter(|&&(k, _)| keys[k as usize] && !last_keys[k as usize])
         .copied()
@@ -1459,6 +1628,9 @@ fn key_legend() -> Vec<(String, String)> {
         }
     }
     for (label, key) in [
+        ("load game", "F3"),
+        ("quick save", "F6"),
+        ("quick load", "F9"),
         ("gamma darker", "F7"),
         ("gamma brighter", "F8"),
         ("keys", "F4"),
@@ -1521,92 +1693,6 @@ fn gamma_key_step(last_keys: &[bool; 256], keys: &[bool; 256]) -> i32 {
     use q2_platform::keymap::{K_F7, K_F8};
     let pressed = |k: u8| i32::from(keys[k as usize] && !last_keys[k as usize]);
     pressed(K_F8) - pressed(K_F7)
-}
-
-/// Turn the view by mouse movement and the turn keys (C CL_AdjustAngles and
-/// the mouse move), then clamp pitch as C CL_ClampPitch does against the
-/// player's `delta_pitch` (degrees, already in -180..180).
-#[cfg(any(target_arch = "wasm32", test))]
-fn turn_view(
-    input: &mut q2_client::input::InputState,
-    keys: &[bool; 256],
-    mouse_dx: f32,
-    mouse_dy: f32,
-    dt: f32,
-    delta_pitch: f32,
-) {
-    use q2_platform::keymap::*;
-    let down = |k: u8| keys[k as usize];
-    let angles = &mut input.view_angles;
-    angles.y -= mouse_dx * MOUSE_SENSITIVITY;
-    angles.x += mouse_dy * MOUSE_SENSITIVITY;
-    // +speed (shift) turns faster too.
-    let speed = if down(K_SHIFT) {
-        dt * CL_ANGLESPEEDKEY
-    } else {
-        dt
-    };
-    if !down(K_ALT) {
-        if down(K_LEFTARROW) {
-            angles.y += CL_YAWSPEED * speed;
-        }
-        if down(K_RIGHTARROW) {
-            angles.y -= CL_YAWSPEED * speed;
-        }
-    }
-    if down(K_PGDN) {
-        angles.x -= CL_PITCHSPEED * speed; // +lookup
-    }
-    if down(K_DEL) {
-        angles.x += CL_PITCHSPEED * speed; // +lookdown
-    }
-
-    if angles.x + delta_pitch < -360.0 {
-        angles.x += 360.0;
-    }
-    if angles.x + delta_pitch > 360.0 {
-        angles.x -= 360.0;
-    }
-    if angles.x + delta_pitch > 89.0 {
-        angles.x = 89.0 - delta_pitch;
-    }
-    if angles.x + delta_pitch < -89.0 {
-        angles.x = -89.0 - delta_pitch;
-    }
-}
-
-/// Horizontal fov the view is fitted to (C `fov` cvar default).
-#[cfg(any(target_arch = "wasm32", test))]
-const FOV_X: f32 = 90.0;
-
-/// Render size and the vertical fov that fits it, refreshed whenever the
-/// page resizes the canvas so the picture is not stretched.
-#[cfg(any(target_arch = "wasm32", test))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ViewSize {
-    width: i32,
-    height: i32,
-    fov_y: f32,
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-impl ViewSize {
-    /// `Ok(None)` when the canvas has no usable area (hidden, collapsed or
-    /// too large for GL's i32 viewport): there is no aspect ratio to fit.
-    fn for_canvas(width: u32, height: u32) -> q2_common::error::Q2Result<Option<Self>> {
-        let (Ok(width), Ok(height)) = (i32::try_from(width), i32::try_from(height)) else {
-            return Ok(None);
-        };
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-        let fov_y = q2_client::view::calc_fov(FOV_X, width as f32, height as f32)?;
-        Ok(Some(Self {
-            width,
-            height,
-            fov_y,
-        }))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,7 +1763,21 @@ pub fn self_test() -> String {
         return "FAIL: NetMsg read_string".to_string();
     }
 
+    // The shipped binary is past every optimizer that could merge saved
+    // callbacks; native tests cannot see what wasm-opt did.
+    if let Some(failure) = alias_failure(&q2_server::aliased_save_names()) {
+        return failure;
+    }
+
     "PASS".to_string()
+}
+
+/// The self test's failure for saved names a save cannot tell apart,
+/// naming the first pair.
+fn alias_failure(aliases: &[(&str, &str)]) -> Option<String> {
+    aliases
+        .first()
+        .map(|(a, b)| format!("FAIL: saved names {a} and {b} share one function"))
 }
 
 /// Canvas attribute marking that an engine owns the canvas. The marker lives
@@ -1693,7 +1793,11 @@ const ENGINE_MARK: &str = "data-qwasm2-engine";
 /// requestAnimationFrame loop on the same canvas.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValue> {
+pub async fn start_game(
+    canvas_id: String,
+    pak_url: String,
+    saves: Option<js_sys::Array>,
+) -> Result<(), JsValue> {
     let canvas_el = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(&canvas_id))
@@ -1705,7 +1809,7 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
     }
     canvas_el.set_attribute(ENGINE_MARK, "")?;
 
-    let (engine, map_name) = match load_engine(canvas_id, pak_url).await {
+    let (engine, map_name) = match load_engine(canvas_id, pak_url, saves_from_js(saves)).await {
         Ok(loaded) => loaded,
         Err(e) => {
             // Nothing is attached to the page yet: allow a retry after a
@@ -1726,7 +1830,11 @@ pub async fn start_game(canvas_id: String, pak_url: String) -> Result<(), JsValu
 /// context, the pak, the renderer, the server and the client. Returns the
 /// engine and the map it loaded.
 #[cfg(target_arch = "wasm32")]
-async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, String), JsValue> {
+async fn load_engine(
+    canvas_id: String,
+    pak_url: String,
+    saves: Vec<(String, Vec<u8>)>,
+) -> Result<(Engine, String), JsValue> {
     log("Initializing engine...");
 
     // 1. Create WebGL2 context
@@ -1809,13 +1917,31 @@ async fn load_engine(canvas_id: String, pak_url: String) -> Result<(Engine, Stri
     // 8. Server and game: load collision, spawn the map's entities, and put
     //    the local player in at the player start.
     let hand = hand_from_query(&search);
-    let local = q2_server::local::LocalGame::start_with_userinfo(
+    let mut local = q2_server::local::LocalGame::start_with_userinfo(
         short_name,
         &bsp_data,
         &local_userinfo(hand),
     )
     .map_err(q2err_to_js)?;
     log(&format!("Game: {} entities spawned", local.num_edicts()));
+    // The page's store is shared by every pak on its origin: the server
+    // refuses a save of a map this pak lacks.
+    let maps: std::collections::HashSet<String> = fs
+        .list_files("bsp")
+        .into_iter()
+        .filter_map(|path| {
+            Some(
+                path.strip_prefix("maps/")?
+                    .strip_suffix(".bsp")?
+                    .to_string(),
+            )
+        })
+        .collect();
+    local.set_has_map(move |map| maps.contains(map));
+    let refused = restore_saves(&mut local, saves);
+    // Send the page the new game's `current`, its autosave if the page had
+    // none, and the removal of the files the restore replaced or refused.
+    send_saves(&mut local, refused);
     if let Some((origin, ps)) = local.player() {
         log(&format!(
             "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
@@ -2082,6 +2208,11 @@ mod tests {
     }
 
     #[test]
+    fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
+        assert_eq!(cmd_msec(frame_dt_seconds(1300.0, 1000.0)), 100);
+    }
+
+    #[test]
     fn prep_refresh_registers_the_new_map_in_cl_prep_refresh_order() {
         let mut renderer = Recorder::default();
         let mut models = ModelTable::default();
@@ -2285,28 +2416,10 @@ mod tests {
     }
 
     #[test]
-    fn cmd_lightlevel_is_the_renderers_light_level_cast_to_a_byte_like_c() {
-        assert_eq!(cmd_lightlevel(150.0), 150);
-        assert_eq!(cmd_lightlevel(5.9), 5, "truncated toward zero");
-        assert_eq!(cmd_lightlevel(0.0), 0);
-        // C `(byte)cl_lightlevel->value` keeps the low 8 bits.
-        assert_eq!(cmd_lightlevel(300.0), 44);
-    }
-
-    #[test]
     fn renderer_without_light_data_reports_the_player_lit() {
         use q2_render_api::Renderer;
         let renderer = Recorder::default();
         assert_eq!(cmd_lightlevel(renderer.light_level()), 150);
-    }
-
-    #[test]
-    fn cmd_msec_is_the_frame_time_with_c_unreasonable_time_rule() {
-        assert_eq!(cmd_msec(0.016), 16);
-        assert_eq!(cmd_msec(0.25), 250);
-        // CL_FinishMove: over 250 ms "time was unreasonable", send 100.
-        assert_eq!(cmd_msec(0.4), 100);
-        assert_eq!(cmd_msec(-1.0), 0);
     }
 
     #[test]
@@ -3181,6 +3294,214 @@ mod tests {
     }
 
     #[test]
+    fn a_new_game_restores_the_kept_saves_and_autosave_but_starts_current_over() {
+        let mut local = floor_wall_game();
+        local.console("save quick").unwrap();
+        let file = |local: &q2_server::local::LocalGame, name| {
+            local.saves().file("current", name).unwrap().to_vec()
+        };
+        let (server, game) = (file(&local, "server.ssv"), file(&local, "game.ssv"));
+        let paths = |local: &q2_server::local::LocalGame, slot: &str| -> Vec<String> {
+            local
+                .saves()
+                .iter()
+                .map(|(path, _)| path)
+                .filter(|path| q2_server::local::SaveFiles::slot_of(path) == slot)
+                .map(str::to_string)
+                .collect()
+        };
+        let new_current = paths(&local, "current");
+        let new_quick = paths(&local, "quick");
+        // Whole slots: a stored slot is restored only if a load can read it.
+        restore_saves(
+            &mut local,
+            vec![
+                ("quick/server.ssv".into(), server.clone()),
+                ("quick/game.ssv".into(), game.clone()),
+                ("current/old.sav".into(), vec![2]),
+                ("save0/server.ssv".into(), server.clone()),
+                ("save0/game.ssv".into(), game.clone()),
+            ],
+        );
+        assert_eq!(local.saves().file("quick", "server.ssv"), Some(&server[..]));
+        assert!(local.saves().file("current", "old.sav").is_none());
+        assert_eq!(
+            local.saves().file("save0", "server.ssv"),
+            Some(&server[..]),
+            "the last visit's autosave survives the reload"
+        );
+        let mut changes: Vec<String> = local
+            .saves_mut()
+            .take_changes()
+            .into_iter()
+            .map(|(path, bytes)| format!("{path} {}", bytes.is_some()))
+            .collect();
+        changes.sort();
+        let mut expected: Vec<String> = new_current.iter().map(|p| format!("{p} true")).collect();
+        expected.push("current/old.sav false".into());
+        // The new game's own quick files the restored quick lacks.
+        for path in &new_quick {
+            if !path.ends_with("/server.ssv") && !path.ends_with("/game.ssv") {
+                expected.push(format!("{path} false"));
+            }
+        }
+        expected.sort();
+        assert_eq!(
+            changes, expected,
+            "the page gets the new game's current, loses the old one, keeps its saves"
+        );
+    }
+
+    #[test]
+    fn a_stored_slot_no_load_can_read_leaves_the_new_games_slot_and_the_stored_copy() {
+        let map = crate::test_bsp::floor_wall_bsp();
+        // Another pak's autosave: it names a map this game data lacks.
+        let other = q2_server::local::LocalGame::start("other_map", &map).expect("map loads");
+        let stored: Vec<(String, Vec<u8>)> = other
+            .saves()
+            .iter()
+            .filter(|(path, _)| path.starts_with("save0/"))
+            .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+            .collect();
+        let mut local = floor_wall_game();
+        local.set_has_map(|map| map == "floor_wall");
+        let own_save0 = |local: &q2_server::local::LocalGame| -> Vec<(String, Vec<u8>)> {
+            local
+                .saves()
+                .iter()
+                .filter(|(path, _)| path.starts_with("save0/"))
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec()))
+                .collect()
+        };
+        let fresh = own_save0(&local);
+        assert!(!fresh.is_empty() && fresh != stored);
+
+        restore_saves(&mut local, stored);
+
+        assert_eq!(own_save0(&local), fresh, "the new game keeps its own save0");
+        let save0_changes: Vec<String> = local
+            .saves_mut()
+            .take_changes()
+            .into_iter()
+            .map(|(path, _)| path)
+            .filter(|path| path.starts_with("save0/"))
+            .collect();
+        assert_eq!(
+            save0_changes,
+            Vec::<String>::new(),
+            "the stored save0 is neither removed nor written over"
+        );
+    }
+
+    #[test]
+    fn stored_paths_no_save_could_have_are_returned_for_the_page_to_remove() {
+        let mut local = floor_wall_game();
+        let refused = restore_saves(
+            &mut local,
+            vec![
+                ("server.ssv".into(), vec![1]),
+                ("quick/maps/base1.sav".into(), vec![2]),
+                ("../quick/game.ssv".into(), vec![3]),
+                ("save0/game.ssv".into(), vec![4]),
+            ],
+        );
+        assert_eq!(
+            refused,
+            ["server.ssv", "quick/maps/base1.sav", "../quick/game.ssv"]
+        );
+    }
+
+    fn floor_wall_game() -> q2_server::local::LocalGame {
+        let map = crate::test_bsp::floor_wall_bsp();
+        q2_server::local::LocalGame::start("floor_wall", &map).expect("map loads")
+    }
+
+    #[test]
+    fn a_page_save_command_writes_its_slot() {
+        let mut local = floor_wall_game();
+        let none = [false; 256];
+        run_commands(&mut local, &none, &none, &["save quick".into()]).unwrap();
+        assert!(local.saves().file("quick", "server.ssv").is_some());
+    }
+
+    #[test]
+    fn a_page_kill_reaches_the_game() {
+        let mut local = floor_wall_game();
+        // C Cmd_Kill_f ignores kill for five seconds after a spawn.
+        for _ in 0..60 {
+            local.frame(100_000).unwrap();
+        }
+        let none = [false; 256];
+        run_commands(&mut local, &none, &none, &["kill".into()]).unwrap();
+        // The player state the client sees is built at the frame's end.
+        local.frame(100_000).unwrap();
+        let (_, ps) = local.player().expect("player in game");
+        assert!(ps.stats[q2_shared::constants::STAT_HEALTH] <= 0);
+    }
+
+    #[test]
+    fn a_save_key_and_a_page_command_in_one_frame_each_run_once() {
+        use std::sync::{Arc, Mutex};
+        let mut local = floor_wall_game();
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink_lines = lines.clone();
+        let sink = move |_: tracing::Level, line: &str| {
+            sink_lines.lock().unwrap().push(line.to_string());
+        };
+        let subscriber = crate::console_log::console_subscriber(sink);
+        tracing::subscriber::with_default(subscriber, || {
+            let keys = pressed(&[q2_platform::keymap::K_F6]);
+            run_commands(&mut local, &[false; 256], &keys, &["save page".into()]).unwrap();
+        });
+        let saving = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains("Saving game..."))
+            .count();
+        assert_eq!(saving, 2, "{:?}", lines.lock().unwrap());
+        assert!(local.saves().file("quick", "server.ssv").is_some());
+        assert!(local.saves().file("page", "server.ssv").is_some());
+    }
+
+    #[test]
+    fn the_save_keys_run_default_cfgs_server_commands_once_per_press() {
+        use q2_platform::keymap::{K_F3, K_F6, K_F9};
+        let none = [false; 256];
+        assert_eq!(
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F6])),
+            ["save quick"]
+        );
+        assert_eq!(
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F9])),
+            ["load quick"]
+        );
+        // C's F3 opens the load menu; the stand-in loads the newest save.
+        assert_eq!(
+            pressed_binds(&SERVER_BINDS, &none, &pressed(&[K_F3])),
+            ["menu_loadgame"]
+        );
+        let held = pressed(&[K_F6]);
+        assert!(pressed_binds(&SERVER_BINDS, &held, &held).is_empty());
+        assert!(
+            bound_commands(&none, &held).is_empty(),
+            "not a game command"
+        );
+
+        let legend = key_legend();
+        for (label, key) in [
+            ("quick save", "F6"),
+            ("quick load", "F9"),
+            ("load game", "F3"),
+        ] {
+            assert!(
+                legend.iter().any(|(l, k)| l == label && k == key),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn f4_toggles_the_legend_once_per_press_like_menu_keys() {
         use q2_platform::keymap::K_F4;
         let up = [false; 256];
@@ -3286,73 +3607,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_keys_maps_wasd_jump_crouch_run_and_attack() {
-        use q2_platform::keymap::{K_CTRL, K_SHIFT, K_SPACE};
-        let mut keys = [false; 256];
-        keys[b'w' as usize] = true;
-        keys[b'd' as usize] = true;
-        keys[K_SPACE as usize] = true;
-        keys[K_SHIFT as usize] = true;
-        let mut input = q2_client::input::InputState::default();
-        apply_keys(&keys, 0, &mut input);
-        assert_eq!((input.forward_move, input.side_move), (1.0, 1.0));
-        assert!(input.jump && input.run && !input.crouch && !input.attack);
-
-        keys[K_CTRL as usize] = true;
-        apply_keys(&keys, 0, &mut input);
-        assert!(input.attack, "ctrl is +attack");
-        apply_keys(&[false; 256], 1, &mut input);
-        assert!(input.attack, "mouse1 is +attack");
-        assert_eq!(input.forward_move, 0.0);
-    }
-
-    #[test]
-    fn turn_view_follows_c_mouse_signs_and_clamps_pitch() {
-        let mut input = q2_client::input::InputState::default();
-        // Mouse right turns right (yaw down), mouse down looks down (+pitch).
-        turn_view(&mut input, &[false; 256], 10.0, 10.0, 0.0, 0.0);
-        assert!(input.view_angles.y < 0.0 && input.view_angles.x > 0.0);
-
-        // CL_ClampPitch: pitch + delta pitch stays within +-89.
-        turn_view(&mut input, &[false; 256], 0.0, 100_000.0, 0.0, 0.0);
-        assert_eq!(input.view_angles.x, 89.0);
-        turn_view(&mut input, &[false; 256], 0.0, -100_000.0, 0.0, 10.0);
-        assert_eq!(input.view_angles.x, -99.0);
-    }
-
-    #[test]
-    fn turn_view_arrow_keys_turn_at_cl_yawspeed() {
-        use q2_platform::keymap::K_LEFTARROW;
-        let mut input = q2_client::input::InputState::default();
-        let mut keys = [false; 256];
-        keys[K_LEFTARROW as usize] = true;
-        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
-        assert!(
-            (input.view_angles.y - 70.0).abs() < 1e-4,
-            "140 deg/s for 0.5 s"
-        );
-    }
-
-    #[test]
-    fn view_size_fits_vertical_fov_to_canvas_aspect() {
-        let view = ViewSize::for_canvas(640, 480).unwrap().unwrap();
-        assert_eq!((view.width, view.height), (640, 480));
-        assert!((view.fov_y - 73.74).abs() < 0.01, "fov_y {}", view.fov_y);
-
-        // A wider canvas keeps fov_x 90 and narrows fov_y, as C CalcFov does.
-        let wide = ViewSize::for_canvas(1920, 1080).unwrap().unwrap();
-        assert!((wide.fov_y - 58.72).abs() < 0.01, "fov_y {}", wide.fov_y);
-    }
-
-    #[test]
-    fn view_size_has_no_fit_for_zero_or_unrepresentable_canvas() {
-        // A hidden or collapsed canvas has no aspect ratio to fit.
-        assert_eq!(ViewSize::for_canvas(0, 480).unwrap(), None);
-        assert_eq!(ViewSize::for_canvas(640, 0).unwrap(), None);
-        assert_eq!(ViewSize::for_canvas(u32::MAX, 480).unwrap(), None);
-    }
-
-    #[test]
     fn engine_version_contains_pkg_version() {
         let v = engine_version();
         assert!(v.starts_with("qwasm2-rs "));
@@ -3385,30 +3639,10 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_over_250ms_sends_the_c_unreasonable_time_of_100() {
-        assert_eq!(cmd_msec(frame_dt_seconds(1300.0, 1000.0)), 100);
-    }
-
-    #[test]
     fn elapsed_microseconds_is_uncapped_and_never_negative() {
         assert_eq!(elapsed_microseconds(1006.944, 1000.0), 6944);
         assert_eq!(elapsed_microseconds(3000.0, 1000.0), 2_000_000);
         assert_eq!(elapsed_microseconds(1000.0, 1010.0), 0);
-    }
-
-    #[test]
-    fn turn_view_speed_key_turns_at_cl_anglespeedkey_times_the_speed() {
-        use q2_platform::keymap::{K_LEFTARROW, K_SHIFT};
-        let mut input = q2_client::input::InputState::default();
-        let mut keys = [false; 256];
-        keys[K_LEFTARROW as usize] = true;
-        keys[K_SHIFT as usize] = true;
-        turn_view(&mut input, &keys, 0.0, 0.0, 0.5, 0.0);
-        assert!(
-            (input.view_angles.y - 105.0).abs() < 1e-4,
-            "140 deg/s * 1.5 for 0.5 s, got {}",
-            input.view_angles.y
-        );
     }
 
     #[test]
@@ -3419,5 +3653,16 @@ mod tests {
     #[test]
     fn self_test_passes() {
         assert_eq!(self_test(), "PASS");
+    }
+
+    #[test]
+    fn the_self_test_fails_on_saved_names_that_share_a_body() {
+        assert_eq!(alias_failure(&[]), None);
+        let failure = alias_failure(&[("a_die", "b_die"), ("c_pain", "d_pain")]).unwrap();
+        assert!(failure.starts_with("FAIL: "), "{failure}");
+        assert!(
+            failure.contains("a_die") && failure.contains("b_die"),
+            "{failure}"
+        );
     }
 }

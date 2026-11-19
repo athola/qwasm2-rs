@@ -73,7 +73,7 @@ pub(crate) const SOUND_STEPS: [&str; 2] = ["infantry/step1.wav", "infantry/step2
 // ---------------------------------------------------------------------------
 
 static INFANTRY_FRAMES_STAND: [MonsterFrame; 22] = [frame(ai::ai_stand, 0.0, None); 22];
-static INFANTRY_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND50,
     lastframe: FRAME_STAND71,
     frames: &INFANTRY_FRAMES_STAND,
@@ -131,7 +131,7 @@ static INFANTRY_FRAMES_FIDGET: [MonsterFrame; 49] = [
     frame(ai::ai_stand, -3.0, Some(infantry_footstep)),
     frame(ai::ai_stand, -2.0, None),
 ];
-static INFANTRY_MOVE_FIDGET: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_FIDGET: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND01,
     lastframe: FRAME_STAND49,
     frames: &INFANTRY_FRAMES_FIDGET,
@@ -152,7 +152,7 @@ static INFANTRY_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 4.0, None),
     frame(ai::ai_walk, 5.0, None),
 ];
-static INFANTRY_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK03,
     lastframe: FRAME_WALK14,
     frames: &INFANTRY_FRAMES_WALK,
@@ -169,7 +169,7 @@ static INFANTRY_FRAMES_RUN: [MonsterFrame; 8] = [
     frame(ai::ai_run, 2.0, None),
     frame(ai::ai_run, 6.0, None),
 ];
-static INFANTRY_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN01,
     lastframe: FRAME_RUN08,
     frames: &INFANTRY_FRAMES_RUN,
@@ -188,7 +188,7 @@ static INFANTRY_FRAMES_PAIN1: [MonsterFrame; 10] = [
     frame(ai::ai_move, 6.0, None),
     frame(ai::ai_move, 2.0, Some(infantry_footstep)),
 ];
-static INFANTRY_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN110,
     frames: &INFANTRY_FRAMES_PAIN1,
@@ -207,7 +207,7 @@ static INFANTRY_FRAMES_PAIN2: [MonsterFrame; 10] = [
     frame(ai::ai_move, 5.0, None),
     frame(ai::ai_move, 2.0, Some(infantry_footstep)),
 ];
-static INFANTRY_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN210,
     frames: &INFANTRY_FRAMES_PAIN2,
@@ -236,7 +236,7 @@ static INFANTRY_FRAMES_DEATH1: [MonsterFrame; 20] = [
     frame(ai::ai_move, -3.0, None),
     frame(ai::ai_move, -3.0, None),
 ];
-static INFANTRY_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH120,
     frames: &INFANTRY_FRAMES_DEATH1,
@@ -270,7 +270,7 @@ static INFANTRY_FRAMES_DEATH2: [MonsterFrame; 25] = [
     frame(ai::ai_move, 4.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static INFANTRY_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH225,
     frames: &INFANTRY_FRAMES_DEATH2,
@@ -288,7 +288,7 @@ static INFANTRY_FRAMES_DEATH3: [MonsterFrame; 9] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, None),
 ];
-static INFANTRY_MOVE_DEATH3: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_DEATH3: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH301,
     lastframe: FRAME_DEATH309,
     frames: &INFANTRY_FRAMES_DEATH3,
@@ -302,7 +302,7 @@ static INFANTRY_FRAMES_DUCK: [MonsterFrame; 5] = [
     frame(ai::ai_move, 4.0, Some(infantry_duck_up)),
     frame(ai::ai_move, 0.0, Some(infantry_footstep)),
 ];
-static INFANTRY_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK01,
     lastframe: FRAME_DUCK05,
     frames: &INFANTRY_FRAMES_DUCK,
@@ -326,7 +326,7 @@ static INFANTRY_FRAMES_ATTACK1: [MonsterFrame; 15] = [
     frame(ai::ai_charge, -2.0, None),
     frame(ai::ai_charge, -3.0, None),
 ];
-static INFANTRY_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK115,
     frames: &INFANTRY_FRAMES_ATTACK1,
@@ -343,7 +343,7 @@ static INFANTRY_FRAMES_ATTACK2: [MonsterFrame; 8] = [
     frame(ai::ai_charge, 6.0, None),
     frame(ai::ai_charge, 3.0, None),
 ];
-static INFANTRY_MOVE_ATTACK2: MonsterMove = MonsterMove {
+pub(crate) static INFANTRY_MOVE_ATTACK2: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK208,
     frames: &INFANTRY_FRAMES_ATTACK2,
@@ -525,6 +525,7 @@ pub fn infantry_sight(world: &mut GameWorld, key: EntityKey, _other: EntityKey) 
 /// Unlike `ai::monster_dead` it leaves `nextthink` alone, so a failed
 /// fly check is retried on the next frame.
 pub fn infantry_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -575,6 +576,7 @@ pub fn infantry_die(
 /// Crouch: 32 units shorter and hittable but no longer aimed at, for a
 /// second. C ref: `infantry_duck_down`.
 pub fn infantry_duck_down(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(ent) = world.entities.get_mut(key) else {
         return;
@@ -594,11 +596,13 @@ pub fn infantry_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `infantry_duck_hold`.
 pub fn infantry_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     hold_until_pausetime(world, key);
 }
 
 /// C ref: `infantry_duck_up`.
 pub fn infantry_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };

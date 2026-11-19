@@ -17,10 +17,17 @@ use q2_game::world::GameWorld;
 use q2_shared::constants::MAX_EDICTS;
 use q2_shared::types::{EntityState, PlayerState, UserCmd, Vec3f};
 
+mod save;
+pub use save::SaveFiles;
+
 use crate::ents::build_client_frame;
 use crate::init::{LevelKind, MapRequest};
 use crate::state::{ClientState, Server, ServerState, ServerStatic};
 use crate::ServerGameImport;
+
+/// The `tracing` target of the server's console prints (C `Com_Printf` in
+/// `SV_Savegame_f`, `SV_Loadgame_f` and friends), which C always shows.
+pub const SERVER_PRINT_TARGET: &str = "server";
 
 /// Entity number of the local client (client slot 0).
 pub const LOCAL_PLAYER: usize = 1;
@@ -35,8 +42,9 @@ pub struct LocalGame {
     /// Frame time not yet handed to the server: under a millisecond, which
     /// `SV_Frame`'s `usec / 1000` would drop.
     pending_us: u32,
-    /// Runs the console text the game queues (C `Cbuf_Execute`); only
-    /// `gamemap` is registered.
+    /// Runs the console text the game queues (C `Cbuf_Execute`); the
+    /// server's `gamemap`, `save`, `load` and `menu_loadgame` are
+    /// registered.
     cmd: CmdSystem,
     /// Map a `gamemap` command asked for, until the caller takes it.
     next_map: Rc<RefCell<Option<String>>>,
@@ -48,6 +56,38 @@ pub struct LocalGame {
     /// `SV_SendClientMessages` sends them).
     sent_messages: Vec<Vec<u8>>,
     sent_sounds: Vec<crate::game_iface::SoundEvent>,
+    /// The save slots (C `save/`).
+    saves: SaveFiles,
+    /// Whether the game data has `maps/<map>.bsp`, as the platform tells
+    /// it; a load of a save for a missing map is refused.
+    has_map: Box<dyn Fn(&str) -> bool>,
+    /// A `load` waiting for its map.
+    loading: Option<Load>,
+    /// `save`, `load` and `menu_loadgame`, as the console queued
+    /// them, for `run_server_commands`.
+    server_commands: Rc<RefCell<Vec<Vec<String>>>>,
+    /// The local client's userinfo, kept for its reconnect after a load.
+    userinfo: String,
+}
+
+/// How a `load` brings its level back (C `SV_CheckForSavegame`'s
+/// `isautosave`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Load {
+    /// An autosave (`save0` or `current`): the level runs ten seconds
+    /// first, as a revisit does.
+    Revisit,
+    /// Any other slot: the level comes back as it was saved.
+    Exact,
+}
+
+/// A game as C `SV_InitGameProgs` starts one: one client, `Init` run.
+fn new_game(gi: &Rc<ServerGameImport>) -> Box<dyn GameExport> {
+    let mut world = GameWorld::new(gi.clone(), MAX_EDICTS);
+    world.set_max_clients(1);
+    let mut game: Box<dyn GameExport> = Box::new(world);
+    game.init();
+    game
 }
 
 impl LocalGame {
@@ -60,18 +100,11 @@ impl LocalGame {
     /// `start` with the local client's `userinfo` (C `hand` and the like).
     pub fn start_with_userinfo(map_name: &str, bsp: &[u8], userinfo: &str) -> Q2Result<Self> {
         let gi = Rc::new(ServerGameImport::new());
-        let mut world = GameWorld::new(gi.clone(), MAX_EDICTS);
-        world.set_max_clients(1);
-        let mut game: Box<dyn GameExport> = Box::new(world);
-        game.init();
+        let game = new_game(&gi);
         let mut svs = ServerStatic::default();
         svs.init_game(1);
-        let mut sv = Server::default();
-        sv.map(&mut svs, map_name, bsp, "", &gi, game.as_mut())?;
-        svs.connect_local_client(game.as_mut(), userinfo)?;
-        sv.drop_on_game_error(&gi)?;
-        gi.set_client_states(svs.clients.iter().map(|client| client.state));
         let next_map = Rc::new(RefCell::new(None));
+        let server_commands = Rc::new(RefCell::new(Vec::new()));
         let mut cmd = CmdSystem::new();
         let requested = next_map.clone();
         cmd.add_command("gamemap", move |args: &[&str]| {
@@ -79,8 +112,16 @@ impl LocalGame {
                 *requested.borrow_mut() = Some((*map).to_string());
             }
         });
+        for name in ["save", "load", "menu_loadgame"] {
+            let queue = server_commands.clone();
+            cmd.add_command(name, move |args: &[&str]| {
+                let mut command = vec![name.to_string()];
+                command.extend(args.iter().map(|arg| arg.to_string()));
+                queue.borrow_mut().push(command);
+            });
+        }
         let mut local = Self {
-            sv,
+            sv: Server::default(),
             svs,
             gi,
             game,
@@ -90,9 +131,67 @@ impl LocalGame {
             client_frame: Vec::new(),
             sent_messages: Vec::new(),
             sent_sounds: Vec::new(),
+            saves: SaveFiles::default(),
+            has_map: Box::new(|_| true),
+            loading: None,
+            server_commands,
+            userinfo: userinfo.to_string(),
         };
+        // C `map` (SV_Map_f) wipes `current`; entering the level writes
+        // the autosave before the client connects (SV_GameMap_f).
+        local.sv.map(
+            &mut local.svs,
+            map_name,
+            bsp,
+            "",
+            &local.gi,
+            local.game.as_mut(),
+        )?;
+        local.svs.mapcmd = map_name.to_string();
+        local.autosave()?;
+        local
+            .svs
+            .connect_local_client(local.game.as_mut(), userinfo)?;
+        local.sv.drop_on_game_error(&local.gi)?;
+        local
+            .gi
+            .set_client_states(local.svs.clients.iter().map(|client| client.state));
         local.send_client_frame();
         Ok(local)
+    }
+
+    /// The autosave on entering a level (C SV_GameMap_f's
+    /// `SV_WriteServerFile(true)` and copy to `save0`).
+    fn autosave(&mut self) -> Q2Result<()> {
+        self.write_server_file(true)?;
+        self.saves.copy("current", "save0");
+        Ok(())
+    }
+
+    /// Run console text (C `Cbuf_AddText` then `Cbuf_Execute`): the
+    /// server's `save <slot>` and `load <slot>` (C SV_Savegame_f and
+    /// SV_Loadgame_f, which default.cfg binds to F6 and F9), and `gamemap`. A
+    /// load queues its level for `take_map_change`. A `Com_Error` while
+    /// saving or loading ends the server and is returned.
+    pub fn console(&mut self, text: &str) -> Q2Result<()> {
+        self.cmd.cbuf_add_text(&format!("{text}\n"));
+        self.cmd.cbuf_execute();
+        self.run_server_commands()
+    }
+
+    /// Whether console `text` is a server command (`gamemap`, `save`,
+    /// `load`, `menu_loadgame`) for `console`. C's console forwards any
+    /// other to the game, as `client_command`.
+    pub fn is_server_command(&self, text: &str) -> bool {
+        text.split_whitespace()
+            .next()
+            .is_some_and(|name| self.cmd.exists(name))
+    }
+
+    /// Tell the server which maps the game data holds (C reads the
+    /// filesystem), so a load of another game data's save is refused.
+    pub fn set_has_map(&mut self, has_map: impl Fn(&str) -> bool + 'static) {
+        self.has_map = Box::new(has_map);
     }
 
     /// Run a console command as the local player's (C
@@ -190,7 +289,7 @@ impl LocalGame {
             self.cmd.cbuf_add_text(&commands);
             self.cmd.cbuf_execute();
         }
-        Ok(())
+        self.run_server_commands()
     }
 
     /// The level string a game `gamemap` command (C `ExitLevel`) asked
@@ -236,7 +335,17 @@ impl LocalGame {
     /// `Q2Error::Drop`, leaving the current map running where C would end
     /// the server (`killserver`) after the movie.
     pub fn change_map(&mut self, level: &MapRequest, bsp: &[u8]) -> Q2Result<()> {
-        if matches!(level.kind, LevelKind::Game | LevelKind::Pic) {
+        let loading = self.loading.take();
+        if loading.is_none() {
+            // C SV_GameMap_f: a new unit wipes the levels kept in `current`;
+            // otherwise the level being left is kept, without the player.
+            if level.level().starts_with('*') {
+                self.saves.wipe("current");
+            } else if self.sv.state == ServerState::Game {
+                self.write_level_file(false)?;
+            }
+        }
+        if matches!(level.kind(), LevelKind::Game | LevelKind::Pic) {
             // C's client parses the old level's last messages before the
             // new `svc_serverdata`, and CL_ClearState then clears the
             // effects they started (CL_ClearEffects, CL_ClearTEnts) and
@@ -246,38 +355,60 @@ impl LocalGame {
             self.gi.take_messages();
             self.gi.take_sounds();
         }
-        match level.kind {
+        match level.kind() {
             LevelKind::Game => self.sv.map(
                 &mut self.svs,
-                &level.map,
+                level.map(),
                 bsp,
-                &level.spawnpoint,
+                level.spawnpoint(),
                 &self.gi,
                 self.game.as_mut(),
             )?,
             LevelKind::Pic => self.sv.pic(
                 &mut self.svs,
-                &level.map,
-                &level.spawnpoint,
+                level.map(),
+                level.spawnpoint(),
                 &self.gi,
                 self.game.as_mut(),
             )?,
             LevelKind::Cinematic | LevelKind::Demo => {
-                if let Some(next) = &level.next_server {
-                    *self.next_map.borrow_mut() = Some(next.clone());
+                if let Some(next) = level.next_server() {
+                    *self.next_map.borrow_mut() = Some(next.to_string());
                     return Ok(());
                 }
                 return Err(Q2Error::Drop(format!(
                     "{}: cinematic and demo playback is not supported",
-                    level.map
+                    level.map()
                 )));
             }
         }
         // C SV_SpawnServer resets `svs.realtime`; the old map's leftover
         // sub-millisecond time goes with it.
         self.pending_us = 0;
-        if level.kind == LevelKind::Game {
-            self.svs.begin_connected_clients(self.game.as_mut());
+        if level.kind() == LevelKind::Game {
+            self.check_for_savegame(loading)?;
+        }
+        if loading.is_none() {
+            self.svs.mapcmd = level.level().to_string();
+            self.autosave()?;
+        }
+        if level.kind() == LevelKind::Game {
+            // A load's C SV_InitGame dropped the client; it connects again
+            // and takes the body the level kept for it. Its level can be a
+            // movie first (C plays it and its `gamemap` is a plain one), so
+            // the drop is read from the slot, not from `loading`.
+            let dropped = self
+                .svs
+                .clients
+                .first()
+                .is_some_and(|client| client.state == ClientState::Free);
+            if dropped {
+                let userinfo = self.userinfo.clone();
+                self.svs
+                    .connect_local_client(self.game.as_mut(), &userinfo)?;
+            } else {
+                self.svs.begin_connected_clients(self.game.as_mut());
+            }
             self.sv.drop_on_game_error(&self.gi)?;
             self.gi
                 .set_client_states(self.svs.clients.iter().map(|client| client.state));
@@ -378,6 +509,11 @@ mod tests {
             client_frame: Vec::new(),
             sent_messages: Vec::new(),
             sent_sounds: Vec::new(),
+            saves: SaveFiles::default(),
+            has_map: Box::new(|_| true),
+            loading: None,
+            server_commands: Rc::default(),
+            userinfo: String::new(),
         };
         (local, thinks, commands)
     }

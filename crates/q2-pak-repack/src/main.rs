@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     fs,
     io::{self, Write},
@@ -14,8 +14,10 @@ use std::{
     about = "Repack a Q2 PAK and optionally Brotli-compress it for web delivery"
 )]
 struct Args {
-    #[arg(long, value_name = "PATH")]
-    r#in: PathBuf,
+    /// A pak to read; repeat it to merge several (pak0, pak1, ...), a later
+    /// one's file replacing an earlier one's of the same name.
+    #[arg(long, value_name = "PATH", required = true)]
+    r#in: Vec<PathBuf>,
 
     #[arg(long, value_name = "PATH")]
     out: PathBuf,
@@ -45,14 +47,31 @@ fn main() -> Result<()> {
 fn run(args: &Args) -> Result<()> {
     let allowlist = args.allow.as_deref().map(parse_allowlist).transpose()?;
 
-    let src = fs::read(&args.r#in).with_context(|| format!("reading {}", args.r#in.display()))?;
+    let paks = args
+        .r#in
+        .iter()
+        .map(|path| {
+            let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            Ok((path.as_path(), bytes))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let src = match paks.as_slice() {
+        [(_, one)] => one.clone(),
+        _ => merge(&paks)?,
+    };
+    let inputs = args
+        .r#in
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let out = repack(&src, allowlist.as_ref())?;
     if allowlist.is_some() && entry_count(&out) == 0 && entry_count(&src) > 0 {
         bail!(
             "--allow {:?} matched no file in {}",
             args.allow.as_deref().unwrap_or_default(),
-            args.r#in.display()
+            inputs
         );
     }
 
@@ -191,6 +210,54 @@ fn write_brotli<W: Write>(data: &[u8], w: &mut W) -> Result<()> {
     Ok(())
 }
 
+/// One pak holding every file of `paks`, where a later pak's file replaces
+/// an earlier one's of the same name (C searches the highest-numbered pak
+/// first, and compares names without case). Each replaced file keeps the
+/// place of the first. Each pak's path names it in errors.
+pub fn merge(paks: &[(&Path, Vec<u8>)]) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    data.extend_from_slice(PAK_MAGIC);
+    data.extend_from_slice(&[0u8; 8]);
+    let mut order: Vec<String> = Vec::new();
+    let mut entries: HashMap<String, ([u8; NAME_LEN], usize, usize)> = HashMap::new();
+    for (path, pak) in paks {
+        // `repack` validates the pak and packs its files after its header.
+        let pak = repack(pak, None).with_context(|| format!("reading {}", path.display()))?;
+        // C takes the first of a name repeated within one pak.
+        let mut this_pak = HashSet::new();
+        let base = data.len();
+        data.extend_from_slice(&pak[HEADER_LEN..]);
+        let dir_offset = u32::from_le_bytes(pak[4..8].try_into().unwrap()) as usize;
+        for i in 0..entry_count(&pak) {
+            let (raw_name, offset, size) = dir_entry(&pak, dir_offset, i);
+            let (offset, size) = (offset as usize, size as usize);
+            let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
+            let key = String::from_utf8_lossy(&raw_name[..name_end]).to_ascii_lowercase();
+            if !this_pak.insert(key.clone()) {
+                continue;
+            }
+            if !entries.contains_key(&key) {
+                order.push(key.clone());
+            }
+            entries.insert(key, (raw_name, base + offset - HEADER_LEN, size));
+        }
+    }
+    let dir_offset = data.len();
+    for key in &order {
+        let (raw_name, offset, size) = entries[key];
+        let to_u32 =
+            |n: usize| u32::try_from(n).map_err(|_| anyhow::anyhow!("merged pak exceeds 4 GB"));
+        data.extend_from_slice(&raw_name);
+        data.extend_from_slice(&to_u32(offset)?.to_le_bytes());
+        data.extend_from_slice(&to_u32(size)?.to_le_bytes());
+    }
+    let dir_len = order.len() * ENTRY_SIZE;
+    data[4..8].copy_from_slice(&u32::try_from(dir_offset)?.to_le_bytes());
+    data[8..12].copy_from_slice(&u32::try_from(dir_len)?.to_le_bytes());
+    // Pack the files the directory still names, dropping replaced ones.
+    repack(&data, None)
+}
+
 /// Repack a Q2 PAK, optionally filtering to an extension allowlist.
 ///
 /// `allowlist = None` means keep every file.
@@ -232,18 +299,7 @@ fn repack_with_limit(
     let mut out_len = HEADER_LEN;
 
     for i in 0..num_files {
-        let base = dir_offset + i * ENTRY_SIZE;
-        let raw_name: [u8; NAME_LEN] = src[base..base + NAME_LEN].try_into().unwrap();
-        let offset = u32::from_le_bytes(
-            src[base + NAME_LEN..base + NAME_LEN + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let size = u32::from_le_bytes(
-            src[base + NAME_LEN + 4..base + ENTRY_SIZE]
-                .try_into()
-                .unwrap(),
-        );
+        let (raw_name, offset, size) = dir_entry(src, dir_offset, i);
 
         let name_end = raw_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
         let name = String::from_utf8_lossy(&raw_name[..name_end]);
@@ -301,6 +357,16 @@ fn repack_with_limit(
     Ok(out)
 }
 
+/// Directory entry `i` of `pak` as (name, offset, size). The caller has
+/// checked that the directory at `dir_offset` lies inside `pak`.
+fn dir_entry(pak: &[u8], dir_offset: usize, i: usize) -> ([u8; NAME_LEN], u32, u32) {
+    let entry = &pak[dir_offset + i * ENTRY_SIZE..][..ENTRY_SIZE];
+    let raw_name = entry[..NAME_LEN].try_into().unwrap();
+    let offset = u32::from_le_bytes(entry[NAME_LEN..NAME_LEN + 4].try_into().unwrap());
+    let size = u32::from_le_bytes(entry[NAME_LEN + 4..].try_into().unwrap());
+    (raw_name, offset, size)
+}
+
 fn entry_count(pak: &[u8]) -> usize {
     if pak.len() < HEADER_LEN {
         return 0;
@@ -355,23 +421,44 @@ mod tests {
         let num = dir_len / ENTRY_SIZE;
         let mut entries = Vec::new();
         for i in 0..num {
-            let base = dir_offset + i * ENTRY_SIZE;
-            let name_bytes = &pak[base..base + NAME_LEN];
+            let (name_bytes, offset, size) = dir_entry(pak, dir_offset, i);
             let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
             let name = std::str::from_utf8(&name_bytes[..end]).unwrap().to_string();
-            let offset = u32::from_le_bytes(
-                pak[base + NAME_LEN..base + NAME_LEN + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let size = u32::from_le_bytes(
-                pak[base + NAME_LEN + 4..base + NAME_LEN + 8]
-                    .try_into()
-                    .unwrap(),
-            );
             entries.push((name, offset, size));
         }
         entries
+    }
+
+    /// `name`'s bytes in `pak`, by the first directory entry.
+    fn file<'a>(pak: &'a [u8], name: &str) -> &'a [u8] {
+        let (_, offset, size) = parse_dir(pak)
+            .into_iter()
+            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+            .expect("file in the pak");
+        &pak[offset as usize..][..size as usize]
+    }
+
+    #[test]
+    fn merge_lets_a_later_pak_replace_a_file_of_any_case() {
+        let pak0 = make_pak(&[("maps/base1.bsp", b"OLD"), ("pics/a.pcx", b"A")]);
+        let pak1 = make_pak(&[("MAPS/BASE1.BSP", b"NEW")]);
+        let merged =
+            merge(&[(Path::new("pak0.pak"), pak0), (Path::new("pak1.pak"), pak1)]).unwrap();
+        assert_eq!(parse_dir(&merged).len(), 2, "one entry each");
+        assert_eq!(file(&merged, "maps/base1.bsp"), b"NEW");
+        assert_eq!(file(&merged, "pics/a.pcx"), b"A");
+    }
+
+    #[test]
+    fn merge_keeps_the_first_of_a_name_repeated_inside_one_pak() {
+        // C FS_FOpenFile takes the first match in a pak's directory.
+        let pak = make_pak(&[("a.cfg", b"FIRST"), ("a.cfg", b"SECOND")]);
+        let merged = merge(&[
+            (Path::new("pak0.pak"), pak),
+            (Path::new("pak1.pak"), make_pak(&[("b.cfg", b"B")])),
+        ])
+        .unwrap();
+        assert_eq!(file(&merged, "a.cfg"), b"FIRST");
     }
 
     #[test]
@@ -693,6 +780,46 @@ mod tests {
     }
 
     #[test]
+    fn later_paks_override_earlier_files_and_add_their_own() {
+        // C searches the highest-numbered pak first, so pak1's copy of a
+        // file wins over pak0's. Names compare without case, as C's do.
+        let dir = tempfile::tempdir().unwrap();
+        let pak0 = dir.path().join("pak0.pak");
+        let pak1 = dir.path().join("pak1.pak");
+        fs::write(
+            &pak0,
+            make_pak(&[("maps/base1.bsp", b"OLD"), ("pics/a.pcx", b"PCX")]),
+        )
+        .unwrap();
+        fs::write(
+            &pak1,
+            make_pak(&[("MAPS/BASE1.BSP", b"NEW"), ("maps/q2dm1.bsp", b"DM")]),
+        )
+        .unwrap();
+        let out = dir.path().join("pak0-web.pak");
+        let args = Args::try_parse_from([
+            "q2-pak-repack",
+            "--in",
+            pak0.to_str().unwrap(),
+            "--in",
+            pak1.to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .unwrap();
+
+        run(&args).unwrap();
+        assert_eq!(
+            fs::read(&out).unwrap(),
+            make_pak(&[
+                ("MAPS/BASE1.BSP", b"NEW"),
+                ("pics/a.pcx", b"PCX"),
+                ("maps/q2dm1.bsp", b"DM")
+            ])
+        );
+    }
+
+    #[test]
     fn run_writes_filtered_pak_and_brotli_variant() {
         let dir = tempfile::tempdir().unwrap();
         let files: &[(&str, &[u8])] = &[("maps/q2dm1.bsp", b"BSP"), ("sound/a.wav", b"WAV")];
@@ -731,9 +858,21 @@ mod tests {
     fn run_names_the_missing_input() {
         let dir = tempfile::tempdir().unwrap();
         let mut args = cli(dir.path(), &[], &[]);
-        args.r#in = dir.path().join("absent.pak");
+        args.r#in = vec![dir.path().join("absent.pak")];
         let err = format!("{:#}", run(&args).unwrap_err());
         assert!(err.contains("absent.pak"), "{err}");
+    }
+
+    #[test]
+    fn run_names_the_bad_pak_among_several_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut args = cli(dir.path(), &[("a.cfg", b"A")], &[]);
+        let bad = dir.path().join("bad.pak");
+        fs::write(&bad, b"not a pak").unwrap();
+        args.r#in.push(bad);
+        let err = format!("{:#}", run(&args).unwrap_err());
+        assert!(err.contains("bad.pak"), "{err}");
+        assert!(err.contains("bad magic"), "{err}");
     }
 
     #[test]

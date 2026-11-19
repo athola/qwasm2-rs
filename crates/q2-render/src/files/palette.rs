@@ -61,8 +61,8 @@ impl Palette {
 /// Split exactly 768 bytes into 256 RGB triples.
 pub(crate) fn rgb_entries(raw: &[u8]) -> [[u8; 3]; 256] {
     let mut entries = [[0u8; 3]; 256];
-    for (entry, rgb) in entries.iter_mut().zip(raw.chunks_exact(3)) {
-        entry.copy_from_slice(rgb);
+    for (entry, rgb) in entries.iter_mut().zip(raw.as_chunks::<3>().0) {
+        *entry = *rgb;
     }
     entries
 }

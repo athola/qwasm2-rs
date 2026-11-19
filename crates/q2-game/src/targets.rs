@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 /// Blast at the target: explosion effect, radius damage, then its own
 /// targets. C ref: `target_explosion_explode`.
-fn target_explosion_explode(world: &mut GameWorld, self_key: EntityKey) {
+pub(crate) fn target_explosion_explode(world: &mut GameWorld, self_key: EntityKey) {
     let Some(ent) = world.entities.get(self_key) else {
         return;
     };
@@ -58,7 +58,7 @@ fn target_explosion_explode(world: &mut GameWorld, self_key: EntityKey) {
 }
 
 /// C ref: `use_target_explosion`.
-fn target_explosion_use(
+pub(crate) fn target_explosion_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -80,7 +80,7 @@ fn target_explosion_use(
 /// target_changelevel — exit to the next map through the intermission.
 /// A deathmatch exit kills whoever touches it unless `DF_ALLOW_EXIT`.
 /// C ref: `use_target_changelevel` (g_target.c).
-fn target_changelevel_use(
+pub(crate) fn target_changelevel_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     other: EntityKey,
@@ -174,7 +174,7 @@ pub fn finish_target_help(
     }
 }
 
-fn target_help_use(
+pub(crate) fn target_help_use(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -195,7 +195,7 @@ fn target_help_use(
 /// Looping speakers toggle; others play their sound once.
 /// C ref: `Use_Target_Speaker`. The one-shot sound is positioned at the
 /// speaker, which is invisible and so never sent to clients.
-fn target_speaker_use(
+pub(crate) fn target_speaker_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -235,7 +235,7 @@ fn target_speaker_use(
 
 /// Play the secret sound, count the secret, fire the targets and go.
 /// C ref: `use_target_secret`.
-fn target_secret_use(
+pub(crate) fn target_secret_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -249,7 +249,7 @@ fn target_secret_use(
 
 /// As `target_secret_use`, and the last goal found stops the CD track.
 /// C ref: `use_target_goal`.
-fn target_goal_use(
+pub(crate) fn target_goal_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -282,7 +282,7 @@ const LASER_ON: i32 = 1;
 /// is neither a monster nor a player, spark there when the beam moved,
 /// and end the beam (`old_origin`) where it stopped. A laser with a
 /// target aims at its center. C ref: `target_laser_think`.
-fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
+pub(crate) fn target_laser_think(world: &mut GameWorld, self_key: EntityKey) {
     let enemy_point = world
         .entities
         .get(self_key)
@@ -400,7 +400,7 @@ fn target_laser_off(world: &mut GameWorld, self_key: EntityKey) {
 }
 
 /// Toggle the laser for `activator`. C ref: `target_laser_use`.
-fn target_laser_use(
+pub(crate) fn target_laser_use(
     world: &mut GameWorld,
     self_key: EntityKey,
     _other: EntityKey,
@@ -421,7 +421,7 @@ fn target_laser_use(
 /// spawnflags pick (2 red, 4 green, 8 blue, 16 yellow, 32 orange; four
 /// palette indices packed in `skinnum`), aimed at its target or along its
 /// angles, on when spawnflag 1 is set. C ref: `target_laser_start`.
-fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
+pub(crate) fn target_laser_start(world: &mut GameWorld, self_key: EntityKey) {
     let target_name = world
         .entities
         .get(self_key)
@@ -507,7 +507,7 @@ pub fn finish_target_laser(
 }
 
 /// Send the `style` temp entity at the target. C ref: `Use_Target_Tent`.
-fn use_target_tent(
+pub(crate) fn use_target_tent(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -522,7 +522,7 @@ fn use_target_tent(
 
 /// A `count`-particle splash of color `sounds` along `movedir`, and
 /// radius damage when `dmg` is set. C ref: `use_target_splash`.
-fn use_target_splash(
+pub(crate) fn use_target_splash(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -554,7 +554,7 @@ fn use_target_splash(
 /// Spawn an entity of the classname in `target` at the spawner, telefrag
 /// what it lands in, and launch it along `movedir` when `speed` is set.
 /// C ref: `use_target_spawner`.
-fn use_target_spawner(
+pub(crate) fn use_target_spawner(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -603,7 +603,7 @@ fn use_target_spawner(
 /// Fire a blaster bolt along `movedir`. C passes `MOD_TARGET_BLASTER` in
 /// fire_blaster's `hyper` slot, so the bolt counts as a hyperblaster's.
 /// C ref: `use_target_blaster`.
-fn use_target_blaster(
+pub(crate) fn use_target_blaster(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -635,7 +635,7 @@ fn use_target_blaster(
 
 /// Set the unit's cross-level flags, fire the targets and go.
 /// C ref: `trigger_crosslevel_trigger_use`.
-fn trigger_crosslevel_trigger_use(
+pub(crate) fn trigger_crosslevel_trigger_use(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -650,7 +650,7 @@ fn trigger_crosslevel_trigger_use(
 /// Once the level has started, fire the targets (as their own activator)
 /// if every flag this target names was set earlier in the unit.
 /// C ref: `target_crosslevel_target_think`.
-fn target_crosslevel_target_think(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn target_crosslevel_target_think(world: &mut GameWorld, key: EntityKey) {
     let flags = world.entities.get(key).map_or(0, |e| e.game.spawnflags);
     if flags == world.game.serverflags & SFL_CROSS_TRIGGER_MASK & flags {
         world.use_targets(key, key);
@@ -664,7 +664,7 @@ const LIGHTRAMP_TOGGLE: i32 = 1;
 /// Write the ramp's current letter to the light's style, a frame at a time
 /// for `speed` seconds. `movedir` holds the start and end letters (from
 /// 'a') and the step per frame. C ref: `target_lightramp_think`.
-fn target_lightramp_think(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn target_lightramp_think(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let Some(ent) = world.entities.get(key) else {
         return;
@@ -701,7 +701,7 @@ fn target_lightramp_think(world: &mut GameWorld, key: EntityKey) {
 
 /// Find the light on first use (complaining about targets that are not
 /// lights), then start the ramp. C ref: `target_lightramp_use`.
-fn target_lightramp_use(
+pub(crate) fn target_lightramp_use(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,
@@ -756,7 +756,7 @@ fn target_lightramp_use(
 
 /// Rumble every half second and throw every client standing on something,
 /// each frame until `timestamp`. C ref: `target_earthquake_think`.
-fn target_earthquake_think(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn target_earthquake_think(world: &mut GameWorld, key: EntityKey) {
     let time = world.level.time;
     let Some(number) = world.number_of(key) else {
         return;
@@ -803,7 +803,7 @@ fn target_earthquake_think(world: &mut GameWorld, key: EntityKey) {
 }
 
 /// Start a `count`-second quake next frame. C ref: `target_earthquake_use`.
-fn target_earthquake_use(
+pub(crate) fn target_earthquake_use(
     world: &mut GameWorld,
     key: EntityKey,
     _other: EntityKey,

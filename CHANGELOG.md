@@ -2,6 +2,76 @@
 
 All notable changes to qwasm2-rs are documented here.
 
+## [Unreleased]
+
+### Changed (breaking)
+- `GameExport` gains the required `write_game`, `read_game`,
+  `write_level`, `read_level`, `check_game` and `check_level` (C
+  `WriteGame`/`ReadGame`/`WriteLevel`/`ReadLevel`), so the server can save
+  without naming the game's types
+- `q2_server::MapRequest`'s fields are private; read them through
+  `level()`, `map()`, `spawnpoint()`, `next_server()` and `kind()`
+
+### Added
+- Save and load (#15): `save <slot>` and `load <slot>` as C registers
+  them, the death menu's `menu_loadgame`, a unit's levels keeping their
+  state between visits, and the autosave written on entering a level.
+  Files are postcard with a version header; entity callbacks and monster
+  moves are saved by name from tables `build.rs` generates, so a save
+  survives a rebuild. A damaged or incomplete save is refused with a
+  message instead of ending the game
+- In the browser, F6 quick-saves, F9 quick-loads and F3 loads the newest
+  save (#21). Saves live in IndexedDB, so they and the last autosave
+  outlive a page reload; the page restores only slots the current pak
+  can load. Each save is stored in one transaction, one tab at a time
+  uses the store, and a store that cannot be read or written says so on
+  the page
+- `make play-retail` builds one web pak from your own retail paks in
+  `gamedata/retail/baseq2` (`q2-pak-repack` merges several paks) and the
+  devserver serves that directory; nothing from it is committed or
+  copied into `dist/`
+- yquake2's 12 `.ent` map fixes (monster counts, broken spawn chains,
+  biggun's `target_actor`) load in place of those maps' entities;
+  `sv_entfile 0` turns them off
+- The `kill` command (C `Cmd_Kill_f`), and console commands the page
+  sends to the engine
+- `SV_CreateBaseline`: the spawned map's visible edicts become entity
+  baselines (#11)
+- `q2_common::keys` holds Quake 2's key numbers, so `q2-client` reads
+  them without depending on `q2-platform`
+
+### Changed
+- The client's input and view math (C `CL_AdjustAngles`, the keys of
+  `CL_BaseMove`, `CL_FinishMove`, `CalcFov`) moved from `q2-wasm` into
+  `q2-client`
+- Toolchain Rust 1.100.0, wasm-pack 0.15.1 and wasm-bindgen 0.2.130;
+  glam 0.34, glow 0.18, syn 3, brotli 9, tower-http 0.7 and base64 0.23.
+  `npm audit` reports no advisories in the browser test tooling
+- `q2-wasm` declares `q2-render` and `wasm-bindgen-futures` for the
+  wasm32 target only
+
+### Fixed
+- The random sequence's low bits cycled every 512 and 1024 calls, so
+  coin flips repeated on a short period; the output now passes through
+  the murmur3 finalizer
+- Friction, gravity and turret turns step in double precision as C does
+- An entity search continues past an entity whose number was reused
+- `game.autosaved` clears when an intermission begins
+- Layouts and center prints cut at 1023 characters as in C, and a demo's
+  player is frozen instead of predicted
+- q2-render confines `unsafe` to `gl3` and refuses a BSP node whose
+  child does not follow it
+- A game map's name is matched in the pak's lower case
+- `q2-pak-repack` keeps the first of a name repeated in one pak
+- The devserver refuses requests naming a non-loopback host, or a Host
+  header that is not readable text
+- `sv_noreload 1` spawns a visited level fresh, as in C
+- `q2-pak-repack` names the input pak that fails to parse in a merge
+- A repack killed mid-write no longer leaves a truncated pak that make
+  serves, the retail pak rebuilds when its pak list changes, `PORT` from
+  the environment is honored, and Playwright starts its own server
+  instead of reusing whatever holds the port
+
 ## [0.1.3] - 2026-11-16
 
 ### Changed (breaking)

@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
+import { frames, LOADING, press, send, stored } from './helpers';
 
 // dist/qwasm2.html is served by the webServer in playwright.config.ts. That
 // server has no /gamedata, so start_game ends with the pak fetch 404 unless a
@@ -79,6 +80,24 @@ test.describe('Qwasm2 WASM Module', () => {
     await page.evaluate(() => (window as unknown as { copyLog: () => void }).copyLog());
     await expect(page.locator('#status-toolbar button').first()).toHaveText('Copy failed');
     expect(rejections).toEqual([]);
+  });
+
+  test('CP-0: A save store that will not open is reported on the page', async ({ page }) => {
+    await page.addInitScript(() => {
+      indexedDB.open = () => { throw new DOMException('storage denied', 'SecurityError'); };
+    });
+    await loadUntilSettled(page);
+    await expect(page.locator('#status .fail').first())
+      .toHaveText(/saves will last only this visit.*storage denied/i);
+  });
+
+  test('CP-0: A second tab keeps its saves for the visit and says so', async ({ page, context }) => {
+    await loadUntilSettled(page);
+    const second = await context.newPage();
+    await loadUntilSettled(second);
+    await expect(second.locator('#status .fail').first())
+      .toHaveText(/saves will last only this visit.*another tab/i);
+    await expect(page.locator('#status')).not.toContainText('another tab');
   });
 });
 
@@ -266,9 +285,24 @@ test.describe('Qwasm2 with the demo pak', () => {
     // The engine reports the context's first state; browsers may start it
     // suspended until a user gesture.
     await expect(page.locator('#status')).toContainText(/Audio: context (suspended|running)/);
+    const audioAt = (text: string | null, state: string) =>
+      (text ?? '').lastIndexOf(`Audio: context ${state}`);
+    const first = await page.locator('#status').textContent();
     // Off-center: the "Click to play" prompt sits over the canvas middle.
     await page.locator('#canvas').click({ position: { x: 10, y: 10 } });
-    await expect(page.locator('#status')).toContainText('Audio: context running');
+    if (audioAt(first, 'suspended') >= 0) {
+      // The click is what started it: running is reported after suspended.
+      await expect.poll(async () => {
+        const text = await page.locator('#status').textContent();
+        return audioAt(text, 'running') > audioAt(text, 'suspended');
+      }).toBe(true);
+    } else {
+      test.info().annotations.push({
+        type: 'note',
+        description: 'this browser started audio unsuspended; the click was not needed',
+      });
+      await expect(page.locator('#status')).toContainText('Audio: context running');
+    }
 
     // Frames with sound mixing on.
     await page.evaluate(() => new Promise<void>(resolve => {
@@ -277,5 +311,162 @@ test.describe('Qwasm2 with the demo pak', () => {
       requestAnimationFrame(step);
     }));
     expect(errors.filter(e => !e.url.endsWith('/favicon.ico'))).toEqual([]);
+  });
+});
+
+test.describe('Qwasm2 saves with the demo pak', () => {
+  test.skip(!process.env.CI && !fs.existsSync(DEMO_PAK),
+    'gamedata/baseq2/pak0.pak not installed (make gamedata)');
+
+  /// The page's console lines, where the server's save prints go.
+  let lines: string[] = [];
+  const since = (before: number) => lines.slice(before).join('\n');
+
+  test.beforeEach(async ({ page }) => {
+    const pageLines: string[] = [];
+    lines = pageLines;
+    page.on('console', msg => pageLines.push(msg.text()));
+    await page.route(`**${PAK_PATH}`, route => route.fulfill({ path: DEMO_PAK }));
+  });
+
+  async function ready(page: Page) {
+    await expect(page.locator('#status')).toContainText(/ERROR:|engine running/, { timeout: 60000 });
+    await expect(page.locator('#status .fail')).toHaveCount(0);
+    await frames(page, 10);
+  }
+
+  async function save(page: Page, run: () => Promise<void>) {
+    const before = lines.length;
+    await run();
+    await expect.poll(() => since(before)).toMatch(/Saving game\.\.\.[\s\S]*Done\./);
+  }
+
+  /// F9 after a reload: only the kept quick save can be loaded.
+  async function quickLoad(page: Page) {
+    const before = lines.length;
+    await press(page, 'F9');
+    await expect.poll(() => since(before), { timeout: 60000 })
+      .toMatch(new RegExp(`${LOADING}Level exit to \\*?demo1\\b`));
+  }
+
+  test('CP-6: A quick save outlives a page reload and loads back', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto(HTML_PATH);
+    await ready(page);
+    await save(page, () => press(page, 'F6'));
+    await stored(page);
+
+    await page.reload();
+    await ready(page);
+    await quickLoad(page);
+    await expect(page.locator('#status .fail')).toHaveCount(0);
+  });
+
+  test('CP-6: A malformed stored save is skipped and the game starts', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto(HTML_PATH);
+    await ready(page);
+    await page.evaluate(() => new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open('qwasm2-saves', 1);
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const tx = req.result.transaction('files', 'readwrite');
+        tx.objectStore('files').put(5, 'quick/server.ssv');
+        tx.oncomplete = () => { req.result.close(); resolve(); };
+        tx.onabort = () => reject(tx.error);
+      };
+    }));
+
+    const before = lines.length;
+    await page.reload();
+    await ready(page);
+    await expect(page.locator('#status')).toContainText('engine running');
+    expect(since(before)).toContain('quick/server.ssv');
+  });
+
+  test('CP-6: A save the store refuses is reported once and kept for the next write', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto(HTML_PATH);
+    await ready(page);
+    // The next two puts fail as a full disk does, each in its own batch.
+    await page.evaluate(() => {
+      const put = IDBObjectStore.prototype.put;
+      let refusals = 2;
+      IDBObjectStore.prototype.put = function (this: IDBObjectStore, ...args: [unknown, IDBValidKey?]) {
+        if (refusals > 0) {
+          refusals--;
+          throw new DOMException('disk full', 'QuotaExceededError');
+        }
+        return put.apply(this, args);
+      };
+    });
+    await save(page, () => press(page, 'F6'));
+    await stored(page);
+    await expect(page.locator('#status .fail')).toHaveCount(1);
+    await expect(page.locator('#status .fail')).toHaveText(/saves not kept.*disk full/i);
+    // Refused again: still one report.
+    await save(page, () => send(page, 'save other'));
+    await stored(page);
+    await expect(page.locator('#status .fail')).toHaveCount(1);
+
+    // A later slot's save carries the refused quick save with it.
+    await save(page, () => send(page, 'save third'));
+    await stored(page);
+    await expect(page.locator('#status .fail')).toHaveCount(1);
+
+    await page.reload();
+    await ready(page);
+    await quickLoad(page);
+  });
+
+  test('CP-6: Saves a throwing commit missed go with the next one', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.goto(HTML_PATH);
+    await ready(page);
+    await page.evaluate(() => {
+      const saves = (window as Window & { qwasm2Saves: { commit: (ops: unknown) => void } }).qwasm2Saves;
+      const commit = saves.commit;
+      let thrown = false;
+      saves.commit = function (ops: unknown) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error('store busy');
+        }
+        return commit.call(this, ops);
+      };
+    });
+    await save(page, () => press(page, 'F6'));
+    // The engine sends the changes again with the next frame's flush.
+    await frames(page, 2);
+    await stored(page);
+
+    await page.reload();
+    await ready(page);
+    await quickLoad(page);
+  });
+
+  test('CP-6: Saves the store could not read are not written over', async ({ page }) => {
+    test.setTimeout(120000);
+    await page.addInitScript(() => {
+      IDBObjectStore.prototype.openCursor = () => {
+        throw new DOMException('read failed', 'UnknownError');
+      };
+    });
+    await page.goto(HTML_PATH);
+    await expect(page.locator('#status')).toContainText('engine running', { timeout: 60000 });
+    await expect(page.locator('#status .fail').first()).toHaveText(/saved games not read.*read failed/i);
+    await frames(page, 10);
+    await save(page, () => press(page, 'F6'));
+    await stored(page);
+    const kept = await page.evaluate(() => new Promise<number>((resolve, reject) => {
+      const req = indexedDB.open('qwasm2-saves', 1);
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const count = req.result.transaction('files').objectStore('files').count();
+        count.onsuccess = () => resolve(count.result);
+        count.onerror = () => reject(count.error);
+      };
+    }));
+    expect(kept).toBe(0);
   });
 });

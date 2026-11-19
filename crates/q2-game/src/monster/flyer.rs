@@ -333,7 +333,9 @@ pub fn flyer_stand(world: &mut GameWorld, key: EntityKey) {
 /// `nextmove`, which only `flyer_setstart` sets and nothing calls that,
 /// so it stays `ACTION_nothing` and no move is chosen; those unreachable
 /// setters are not ported. C ref: `flyer_nextmove`.
-pub fn flyer_nextmove(_world: &mut GameWorld, _key: EntityKey) {}
+pub fn flyer_nextmove(_world: &mut GameWorld, _key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
+}
 
 /// A bolt from gun `flash` at the enemy's eye; frames attak204, attak207
 /// and attak210 fire hyperblaster ones. C ref: `flyer_fire`.

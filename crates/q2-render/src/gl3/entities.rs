@@ -471,7 +471,6 @@ fn draw_alias(scene: &EntityScene, entity: &RenderEntity, translucent: bool) {
         &scene.extra.alias_stream,
         &MeshDraw {
             vertices: &vertices,
-            vertex_count: i32::try_from(vertices.len() / ALIAS_VERTEX_FLOATS).unwrap_or(i32::MAX),
             texture: Some(texture),
             mvp: &mvp,
             blend: translucent,

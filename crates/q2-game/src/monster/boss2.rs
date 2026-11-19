@@ -46,7 +46,7 @@ const FRAME_DEATH2: i32 = 132;
 const FRAME_DEATH50: i32 = 180;
 
 static BOSS2_FRAMES_STAND: [MonsterFrame; 21] = [frame(ai::ai_stand, 0.0, None); 21];
-static BOSS2_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND30,
     lastframe: FRAME_STAND50,
     frames: &BOSS2_FRAMES_STAND,
@@ -54,7 +54,7 @@ static BOSS2_MOVE_STAND: MonsterMove = MonsterMove {
 };
 
 static BOSS2_FRAMES_WALK: [MonsterFrame; 20] = [frame(ai::ai_walk, 8.0, None); 20];
-static BOSS2_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK20,
     frames: &BOSS2_FRAMES_WALK,
@@ -62,7 +62,7 @@ static BOSS2_MOVE_WALK: MonsterMove = MonsterMove {
 };
 
 static BOSS2_FRAMES_RUN: [MonsterFrame; 20] = [frame(ai::ai_run, 8.0, None); 20];
-static BOSS2_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK20,
     frames: &BOSS2_FRAMES_RUN,
@@ -80,7 +80,7 @@ static BOSS2_FRAMES_ATTACK_PRE_MG: [MonsterFrame; 9] = [
     frame(ai::ai_charge, 1.0, None),
     frame(ai::ai_charge, 1.0, Some(boss2_attack_mg)),
 ];
-static BOSS2_MOVE_ATTACK_PRE_MG: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_ATTACK_PRE_MG: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK1,
     lastframe: FRAME_ATTACK9,
     frames: &BOSS2_FRAMES_ATTACK_PRE_MG,
@@ -95,7 +95,7 @@ static BOSS2_FRAMES_ATTACK_MG: [MonsterFrame; 6] = [
     frame(ai::ai_charge, 1.0, Some(boss2_machine_gun)),
     frame(ai::ai_charge, 1.0, Some(boss2_reattack_mg)),
 ];
-static BOSS2_MOVE_ATTACK_MG: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_ATTACK_MG: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK10,
     lastframe: FRAME_ATTACK15,
     frames: &BOSS2_FRAMES_ATTACK_MG,
@@ -103,7 +103,7 @@ static BOSS2_MOVE_ATTACK_MG: MonsterMove = MonsterMove {
 };
 
 static BOSS2_FRAMES_ATTACK_POST_MG: [MonsterFrame; 4] = [frame(ai::ai_charge, 1.0, None); 4];
-static BOSS2_MOVE_ATTACK_POST_MG: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_ATTACK_POST_MG: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK16,
     lastframe: FRAME_ATTACK19,
     frames: &BOSS2_FRAMES_ATTACK_POST_MG,
@@ -133,7 +133,7 @@ static BOSS2_FRAMES_ATTACK_ROCKET: [MonsterFrame; 21] = [
     frame(ai::ai_charge, 1.0, None),
     frame(ai::ai_charge, 1.0, None),
 ];
-static BOSS2_MOVE_ATTACK_ROCKET: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_ATTACK_ROCKET: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK20,
     lastframe: FRAME_ATTACK40,
     frames: &BOSS2_FRAMES_ATTACK_ROCKET,
@@ -141,7 +141,7 @@ static BOSS2_MOVE_ATTACK_ROCKET: MonsterMove = MonsterMove {
 };
 
 static BOSS2_FRAMES_PAIN_HEAVY: [MonsterFrame; 18] = [frame(ai::ai_move, 0.0, None); 18];
-static BOSS2_MOVE_PAIN_HEAVY: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_PAIN_HEAVY: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN2,
     lastframe: FRAME_PAIN19,
     frames: &BOSS2_FRAMES_PAIN_HEAVY,
@@ -149,7 +149,7 @@ static BOSS2_MOVE_PAIN_HEAVY: MonsterMove = MonsterMove {
 };
 
 static BOSS2_FRAMES_PAIN_LIGHT: [MonsterFrame; 4] = [frame(ai::ai_move, 0.0, None); 4];
-static BOSS2_MOVE_PAIN_LIGHT: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_PAIN_LIGHT: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN20,
     lastframe: FRAME_PAIN23,
     frames: &BOSS2_FRAMES_PAIN_LIGHT,
@@ -207,7 +207,7 @@ static BOSS2_FRAMES_DEATH: [MonsterFrame; 49] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, Some(boss_explode)),
 ];
-static BOSS2_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static BOSS2_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH2,
     lastframe: FRAME_DEATH50,
     frames: &BOSS2_FRAMES_DEATH,

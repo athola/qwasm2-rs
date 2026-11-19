@@ -19,6 +19,10 @@ const NUM_CON_TIMES: usize = 4;
 const CON_NOTIFYTIME_MS: i32 = 3000;
 /// How long a center print shows (C `scr_centertime` 2.5 s).
 const SCR_CENTERTIME_MS: i32 = 2500;
+/// C's `cl.layout` and `scr_centerstring` are `char[1024]` filled by
+/// `Q_strlcpy`.
+const TEXT_CHARS: usize = 1023;
+
 /// Characters per center-print line (C `SCR_DrawCenterString`).
 const CENTER_LINE: usize = 40;
 
@@ -36,6 +40,8 @@ pub struct ServerText {
     carriage_return: bool,
     /// The center print's lines as wire bytes, at most 40 each.
     center: Vec<Vec<u8>>,
+    /// C `scr_center_lines`: the lines of the uncut center print.
+    center_lines: usize,
     center_until: i32,
     /// The last `svc_layout` (C `cl.layout`), drawn while `STAT_LAYOUTS`
     /// bit 1 is set.
@@ -67,7 +73,8 @@ impl ServerText {
                 false
             }
             Ok(SvcOp::Layout) => {
-                self.layout = msg.read_string();
+                // C Q_strlcpy into cl.layout[1024].
+                self.layout = msg.read_string().chars().take(TEXT_CHARS).collect();
                 false
             }
             _ => false,
@@ -138,7 +145,10 @@ impl ServerText {
     /// so the count is C's `scr_center_lines`; C `SCR_DrawCenterString`
     /// draws at most 40 characters of each and skips the rest.
     fn center_print(&mut self, text: &str, now: i32) {
-        self.center = text
+        // C draws scr_centerstring[1024] but counts the uncut lines.
+        self.center_lines = 1 + text.matches('\n').count();
+        let cut: String = text.chars().take(TEXT_CHARS).collect();
+        self.center = cut
             .split('\n')
             .map(|line| wire_bytes(line).take(CENTER_LINE).collect())
             .collect();
@@ -157,6 +167,7 @@ impl ServerText {
         self.line_open = false;
         self.center.clear();
         self.center_until = 0;
+        self.center_lines = 0;
     }
 
     /// The notify lines (C `Con_DrawNotify`, one character in from the
@@ -174,7 +185,7 @@ impl ServerText {
             v += 8;
         }
         if now < self.center_until {
-            let mut y = if self.center.len() <= 4 {
+            let mut y = if self.center_lines <= 4 {
                 // C `(viddef.height * 0.35) / scale`, a double product.
                 (f64::from(height) * 0.35) as i32
             } else {
@@ -443,6 +454,30 @@ mod tests {
         m.extend_from_slice(b"xv 0 yv 0 string hi\0");
         text.message(&m, 0, 80);
         assert_eq!(text.layout, "xv 0 yv 0 string hi");
+    }
+
+    #[test]
+    fn a_layout_is_cut_to_cs_1023_characters() {
+        // C Q_strlcpy into cl.layout[1024].
+        let mut text = ServerText::default();
+        let mut m = vec![SvcOp::Layout as u8];
+        m.extend_from_slice("x".repeat(1100).as_bytes());
+        m.push(0);
+        text.message(&m, 0, 80);
+        assert_eq!(text.layout.len(), 1023);
+    }
+
+    #[test]
+    fn a_center_print_draws_its_first_1023_characters_placed_by_all_its_lines() {
+        // C copies 1023 characters into scr_centerstring and draws those,
+        // but counts scr_center_lines on the whole string.
+        let mut text = ServerText::default();
+        let long = format!("a\nb\n{}\nc\nd", "x".repeat(1100));
+        text.message(&center(&long), 0, 80);
+        let r = rows(&text.draws(640, 480, 0));
+        assert_eq!(r.len(), 3, "c and d are past the cut");
+        assert_eq!(r[2].1, "x".repeat(CENTER_LINE));
+        assert_eq!(r[0].0, 48, "five lines counted: near the top");
     }
 
     #[test]

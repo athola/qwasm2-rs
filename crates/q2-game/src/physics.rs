@@ -237,7 +237,7 @@ impl GameWorld {
             return;
         };
         // G_InitEdict sets gravity 1.0; trigger_gravity may set 0.
-        ent.velocity.z -= ent.game.gravity * DEFAULT_GRAVITY * FRAMETIME;
+        ent.velocity.z = gravity_velocity(ent.velocity.z, ent.game.gravity);
     }
 
     /// Apply friction to angular velocity, spinning entities to rest.
@@ -674,17 +674,14 @@ impl GameWorld {
         // Vertical friction for flying monsters given vertical velocity.
         if is_flying && ent.velocity.z != 0.0 {
             let speed = ent.velocity.z.abs();
-            let control = speed.max(STOPSPEED);
-            let newspeed = (speed - FRAMETIME * control * (FRICTION / 3.0)).max(0.0);
+            let newspeed = friction_speed(speed, f64::from(FRICTION) / 3.0);
             ent.velocity.z *= newspeed / speed;
         }
 
         // Vertical friction for swimming monsters.
         if is_swimming && ent.velocity.z != 0.0 {
             let speed = ent.velocity.z.abs();
-            let control = speed.max(STOPSPEED);
-            let newspeed =
-                (speed - FRAMETIME * control * WATERFRICTION * waterlevel as f32).max(0.0);
+            let newspeed = friction_speed(speed, f64::from(WATERFRICTION) * f64::from(waterlevel));
             ent.velocity.z *= newspeed / speed;
         }
 
@@ -700,8 +697,7 @@ impl GameWorld {
             if friction {
                 let speed = Vec3f::new(ent.velocity.x, ent.velocity.y, 0.0).length();
                 if speed != 0.0 {
-                    let control = speed.max(STOPSPEED);
-                    let newspeed = (speed - FRAMETIME * control * FRICTION).max(0.0) / speed;
+                    let newspeed = friction_speed(speed, f64::from(FRICTION)) / speed;
                     ent.velocity.x *= newspeed;
                     ent.velocity.y *= newspeed;
                 }
@@ -1073,6 +1069,20 @@ impl GameWorld {
 // Tests
 // ==========================================================================
 
+/// C's friction step, `speed - FRAMETIME * control * rate` clamped at 0:
+/// C's FRAMETIME is the double 0.1, so it runs in double and rounds to
+/// float once.
+fn friction_speed(speed: f32, rate: f64) -> f32 {
+    let control = speed.max(STOPSPEED);
+    (f64::from(speed) - crate::func::FRAMETIME_C * f64::from(control) * rate).max(0.0) as f32
+}
+
+/// C `SV_AddGravity`'s `velocity[2] -= gravity * sv_gravity * FRAMETIME`,
+/// in double as there.
+fn gravity_velocity(vz: f32, gravity: f32) -> f32 {
+    (f64::from(vz) - f64::from(gravity * DEFAULT_GRAVITY) * crate::func::FRAMETIME_C) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,6 +1098,22 @@ mod tests {
         if let Some(ent) = world.entities.get_mut(self_key) {
             ent.game.count = 99;
         }
+    }
+
+    #[test]
+    fn friction_and_gravity_round_like_cs_double_frametime() {
+        // C's FRAMETIME is the double 0.1, so these steps run in double
+        // and round to float once; f32 throughout lands an ulp off.
+        assert_eq!(
+            friction_speed(100.02, f64::from(FRICTION)).to_bits(),
+            0x4220_0831
+        );
+        assert_eq!(
+            friction_speed(100.139, f64::from(WATERFRICTION) * 3.0).to_bits(),
+            0x428c_31d1
+        );
+        assert_eq!(friction_speed(50.0, 6.0), 0.0, "never below rest");
+        assert_eq!(gravity_velocity(0.74, 0.01).to_bits(), 0xbd75_c28d);
     }
 
     #[test]

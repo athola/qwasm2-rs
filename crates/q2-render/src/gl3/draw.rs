@@ -479,7 +479,6 @@ pub(super) fn fill_stream(gl: &glow::Context, stream: &StreamBuffer, floats: &[f
 pub struct MeshDraw<'a> {
     /// Vertices in the MD2 stream layout, three per triangle.
     pub vertices: &'a [f32],
-    pub vertex_count: i32,
     pub texture: Option<glow::Texture>,
     pub mvp: &'a [f32; 16],
     pub blend: bool,
@@ -496,6 +495,9 @@ pub fn draw_mesh(
     draw: &MeshDraw,
 ) {
     fill_stream(gl, stream, draw.vertices);
+    // Counted from the slice just uploaded, so the draw cannot read past it.
+    let vertex_count =
+        i32::try_from(draw.vertices.len() / super::alias::ALIAS_VERTEX_FLOATS).unwrap_or(i32::MAX);
     // SAFETY: the texture and the stream belong to `gl`; the stream was just
     // filled with `vertex_count` vertices in the MD2 layout; the uniform
     // location belongs to the currently bound MD2 program.
@@ -509,7 +511,7 @@ pub fn draw_mesh(
             set_alpha_blend(gl);
             gl.depth_mask(false);
         }
-        gl.draw_arrays(glow::TRIANGLES, 0, draw.vertex_count);
+        gl.draw_arrays(glow::TRIANGLES, 0, vertex_count);
         if draw.blend {
             gl.depth_mask(true);
             gl.disable(glow::BLEND);

@@ -978,9 +978,9 @@ impl NetMsg {
             }
         }
         self.write_long(statbits as i32);
-        for i in 0..MAX_STATS {
+        for (i, &stat) in new.stats.iter().enumerate() {
             if statbits & (1u32 << i) != 0 {
-                self.write_short(new.stats[i] as i32);
+                self.write_short(stat as i32);
             }
         }
     }

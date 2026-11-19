@@ -341,7 +341,10 @@ static INSANE_FRAMES_STAND_DEATH: [MonsterFrame; 17] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = [
+/// C's two crawl moves share `insane_frames_crawl`, and C saves tell them
+/// apart by the move's own address. A loaded move here is a copy that
+/// keeps only its frames' address, so each move gets its own frames.
+const CRAWL_FRAMES: [MonsterFrame; 9] = [
     frame(ai::ai_walk, 0.0, Some(insane_scream)),
     frame(ai::ai_walk, 1.5, None),
     frame(ai::ai_walk, 2.1, None),
@@ -352,6 +355,8 @@ static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = [
     frame(ai::ai_walk, 3.4, None),
     frame(ai::ai_walk, 2.4, None),
 ];
+static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = CRAWL_FRAMES;
+static INSANE_FRAMES_RUNCRAWL: [MonsterFrame; 9] = CRAWL_FRAMES;
 
 static INSANE_FRAMES_CRAWL_PAIN: [MonsterFrame; 9] = [
     frame(ai::ai_move, 0.0, None),
@@ -411,126 +416,126 @@ static INSANE_FRAMES_STRUGGLE_CROSS: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static INSANE_MOVE_STAND_NORMAL: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_STAND_NORMAL: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND60,
     lastframe: FRAME_STAND65,
     frames: &INSANE_FRAMES_STAND_NORMAL,
     endfunc: Some(insane_stand),
 };
 
-static INSANE_MOVE_STAND_INSANE: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_STAND_INSANE: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND65,
     lastframe: FRAME_STAND94,
     frames: &INSANE_FRAMES_STAND_INSANE,
     endfunc: Some(insane_stand),
 };
 
-static INSANE_MOVE_UPTODOWN: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_UPTODOWN: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND1,
     lastframe: FRAME_STAND40,
     frames: &INSANE_FRAMES_UPTODOWN,
     endfunc: Some(insane_onground),
 };
 
-static INSANE_MOVE_DOWNTOUP: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_DOWNTOUP: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND41,
     lastframe: FRAME_STAND59,
     frames: &INSANE_FRAMES_DOWNTOUP,
     endfunc: Some(insane_stand),
 };
 
-static INSANE_MOVE_JUMPDOWN: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_JUMPDOWN: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND96,
     lastframe: FRAME_STAND100,
     frames: &INSANE_FRAMES_JUMPDOWN,
     endfunc: Some(insane_onground),
 };
 
-static INSANE_MOVE_DOWN: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_DOWN: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND100,
     lastframe: FRAME_STAND160,
     frames: &INSANE_FRAMES_DOWN,
     endfunc: Some(insane_onground),
 };
 
-static INSANE_MOVE_WALK_NORMAL: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_WALK_NORMAL: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK27,
     lastframe: FRAME_WALK39,
     frames: &INSANE_FRAMES_WALK_NORMAL,
     endfunc: Some(insane_walk),
 };
 
-static INSANE_MOVE_RUN_NORMAL: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_RUN_NORMAL: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK27,
     lastframe: FRAME_WALK39,
     frames: &INSANE_FRAMES_WALK_NORMAL,
     endfunc: Some(insane_run),
 };
 
-static INSANE_MOVE_WALK_INSANE: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_WALK_INSANE: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK26,
     frames: &INSANE_FRAMES_WALK_INSANE,
     endfunc: Some(insane_walk),
 };
 
-static INSANE_MOVE_RUN_INSANE: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_RUN_INSANE: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK26,
     frames: &INSANE_FRAMES_WALK_INSANE,
     endfunc: Some(insane_run),
 };
 
-static INSANE_MOVE_STAND_PAIN: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_STAND_PAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_ST_PAIN2,
     lastframe: FRAME_ST_PAIN12,
     frames: &INSANE_FRAMES_STAND_PAIN,
     endfunc: Some(insane_run),
 };
 
-static INSANE_MOVE_STAND_DEATH: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_STAND_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_ST_DEATH2,
     lastframe: FRAME_ST_DEATH18,
     frames: &INSANE_FRAMES_STAND_DEATH,
     endfunc: Some(insane_dead),
 };
 
-static INSANE_MOVE_CRAWL: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_CRAWL: MonsterMove = MonsterMove {
     firstframe: FRAME_CRAWL1,
     lastframe: FRAME_CRAWL9,
     frames: &INSANE_FRAMES_CRAWL,
     endfunc: None,
 };
 
-static INSANE_MOVE_RUNCRAWL: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_RUNCRAWL: MonsterMove = MonsterMove {
     firstframe: FRAME_CRAWL1,
     lastframe: FRAME_CRAWL9,
-    frames: &INSANE_FRAMES_CRAWL,
+    frames: &INSANE_FRAMES_RUNCRAWL,
     endfunc: None,
 };
 
-static INSANE_MOVE_CRAWL_PAIN: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_CRAWL_PAIN: MonsterMove = MonsterMove {
     firstframe: FRAME_CR_PAIN2,
     lastframe: FRAME_CR_PAIN10,
     frames: &INSANE_FRAMES_CRAWL_PAIN,
     endfunc: Some(insane_run),
 };
 
-static INSANE_MOVE_CRAWL_DEATH: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_CRAWL_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_CR_DEATH10,
     lastframe: FRAME_CR_DEATH16,
     frames: &INSANE_FRAMES_CRAWL_DEATH,
     endfunc: Some(insane_dead),
 };
 
-static INSANE_MOVE_CROSS: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_CROSS: MonsterMove = MonsterMove {
     firstframe: FRAME_CROSS1,
     lastframe: FRAME_CROSS15,
     frames: &INSANE_FRAMES_CROSS,
     endfunc: Some(insane_cross),
 };
 
-static INSANE_MOVE_STRUGGLE_CROSS: MonsterMove = MonsterMove {
+pub(crate) static INSANE_MOVE_STRUGGLE_CROSS: MonsterMove = MonsterMove {
     firstframe: FRAME_CROSS16,
     lastframe: FRAME_CROSS30,
     frames: &INSANE_FRAMES_STRUGGLE_CROSS,

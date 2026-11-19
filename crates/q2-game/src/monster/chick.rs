@@ -133,7 +133,7 @@ static CHICK_FRAMES_FIDGET: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static CHICK_MOVE_FIDGET: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_FIDGET: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND201,
     lastframe: FRAME_STAND230,
     frames: &CHICK_FRAMES_FIDGET,
@@ -173,7 +173,7 @@ static CHICK_FRAMES_STAND: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, Some(chick_fidget)),
 ];
 
-static CHICK_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND101,
     lastframe: FRAME_STAND130,
     frames: &CHICK_FRAMES_STAND,
@@ -193,7 +193,7 @@ static CHICK_FRAMES_START_RUN: [MonsterFrame; 10] = [
     frame(ai::ai_run, 3.0, None),
 ];
 
-static CHICK_MOVE_START_RUN: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_START_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK01,
     lastframe: FRAME_WALK10,
     frames: &CHICK_FRAMES_START_RUN,
@@ -213,7 +213,7 @@ static CHICK_FRAMES_RUN: [MonsterFrame; 10] = [
     frame(ai::ai_run, 7.0, None),
 ];
 
-static CHICK_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK11,
     lastframe: FRAME_WALK20,
     frames: &CHICK_FRAMES_RUN,
@@ -233,7 +233,7 @@ static CHICK_FRAMES_WALK: [MonsterFrame; 10] = [
     frame(ai::ai_walk, 7.0, None),
 ];
 
-static CHICK_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK11,
     lastframe: FRAME_WALK20,
     frames: &CHICK_FRAMES_WALK,
@@ -248,7 +248,7 @@ static CHICK_FRAMES_PAIN1: [MonsterFrame; 5] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static CHICK_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN105,
     frames: &CHICK_FRAMES_PAIN1,
@@ -263,7 +263,7 @@ static CHICK_FRAMES_PAIN2: [MonsterFrame; 5] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static CHICK_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN205,
     frames: &CHICK_FRAMES_PAIN2,
@@ -294,7 +294,7 @@ static CHICK_FRAMES_PAIN3: [MonsterFrame; 21] = [
     frame(ai::ai_move, 2.0, None),
 ];
 
-static CHICK_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN321,
     frames: &CHICK_FRAMES_PAIN3,
@@ -327,7 +327,7 @@ static CHICK_FRAMES_DEATH2: [MonsterFrame; 23] = [
     frame(ai::ai_move, 1.0, None),
 ];
 
-static CHICK_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH223,
     frames: &CHICK_FRAMES_DEATH2,
@@ -349,7 +349,7 @@ static CHICK_FRAMES_DEATH1: [MonsterFrame; 12] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static CHICK_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH112,
     frames: &CHICK_FRAMES_DEATH1,
@@ -366,7 +366,7 @@ static CHICK_FRAMES_DUCK: [MonsterFrame; 7] = [
     frame(ai::ai_move, 1.0, None),
 ];
 
-static CHICK_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK01,
     lastframe: FRAME_DUCK07,
     frames: &CHICK_FRAMES_DUCK,
@@ -389,7 +389,7 @@ static CHICK_FRAMES_START_ATTACK1: [MonsterFrame; 13] = [
     frame(ai::ai_charge, 0.0, Some(chick_attack1)),
 ];
 
-static CHICK_MOVE_START_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_START_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK113,
     frames: &CHICK_FRAMES_START_ATTACK1,
@@ -413,7 +413,7 @@ static CHICK_FRAMES_ATTACK1: [MonsterFrame; 14] = [
     frame(ai::ai_charge, 3.0, Some(chick_rerocket)),
 ];
 
-static CHICK_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK114,
     lastframe: FRAME_ATTAK127,
     frames: &CHICK_FRAMES_ATTACK1,
@@ -428,7 +428,7 @@ static CHICK_FRAMES_END_ATTACK1: [MonsterFrame; 5] = [
     frame(ai::ai_charge, -2.0, Some(chick_footstep)),
 ];
 
-static CHICK_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK128,
     lastframe: FRAME_ATTAK132,
     frames: &CHICK_FRAMES_END_ATTACK1,
@@ -447,7 +447,7 @@ static CHICK_FRAMES_SLASH: [MonsterFrame; 9] = [
     frame(ai::ai_charge, -2.0, Some(chick_reslash)),
 ];
 
-static CHICK_MOVE_SLASH: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_SLASH: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK204,
     lastframe: FRAME_ATTAK212,
     frames: &CHICK_FRAMES_SLASH,
@@ -461,7 +461,7 @@ static CHICK_FRAMES_END_SLASH: [MonsterFrame; 4] = [
     frame(ai::ai_charge, 0.0, Some(chick_footstep)),
 ];
 
-static CHICK_MOVE_END_SLASH: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_END_SLASH: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK213,
     lastframe: FRAME_ATTAK216,
     frames: &CHICK_FRAMES_END_SLASH,
@@ -474,7 +474,7 @@ static CHICK_FRAMES_START_SLASH: [MonsterFrame; 3] = [
     frame(ai::ai_charge, 3.0, Some(chick_footstep)),
 ];
 
-static CHICK_MOVE_START_SLASH: MonsterMove = MonsterMove {
+pub(crate) static CHICK_MOVE_START_SLASH: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK203,
     frames: &CHICK_FRAMES_START_SLASH,
@@ -677,6 +677,7 @@ pub fn chick_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// Hold the crouch frame until `pausetime`. C ref: `chick_duck_hold`.
 pub fn chick_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(mi) = monsterinfo_mut(world, key) else {
         return;
@@ -690,6 +691,7 @@ pub fn chick_duck_hold(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `chick_duck_up`.
 pub fn chick_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };

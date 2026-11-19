@@ -37,7 +37,7 @@ async fn get(root: &std::path::Path, uri: &str, headers: &[(&str, &str)]) -> Res
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    build_app(root)
+    build_app(root, &root.join("gamedata"))
         .oneshot(req.body(Body::empty()).unwrap())
         .await
         .unwrap()
@@ -172,7 +172,7 @@ async fn missing_files_are_404() {
 #[tokio::test]
 async fn head_returns_headers_without_a_body() {
     let root = fixture_root(None);
-    let resp = build_app(root.path())
+    let resp = build_app(root.path(), &root.path().join("gamedata"))
         .oneshot(
             Request::builder()
                 .method("HEAD")
@@ -184,6 +184,36 @@ async fn head_returns_headers_without_a_body() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(body_bytes(resp).await.is_empty());
+}
+
+#[test]
+fn gamedata_comes_from_q2_gamedata_when_set_relative_to_the_root() {
+    let root = std::path::Path::new("/srv/q2");
+    assert_eq!(gamedata_dir(root, None), root.join("gamedata"));
+    assert_eq!(
+        gamedata_dir(root, Some("gamedata/retail".into())),
+        root.join("gamedata/retail")
+    );
+    assert_eq!(
+        gamedata_dir(root, Some("/data/q2".into())),
+        std::path::PathBuf::from("/data/q2")
+    );
+}
+
+#[tokio::test]
+async fn another_gamedata_directory_is_served_as_gamedata() {
+    // `make play-retail` serves gamedata/retail as /gamedata/, so the page
+    // fetches the retail web pak at the usual path.
+    let root = fixture_root(None);
+    let retail = root.path().join("gamedata/retail/baseq2");
+    std::fs::create_dir_all(&retail).unwrap();
+    std::fs::write(retail.join("pak0-web.pak"), b"PACK-retail").unwrap();
+    let resp = build_app(root.path(), &root.path().join("gamedata/retail"))
+        .oneshot(Request::builder().uri(WEB_PAK).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_bytes(resp).await, b"PACK-retail");
 }
 
 #[test]
@@ -276,4 +306,46 @@ async fn web_pak_revalidation_returns_not_modified_and_still_varies() {
     .await;
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
     assert!(resp.headers().get(header::VARY).is_some());
+}
+
+#[tokio::test]
+async fn a_request_naming_another_host_is_refused_against_dns_rebinding() {
+    // A page on evil.example whose name rebinds to 127.0.0.1 reaches the
+    // server with its own name in Host; it must not read the game data.
+    let root = fixture_root(None);
+    for host in [
+        "evil.example:8080",
+        "evil.example",
+        "127.0.0.1.evil.example",
+    ] {
+        let resp = get(root.path(), WEB_PAK, &[("host", host)]).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{host}");
+    }
+    for host in [
+        "127.0.0.1:8080",
+        "localhost:8080",
+        "localhost",
+        "[::1]:8080",
+    ] {
+        let resp = get(root.path(), WEB_PAK, &[("host", host)]).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{host}");
+    }
+    // A Host that is not visible ASCII cannot be read as a name, so it is
+    // refused rather than treated like a missing one.
+    let unreadable = Request::builder()
+        .uri(WEB_PAK)
+        .header(
+            header::HOST,
+            axum::http::HeaderValue::from_bytes(b"localhost\xff").unwrap(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = build_app(root.path(), &root.path().join("gamedata"))
+        .oneshot(unreadable)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "unreadable host");
+    // A request without Host (HTTP/1.0) stays allowed.
+    let resp = get(root.path(), WEB_PAK, &[]).await;
+    assert_eq!(resp.status(), StatusCode::OK, "no host");
 }

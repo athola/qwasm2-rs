@@ -125,7 +125,7 @@ static BRAIN_FRAMES_STAND: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static BRAIN_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND01,
     lastframe: FRAME_STAND30,
     frames: &BRAIN_FRAMES_STAND,
@@ -165,7 +165,7 @@ static BRAIN_FRAMES_IDLE: [MonsterFrame; 30] = [
     frame(ai::ai_stand, 0.0, None),
 ];
 
-static BRAIN_MOVE_IDLE: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_IDLE: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND31,
     lastframe: FRAME_STAND60,
     frames: &BRAIN_FRAMES_IDLE,
@@ -186,7 +186,7 @@ static BRAIN_FRAMES_WALK1: [MonsterFrame; 11] = [
     frame(ai::ai_walk, 2.0, None),
 ];
 
-static BRAIN_MOVE_WALK1: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_WALK1: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK101,
     lastframe: FRAME_WALK111,
     frames: &BRAIN_FRAMES_WALK1,
@@ -222,7 +222,7 @@ static BRAIN_FRAMES_PAIN3: [MonsterFrame; 6] = [
     frame(ai::ai_move, -4.0, None),
 ];
 
-static BRAIN_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN306,
     frames: &BRAIN_FRAMES_PAIN3,
@@ -240,7 +240,7 @@ static BRAIN_FRAMES_PAIN2: [MonsterFrame; 8] = [
     frame(ai::ai_move, -2.0, None),
 ];
 
-static BRAIN_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN208,
     frames: &BRAIN_FRAMES_PAIN2,
@@ -271,7 +271,7 @@ static BRAIN_FRAMES_PAIN1: [MonsterFrame; 21] = [
     frame(ai::ai_move, -1.0, None),
 ];
 
-static BRAIN_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN121,
     frames: &BRAIN_FRAMES_PAIN1,
@@ -289,7 +289,7 @@ static BRAIN_FRAMES_DUCK: [MonsterFrame; 8] = [
     frame(ai::ai_move, -6.0, Some(brain_footstep)),
 ];
 
-static BRAIN_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK01,
     lastframe: FRAME_DUCK08,
     frames: &BRAIN_FRAMES_DUCK,
@@ -304,7 +304,7 @@ static BRAIN_FRAMES_DEATH2: [MonsterFrame; 5] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BRAIN_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH205,
     frames: &BRAIN_FRAMES_DEATH2,
@@ -332,7 +332,7 @@ static BRAIN_FRAMES_DEATH1: [MonsterFrame; 18] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static BRAIN_MOVE_DEATH1: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_DEATH1: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH101,
     lastframe: FRAME_DEATH118,
     frames: &BRAIN_FRAMES_DEATH1,
@@ -360,7 +360,7 @@ static BRAIN_FRAMES_ATTACK1: [MonsterFrame; 18] = [
     frame(ai::ai_charge, -11.0, Some(brain_footstep)),
 ];
 
-static BRAIN_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK118,
     frames: &BRAIN_FRAMES_ATTACK1,
@@ -387,7 +387,7 @@ static BRAIN_FRAMES_ATTACK2: [MonsterFrame; 17] = [
     frame(ai::ai_charge, -6.0, None),
 ];
 
-static BRAIN_MOVE_ATTACK2: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_ATTACK2: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK217,
     frames: &BRAIN_FRAMES_ATTACK2,
@@ -408,7 +408,7 @@ static BRAIN_FRAMES_RUN: [MonsterFrame; 11] = [
     frame(ai::ai_run, 2.0, None),
 ];
 
-static BRAIN_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static BRAIN_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK101,
     lastframe: FRAME_WALK111,
     frames: &BRAIN_FRAMES_RUN,
@@ -495,6 +495,7 @@ pub fn brain_duck_down(world: &mut GameWorld, key: EntityKey) {
 
 /// Hold the crouch frame until `pausetime`. C ref: `brain_duck_hold`.
 pub fn brain_duck_hold(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let time = world.level.time;
     let Some(mi) = monsterinfo_mut(world, key) else {
         return;
@@ -508,6 +509,7 @@ pub fn brain_duck_hold(world: &mut GameWorld, key: EntityKey) {
 
 /// C ref: `brain_duck_up`.
 pub fn brain_duck_up(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -663,6 +665,7 @@ pub fn brain_pain(
 
 /// The corpse box, then stop. C ref: `brain_dead`.
 pub fn brain_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     if let Some(ent) = world.entities.get_mut(key) {
         ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
         ent.maxs = Vec3f::new(16.0, 16.0, -8.0);

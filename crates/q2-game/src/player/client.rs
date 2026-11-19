@@ -13,7 +13,7 @@ use crate::entity::{ClientData, ClientPersistent, ClientRespawn, EntityKey};
 use crate::world::GameWorld;
 
 /// C ANGLE2SHORT.
-fn angle2short(degrees: f32) -> i16 {
+pub(crate) fn angle2short(degrees: f32) -> i16 {
     ((degrees * 65536.0 / 360.0) as i32 & 65535) as i16
 }
 
@@ -47,15 +47,24 @@ impl GameWorld {
         ent.game.takedamage = TakeDamage::Aim;
 
         // The slot is not in use (a fresh body), so C clears the respawn
-        // data and, with no autosave to keep, the persistent data.
+        // data, and the persistent data unless an autosave holds the
+        // inventory the player entered the level with.
         let mut client = ClientData::default();
         self.init_client_resp(&mut client);
-        self.init_client_persistant(&mut client.pers);
+        let saved = &self.clients[slot].pers;
+        if self.game.autosaved && saved.weapon.is_some() {
+            client.pers = saved.clone();
+        } else {
+            self.init_client_persistant(&mut client.pers);
+        }
         client_userinfo_changed(&mut client.pers, userinfo);
         if self.game.maxclients() > 1 {
             self.gi
                 .dprintf(&format!("{} connected\n", client.pers.netname));
         }
+        // On every path: a `pers` kept from an autosave was stored
+        // unconnected by read_level.
+        client.pers.connected = true;
         self.clients[slot] = client;
         let ent = self.entities.get_mut(key)?;
         ent.client = Some(slot);
@@ -65,6 +74,32 @@ impl GameWorld {
         self.player_skin_configstring(key);
 
         Some(key)
+    }
+
+    /// C ClientConnect for a body in use, which only a loadgame leaves: the
+    /// client takes it as saved, keeping its respawn and persistent data.
+    pub(crate) fn take_waiting_body(
+        &mut self,
+        key: EntityKey,
+        slot: usize,
+        userinfo: &str,
+    ) -> bool {
+        let Some(client) = self.clients.get_mut(slot) else {
+            return false;
+        };
+        client_userinfo_changed(&mut client.pers, userinfo);
+        client.pers.connected = true;
+        client.loadgame_body = true;
+        let netname = client.pers.netname.clone();
+        if self.game.maxclients() > 1 {
+            self.gi.dprintf(&format!("{netname} connected\n"));
+        }
+        if let Some(ent) = self.entities.get_mut(key) {
+            ent.client = Some(slot);
+            ent.svflags = 0;
+        }
+        self.player_skin_configstring(key);
+        true
     }
 
     /// Place a connected client into the game world at a spawn point.

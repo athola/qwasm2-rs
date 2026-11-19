@@ -177,7 +177,7 @@ static MEDIC_FRAMES_STAND: [MonsterFrame; 90] = [
     frame(ai::ai_stand, 0.0, None),
     frame(ai::ai_stand, 0.0, None),
 ];
-static MEDIC_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_WAIT1,
     lastframe: FRAME_WAIT90,
     frames: &MEDIC_FRAMES_STAND,
@@ -198,7 +198,7 @@ static MEDIC_FRAMES_WALK: [MonsterFrame; 12] = [
     frame(ai::ai_walk, 14.0, None),
     frame(ai::ai_walk, 9.3, None),
 ];
-static MEDIC_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK1,
     lastframe: FRAME_WALK12,
     frames: &MEDIC_FRAMES_WALK,
@@ -213,7 +213,7 @@ static MEDIC_FRAMES_RUN: [MonsterFrame; 6] = [
     frame(ai::ai_run, 24.0, Some(medic_footstep)),
     frame(ai::ai_run, 35.6, None),
 ];
-static MEDIC_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_RUN1,
     lastframe: FRAME_RUN6,
     frames: &MEDIC_FRAMES_RUN,
@@ -221,7 +221,7 @@ static MEDIC_MOVE_RUN: MonsterMove = MonsterMove {
 };
 
 static MEDIC_FRAMES_PAIN1: [MonsterFrame; 8] = [frame(ai::ai_move, 0.0, None); 8];
-static MEDIC_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINA1,
     lastframe: FRAME_PAINA8,
     frames: &MEDIC_FRAMES_PAIN1,
@@ -245,7 +245,7 @@ static MEDIC_FRAMES_PAIN2: [MonsterFrame; 15] = [
     frame(ai::ai_move, 0.0, None),
     frame(ai::ai_move, 0.0, Some(medic_footstep)),
 ];
-static MEDIC_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAINB1,
     lastframe: FRAME_PAINB15,
     frames: &MEDIC_FRAMES_PAIN2,
@@ -253,7 +253,7 @@ static MEDIC_MOVE_PAIN2: MonsterMove = MonsterMove {
 };
 
 static MEDIC_FRAMES_DEATH: [MonsterFrame; 30] = [frame(ai::ai_move, 0.0, None); 30];
-static MEDIC_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH1,
     lastframe: FRAME_DEATH30,
     frames: &MEDIC_FRAMES_DEATH,
@@ -278,7 +278,7 @@ static MEDIC_FRAMES_DUCK: [MonsterFrame; 16] = [
     frame(ai::ai_move, -1.0, None),
     frame(ai::ai_move, -1.0, None),
 ];
-static MEDIC_MOVE_DUCK: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_DUCK: MonsterMove = MonsterMove {
     firstframe: FRAME_DUCK1,
     lastframe: FRAME_DUCK16,
     frames: &MEDIC_FRAMES_DUCK,
@@ -303,7 +303,7 @@ static MEDIC_FRAMES_ATTACK_HYPER_BLASTER: [MonsterFrame; 16] = [
     frame(ai::ai_charge, 0.0, Some(medic_fire_blaster)),
     frame(ai::ai_charge, 0.0, Some(medic_fire_blaster)),
 ];
-static MEDIC_MOVE_ATTACK_HYPER_BLASTER: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_ATTACK_HYPER_BLASTER: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK15,
     lastframe: FRAME_ATTACK30,
     frames: &MEDIC_FRAMES_ATTACK_HYPER_BLASTER,
@@ -326,7 +326,7 @@ static MEDIC_FRAMES_ATTACK_BLASTER: [MonsterFrame; 14] = [
     frame(ai::ai_charge, 0.0, None),
     frame(ai::ai_charge, 0.0, Some(medic_continue)),
 ];
-static MEDIC_MOVE_ATTACK_BLASTER: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_ATTACK_BLASTER: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK1,
     lastframe: FRAME_ATTACK14,
     frames: &MEDIC_FRAMES_ATTACK_BLASTER,
@@ -363,7 +363,7 @@ static MEDIC_FRAMES_ATTACK_CABLE: [MonsterFrame; 28] = [
     frame(ai::ai_move, 1.2, None),
     frame(ai::ai_move, 1.3, None),
 ];
-static MEDIC_MOVE_ATTACK_CABLE: MonsterMove = MonsterMove {
+pub(crate) static MEDIC_MOVE_ATTACK_CABLE: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTACK33,
     lastframe: FRAME_ATTACK60,
     frames: &MEDIC_FRAMES_ATTACK_CABLE,
@@ -596,6 +596,7 @@ pub fn medic_continue(world: &mut GameWorld, key: EntityKey) {
 
 /// The corpse box, then stop. C ref: `medic_dead`.
 pub fn medic_dead(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     if let Some(ent) = world.entities.get_mut(key) {
         ent.mins = Vec3f::new(-16.0, -16.0, -24.0);
         ent.maxs = Vec3f::new(16.0, 16.0, -8.0);
@@ -713,7 +714,7 @@ pub fn medic_hook_launch(world: &mut GameWorld, key: EntityKey) {
 
 /// C `ED_CallSpawn(ent)` on a corpse. The `st.item` drop is not re-read,
 /// as C's spawn temp is stale by then.
-fn respawn(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn respawn(world: &mut GameWorld, key: EntityKey) {
     let Some(classname) = world.entities.get(key).map(|e| e.game.classname.clone()) else {
         return;
     };

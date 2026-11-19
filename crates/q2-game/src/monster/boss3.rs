@@ -373,77 +373,77 @@ static JORG_FRAMES_END_ATTACK1: [MonsterFrame; 4] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static JORG_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND01,
     lastframe: FRAME_STAND51,
     frames: &JORG_FRAMES_STAND,
     endfunc: None,
 };
 
-static JORG_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK06,
     lastframe: FRAME_WALK19,
     frames: &JORG_FRAMES_RUN,
     endfunc: None,
 };
 
-static JORG_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK06,
     lastframe: FRAME_WALK19,
     frames: &JORG_FRAMES_WALK,
     endfunc: None,
 };
 
-static JORG_MOVE_PAIN3: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_PAIN3: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN301,
     lastframe: FRAME_PAIN325,
     frames: &JORG_FRAMES_PAIN3,
     endfunc: Some(jorg_run),
 };
 
-static JORG_MOVE_PAIN2: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_PAIN2: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN201,
     lastframe: FRAME_PAIN203,
     frames: &JORG_FRAMES_PAIN2,
     endfunc: Some(jorg_run),
 };
 
-static JORG_MOVE_PAIN1: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_PAIN1: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN101,
     lastframe: FRAME_PAIN103,
     frames: &JORG_FRAMES_PAIN1,
     endfunc: Some(jorg_run),
 };
 
-static JORG_MOVE_DEATH: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_DEATH: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH01,
     lastframe: FRAME_DEATH50,
     frames: &JORG_FRAMES_DEATH1,
     endfunc: Some(jorg_dead),
 };
 
-static JORG_MOVE_ATTACK2: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_ATTACK2: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK201,
     lastframe: FRAME_ATTAK213,
     frames: &JORG_FRAMES_ATTACK2,
     endfunc: Some(jorg_run),
 };
 
-static JORG_MOVE_START_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_START_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK101,
     lastframe: FRAME_ATTAK108,
     frames: &JORG_FRAMES_START_ATTACK1,
     endfunc: Some(jorg_attack1),
 };
 
-static JORG_MOVE_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK109,
     lastframe: FRAME_ATTAK114,
     frames: &JORG_FRAMES_ATTACK1,
     endfunc: Some(jorg_reattack1),
 };
 
-static JORG_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
+pub(crate) static JORG_MOVE_END_ATTACK1: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK115,
     lastframe: FRAME_ATTAK118,
     frames: &JORG_FRAMES_END_ATTACK1,
@@ -756,77 +756,77 @@ static MAKRON_FRAMES_ATTACK5: [MonsterFrame; 16] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static MAKRON_MOVE_STAND: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_STAND: MonsterMove = MonsterMove {
     firstframe: FRAME_STAND201,
     lastframe: FRAME_STAND260,
     frames: &MAKRON_FRAMES_STAND,
     endfunc: None,
 };
 
-static MAKRON_MOVE_RUN: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_RUN: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK204,
     lastframe: FRAME_WALK213,
     frames: &MAKRON_FRAMES_RUN,
     endfunc: None,
 };
 
-static MAKRON_MOVE_WALK: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_WALK: MonsterMove = MonsterMove {
     firstframe: FRAME_WALK204,
     lastframe: FRAME_WALK213,
     frames: &MAKRON_FRAMES_WALK,
     endfunc: None,
 };
 
-static MAKRON_MOVE_PAIN6: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_PAIN6: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN601,
     lastframe: FRAME_PAIN627,
     frames: &MAKRON_FRAMES_PAIN6,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_PAIN5: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_PAIN5: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN501,
     lastframe: FRAME_PAIN504,
     frames: &MAKRON_FRAMES_PAIN5,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_PAIN4: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_PAIN4: MonsterMove = MonsterMove {
     firstframe: FRAME_PAIN401,
     lastframe: FRAME_PAIN404,
     frames: &MAKRON_FRAMES_PAIN4,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_DEATH2: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_DEATH2: MonsterMove = MonsterMove {
     firstframe: FRAME_DEATH201,
     lastframe: FRAME_DEATH295,
     frames: &MAKRON_FRAMES_DEATH2,
     endfunc: Some(makron_dead),
 };
 
-static MAKRON_MOVE_SIGHT: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_SIGHT: MonsterMove = MonsterMove {
     firstframe: FRAME_ACTIVE01,
     lastframe: FRAME_ACTIVE13,
     frames: &MAKRON_FRAMES_SIGHT,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_ATTACK3: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_ATTACK3: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK301,
     lastframe: FRAME_ATTAK308,
     frames: &MAKRON_FRAMES_ATTACK3,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_ATTACK4: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_ATTACK4: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK401,
     lastframe: FRAME_ATTAK426,
     frames: &MAKRON_FRAMES_ATTACK4,
     endfunc: Some(makron_run),
 };
 
-static MAKRON_MOVE_ATTACK5: MonsterMove = MonsterMove {
+pub(crate) static MAKRON_MOVE_ATTACK5: MonsterMove = MonsterMove {
     firstframe: FRAME_ATTAK501,
     lastframe: FRAME_ATTAK516,
     frames: &MAKRON_FRAMES_ATTACK5,
@@ -1219,7 +1219,9 @@ pub fn jorg_attack(world: &mut GameWorld, key: EntityKey) {
 
 /// The death move's end function; does nothing in C either (the move's
 /// last frame starts `BossExplode`). C ref: `jorg_dead`.
-pub fn jorg_dead(_world: &mut GameWorld, _key: EntityKey) {}
+pub fn jorg_dead(_world: &mut GameWorld, _key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
+}
 
 /// C ref: `jorg_die`.
 pub fn jorg_die(
@@ -1242,6 +1244,7 @@ pub fn jorg_die(
 
 /// C ref: `Jorg_CheckAttack`.
 pub fn jorg_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
+    crate::savegame::registry::distinct_body!();
     boss3_checkattack(world, key)
 }
 
@@ -1699,6 +1702,7 @@ pub fn makron_die(
 
 /// C ref: `Makron_CheckAttack`.
 pub fn makron_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
+    crate::savegame::registry::distinct_body!();
     boss3_checkattack(world, key)
 }
 
@@ -2238,13 +2242,14 @@ mod tests {
         jorg_pain(&mut world, key, key, 0.0, 100);
         assert!(plays(&world, key, &JORG_MOVE_PAIN2));
         world.level.time = 30.0;
-        world.level.rand_state = seed_rolls(&[0.0..0.3]);
+        // Two draws in range whether or not a frame check draws first.
+        world.level.rand_state = seed_rolls(&[0.01..0.3, 0.01..0.3]);
         jorg_pain(&mut world, key, key, 0.0, 101);
         assert!(plays(&world, key, &JORG_MOVE_PAIN3));
         assert_eq!(played(&gi).last().unwrap(), JORG_PAIN3);
         jorg_stand(&mut world, key);
         world.level.time = 40.0;
-        world.level.rand_state = seed_rolls(&[0.31..1.01]);
+        world.level.rand_state = seed_rolls(&[0.31..1.01, 0.31..1.01]);
         jorg_pain(&mut world, key, key, 0.0, 101);
         assert!(
             plays(&world, key, &JORG_MOVE_STAND),

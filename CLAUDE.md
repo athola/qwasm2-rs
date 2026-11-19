@@ -34,7 +34,7 @@ q2-bin and q2-net are placeholders with no dependencies; devserver/bundler/pak-r
 - **Platform**: `q2-platform`, with WASM-specific code gated on `cfg(target_arch = "wasm32")`.
 
 ### q2-game patterns
-- **Entity callbacks are `fn` pointers** (not closures). They capture no state, so callbacks can be saved by name once save/load (#15) lands.
+- **Entity callbacks are `fn` pointers** (not closures). They capture no state, so save files name them (ADR-003 Save and load).
 - **Callback borrow pattern**: Read `Option<fn>` into a local variable before calling, since callbacks take `&mut GameWorld`.
 - **GameWorld is the central state**: all game code receives `&mut GameWorld`. Replaces C globals (`g_edicts[]`, `level`, `game`).
 - **MockGameImport** (`world::test_world()`) enables unit testing game logic without a real server.

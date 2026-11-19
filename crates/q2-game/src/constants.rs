@@ -18,7 +18,9 @@ pub const FRAMETIME: f32 = 0.1;
 // ---------------------------------------------------------------------------
 
 /// How an entity moves each physics frame.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[repr(i32)]
 pub enum MoveType {
     /// Never moves.
@@ -50,7 +52,7 @@ pub enum MoveType {
 
 bitflags! {
     /// Per-entity flags. C: FL_* defines.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
     pub struct EntityFlags: u32 {
         const FLY             = 0x0000_0001;
         const SWIM            = 0x0000_0002;
@@ -112,7 +114,7 @@ bitflags! {
 // ---------------------------------------------------------------------------
 
 /// Tracks what killed an entity, for obituary messages and stats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[repr(i32)]
 pub enum MeansOfDeath {
     Unknown = 0,
@@ -174,7 +176,7 @@ bitflags! {
 // ---------------------------------------------------------------------------
 
 /// Entity dead state. C: DEAD_* defines.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(i32)]
 pub enum DeadFlag {
     #[default]
@@ -185,7 +187,7 @@ pub enum DeadFlag {
 }
 
 /// Whether an entity can be damaged. C: DAMAGE_* (not DAMAGE_FLAGS).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(i32)]
 pub enum TakeDamage {
     #[default]
@@ -200,7 +202,7 @@ pub enum TakeDamage {
 
 bitflags! {
     /// Monster AI behavior flags. C: AI_* defines.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
     pub struct AiFlags: u32 {
         const STAND_GROUND    = 0x0000_0001;
         const TEMP_STAND_GROUND = 0x0000_0002;
@@ -225,7 +227,7 @@ bitflags! {
 // ---------------------------------------------------------------------------
 
 /// Monster attack state. C: AS_* defines.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[repr(i32)]
 pub enum AttackState {
     #[default]
@@ -386,7 +388,7 @@ pub const BODY_QUEUE_SIZE: usize = 8;
 // ---------------------------------------------------------------------------
 
 /// Distance classification for monster AI decisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Range {
     Melee = 0,
     Near = 1,

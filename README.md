@@ -4,25 +4,16 @@
 
 Quake 2 engine rewrite in Rust, targeting WebAssembly.
 
-Loads real Quake 2 game data (PAK files, BSP maps), renders with
-WebGL2, and runs player movement in the browser.
+Loads real Quake 2 game data (PAK files, BSP maps) and runs the
+single-player game in the browser: ports of the C game logic, server
+and pmove run in one WASM process, drawn with WebGL2, with sound through
+WebAudio.
 
-> **Status: alpha.** The browser build loads a demo map into an
-> in-process server running the game logic (`q2-game`: physics, combat,
-> items, triggers; all 20 monster types sight, hear, chase, attack and
-> die as in C) and moves the player with the C pmove port through the
-> server's collision. Doors, platforms, buttons, trains and elevators
-> move with their sounds, shut doors hide the areas behind them, triggers
-> fire on the player, items can be picked up, and level exits load the
-> next map with the player's inventory. The renderer draws the world
-> textured and lightmapped with sky and warp surfaces, flickering light
-> styles and animated textures, brush entities and MD2 models, and the
-> status bar; game sounds play through WebAudio. The player carries,
-> switches and fires every weapon (number keys, `[` `]` `'` Enter, F7/F8
-> for gamma), with the first-person gun, gunfire sounds and muzzle
-> flashes; powerups, drowning and lava work. Explosions, impacts, trails
-> and the other temp entities are drawn with particles, beams and
-> sprites. A dead player cannot restart until savegames (#15).
+> **Status: alpha.** Every weapon, powerup and all 20 monster types work
+> as in C, and saves persist across page reloads. With your own retail
+> paks, every campaign map loads, saves and loads back. Multiplayer,
+> client prediction and the menus are not ported yet; per-phase status
+> is in [ADR-002](docs/adr/002-conversion-strategy-and-roadmap.md).
 > Expect breaking changes.
 
 ## Progress
@@ -35,11 +26,11 @@ WebGL2, and runs player movement in the browser.
 | CP-3 Server | Frame loop runs the game; map loading, SV_Trace and entity links; the browser runs it in-process | done |
 | CP-4 Client Delta | `parse_frame`, player-state + entity delta | in progress |
 | CP-5 First Frame | Textured BSP map renders in browser | done |
-| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress (a dead player cannot restart until saves, #15) |
+| CP-5b Playable | WASD + mouselook, HUD, rendered world | in progress |
 | CP-5c Sound | Sound through Web Audio | in progress (game sounds play; no PHS culling) |
-| CP-6 Saves | Saves persist across a browser refresh | not started |
+| CP-6 Saves | Saves persist across a browser refresh | done |
 | CP-7 Multiplayer | Two browser tabs connect via Matchbox | not started |
-| CP-8 Campaign | Single-player campaign map loads and plays | not started |
+| CP-8 Campaign | Single-player campaign map loads and plays | in progress (every retail map loads, saves and loads back; the browser test walks each exit) |
 
 ## Features
 
@@ -94,11 +85,24 @@ Settings are query parameters, such as
 | `game` | C `game`; `rogue` applies the mission pack's color shells (client only) | baseq2 |
 | `cl_fxextra` | 1: explosion smoke C does not draw ([ADR-003](docs/adr/003-game-logic-design.md)) | off |
 
+### Controls
+
+| Key | Action |
+|-----|--------|
+| WASD or arrows, mouse | Move, look (click the canvas to lock the pointer) |
+| Ctrl or left mouse | Fire |
+| Space, C, Shift | Jump, crouch, run |
+| 1 to 0, `/` | Pick a weapon, next weapon |
+| `[` `]` Enter `'` | Inventory: previous, next, use, drop |
+| F6, F9, F3 | Quick save, quick load, load the newest save |
+| F7, F8 | Gamma darker, brighter |
+| F4 | Show every key in game |
+
 ### Prerequisites
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| Rust 1.97.1 | Compilation (pinned in `rust-toolchain.toml`) | [rustup.rs](https://rustup.rs); rustup installs the pinned toolchain |
+| Rust 1.100.0 | Compilation (pinned in `rust-toolchain.toml`) | [rustup.rs](https://rustup.rs); rustup installs the pinned toolchain |
 | `wasm32-unknown-unknown` target | WASM builds | Installed by rustup from `rust-toolchain.toml` |
 | wasm-pack | WASM packaging | `cargo install wasm-pack` |
 | 7z | Demo data extraction (only when pak0.pak is missing) | `brew install p7zip` / `apt install p7zip-full` |
@@ -114,6 +118,7 @@ Run `make prereqs` to verify all tools are present.
 | `make play` | Full optimized build + dev server (recommended) |
 | `make play-release` | Same as `make play` |
 | `make play-dev` | Debug WASM build + dev server (slow frames, symbolized panics) |
+| `make play-retail` | Release build + dev server on your own retail paks in `gamedata/retail/baseq2` |
 | `make wasm` | Build WASM module only |
 | `make bundle` | WASM + single-file HTML bundle |
 | `make build` | Native build (all crates) |
@@ -173,11 +178,14 @@ otherwise or when the `.br` is older than the pak. `make pak-web` only
 reruns when `pak0.pak` or the repacker (including its `Cargo.toml` and
 `Cargo.lock`) changes.
 
-To use the full game, copy your `pak0.pak` from a Quake 2 installation
-into `gamedata/baseq2/`, then run `make pak-web` to produce the
-web-optimized variant. Only `pak0.pak` is used for now: `make pak-web`
-repacks that one file and the page fetches only `pak0-web.pak`, so the
-contents of `pak1.pak` and `pak2.pak` are not loaded.
+To play the full game, copy the `.pak` files from your own Quake 2
+installation into `gamedata/retail/baseq2/` and run `make play-retail`,
+then open `?map=base1`. It merges every pak there into one web pak
+(a later pak's file replaces an earlier one's, as C searches the
+highest-numbered pak first) and serves it from
+`gamedata/retail`; that directory is gitignored and nothing from it is
+copied into `dist/`. `make clean-retail` deletes the merged web pak and
+keeps your paks.
 
 ## Development
 

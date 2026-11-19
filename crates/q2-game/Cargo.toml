@@ -11,6 +11,18 @@ q2-common = { path = "../q2-common" }
 slotmap = { workspace = true }
 tracing = { workspace = true }
 bitflags = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+[build-dependencies]
+# syn 2 stays in Cargo.lock through tracing-attributes until it moves to syn 3.
+syn = { version = "3", features = ["full", "visit"] }
+quote = "1"
+
+# For tests/build_script.rs, which compiles build.rs as a test.
+[dev-dependencies]
+syn = { version = "3", features = ["full", "visit"] }
+quote = "1"
 
 [lints]
 workspace = true

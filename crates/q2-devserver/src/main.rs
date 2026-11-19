@@ -51,12 +51,12 @@ async fn main() {
     });
 
     let root = repo_root(std::env::var_os("Q2_ROOT"));
-    let app = build_app(&root);
+    let gamedata_dir = gamedata_dir(&root, std::env::var_os("Q2_GAMEDATA"));
+    let app = build_app(&root, &gamedata_dir);
 
     let addr = listen_addr(port);
 
     // Startup asset inventory
-    let gamedata_dir = root.join("gamedata");
     log_asset(
         &gamedata_dir.join("baseq2/pak0.pak"),
         "source pak",
@@ -113,8 +113,18 @@ fn listen_addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-fn build_app(root: &Path) -> Router {
-    let gamedata_dir = root.join("gamedata");
+/// What `/gamedata/` serves: `Q2_GAMEDATA` (relative to the root) when
+/// set, as `make play-retail` sets it to the user's own retail data, else
+/// the checkout's `gamedata/`.
+fn gamedata_dir(root: &Path, overridden: Option<std::ffi::OsString>) -> PathBuf {
+    match overridden {
+        Some(dir) => root.join(dir),
+        None => root.join("gamedata"),
+    }
+}
+
+fn build_app(root: &Path, gamedata_dir: &Path) -> Router {
+    let gamedata_dir = gamedata_dir.to_path_buf();
     let state = AppState {
         gamedata_dir: gamedata_dir.clone(),
     };
@@ -123,6 +133,29 @@ fn build_app(root: &Path) -> Router {
         .with_state(state)
         .nest_service("/gamedata", ServeDir::new(&gamedata_dir))
         .fallback_service(ServeDir::new(root.join("dist")))
+        .layer(axum::middleware::from_fn(loopback_host_only))
+}
+
+/// Refuse a request whose `Host` is not a loopback name. Binding to
+/// loopback keeps the network out, but a page whose domain rebinds to
+/// 127.0.0.1 still reaches the server, with its own name in `Host`.
+/// Only a missing `Host` passes unchecked; one that is not readable as text
+/// is refused.
+async fn loopback_host_only(req: Request, next: axum::middleware::Next) -> Response<Body> {
+    let loopback = req.headers().get(header::HOST).is_none_or(|host| {
+        let Ok(host) = host.to_str() else {
+            return false;
+        };
+        let name = match host.strip_prefix('[') {
+            Some(v6) => v6.split(']').next().unwrap_or_default(),
+            None => host.split(':').next().unwrap_or_default(),
+        };
+        matches!(name, "localhost" | "127.0.0.1" | "::1")
+    });
+    match loopback {
+        true => next.run(req).await,
+        false => (axum::http::StatusCode::FORBIDDEN, "host not allowed").into_response(),
+    }
 }
 
 /// Serve pak0-web.pak, using the `.br` variant only while it is fresh.

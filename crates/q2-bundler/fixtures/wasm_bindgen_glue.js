@@ -1,7 +1,5 @@
 /* @ts-self-types="./q2_wasm.d.ts" */
 
-//#region exports
-
 /**
  * Get engine info as a diagnostic string.
  * @returns {string}
@@ -19,11 +17,20 @@ export function engine_info() {
     }
 }
 
+
 // ... (fixture trimmed: bindings and imports omitted) ...
 
+let __wbg_init_promise;
 async function __wbg_init(module_or_path) {
     if (wasm !== undefined) return wasm;
+    if (__wbg_init_promise === undefined) {
+        __wbg_init_promise = __wbg_init_once(module_or_path);
+        __wbg_init_promise.catch(() => { __wbg_init_promise = undefined; });
+    }
+    return __wbg_init_promise;
+}
 
+async function __wbg_init_once(module_or_path) {
 
     if (module_or_path !== undefined) {
         if (Object.getPrototypeOf(module_or_path) === Object.prototype) {
@@ -48,5 +55,3 @@ async function __wbg_init(module_or_path) {
 }
 
 export { initSync, __wbg_init as default };
-//#endregion
-export { wasm as __wasm }

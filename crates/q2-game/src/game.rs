@@ -4,8 +4,10 @@
 //! Client calls take the client's entity number (`slot + 1`), as C passes
 //! `EDICT_NUM(slot + 1)`.
 
+use crate::entity::EntityKey;
 use crate::traits::{EdictView, GameExport};
 use crate::world::GameWorld;
+use q2_common::error::Q2Result;
 use q2_shared::types::{PlayerState, UserCmd};
 
 impl GameWorld {
@@ -35,11 +37,13 @@ impl GameExport for GameWorld {
         if !self.is_client_number(number) {
             return false;
         }
-        // A reconnect replaces whatever the slot held.
-        if let Some(old) = self.entities.key_for_number(number) {
-            if let Some(ent) = self.entities.get_mut(old) {
-                ent.in_use = false;
-            }
+        // C ClientConnect: a body in use is one a loadgame left waiting.
+        if let Some(key) = self
+            .entities
+            .key_for_number(number)
+            .filter(|&key| self.entities.is_live(key))
+        {
+            return self.take_waiting_body(key, number - 1, userinfo);
         }
         self.connect_client(number, userinfo).is_some()
     }
@@ -49,6 +53,10 @@ impl GameExport for GameWorld {
             return;
         }
         let slot = number - 1;
+        let loadgame_body = self
+            .clients
+            .get_mut(slot)
+            .is_some_and(|c| std::mem::take(&mut c.loadgame_body));
         // C ClientBeginDeathmatch G_InitEdicts even a body waiting for the
         // client.
         if self.game.deathmatch {
@@ -59,6 +67,23 @@ impl GameExport for GameWorld {
             {
                 ent.in_use = false;
             }
+        }
+        // C ClientBegin takes a body a loadgame left waiting as it is. The
+        // client cleared its view angles on connecting, so the delta angles
+        // carry the saved view.
+        let waiting = (loadgame_body && !self.game.deathmatch)
+            .then(|| self.entities.key_for_number(number))
+            .flatten()
+            .filter(|&key| self.entities.is_live(key));
+        if let Some(key) = waiting {
+            if let Some(client) = self.client_mut(key) {
+                for i in 0..3 {
+                    client.ps.pmove.delta_angles[i] =
+                        crate::player::client::angle2short(client.ps.viewangles[i]);
+                }
+            }
+            self.finish_client_begin(key);
+            return;
         }
         // After a map change the new map's entities start empty: C
         // ClientBegin G_InitEdicts the body and attaches `game.clients[i]`.
@@ -75,30 +100,55 @@ impl GameExport for GameWorld {
             return;
         };
         // C runs InitClientResp for every body it spawns here. The live body
-        // `connect_client` leaves counts as one: C sees a live body here only
-        // after a loadgame (not ported). This also takes the coop respawn
-        // snapshot after ClientConnect's InitClientPersistant, as C does.
+        // `connect_client` leaves counts as one (a loadgame's was taken
+        // above). This also takes the coop respawn snapshot after
+        // ClientConnect's InitClientPersistant, as C does.
         if let Some(record) = self.clients.get_mut(slot) {
             let mut client = std::mem::take(record);
             self.init_client_resp(&mut client);
             self.clients[slot] = client;
         }
         self.begin_client(key);
-        let intermission = self.level.intermission_time != 0.0;
-        if intermission {
-            self.move_client_to_intermission(key);
+        self.finish_client_begin(key);
+    }
+
+    fn write_game(&mut self, autosave: bool) -> Q2Result<Vec<u8>> {
+        GameWorld::write_game(self, autosave)
+    }
+
+    fn read_game(&mut self, bytes: &[u8]) -> Q2Result<()> {
+        GameWorld::read_game(self, bytes)
+    }
+
+    fn write_level(&mut self, client_bodies: bool) -> Q2Result<Vec<u8>> {
+        if client_bodies {
+            return self.encode_level();
         }
-        if self.game.deathmatch {
-            if !intermission {
-                self.send_login_effect(key);
+        let bodies: Vec<_> = (1..=self.clients.len())
+            .filter_map(|n| {
+                let key = self.entities.key_for_number(n)?;
+                Some((key, std::mem::take(&mut self.entities.get_mut(key)?.in_use)))
+            })
+            .collect();
+        let saved = self.encode_level();
+        for (key, in_use) in bodies {
+            if let Some(ent) = self.entities.get_mut(key) {
+                ent.in_use = in_use;
             }
-            self.print_entered_the_game(key);
-        } else if !intermission && self.game.maxclients() > 1 {
-            self.send_login_effect(key);
-            self.print_entered_the_game(key);
         }
-        // Make sure all view stuff is valid.
-        self.client_end_server_frame(key);
+        saved
+    }
+
+    fn read_level(&mut self, bytes: &[u8]) -> Q2Result<()> {
+        GameWorld::read_level(self, bytes)
+    }
+
+    fn check_game(&self, bytes: &[u8]) -> Q2Result<()> {
+        crate::savegame::decode_game(bytes).map(drop)
+    }
+
+    fn check_level(&self, bytes: &[u8]) -> Q2Result<()> {
+        crate::savegame::decode_level(bytes).map(drop)
     }
 
     fn client_disconnect(&mut self, number: usize) {
@@ -172,6 +222,27 @@ impl GameExport for GameWorld {
     }
 }
 
+impl GameWorld {
+    /// The end C ClientBegin runs for a taken and a fresh body alike.
+    fn finish_client_begin(&mut self, key: EntityKey) {
+        let intermission = self.level.intermission_time != 0.0;
+        if intermission {
+            self.move_client_to_intermission(key);
+        }
+        if self.game.deathmatch {
+            if !intermission {
+                self.send_login_effect(key);
+            }
+            self.print_entered_the_game(key);
+        } else if !intermission && self.game.maxclients() > 1 {
+            self.send_login_effect(key);
+            self.print_entered_the_game(key);
+        }
+        // Make sure all view stuff is valid.
+        self.client_end_server_frame(key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +280,33 @@ mod tests {
         world.client_begin(3);
         world.client_disconnect(MAX_CLIENTS + 1);
         world.client_think(0, &UserCmd::default());
+    }
+
+    #[test]
+    fn a_level_left_by_gamemap_is_saved_without_its_client_bodies() {
+        // C SV_GameMap_f clears the client edicts' inuse around WriteLevel,
+        // so a revisit spawns the player at a start, not in a body shell.
+        let (mut world, _gi) = test_world_recording();
+        world.set_max_clients(1);
+        world.init();
+        world.spawn_entities("base1", "{ \"classname\" \"worldspawn\" }", "");
+        assert!(world.client_connect(1, ""));
+        world.ensure_player_start();
+        world.client_begin(1);
+        let game: &mut dyn GameExport = &mut world;
+        let without = game.write_level(false).unwrap();
+        let with = game.write_level(true).unwrap();
+        assert!(
+            game.edict(1).is_some(),
+            "the body is in use again after the write"
+        );
+
+        let mut loaded = test_world_recording().0;
+        loaded.set_max_clients(1);
+        loaded.read_level(&without).unwrap();
+        assert!(GameExport::edict(&loaded, 1).is_none());
+        loaded.read_level(&with).unwrap();
+        assert!(GameExport::edict(&loaded, 1).is_some());
     }
 
     #[test]

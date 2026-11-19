@@ -78,14 +78,19 @@ pub fn quad(
     let top_right = corner(right, top, uv[2], uv[1]);
     let bottom_right = corner(right, bottom, uv[2], uv[3]);
     let mut vertices = [0.0; QUAD_VERTICES * UI_VERTEX_FLOATS];
-    for (slot, vertex) in vertices.chunks_exact_mut(UI_VERTEX_FLOATS).zip([
-        top_left,
-        bottom_left,
-        top_right,
-        top_right,
-        bottom_left,
-        bottom_right,
-    ]) {
+    for (slot, vertex) in vertices
+        .as_chunks_mut::<UI_VERTEX_FLOATS>()
+        .0
+        .iter_mut()
+        .zip([
+            top_left,
+            bottom_left,
+            top_right,
+            top_right,
+            bottom_left,
+            bottom_right,
+        ])
+    {
         slot.copy_from_slice(&vertex);
     }
     Quad { image, vertices }

@@ -55,7 +55,7 @@ pub type DieFn = fn(&mut GameWorld, EntityKey, EntityKey, EntityKey, i32, Vec3f)
 pub type EndMoveFn = fn(&mut GameWorld, EntityKey);
 
 /// Movement controller for func_* entities (doors, platforms, trains).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MoveInfo {
     // -- fixed data (set at spawn) --
     pub start_origin: Vec3f,
@@ -81,6 +81,7 @@ pub struct MoveInfo {
     pub next_speed: f32,
     pub remaining_distance: f32,
     pub decel_distance: f32,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub endfunc: Option<EndMoveFn>,
 }
 
@@ -122,23 +123,34 @@ pub type MonsterSightFn = fn(&mut GameWorld, EntityKey, EntityKey);
 pub type MonsterCheckAttackFn = fn(&mut GameWorld, EntityKey) -> bool;
 
 /// Monster AI state. C ref: local.h:407-439 (monsterinfo_t).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MonsterInfo {
+    #[serde(with = "crate::savegame::fields::monster_move")]
     pub currentmove: Option<MonsterMove>,
     pub aiflags: AiFlags,
     pub nextframe: i32,
     pub scale: f32,
 
     // -- AI state callbacks --
+    #[serde(with = "crate::savegame::fields::callback")]
     pub stand: Option<MonsterStandFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub idle: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub search: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub walk: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub run: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub dodge: Option<MonsterDodgeFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub attack: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub melee: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub sight: Option<MonsterSightFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub checkattack: Option<MonsterCheckAttackFn>,
 
     // -- AI runtime state --
@@ -169,7 +181,7 @@ pub struct MonsterInfo {
 // ---------------------------------------------------------------------------
 
 /// Persistent client data — survives level changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClientPersistent {
     pub userinfo: String,
     pub netname: String,
@@ -180,6 +192,7 @@ pub struct ClientPersistent {
     /// Which hand the weapon is in (userinfo `hand`: `RIGHT_HANDED`,
     /// `LEFT_HANDED` or `CENTER_HANDED`).
     pub hand: i32,
+    #[serde(with = "crate::savegame::fields::array")]
     pub inventory: [i32; crate::constants::MAX_ITEMS],
     /// C `max_bullets`..`max_slugs`; Bandolier and Ammo Pack raise them.
     pub ammo_max: crate::items::AmmoMax,
@@ -223,7 +236,7 @@ impl Default for ClientPersistent {
 }
 
 /// Per-level client data — reset on each map load.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClientRespawn {
     pub coop_respawn: ClientPersistent,
     pub enter_frame: i32,
@@ -233,7 +246,7 @@ pub struct ClientRespawn {
 }
 
 /// Full client-side state (mirrors the game-visible part of `gclient_t`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClientData {
     pub ps: PlayerState,
     /// Last pmove result, to tell pmove to snap when something else moved
@@ -328,10 +341,15 @@ pub struct ClientData {
     pub v_dmg_pitch: f32,
     pub v_dmg_roll: f32,
     pub v_dmg_time: f32,
+    /// Set by `client_connect` when it took a body a loadgame left in the
+    /// level, for `client_begin` (C ClientBegin's `ent->inuse` test, which
+    /// the port cannot use: `connect_client` puts fresh bodies in use too).
+    #[serde(skip)]
+    pub loadgame_body: bool,
 }
 
 /// Where the gun is in its cycle (C `weaponstate_t`, same order).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WeaponState {
     #[default]
     Ready,
@@ -344,7 +362,7 @@ pub enum WeaponState {
 // Game-specific entity data  (fields from `local.h`'s extended edict_t)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GameEntityData {
     pub movetype: MoveType,
     pub flags: EntityFlags,
@@ -464,7 +482,7 @@ pub struct GameEntityData {
 /// This struct merges the C `edict_t` (server-visible) and game-specific
 /// fields into a single Rust struct. Callback fields use `fn` pointers
 /// (not closures) for serializability and Send+Sync.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Entity {
     /// Networked state (sent to clients).
     pub state: EntityState,
@@ -497,12 +515,19 @@ pub struct Entity {
     pub avelocity: Vec3f,
 
     // -- entity callbacks (C: function pointers on edict_t) --
+    #[serde(with = "crate::savegame::fields::callback")]
     pub prethink: Option<PreThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub think: Option<ThinkFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub blocked: Option<BlockedFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub touch: Option<TouchFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub use_fn: Option<UseFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub pain: Option<PainFn>,
+    #[serde(with = "crate::savegame::fields::callback")]
     pub die: Option<DieFn>,
 
     // -- movement controller for func_* entities --
@@ -513,6 +538,8 @@ pub struct Entity {
 
     /// Slot in `GameWorld::clients` (entity number - 1), only `Some` for
     /// player entities: C `ent->client` pointing into `game.clients`.
+    /// Not saved: `read_level` sets it on the client numbers, as C does.
+    #[serde(skip)]
     pub client: Option<usize>,
 
     /// Game-specific data from `local.h`.
@@ -578,6 +605,7 @@ impl std::fmt::Debug for Entity {
 /// `g_edicts`): 0 is the world and `1..=max_clients` are the client slots,
 /// which `spawn` never hands out. Generational keys mean a key held across a
 /// slot's reuse goes stale instead of aliasing the new entity.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct EntityStorage {
     entities: SlotMap<EntityKey, Entity>,
     max_entities: usize,
@@ -588,7 +616,13 @@ pub struct EntityStorage {
     level_time: f32,
     /// C `gi.dprintf` text from spawn functions, which only see the
     /// storage; `GameWorld::call_spawn` prints it.
+    #[serde(skip)]
     dprints: Vec<String>,
+    /// The key each number held before a spawn reused it: a C edict
+    /// pointer outlives the reuse, so a search continuing after it still
+    /// knows its place (`number_of_retired`).
+    #[serde(skip)]
+    retired: Vec<Option<EntityKey>>,
 }
 
 /// C G_FindFreeEdict policies.
@@ -609,6 +643,7 @@ impl EntityStorage {
             max_clients: 0,
             level_time: 0.0,
             dprints: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -675,6 +710,10 @@ impl EntityStorage {
     fn init_at(&mut self, number: usize) -> Option<EntityKey> {
         if let Some(old) = self.numbers[number].take() {
             self.entities.remove(old);
+            if self.retired.len() <= number {
+                self.retired.resize(number + 1, None);
+            }
+            self.retired[number] = Some(old);
         }
         let ent = Entity {
             in_use: true,
@@ -729,6 +768,32 @@ impl EntityStorage {
         }
     }
 
+    /// Refuse loaded storage whose number table disagrees with its
+    /// entities: every later spawn and lookup indexes it.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let bad = |why: &str| Err(format!("entity numbering is damaged: {why}"));
+        if self.numbers.len() != self.max_entities || self.max_clients >= self.max_entities {
+            return bad("table size");
+        }
+        let mut listed = 0;
+        for (n, key) in self.numbers.iter().enumerate() {
+            let Some(key) = key else { continue };
+            match self.entities.get(*key) {
+                Some(ent) if usize::try_from(ent.state.number) == Ok(n) => listed += 1,
+                _ => return bad(&format!("number {n}")),
+            }
+        }
+        match listed == self.entities.len() {
+            true => Ok(()),
+            false => bad("unnumbered entities"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn break_numbering_for_test(&mut self) {
+        self.numbers.pop();
+    }
+
     /// The key holding entity number `n` (in use or soft-freed), if any.
     /// `state.number` is public, so debug builds check here that it still
     /// names this slot.
@@ -746,6 +811,12 @@ impl EntityStorage {
     /// (C walks `g_edicts`). Includes soft-freed entities.
     pub fn keys_from(&self, first: usize) -> impl Iterator<Item = EntityKey> + '_ {
         self.numbers.iter().skip(first).filter_map(|k| *k)
+    }
+
+    /// The number `key` held before a spawn reused it, if that is the last
+    /// key the number retired.
+    pub fn number_of_retired(&self, key: EntityKey) -> Option<usize> {
+        self.retired.iter().position(|&k| k == Some(key))
     }
 
     /// Immutable lookup by key.
@@ -1023,5 +1094,29 @@ mod tests {
         let gl = crate::world::GameLocals::default();
         assert_eq!(gl.maxclients(), 1);
         assert_eq!(gl.maxentities, 1024);
+    }
+
+    #[test]
+    fn a_number_table_out_of_step_with_its_entities_is_refused() {
+        type Tamper = fn(&mut EntityStorage, usize, usize);
+        let cases: [(&str, Tamper); 3] = [
+            ("swapped", |s, a, b| s.numbers.swap(a, b)),
+            ("cleared", |s, a, _| s.numbers[a] = None),
+            ("removed", |s, a, _| {
+                let key = s.numbers[a].expect("spawned");
+                s.entities.remove(key);
+            }),
+        ];
+        for (case, tamper) in cases {
+            let mut storage = EntityStorage::new(16);
+            let a = storage.spawn().unwrap();
+            let b = storage.spawn().unwrap();
+            assert_eq!(storage.check(), Ok(()), "{case}");
+            let number = |key| storage.get(key).unwrap().state.number as usize;
+            let (a, b) = (number(a), number(b));
+            tamper(&mut storage, a, b);
+            let err = storage.check().unwrap_err();
+            assert!(err.contains("numbering"), "{case}: {err}");
+        }
     }
 }

@@ -326,7 +326,7 @@ impl BspData {
                 return drop("Mod_LoadFaces: bad texinfo number".into());
             }
         }
-        for node in &self.nodes {
+        for (index, node) in self.nodes.iter().enumerate() {
             if !in_range(i64::from(node.plane_idx), self.planes.len()) {
                 return drop(format!(
                     "Mod_LoadNodes: Incorrect {} < {} planenum.",
@@ -335,7 +335,10 @@ impl BspData {
                 ));
             }
             for &child in &node.children {
-                if child >= 0 && !in_range(i64::from(child), self.nodes.len()) {
+                // Children follow their parent (qbsp's preorder), so a walk
+                // of the tree cannot loop.
+                let after_parent = i64::from(child) > index as i64;
+                if child >= 0 && !(in_range(i64::from(child), self.nodes.len()) && after_parent) {
                     return drop(format!("Mod_LoadNodes: Incorrect {child} nodenum as leaf."));
                 }
                 let leaf = -1 - i64::from(child);
@@ -669,6 +672,16 @@ mod tests {
             "planenum",
         );
         let node_children = [1, -1];
+        rejected(
+            Refs {
+                node_children,
+                ..Refs::default()
+            },
+            "nodenum",
+        );
+        // A child at or before its parent would loop the tree walks; qbsp
+        // writes nodes in preorder, and the collision loader refuses it too.
+        let node_children = [0, -1];
         rejected(
             Refs {
                 node_children,

@@ -28,7 +28,7 @@ use q2_shared::constants::{
 /// Move a touching client to the teleporter's destination, hold it briefly
 /// and reset its view, telefragging whatever is at the destination.
 /// C ref: `teleporter_touch`.
-fn teleporter_touch(
+pub(crate) fn teleporter_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -95,7 +95,7 @@ fn teleporter_touch(
 /// A monster reached the path_corner it was heading for: fire pathtarget,
 /// pick the next corner (teleporting to it if flagged), pause for `wait`.
 /// C ref: `path_corner_touch`.
-fn path_corner_touch(
+pub(crate) fn path_corner_touch(
     world: &mut GameWorld,
     self_key: EntityKey,
     other_key: EntityKey,
@@ -177,7 +177,7 @@ fn path_corner_touch(
 }
 
 /// The barrel was killed: explode two frames later. C ref: `barrel_delay`.
-fn barrel_delay(
+pub(crate) fn barrel_delay(
     world: &mut GameWorld,
     self_key: EntityKey,
     _inflictor: EntityKey,
@@ -196,7 +196,7 @@ fn barrel_delay(
 
 /// Radius damage, debris, then the barrel becomes an explosion.
 /// C ref: `barrel_explode`.
-fn barrel_explode(world: &mut GameWorld, self_key: EntityKey) {
+pub(crate) fn barrel_explode(world: &mut GameWorld, self_key: EntityKey) {
     let Some(ent) = world.entities.get(self_key) else {
         return;
     };
@@ -274,6 +274,7 @@ const SM_MEAT_MODEL: &str = "models/objects/gibs/sm_meat/tris.md2";
 
 /// C `think = G_FreeEdict`.
 pub(crate) fn free_think(world: &mut GameWorld, key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(key);
 }
 
@@ -370,6 +371,7 @@ pub fn gib_die(
     _damage: i32,
     _point: Vec3f,
 ) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(self_key);
 }
 
@@ -544,6 +546,7 @@ pub fn debris_die(
     _damage: i32,
     _point: Vec3f,
 ) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(self_key);
 }
 

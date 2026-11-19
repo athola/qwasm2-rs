@@ -25,7 +25,7 @@ const fn prev(n: usize) -> usize {
 }
 
 /// One breadcrumb: where, when, and the yaw from the previous one.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrailNode {
     pub origin: Vec3f,
     pub timestamp: f32,
@@ -33,7 +33,7 @@ pub struct TrailNode {
 }
 
 /// Ring of trail nodes; `head` is the oldest, the next to be overwritten.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PlayerTrail {
     nodes: [TrailNode; TRAIL_LENGTH],
     head: usize,
@@ -41,6 +41,19 @@ pub struct PlayerTrail {
 }
 
 impl PlayerTrail {
+    /// Refuse a loaded trail whose `head` is off the ring.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        match self.head < TRAIL_LENGTH {
+            true => Ok(()),
+            false => Err(format!("trail head {} is off the ring", self.head)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_head_for_test(&mut self, head: usize) {
+        self.head = head;
+    }
+
     /// Fresh nodes at the map origin with timestamp 0, as C's newly spawned
     /// edicts. C ref: `PlayerTrail_Init`.
     pub fn init(&mut self) {

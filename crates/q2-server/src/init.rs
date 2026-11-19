@@ -116,7 +116,24 @@ impl Server {
             gi.configstring((CS_MODELS + 1 + i) as i32, &format!("*{i}"));
         }
 
-        game.spawn_entities(map_name, &gi.entity_string(), spawnpoint);
+        // C CMod_LoadEntityString: with `sv_entfile` set (its default), a
+        // map's .ent file replaces the entities in its BSP.
+        let entities = if gi.cvar("sv_entfile", "1").parse::<f32>().unwrap_or(0.0) != 0.0 {
+            crate::mapfixes::entity_file(map_name)
+        } else {
+            None
+        };
+        let entities = match entities {
+            Some(fixed) => {
+                tracing::info!(
+                    target: crate::local::SERVER_PRINT_TARGET,
+                    "CMod_LoadEntityString: .ent file maps/{map_name}.ent loaded."
+                );
+                fixed.to_string()
+            }
+            None => gi.entity_string(),
+        };
+        game.spawn_entities(map_name, &entities, spawnpoint);
         self.drop_on_game_error(gi)?;
         game.run_frame();
         self.drop_on_game_error(gi)?;
@@ -135,7 +152,7 @@ impl Server {
                 "Game DLL corrupted server configstrings".into(),
             ));
         }
-        // TODO(#10): SV_CreateBaseline once client messages are sent.
+        self.create_baseline(game);
 
         // All precaches complete — go live.
         self.state = serverstate;
@@ -144,17 +161,14 @@ impl Server {
 }
 
 /// What a level string loads (C `SV_Map`'s parsing of its `levelstring`).
+/// Built only by `parse`, so its parts always agree with its level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapRequest {
-    /// Map (or cinematic, demo or picture) name, without the `*` new-unit
-    /// flag, the `$spawnpoint` or the `+` remainder.
-    pub map: String,
-    /// Target name of the player start to use (after `$`), "" for none.
-    pub spawnpoint: String,
-    /// What C stores as `nextserver` (`gamemap "<rest>"`) to run once a
-    /// cinematic ends: the text after the first `+`.
-    pub next_server: Option<String>,
-    pub kind: LevelKind,
+    level: String,
+    map: String,
+    spawnpoint: String,
+    next_server: Option<String>,
+    kind: LevelKind,
 }
 
 /// The server state `SV_Map` spawns for a level, from its suffix.
@@ -172,12 +186,74 @@ pub enum LevelKind {
 impl MapRequest {
     /// C `SV_Map`: cut at the first `+` (the rest becomes `nextserver`),
     /// then at the first `$` (the rest is the spawnpoint), then drop a
-    /// leading `*`. A `*` only matters to C's savegames, which this port
-    /// does not write. The coop `victory.pcx` hack needs a coop cvar and is
+    /// leading `*`. The coop `victory.pcx` hack needs a coop cvar and is
     /// not ported.
     pub fn parse(level: &str) -> Self {
+        let cut = Cut::of(level);
+        Self {
+            level: level.to_string(),
+            map: cut.map(),
+            spawnpoint: cut.spawnpoint.to_string(),
+            next_server: cut.next_server.map(str::to_string),
+            kind: cut.kind,
+        }
+    }
+
+    /// The level string as given (C `svs.mapcmd`). A leading `*` starts a
+    /// new unit: `gamemap` then wipes the unit's saved levels.
+    pub fn level(&self) -> &str {
+        &self.level
+    }
+
+    /// Map (or cinematic, demo or picture) name, without the `*` new-unit
+    /// flag, the `$spawnpoint` or the `+` remainder.
+    pub fn map(&self) -> &str {
+        &self.map
+    }
+
+    /// Target name of the player start to use (after `$`), "" for none.
+    pub fn spawnpoint(&self) -> &str {
+        &self.spawnpoint
+    }
+
+    /// What C stores as `nextserver` (`gamemap "<rest>"`) to run once a
+    /// cinematic ends: the text after the first `+`.
+    pub fn next_server(&self) -> Option<&str> {
+        self.next_server.as_deref()
+    }
+
+    pub fn kind(&self) -> LevelKind {
+        self.kind
+    }
+
+    /// The game map `level` ends in, following a cinematic's next server;
+    /// `None` for a picture or a cinematic with none.
+    pub fn destination(mut level: &str) -> Option<String> {
+        // A loop over borrowed cuts: a saved level string can chain any
+        // number of movies.
+        loop {
+            let cut = Cut::of(level);
+            match (cut.kind, cut.next_server) {
+                (LevelKind::Game, _) => return Some(cut.map()),
+                (LevelKind::Cinematic | LevelKind::Demo, Some(next)) => level = next,
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// One level string cut as `parse` documents, borrowing from it.
+struct Cut<'a> {
+    map: &'a str,
+    spawnpoint: &'a str,
+    next_server: Option<&'a str>,
+    kind: LevelKind,
+}
+
+impl<'a> Cut<'a> {
+    fn of(level: &'a str) -> Self {
         let (level, next_server) = match level.split_once('+') {
-            Some((level, rest)) => (level, Some(rest.to_string())),
+            Some((level, rest)) => (level, Some(rest)),
             None => (level, None),
         };
         let (level, spawnpoint) = level.split_once('$').unwrap_or((level, ""));
@@ -193,15 +269,44 @@ impl MapRequest {
             LevelKind::Game
         };
         Self {
-            map: map.to_string(),
-            spawnpoint: spawnpoint.to_string(),
+            map,
+            spawnpoint,
             next_server,
             kind,
+        }
+    }
+
+    fn map(&self) -> String {
+        match self.kind {
+            // C SV_GameMap_f: the pak's spelling, which is lower case.
+            LevelKind::Game => self.map.to_ascii_lowercase(),
+            _ => self.map.to_string(),
         }
     }
 }
 
 impl Server {
+    /// C `SV_CreateBaseline`: each edict in use that shows a model, a sound
+    /// or effects becomes its number's baseline, `old_origin` at its
+    /// origin. C also writes those two fields back into the edict; the
+    /// game sets `old_origin` itself every frame (G_RunFrame) before any
+    /// client frame is built, so only the server's copy is set here.
+    fn create_baseline(&mut self, game: &dyn GameExport) {
+        for number in 1..game.num_edicts().min(self.baselines.len()) {
+            let Some(edict) = game.edict(number) else {
+                continue;
+            };
+            let s = edict.state;
+            if s.modelindex == 0 && s.sound == 0 && s.effects == 0 {
+                continue;
+            }
+            let mut baseline = s.clone();
+            baseline.number = number as i32;
+            baseline.old_origin = baseline.origin;
+            self.baselines[number] = baseline;
+        }
+    }
+
     /// Copy the configstrings the game wrote through the import's mirror
     /// into `configstrings`. In C the game writes `sv.configstrings`
     /// directly, so this runs after every call into the game that can
@@ -330,6 +435,42 @@ mod tests {
     }
 
     #[test]
+    fn a_map_with_a_shipped_fix_spawns_the_fixed_entities_unless_sv_entfile_is_0() {
+        // C CMod_LoadEntityString with yquake2's stuff/mapfixes installed.
+        let gi = ServerGameImport::new();
+        let mut sv = Server::default();
+        let mut svs = ServerStatic::default();
+        svs.init_game(1);
+        let mut game = NullGame::default();
+        sv.map(&mut svs, "biggun", &[], "", &gi, &mut game).unwrap();
+        assert!(game.entities.starts_with("// FIXED ENTITY STRING"));
+        let spawned = q2_game::spawn::parse_entity_string(&game.entities).unwrap();
+        assert!(!spawned.iter().any(|e| e["classname"] == "target_actor"));
+
+        gi.set_cvar("sv_entfile", "0");
+        sv.map(&mut svs, "biggun", &[], "", &gi, &mut game).unwrap();
+        assert_eq!(game.entities, gi.entity_string(), "the map's own entities");
+
+        gi.set_cvar("sv_entfile", "1");
+        sv.map(&mut svs, "base1", &[], "", &gi, &mut game).unwrap();
+        assert_eq!(game.entities, gi.entity_string(), "base1 has no fix");
+    }
+
+    #[test]
+    fn every_shipped_fix_parses() {
+        for (map, text) in crate::mapfixes::FIXES {
+            let entities =
+                q2_game::spawn::parse_entity_string(text).unwrap_or_else(|e| panic!("{map}: {e}"));
+            assert!(
+                entities
+                    .first()
+                    .is_some_and(|e| e["classname"] == "worldspawn"),
+                "{map}"
+            );
+        }
+    }
+
+    #[test]
     fn a_picture_server_loads_no_map_spawns_the_game_and_ends_in_the_pic_state() {
         let gi = ServerGameImport::new();
         let mut sv = Server::default();
@@ -394,6 +535,24 @@ mod tests {
         }
         fn client_player_state(&self, _: usize) -> Option<&q2_shared::types::PlayerState> {
             None
+        }
+        fn write_game(&mut self, _: bool) -> q2_common::error::Q2Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn read_game(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn write_level(&mut self, _: bool) -> q2_common::error::Q2Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn read_level(&mut self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn check_game(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
+        }
+        fn check_level(&self, _: &[u8]) -> q2_common::error::Q2Result<()> {
+            Ok(())
         }
     }
 
@@ -572,6 +731,42 @@ mod tests {
             (level.map.as_str(), level.spawnpoint.as_str()),
             ("base1", "start")
         );
+    }
+
+    #[test]
+    fn a_game_map_in_another_case_takes_the_paks_lower_case_name() {
+        // C SV_GameMap_f takes the pak's spelling, so the map fix and the
+        // unit's saved level are found as for `base2`; paks name maps in
+        // lower case.
+        let level = MapRequest::parse("*BASE2$Start");
+        assert_eq!(level.map, "base2");
+        assert_eq!(level.spawnpoint, "Start");
+    }
+
+    #[test]
+    fn a_level_string_ends_in_its_game_map_through_any_cinematic() {
+        assert_eq!(
+            MapRequest::destination("*base2$x").as_deref(),
+            Some("base2")
+        );
+        assert_eq!(
+            MapRequest::destination("ntro.cin+base1").as_deref(),
+            Some("base1")
+        );
+        assert_eq!(MapRequest::destination("end.cin"), None);
+        assert_eq!(MapRequest::destination("victory.pcx"), None);
+    }
+
+    #[test]
+    fn a_long_chain_of_cinematics_is_followed_without_recursing() {
+        // A saved mapcmd is read back from the platform's store, so it can
+        // be any length.
+        let chain = "a.cin+".repeat(100_000);
+        assert_eq!(
+            MapRequest::destination(&format!("{chain}base1")).as_deref(),
+            Some("base1")
+        );
+        assert_eq!(MapRequest::destination(&format!("{chain}end.cin")), None);
     }
 
     #[test]

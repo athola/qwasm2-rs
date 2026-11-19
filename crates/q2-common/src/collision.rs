@@ -24,7 +24,7 @@ use crate::bsp_file::{
 const MAX_MAP_MODELS: usize = 1024;
 const MAX_MAP_BRUSHES: usize = 8192;
 const MAX_MAP_TEXINFO: usize = 8192;
-const MAX_MAP_AREAPORTALS: usize = 1024;
+pub const MAX_MAP_AREAPORTALS: usize = 1024;
 const MAX_MAP_PLANES: usize = 65536;
 const MAX_MAP_NODES: usize = 65536;
 const MAX_MAP_BRUSHSIDES: usize = 65536;
@@ -887,6 +887,22 @@ impl CollisionMap {
             return Err(Q2Error::Drop("areaportal > numareaportals".into()));
         }
         self.portal_open[portal_num] = open;
+        self.flood_area_connections();
+        Ok(())
+    }
+
+    /// Which area portals are open (C `portalopen`, CM_WritePortalState).
+    pub fn portal_states(&self) -> &[bool] {
+        &self.portal_open
+    }
+
+    /// Restore `portal_states` from a save and recalculate connectivity
+    /// (C CM_ReadPortalState).
+    pub fn set_portal_states(&mut self, open: &[bool]) -> Q2Result<()> {
+        if open.len() != self.portal_open.len() {
+            return Err(Q2Error::Drop("saved portal state is damaged".into()));
+        }
+        self.portal_open.copy_from_slice(open);
         self.flood_area_connections();
         Ok(())
     }
@@ -1883,10 +1899,10 @@ fn md4_digest(data: &[u8]) -> [u32; 4] {
     const MD4_INIT_D: u32 = 0x1032_5476;
     let mut state: [u32; 4] = [MD4_INIT_A, MD4_INIT_B, MD4_INIT_C, MD4_INIT_D];
 
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0 {
         let mut x = [0u32; 16];
-        for (i, chunk) in block.chunks_exact(4).enumerate() {
-            x[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            x[i] = u32::from_le_bytes(*word);
         }
 
         let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
@@ -3307,6 +3323,36 @@ pub(crate) mod tests {
         );
         assert_eq!(miss.fraction, 1.0);
         assert_eq!(miss.ent_index, None);
+    }
+
+    #[test]
+    fn a_leaf_past_the_map_is_in_no_cluster_and_area_0() {
+        // C CM_LeafCluster/CM_LeafArea Com_Error on a bad leaf; callers
+        // here ask with indices from untrusted traces, so they get the
+        // "outside the map" values instead.
+        let mut cm = CollisionMap::new();
+        cm.load_map(&areas_bsp(0)).unwrap();
+        assert_eq!(cm.leaf_cluster(usize::MAX), -1);
+        assert_eq!(cm.leaf_area(usize::MAX), 0);
+    }
+
+    #[test]
+    fn saved_portal_states_restore_the_area_connections() {
+        // C CM_WritePortalState / CM_ReadPortalState, which floods again.
+        let mut cm = CollisionMap::new();
+        cm.load_map(&areas_bsp(0)).unwrap();
+        cm.set_area_portal_state(1, true).unwrap();
+        let saved = cm.portal_states().to_vec();
+
+        let mut loaded = CollisionMap::new();
+        loaded.load_map(&areas_bsp(0)).unwrap();
+        assert!(!loaded.areas_connected(1, 2).unwrap());
+        loaded.set_portal_states(&saved).unwrap();
+        assert!(loaded.areas_connected(1, 2).unwrap());
+        assert!(
+            loaded.set_portal_states(&saved[..3]).is_err(),
+            "wrong length"
+        );
     }
 
     #[test]

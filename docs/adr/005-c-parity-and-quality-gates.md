@@ -41,7 +41,38 @@ on an empty map or from a bad head node ends at `end` where C leaves
 `world_trace` names the world entity only on a hit. Outside collision,
 every `NetMsg` buffer behaves as C's `allowoverflow` (no `ERR_FATAL`), and
 `CmdSystem` is a subset of `cmdparser.c` (its module doc lists what is
-missing).
+missing). Saves refuse a slot name holding `..`, `/` or `\`, which C reports
+as "Bad savedir." and then uses anyway. A load checks every file of its
+slot before it gives up the running game, so a damaged, older-version or
+incomplete save, one whose values (item indices, entity numbering, sizes)
+would break play, or one of a map the pak lacks is refused with a print
+and play goes on, where C's ReadGame raises ERR_DROP. A test pins the
+shape of the saved types (field names, kinds and variants), so a change to
+one has to bump the save version.
+
+Where the port has no C counterpart to match, it picks the nearest
+behavior and says so. With no menu system, `menu_loadgame` (F3, and the
+press after a single-player death) loads the newest save rather than
+listing them. Opening the page starts a new game, as C's `map` does, but
+it keeps the last visit's `save0` autosave instead of writing over it, so
+closing the tab loses only what was played since the last level entry. A
+skipped cinematic writes no autosave of its own; the
+level it leads to writes one. The save/load tests allow exactly the
+differences C's own load shows against an uninterrupted run: `linkcount`
+one ahead after the relink, a SOLID_NOT entity left area-linked coming
+back unlinked, free entities zeroed, and the reconnected client's view in
+its delta angles.
+
+The game's random sequence is another stand-in. C `randk()` is a KISS
+generator whose 16 MB state has no place in a save, so
+`GameWorld::random_u32` steps a 32-bit LCG kept in the level state and
+returns that state passed through the murmur3 finalizer
+(`random_output` in `q2-game/src/world.rs`), shifted into C's 0..2^31
+range. Callers take `& 1`, `& 3` or `% n` of it, as C does of `randk()`,
+and a bare LCG's low bits cycle every 2^k calls; the finalizer makes every
+state bit reach the low output bits. Adding it changed every random
+sequence from the one 0.1.3 produced, so a given seed no longer yields
+the same draws. Neither sequence is C's.
 
 Additions C does not have, on valid input, are allowed only behind an
 opt-in setting that defaults to C's behavior, so the default build stays

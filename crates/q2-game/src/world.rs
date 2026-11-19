@@ -27,7 +27,7 @@ use std::rc::Rc;
 // ---------------------------------------------------------------------------
 
 /// Level-specific state — reset each map load.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LevelLocals {
     pub framenum: i32,
     pub time: f32,
@@ -80,7 +80,7 @@ pub struct LevelLocals {
 // ---------------------------------------------------------------------------
 
 /// Persistent game state — survives level changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameLocals {
     /// Target name of the start to use (C `game.spawnpoint`), from the
     /// previous level's exit; empty for a fresh map.
@@ -114,12 +114,22 @@ pub struct GameLocals {
     /// How far the view bob cycle advances each frame on the ground; kept
     /// while airborne (C view.c file static `bobmove`).
     pub bobmove: f32,
+    /// Whether the game was just read from an autosave (C
+    /// `game.autosaved`): ClientConnect then keeps the inventory the
+    /// autosave stored instead of starting the player afresh.
+    pub autosaved: bool,
 }
 
 impl GameLocals {
     /// C `game.maxclients()`.
     pub fn maxclients(&self) -> i32 {
         self.maxclients
+    }
+
+    /// A value `set_max_clients` would clamp, as a tampered save holds.
+    #[cfg(test)]
+    pub(crate) fn set_maxclients_unclamped_for_test(&mut self, maxclients: i32) {
+        self.maxclients = maxclients;
     }
 }
 
@@ -142,6 +152,7 @@ impl Default for GameLocals {
             helpmessage2: String::new(),
             helpchanged: 0,
             bobmove: 0.0,
+            autosaved: false,
         }
     }
 }
@@ -438,6 +449,13 @@ impl GameWorld {
 
     // -- Search utilities ----------------------------------------------------
 
+    /// Where a search continuing after `key` resumes: its number, or the
+    /// number it held before a spawn reused it (C's edict pointer).
+    fn search_position(&self, key: EntityKey) -> Option<usize> {
+        self.number_of(key)
+            .or_else(|| self.entities.number_of_retired(key))
+    }
+
     /// Next in-use entity after `start_after` (in entity-number order) whose
     /// `field` matches `value` case-insensitively. An empty field never
     /// matches (C skips NULL strings).
@@ -449,7 +467,7 @@ impl GameWorld {
         field: fn(&crate::entity::Entity) -> &str,
     ) -> Option<EntityKey> {
         let first = match start_after {
-            Some(key) => self.number_of(key)? + 1,
+            Some(key) => self.search_position(key)? + 1,
             None => 0,
         };
         self.entities.keys_from(first).find(|&key| {
@@ -490,7 +508,7 @@ impl GameWorld {
         radius: f32,
     ) -> Option<EntityKey> {
         let first = match start_after {
-            Some(key) => self.number_of(key)? + 1,
+            Some(key) => self.search_position(key)? + 1,
             None => 0,
         };
         self.entities.keys_from(first).find(|&key| {
@@ -503,16 +521,19 @@ impl GameWorld {
         })
     }
 
-    /// Next value of the game's pseudo-random sequence. A deterministic
-    /// stand-in for C `randk()`, advanced on every call.
+    /// Next value of the game's pseudo-random sequence, in 0..2^31 as C
+    /// `randk()` returns. A deterministic stand-in for C's KISS generator,
+    /// whose 16 MB state has no place in a save, advanced on every call.
     pub fn random_u32(&mut self) -> u32 {
-        // Numerical Recipes LCG.
+        // Numerical Recipes LCG for the state; its low bits cycle every
+        // 2^k calls, so the output mixes the high bits down (the murmur3
+        // finalizer) before callers take `& 1` or `% n` of it.
         self.level.rand_state = self
             .level
             .rand_state
             .wrapping_mul(1_664_525)
             .wrapping_add(1_013_904_223);
-        self.level.rand_state >> 8
+        random_output(self.level.rand_state)
     }
 
     /// C `random()`: uniform in [0, 1].
@@ -733,7 +754,7 @@ impl GameWorld {
 }
 
 /// C `Think_Delay`: fire the delayed targets, then remove the temp entity.
-fn think_delay(world: &mut GameWorld, key: EntityKey) {
+pub(crate) fn think_delay(world: &mut GameWorld, key: EntityKey) {
     let activator = world.entities.get(key).and_then(|e| e.game.activator);
     match activator {
         Some(activator) => world.use_targets(key, activator),
@@ -767,7 +788,12 @@ const LIGHT_STYLES: [&str; 12] = [
 const LIGHT_START_OFF: i32 = 1;
 
 /// C ref: `light_use`.
-fn light_use(world: &mut GameWorld, key: EntityKey, _other: EntityKey, _activator: EntityKey) {
+pub(crate) fn light_use(
+    world: &mut GameWorld,
+    key: EntityKey,
+    _other: EntityKey,
+    _activator: EntityKey,
+) {
     let Some(ent) = world.entities.get_mut(key) else {
         return;
     };
@@ -1828,9 +1854,38 @@ impl GameWorld {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// `random_u32`'s output for a state: the murmur3 finalizer, so every
+/// state bit reaches the low output bits, shifted into C randk's range.
+pub(crate) fn random_output(state: u32) -> u32 {
+    let mut x = state;
+    x = (x ^ (x >> 16)).wrapping_mul(0x85eb_ca6b);
+    x = (x ^ (x >> 13)).wrapping_mul(0xc2b2_ae35);
+    (x ^ (x >> 16)) >> 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_random_sequences_low_bits_do_not_repeat_in_short_cycles() {
+        // Callers take `& 1`, `& 3` and `% n` of it (C randk), so a
+        // power-of-two LCG's low bits, which cycle every 2^k calls, show.
+        let mut world = test_world();
+        let bits: Vec<u32> = (0..4096).map(|_| world.random_u32() & 1).collect();
+        for period in [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048] {
+            assert!(
+                bits.iter().zip(&bits[period..]).any(|(a, b)| a != b),
+                "bit 0 repeats every {period} calls"
+            );
+        }
+        let ones = bits.iter().filter(|&&b| b == 1).count();
+        assert!((1800..2300).contains(&ones), "bit 0 balanced: {ones}");
+        assert!(
+            (0..1000).all(|_| world.random_u32() <= i32::MAX as u32),
+            "C randk is non-negative"
+        );
+    }
 
     #[test]
     fn gameworld_creates_with_empty_state() {
@@ -3602,6 +3657,35 @@ mod tests {
         );
         assert_eq!(world.find_radius(Some(next), Vec3f::ZERO, 100.0), None);
         assert_eq!(world.find_radius(Some(near), Vec3f::ZERO, 101.0), Some(far));
+    }
+
+    #[test]
+    fn a_search_goes_on_past_an_entity_whose_number_was_reused() {
+        // C G_Find and findradius continue from the edict slot, which a
+        // spawn into the freed number leaves where it was: a barrel that
+        // frees itself mid-blast and debris spawned into its number must
+        // not end T_RadiusDamage's scan.
+        let mut world = test_world();
+        world.level.time = 1.0; // freed before 2 s: reusable at once
+        world.entities.set_level_time(1.0);
+        let barrel = radius_target(&mut world, Vec3f::new(10.0, 0.0, -32.0), Solid::Bbox);
+        let beyond = radius_target(&mut world, Vec3f::new(20.0, 0.0, -32.0), Solid::Bbox);
+        world.free_entity(barrel);
+        let debris = world.spawn().unwrap();
+        assert_eq!(
+            world.number_of(debris),
+            Some(world.number_of(beyond).unwrap() - 1)
+        );
+        assert_eq!(
+            world.find_radius(Some(barrel), Vec3f::ZERO, 100.0),
+            Some(beyond)
+        );
+
+        world.entities.get_mut(beyond).unwrap().game.classname = "beyond".into();
+        assert_eq!(
+            world.find_by_classname(Some(barrel), "beyond"),
+            Some(beyond)
+        );
     }
 
     #[test]

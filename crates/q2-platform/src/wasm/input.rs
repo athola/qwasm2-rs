@@ -75,6 +75,20 @@ pub fn setup_input_listeners(
         })?;
     }
 
+    // A console command from the page (`qwasm2-command`, its `detail` the
+    // text), run by the next frame.
+    {
+        let state = state.clone();
+        listen(&document, "qwasm2-command", move |event: Event| {
+            let text = event
+                .dyn_ref::<web_sys::CustomEvent>()
+                .and_then(|event| event.detail().as_string());
+            if let Some(text) = text {
+                state.borrow_mut().commands.push(text);
+            }
+        })?;
+    }
+
     // Log pointer lock errors to the browser console for diagnostics.
     listen(&document, "pointerlockerror", move |_: Event| {
         web_sys::console::warn_1(
