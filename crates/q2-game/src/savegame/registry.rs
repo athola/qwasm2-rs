@@ -115,6 +115,12 @@ mod tests {
     }
 
     #[test]
+    fn a_callback_named_only_inside_a_macro_is_registered() {
+        // `items::build_item_list` names it inside `vec![..]`.
+        assert!(by_name::<ThinkFn>("player::weapon::weapon_blaster").is_some());
+    }
+
+    #[test]
     fn every_registered_callback_round_trips_by_name() {
         fn check<F: Callback>() {
             for &(name, f) in F::table() {

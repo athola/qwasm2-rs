@@ -14,6 +14,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
+use syn::parse::{ParseStream, Parser};
+use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 
 /// Normalized signature -> callback type alias in `crate::entity`.
@@ -170,6 +172,9 @@ fn scan_items(module: &str, items: &[syn::Item], found: &mut Found) {
                 }
                 ValueUses(&mut found.values).visit_item_static(s);
             }
+            syn::Item::Const(c) if !is_test_only(&c.attrs) => {
+                ValueUses(&mut found.values).visit_item_const(c);
+            }
             syn::Item::Impl(i) if !is_test_only(&i.attrs) => {
                 ValueUses(&mut found.values).visit_item_impl(i)
             }
@@ -240,6 +245,46 @@ impl<'ast> Visit<'ast> for ValueUses<'_> {
             self.0.insert(last.ident.to_string());
         }
     }
+
+    /// syn leaves a macro's arguments as tokens. Read them as expressions
+    /// (`vec![a, b]`, `format!(..)`); failing that (`vec![a; n]`), take
+    /// every identifier that does not open a call.
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let exprs = Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        match mac.parse_body_with(exprs) {
+            Ok(exprs) => exprs.iter().for_each(|e| self.visit_expr(e)),
+            Err(_) => {
+                let idents = |input: ParseStream| uncalled_idents(input, self.0);
+                idents
+                    .parse2(mac.tokens.clone())
+                    .expect("the scan reads any token");
+            }
+        }
+    }
+}
+
+/// Add each identifier in `input` not followed by parentheses to `out`.
+fn uncalled_idents(input: ParseStream, out: &mut BTreeSet<String>) -> syn::Result<()> {
+    while !input.is_empty() {
+        if input.peek(syn::Ident) {
+            let ident: syn::Ident = input.parse()?;
+            if !input.peek(syn::token::Paren) {
+                out.insert(ident.to_string());
+            }
+            continue;
+        }
+        let group = input.step(|cursor| match cursor.any_group() {
+            Some((inside, _, _, rest)) => Ok((Some(inside.token_stream()), rest)),
+            None => cursor
+                .token_tree()
+                .map(|(_, rest)| (None, rest))
+                .ok_or_else(|| cursor.error("end of tokens")),
+        })?;
+        if let Some(tokens) = group {
+            (|inner: ParseStream| uncalled_idents(inner, out)).parse2(tokens)?;
+        }
+    }
+    Ok(())
 }
 
 /// Run by `tests/build_script.rs`, which includes this file: a build
@@ -282,5 +327,20 @@ mod tests {
             "#[cfg(test)] mod t {{ fn a{THINK} {{}} }}\n#[cfg(not(test))] mod n {{ fn b{THINK} {{}} }}"
         );
         assert_eq!(callbacks(&scan(&source)), ["m::n::b"]);
+    }
+
+    #[test]
+    fn a_value_in_a_const_or_a_macro_counts_and_a_call_does_not() {
+        let found = scan(
+            "const C: Item = Item { think: Some(in_const) };
+             fn f() {
+                 let v = vec![Item { think: Some(in_vec) }, called(1)];
+                 tail![in_odd_macro; 3];
+             }",
+        );
+        for name in ["in_const", "in_vec", "in_odd_macro"] {
+            assert!(found.values.contains(name), "{name}: {:?}", found.values);
+        }
+        assert!(!found.values.contains("called"));
     }
 }
