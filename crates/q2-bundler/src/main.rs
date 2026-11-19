@@ -132,6 +132,9 @@ function __q2_decode_wasm() {{
         ],
         "__q2_decode_wasm()",
     )?;
+    // A debug build exposes the raw wasm exports to importers; nothing
+    // imports this page. Release glue has no such line.
+    let patched = patched.replace("export { wasm as __wasm }", "");
 
     ensure!(
         !patched.contains("import.meta.url"),
@@ -575,6 +578,13 @@ mod tests {
         let glue = format!("{GLUE}\nconst base = import.meta.url;\n");
         let err = patch_js_glue(&glue, "").unwrap_err().to_string();
         assert!(err.contains("import.meta.url"), "{err}");
+    }
+
+    #[test]
+    fn patch_drops_the_raw_exports_a_debug_build_adds() {
+        let glue = format!("{GLUE}\nexport {{ wasm as __wasm }}\n");
+        let patched = patch_js_glue(&glue, "").expect("debug glue bundles");
+        assert!(!patched.contains("__wasm }"), "{patched}");
     }
 
     #[test]
