@@ -1237,40 +1237,45 @@ const BINDS: [(u8, &str); 23] = [
 /// (ADR-005).
 #[cfg(any(target_arch = "wasm32", test))]
 fn restore_saves(local: &mut q2_server::local::LocalGame, files: Vec<(String, Vec<u8>)>) {
-    let mut stored = q2_server::local::SaveFiles::default();
+    use q2_server::local::SaveFiles;
+    let mut stored = SaveFiles::default();
     for (path, bytes) in files {
         stored.insert(&path, bytes);
     }
-    let slot_of = |path: &str| {
-        path.rsplit_once('/')
-            .map_or("", |(slot, _)| slot)
-            .to_string()
-    };
+    let slots: std::collections::BTreeSet<&str> = stored
+        .iter()
+        .map(|(path, _)| SaveFiles::slot_of(path))
+        .filter(|&slot| slot != "current")
+        .collect();
     // A restored slot replaces the new game's whole: no mixed save0.
     let replaced: Vec<String> = local
         .saves()
         .iter()
-        .map(|(path, _)| path.to_string())
+        .map(|(path, _)| path)
         .filter(|path| {
-            let slot = slot_of(path);
-            slot != "current"
-                && stored.iter().any(|(kept, _)| slot_of(kept) == slot)
-                && stored.iter().all(|(kept, _)| kept != path)
+            slots.contains(SaveFiles::slot_of(path)) && saved_file(&stored, path).is_none()
         })
+        .map(str::to_string)
         .collect();
     for path in replaced {
         local.saves_mut().discard(&path);
     }
     for (path, bytes) in stored.iter() {
-        let slot = slot_of(path);
-        if slot == "current" {
-            if local.saves().iter().all(|(own, _)| own != path) {
+        if SaveFiles::slot_of(path) == "current" {
+            if saved_file(local.saves(), path).is_none() {
                 local.saves_mut().discard(path);
             }
         } else {
             local.saves_mut().insert(path, bytes.to_vec());
         }
     }
+}
+
+/// `saves`' file at a `<slot>/<file>` path, split as the server splits it.
+#[cfg(any(target_arch = "wasm32", test))]
+fn saved_file<'a>(saves: &'a q2_server::local::SaveFiles, path: &str) -> Option<&'a [u8]> {
+    let slot = q2_server::local::SaveFiles::slot_of(path);
+    saves.file(slot, path.get(slot.len() + 1..)?)
 }
 
 // The page's save store (`window.qwasm2Saves`), which keeps each file in
