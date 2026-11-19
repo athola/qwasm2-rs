@@ -3,8 +3,10 @@
 //! A game file holds what survives a level change (`GameLocals` and every
 //! client record); a level file holds one level's `LevelLocals` and
 //! entities. The server stores them as C's `game.ssv` and `<map>.sav`.
-//! The encoding is the port's own (postcard): C's files are raw struct
-//! dumps tied to one build, so there is nothing to be compatible with.
+//! The encoding is the port's own (postcard): C writes its structs as they
+//! lie in memory, with function and move pointers swapped for names, so its
+//! files are tied to C's struct layout, OS and architecture, and there is
+//! nothing to be compatible with.
 
 pub mod fields;
 pub mod registry;
