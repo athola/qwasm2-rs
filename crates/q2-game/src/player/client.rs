@@ -62,6 +62,9 @@ impl GameWorld {
             self.gi
                 .dprintf(&format!("{} connected\n", client.pers.netname));
         }
+        // On every path: a `pers` kept from an autosave was stored
+        // unconnected by read_level.
+        client.pers.connected = true;
         self.clients[slot] = client;
         let ent = self.entities.get_mut(key)?;
         ent.client = Some(slot);

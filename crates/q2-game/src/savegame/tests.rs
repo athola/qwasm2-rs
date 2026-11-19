@@ -299,6 +299,21 @@ fn an_autosave_keeps_the_inventory_on_a_fresh_body() {
 }
 
 #[test]
+fn a_player_entering_from_an_autosave_is_connected() {
+    // The level file leaves the body out, and read_level marks the client
+    // unconnected, so ClientConnect copies an unconnected `pers` from the
+    // autosave; C sets `pers.connected` on every path.
+    use crate::traits::GameExport;
+    let mut world = world_with_player();
+    let autosave = world.write_game(true).unwrap();
+    let level = GameExport::write_level(&mut world, false).unwrap();
+
+    let loaded = load(&autosave, Some(&level));
+    assert!(player(&loaded).1.pers.weapon.is_some(), "the autosave path");
+    assert!(player(&loaded).1.pers.connected);
+}
+
+#[test]
 fn a_manual_save_without_its_level_starts_the_player_afresh() {
     let mut world = world_with_player();
     let key = world.entities.key_for_number(1).unwrap();
