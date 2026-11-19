@@ -9,6 +9,8 @@ All notable changes to qwasm2-rs are documented here.
   `write_level`, `read_level`, `check_game` and `check_level` (C
   `WriteGame`/`ReadGame`/`WriteLevel`/`ReadLevel`), so the server can save
   without naming the game's types
+- `q2_server::MapRequest`'s fields are private; read them through
+  `level()`, `map()`, `spawnpoint()`, `next_server()` and `kind()`
 
 ### Added
 - Save and load (#15): `save <slot>` and `load <slot>` as C registers
@@ -21,7 +23,9 @@ All notable changes to qwasm2-rs are documented here.
 - In the browser, F6 quick-saves, F9 quick-loads and F3 loads the newest
   save (#21). Saves live in IndexedDB, so they and the last autosave
   outlive a page reload; the page restores only slots the current pak
-  can load
+  can load. Each save is stored in one transaction, one tab at a time
+  uses the store, and a store that cannot be read or written says so on
+  the page
 - `make play-retail` builds one web pak from your own retail paks in
   `gamedata/retail/baseq2` (`q2-pak-repack` merges several paks) and the
   devserver serves that directory; nothing from it is committed or
@@ -59,7 +63,10 @@ All notable changes to qwasm2-rs are documented here.
   child does not follow it
 - A game map's name is matched in the pak's lower case
 - `q2-pak-repack` keeps the first of a name repeated in one pak
-- The devserver refuses requests naming a non-loopback host
+- The devserver refuses requests naming a non-loopback host, or a Host
+  header that is not readable text
+- `sv_noreload 1` spawns a visited level fresh, as in C
+- `q2-pak-repack` names the input pak that fails to parse in a merge
 - A repack killed mid-write no longer leaves a truncated pak that make
   serves, the retail pak rebuilds when its pak list changes, `PORT` from
   the environment is honored, and Playwright starts its own server
