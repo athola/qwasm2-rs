@@ -324,36 +324,88 @@ window.clearLog = function() {{
   document.getElementById('status').innerHTML = '';
 }};
 
+// A failure the player must see, on the page's log, which starts hidden.
+function showFailure(text) {{
+  // textContent: error text can carry pak-derived strings; never parse it as HTML.
+  const line = document.createElement('span');
+  line.className = 'fail';
+  line.textContent = text;
+  document.getElementById('status-container').classList.remove('hidden');
+  const statusEl = document.getElementById('status');
+  statusEl.appendChild(line);
+  statusEl.appendChild(document.createTextNode('\n'));
+}}
+
 // Save slots (the server's save/ files) kept in IndexedDB between visits.
-// The engine hands each changed file to qwasm2Saves and goes on; the
-// writes finish in the background, in the order they were made.
+// The engine hands each frame's changed files to qwasm2Saves.commit and
+// goes on. Each batch is written in one transaction, one at a time, so a
+// reload mid-write leaves every slot as it was before a batch or after it.
 const saveDb = await new Promise((resolve, reject) => {{
   const req = indexedDB.open('qwasm2-saves', 1);
   req.onupgradeneeded = () => req.result.createObjectStore('files');
   req.onsuccess = () => resolve(req.result);
   req.onerror = () => reject(req.error);
-}}).catch((e) => {{
-  console.error('[qwasm2-rs] saves will last only this visit:', e);
+}}).catch((err) => {{
+  console.error('[qwasm2-rs] saves will last only this visit:', err);
   return null;
 }});
-// Writes not yet finished, so a test can wait for the store to settle.
-let pendingWrites = 0;
-function saveWrite(act) {{
-  if (!saveDb) return;
-  const tx = saveDb.transaction('files', 'readwrite');
-  pendingWrites++;
-  act(tx.objectStore('files'));
-  tx.oncomplete = () => pendingWrites--;
-  tx.onabort = () => {{
-    pendingWrites--;
-    console.error('[qwasm2-rs] save not kept:', tx.error);
+// Ops not yet in a transaction, by path; a refused batch waits here for
+// the next commit, whose ops for the same path win.
+let queued = new Map();
+// The batch the transaction in flight writes.
+let writing = null;
+let refusalShown = false;
+function writeSaves() {{
+  if (writing || queued.size === 0) return;
+  const batch = queued;
+  queued = new Map();
+  writing = batch;
+  const settle = (error) => {{
+    writing = null;
+    if (!error) {{
+      refusalShown = false;
+      writeSaves();
+      return;
+    }}
+    for (const [path, bytes] of queued) batch.set(path, bytes);
+    queued = batch;
+    console.error('[qwasm2-rs] saves not kept:', error);
+    if (!refusalShown) {{
+      refusalShown = true;
+      showFailure('Saves not kept: ' + error);
+    }}
   }};
+  let tx;
+  try {{
+    tx = saveDb.transaction('files', 'readwrite');
+  }} catch (err) {{
+    settle(err);
+    return;
+  }}
+  let failure = null;
+  tx.oncomplete = () => settle(null);
+  tx.onabort = () => settle(failure || tx.error);
+  try {{
+    const files = tx.objectStore('files');
+    for (const [path, bytes] of batch) {{
+      if (bytes) files.put(bytes, path);
+      else files.delete(path);
+    }}
+  }} catch (err) {{
+    failure = err;
+    tx.abort();
+  }}
 }}
 window.qwasm2Saves = {{
-  // `bytes` views the engine's memory: store a copy.
-  put(path, bytes) {{ saveWrite((files) => files.put(bytes.slice(), path)); }},
-  remove(path) {{ saveWrite((files) => files.delete(path)); }},
-  get pending() {{ return pendingWrites; }},
+  // `ops` holds [path, bytes or null to remove] pairs; the bytes are the
+  // engine's copies, not views of its memory.
+  commit(ops) {{
+    if (!saveDb) return;
+    for (const [path, bytes] of ops) queued.set(path, bytes);
+    writeSaves();
+  }},
+  // Writes not yet finished, so a test can wait for the store to settle.
+  get pending() {{ return writing ? writing.size + queued.size : 0; }},
 }};
 function storedSaves() {{
   if (!saveDb) return Promise.resolve([]);
@@ -392,15 +444,7 @@ try {{
   }});
   await start_game('canvas', pakUrl, saves);
 }} catch (e) {{
-  // textContent: error text can carry pak-derived strings; never parse it as HTML.
-  const line = document.createElement('span');
-  line.className = 'fail';
-  line.textContent = 'ERROR: ' + e;
-  // The console starts hidden; show it so the error is seen.
-  document.getElementById('status-container').classList.remove('hidden');
-  const statusEl = document.getElementById('status');
-  statusEl.appendChild(line);
-  statusEl.appendChild(document.createTextNode('\n'));
+  showFailure('ERROR: ' + e);
   console.error('[qwasm2-rs]', e);
 }}
 </script>
@@ -528,9 +572,49 @@ mod tests {
             "the save store the engine calls"
         );
         assert!(
-            html.contains("get pending() { return pendingWrites; }"),
+            html.contains("get pending() {"),
             "tests wait on the store's writes, not on frames"
         );
+    }
+
+    #[test]
+    fn the_page_writes_each_batch_of_saves_in_one_transaction() {
+        // One transaction per batch: a reload mid-write cannot leave a
+        // slot with some files of a save and some of the one before.
+        let html = generate_html("");
+        let store = html
+            .split("window.qwasm2Saves = {")
+            .nth(1)
+            .and_then(|s| s.split("\n};").next())
+            .expect("save store");
+        assert!(store.contains("commit(ops) {"), "{store}");
+        assert!(!store.contains("put(path"), "no per-file writes: {store}");
+        let write = html
+            .split("function writeSaves() {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .expect("writeSaves");
+        assert_eq!(write.matches(".transaction(").count(), 1, "{write}");
+        // The handlers are set before any put, and a throwing put aborts.
+        let oncomplete = write.find("tx.oncomplete").expect("oncomplete");
+        let put = write.find("files.put(").expect("put");
+        assert!(oncomplete < put && write.find("tx.onabort").unwrap() < put);
+        assert!(write.contains("tx.abort();"), "{write}");
+    }
+
+    #[test]
+    fn a_refused_batch_is_reported_once_and_kept_for_the_next() {
+        let html = generate_html("");
+        let write = html
+            .split("function writeSaves() {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .expect("writeSaves");
+        // Newer ops for a path win over the refused batch's.
+        assert!(write.contains("for (const [path, bytes] of queued) batch.set(path, bytes);"));
+        assert!(write.contains("queued = batch;"));
+        assert!(write.contains("if (!refusalShown) {"), "{write}");
+        assert!(write.contains("showFailure('Saves not kept: ' + error);"));
     }
 
     #[test]
@@ -633,11 +717,17 @@ mod tests {
             .split("} catch (e) {")
             .nth(1)
             .expect("startup catch block");
+        assert!(catch.contains("showFailure('ERROR: ' + e);"), "{catch}");
+        let show = html
+            .split("function showFailure(text) {")
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .expect("showFailure");
         assert!(
-            catch.contains(
+            show.contains(
                 "document.getElementById('status-container').classList.remove('hidden');"
             ),
-            "{catch}"
+            "{show}"
         );
     }
 
@@ -648,6 +738,6 @@ mod tests {
             !html.contains("innerHTML +="),
             "error text must not be parsed as HTML"
         );
-        assert!(html.contains("line.textContent = 'ERROR: ' + e;"));
+        assert!(html.contains("line.textContent = text;"));
     }
 }

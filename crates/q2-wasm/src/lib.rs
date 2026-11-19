@@ -1300,28 +1300,50 @@ fn saved_file<'a>(saves: &'a q2_server::local::SaveFiles, path: &str) -> Option<
     saves.file(slot, path.get(slot.len() + 1..)?)
 }
 
-// The page's save store (`window.qwasm2Saves`), which keeps each file in
-// IndexedDB. The calls return at once; the store writes in the background.
+// The page's save store (`window.qwasm2Saves`), which keeps the files in
+// IndexedDB. The call returns at once; the store writes in the background.
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = put)]
-    fn saves_put(path: &str, bytes: &[u8]) -> Result<(), JsValue>;
-    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = remove)]
-    fn saves_remove(path: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_namespace = qwasm2Saves, js_name = commit)]
+    fn saves_commit(ops: &js_sys::Array) -> Result<(), JsValue>;
 }
 
 /// Hand the save files changed since the last call to the page's store.
-/// A page without one (an embed or test page) keeps saves for the visit.
 #[cfg(target_arch = "wasm32")]
 fn flush_saves(local: &mut q2_server::local::LocalGame) {
-    for (path, bytes) in local.saves_mut().take_changes() {
-        let stored = match &bytes {
-            Some(bytes) => saves_put(&path, bytes),
-            None => saves_remove(&path),
-        };
-        if let Err(e) = stored {
-            console::warn_1(&format!("[qwasm2-rs] save {path} not kept: {e:?}").into());
+    send_saves(local, Vec::new());
+}
+
+/// Hand the page's store the save files changed since the last call and
+/// the removal of `removed`, as one batch of `[path, bytes or null]` ops it
+/// writes whole. A page without a store (an embed or test page) keeps
+/// saves for the visit. If the store throws, the changes go again with the
+/// next batch.
+#[cfg(target_arch = "wasm32")]
+fn send_saves(local: &mut q2_server::local::LocalGame, removed: Vec<String>) {
+    let changes = local.saves_mut().take_changes();
+    if changes.is_empty() && removed.is_empty() {
+        return;
+    }
+    // Reflect::has fails only on a non-object target, and the global is one.
+    if !js_sys::Reflect::has(&js_sys::global(), &"qwasm2Saves".into()).unwrap_or(false) {
+        return;
+    }
+    let ops: js_sys::Array = changes
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.as_deref()))
+        .chain(removed.iter().map(|path| (path.as_str(), None)))
+        .map(|(path, bytes)| {
+            // A copy in JS memory: the store may keep it past this frame.
+            let bytes = bytes.map_or(JsValue::NULL, |b| js_sys::Uint8Array::from(b).into());
+            js_sys::Array::of2(&path.into(), &bytes)
+        })
+        .collect();
+    if let Err(e) = saves_commit(&ops) {
+        console::warn_1(&format!("[qwasm2-rs] saves not handed to the page: {e:?}").into());
+        for (path, _) in &changes {
+            local.saves_mut().unsent(path);
         }
     }
 }
@@ -1896,12 +1918,7 @@ async fn load_engine(
     let refused = restore_saves(&mut local, saves);
     // Send the page the new game's `current`, its autosave if the page had
     // none, and the removal of the files the restore replaced or refused.
-    for path in refused {
-        if let Err(e) = saves_remove(&path) {
-            console::warn_1(&format!("[qwasm2-rs] save {path} not removed: {e:?}").into());
-        }
-    }
-    flush_saves(&mut local);
+    send_saves(&mut local, refused);
     if let Some((origin, ps)) = local.player() {
         log(&format!(
             "Player start: ({:.0}, {:.0}, {:.0}) yaw={:.0}",
