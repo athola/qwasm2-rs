@@ -1,11 +1,13 @@
-//! Generates the save-file name tables (C `savegame/tables/gamefunc_list.h`
-//! and `gamemmove_list.h`, which C checks in and edits by hand).
-//!
-//! A function is registered when its signature is one of the entity
-//! callback types and the crate uses it as a value somewhere (assigns or
-//! passes it rather than calls it). Every `MonsterMove` static is
-//! registered. The generated paths must be visible from the crate root, so
-//! a private callback fails to compile until it is made `pub(crate)`.
+// Generates the save-file name tables (C `savegame/tables/gamefunc_list.h`
+// and `gamemmove_list.h`, which C checks in and edits by hand).
+//
+// A function is registered when its signature is one of the entity
+// callback types and the crate uses it as a value somewhere (assigns or
+// passes it rather than calls it). Every `MonsterMove` static is
+// registered. The generated paths must be visible from the crate root, so
+// a private callback fails to compile until it is made `pub(crate)`.
+//
+// Plain comments, not `//!`: `tests/build_script.rs` includes this file.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -129,14 +131,23 @@ fn join(module: &str, name: &str) -> String {
 
 fn is_test_only(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg")
-            && attr
-                .meta
-                .to_token_stream()
-                .to_string()
-                .replace(' ', "")
-                .contains("test")
+        attr.path().is_ident("cfg") && attr.parse_args().is_ok_and(|pred| needs_test(&pred))
     })
+}
+
+/// Whether cfg predicate `pred` holds only under `cfg(test)`: `test`, or an
+/// `all(..)` with such a term. `not(test)` or `any(test, ..)` may hold
+/// without it.
+fn needs_test(pred: &syn::Meta) -> bool {
+    match pred {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) if list.path.is_ident("all") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|terms| terms.iter().any(needs_test)),
+        _ => false,
+    }
 }
 
 fn scan_items(module: &str, items: &[syn::Item], found: &mut Found) {
@@ -228,5 +239,48 @@ impl<'ast> Visit<'ast> for ValueUses<'_> {
         if let Some(last) = path.path.segments.last() {
             self.0.insert(last.ident.to_string());
         }
+    }
+}
+
+/// Run by `tests/build_script.rs`, which includes this file: a build
+/// script's own tests are never compiled.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan(source: &str) -> Found {
+        let file = syn::parse_file(source).expect("test source parses");
+        let mut found = Found::default();
+        scan_items("m", &file.items, &mut found);
+        found
+    }
+
+    fn callbacks(found: &Found) -> Vec<&str> {
+        found.fns.iter().map(|(_, path)| path.as_str()).collect()
+    }
+
+    const THINK: &str = "(w: &mut GameWorld, k: EntityKey)";
+
+    #[test]
+    fn only_a_test_or_all_test_cfg_leaves_an_item_out() {
+        let source = [
+            ("#[cfg(test)]", "a"),
+            ("#[cfg(all(test, feature = \"x\"))]", "b"),
+            ("#[cfg(not(test))]", "c"),
+            ("#[cfg(feature = \"testing\")]", "d"),
+            ("#[cfg(any(test, debug_assertions))]", "e"),
+            ("", "f"),
+        ]
+        .map(|(cfg, name)| format!("{cfg} fn {name}{THINK} {{}}\n"))
+        .concat();
+        assert_eq!(callbacks(&scan(&source)), ["m::c", "m::d", "m::e", "m::f"]);
+    }
+
+    #[test]
+    fn a_not_test_module_is_scanned() {
+        let source = format!(
+            "#[cfg(test)] mod t {{ fn a{THINK} {{}} }}\n#[cfg(not(test))] mod n {{ fn b{THINK} {{}} }}"
+        );
+        assert_eq!(callbacks(&scan(&source)), ["m::n::b"]);
     }
 }

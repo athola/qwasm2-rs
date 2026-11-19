@@ -18,5 +18,10 @@ postcard = { workspace = true }
 syn = { version = "3", features = ["full", "visit"] }
 quote = "1"
 
+# For tests/build_script.rs, which compiles build.rs as a test.
+[dev-dependencies]
+syn = { version = "3", features = ["full", "visit"] }
+quote = "1"
+
 [lints]
 workspace = true
