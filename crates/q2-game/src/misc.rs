@@ -370,6 +370,7 @@ pub fn gib_die(
     _damage: i32,
     _point: Vec3f,
 ) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(self_key);
 }
 
@@ -544,6 +545,7 @@ pub fn debris_die(
     _damage: i32,
     _point: Vec3f,
 ) {
+    crate::savegame::registry::distinct_body!();
     world.free_entity(self_key);
 }
 

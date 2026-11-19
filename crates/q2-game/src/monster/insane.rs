@@ -341,7 +341,10 @@ static INSANE_FRAMES_STAND_DEATH: [MonsterFrame; 17] = [
     frame(ai::ai_move, 0.0, None),
 ];
 
-static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = [
+/// C's two crawl moves share `insane_frames_crawl`, and C saves tell them
+/// apart by the move's own address. A loaded move here is a copy that
+/// keeps only its frames' address, so each move gets its own frames.
+const CRAWL_FRAMES: [MonsterFrame; 9] = [
     frame(ai::ai_walk, 0.0, Some(insane_scream)),
     frame(ai::ai_walk, 1.5, None),
     frame(ai::ai_walk, 2.1, None),
@@ -352,6 +355,8 @@ static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = [
     frame(ai::ai_walk, 3.4, None),
     frame(ai::ai_walk, 2.4, None),
 ];
+static INSANE_FRAMES_CRAWL: [MonsterFrame; 9] = CRAWL_FRAMES;
+static INSANE_FRAMES_RUNCRAWL: [MonsterFrame; 9] = CRAWL_FRAMES;
 
 static INSANE_FRAMES_CRAWL_PAIN: [MonsterFrame; 9] = [
     frame(ai::ai_move, 0.0, None),
@@ -505,7 +510,7 @@ pub(crate) static INSANE_MOVE_CRAWL: MonsterMove = MonsterMove {
 pub(crate) static INSANE_MOVE_RUNCRAWL: MonsterMove = MonsterMove {
     firstframe: FRAME_CRAWL1,
     lastframe: FRAME_CRAWL9,
-    frames: &INSANE_FRAMES_CRAWL,
+    frames: &INSANE_FRAMES_RUNCRAWL,
     endfunc: None,
 };
 

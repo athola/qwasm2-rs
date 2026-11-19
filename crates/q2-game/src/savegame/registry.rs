@@ -21,17 +21,26 @@ pub trait Callback: Copy + 'static {
     fn addr(self) -> usize;
 }
 
+/// Code run once per callback type: a closure cannot be generic.
+pub(crate) trait TableVisitor {
+    fn visit<F: Callback>(&mut self);
+}
+
 macro_rules! callback {
-    ($($ty:ty => $table:ident),* $(,)?) => {$(
-        impl Callback for $ty {
+    ($($ty:ty => $table:ident),* $(,)?) => {
+        /// Run `visitor` on every callback type.
+        pub(crate) fn visit_tables(visitor: &mut impl TableVisitor) {
+            $(visitor.visit::<$ty>();)*
+        }
+        $(impl Callback for $ty {
             fn table() -> &'static [(&'static str, Self)] {
                 $table
             }
             fn addr(self) -> usize {
                 self as usize
             }
-        }
-    )*};
+        })*
+    };
 }
 
 callback! {
@@ -43,6 +52,47 @@ callback! {
     PainFn => PAIN_FN,
     TouchFn => TOUCH_FN,
     DieFn => DIE_FN,
+}
+
+/// Makes a callback's body unlike every other, so no optimizer merges it
+/// with one that does the same and its saved name stays its own. Each use
+/// hands `black_box` a string naming the call site, which costs a register
+/// move and changes nothing the game sees.
+macro_rules! distinct_body {
+    () => {
+        ::std::hint::black_box(concat!(module_path!(), ":", line!()))
+    };
+}
+pub(crate) use distinct_body;
+
+/// Registered names a save cannot tell apart: callbacks at one address, or
+/// monster moves with one `move_key`, each paired with the next such name.
+/// Optimizers merge functions with identical bodies (LLVM in release
+/// builds, then wasm-opt), and a save then records the first name for all
+/// of them, which loads the wrong function once one body changes. Empty
+/// when every name is exact; `distinct_body!` keeps a body apart.
+pub fn aliased_names() -> Vec<(&'static str, &'static str)> {
+    struct Aliases(Vec<(&'static str, &'static str)>);
+    impl Aliases {
+        fn collect<K: Ord>(&mut self, entries: impl Iterator<Item = (K, &'static str)>) {
+            let mut sorted: Vec<_> = entries.collect();
+            sorted.sort();
+            for pair in sorted.windows(2) {
+                if pair[0].0 == pair[1].0 {
+                    self.0.push((pair[0].1, pair[1].1));
+                }
+            }
+        }
+    }
+    impl TableVisitor for Aliases {
+        fn visit<F: Callback>(&mut self) {
+            self.collect(F::table().iter().map(|&(name, f)| (f.addr(), name)));
+        }
+    }
+    let mut aliases = Aliases(Vec::new());
+    visit_tables(&mut aliases);
+    aliases.collect(MONSTER_MOVES.iter().map(|&(name, mv)| (move_key(mv), name)));
+    aliases.0
 }
 
 /// The registered name of `f`, or `None` for a function the tables lack.
@@ -70,7 +120,7 @@ fn lookup<T: Copy>(table: &[(&'static str, T)], name: &str) -> Option<T> {
 /// What identifies a monster move. `MonsterInfo::currentmove` holds a copy
 /// of the static, so the static's own address is gone; its frames are
 /// another static, whose address is unique, and two moves over the same
-/// frames differ in their range or end function.
+/// frames must differ in their range or end function (`aliased_names`).
 fn move_key(mv: &MonsterMove) -> (usize, usize, i32, i32, Option<usize>) {
     (
         mv.frames.as_ptr() as usize,
@@ -138,6 +188,12 @@ mod tests {
         check::<DieFn>();
     }
 
+    /// Run by CI in release too, where LLVM merges identical bodies.
+    #[test]
+    fn no_two_registered_names_share_a_callback_or_move() {
+        assert_eq!(aliased_names(), Vec::<(&str, &str)>::new());
+    }
+
     #[test]
     fn an_unregistered_function_has_no_name() {
         let local: ThinkFn = not_a_game_callback;
@@ -145,13 +201,11 @@ mod tests {
         assert!(by_name::<ThinkFn>("savegame::registry::tests::not_a_game_callback").is_none());
     }
 
-    /// C's `insane_move_crawl` and `insane_move_runcrawl` are identical, so a
-    /// copy of either names the first: both load back the same frames,
-    /// range and end function.
     #[test]
     fn every_monster_move_loads_back_the_same_move() {
         for &(name, mv) in MONSTER_MOVES {
             let saved = move_name(&mv.clone()).expect("registered");
+            assert_eq!(saved, name);
             let loaded = move_by_name(saved).expect("registered");
             assert_eq!(move_key(loaded), move_key(mv), "{name}");
         }

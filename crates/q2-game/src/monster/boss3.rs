@@ -1219,7 +1219,9 @@ pub fn jorg_attack(world: &mut GameWorld, key: EntityKey) {
 
 /// The death move's end function; does nothing in C either (the move's
 /// last frame starts `BossExplode`). C ref: `jorg_dead`.
-pub fn jorg_dead(_world: &mut GameWorld, _key: EntityKey) {}
+pub fn jorg_dead(_world: &mut GameWorld, _key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
+}
 
 /// C ref: `jorg_die`.
 pub fn jorg_die(
@@ -1242,6 +1244,7 @@ pub fn jorg_die(
 
 /// C ref: `Jorg_CheckAttack`.
 pub fn jorg_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
+    crate::savegame::registry::distinct_body!();
     boss3_checkattack(world, key)
 }
 
@@ -1699,6 +1702,7 @@ pub fn makron_die(
 
 /// C ref: `Makron_CheckAttack`.
 pub fn makron_checkattack(world: &mut GameWorld, key: EntityKey) -> bool {
+    crate::savegame::registry::distinct_body!();
     boss3_checkattack(world, key)
 }
 

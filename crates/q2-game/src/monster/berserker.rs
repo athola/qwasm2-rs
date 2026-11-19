@@ -397,7 +397,9 @@ pub fn berserk_attack_club(world: &mut GameWorld, key: EntityKey) {
 
 /// Does nothing in C either ("Unused, but removal is very PITA"), on the
 /// strike move nothing selects. C ref: `berserk_strike`.
-pub fn berserk_strike(_world: &mut GameWorld, _key: EntityKey) {}
+pub fn berserk_strike(_world: &mut GameWorld, _key: EntityKey) {
+    crate::savegame::registry::distinct_body!();
+}
 
 /// Spike or club, evenly. C ref: `berserk_melee`.
 pub fn berserk_melee(world: &mut GameWorld, key: EntityKey) {
