@@ -139,12 +139,13 @@ fn build_app(root: &Path, gamedata_dir: &Path) -> Router {
 /// Refuse a request whose `Host` is not a loopback name. Binding to
 /// loopback keeps the network out, but a page whose domain rebinds to
 /// 127.0.0.1 still reaches the server, with its own name in `Host`.
+/// Only a missing `Host` passes unchecked; one that is not readable as text
+/// is refused.
 async fn loopback_host_only(req: Request, next: axum::middleware::Next) -> Response<Body> {
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|host| host.to_str().ok());
-    let loopback = host.is_none_or(|host| {
+    let loopback = req.headers().get(header::HOST).is_none_or(|host| {
+        let Ok(host) = host.to_str() else {
+            return false;
+        };
         let name = match host.strip_prefix('[') {
             Some(v6) => v6.split(']').next().unwrap_or_default(),
             None => host.split(':').next().unwrap_or_default(),

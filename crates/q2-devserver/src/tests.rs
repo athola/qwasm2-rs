@@ -330,4 +330,22 @@ async fn a_request_naming_another_host_is_refused_against_dns_rebinding() {
         let resp = get(root.path(), WEB_PAK, &[("host", host)]).await;
         assert_eq!(resp.status(), StatusCode::OK, "{host}");
     }
+    // A Host that is not visible ASCII cannot be read as a name, so it is
+    // refused rather than treated like a missing one.
+    let unreadable = Request::builder()
+        .uri(WEB_PAK)
+        .header(
+            header::HOST,
+            axum::http::HeaderValue::from_bytes(b"localhost\xff").unwrap(),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = build_app(root.path(), &root.path().join("gamedata"))
+        .oneshot(unreadable)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "unreadable host");
+    // A request without Host (HTTP/1.0) stays allowed.
+    let resp = get(root.path(), WEB_PAK, &[]).await;
+    assert_eq!(resp.status(), StatusCode::OK, "no host");
 }
