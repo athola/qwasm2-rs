@@ -52,6 +52,19 @@ jobs:
       - run: test -f gamedata/baseq2/pak0.pak
       - run: make test
 
+  # Release builds merge identical function bodies, so a test that only
+  # passes in debug can hide a broken savegame callback name registry.
+  savegame-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release
+      - run: cargo test --locked --release -p q2-game savegame
+
   # Cargo.toml declares rust-version; check the libraries build on it, not
   # only on the newer toolchain rust-toolchain.toml pins.
   msrv:
