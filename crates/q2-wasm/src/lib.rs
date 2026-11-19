@@ -1348,7 +1348,8 @@ fn send_saves(local: &mut q2_server::local::LocalGame, removed: Vec<String>) {
     }
 }
 
-/// The page's stored files as `[path, Uint8Array]` pairs.
+/// The page's stored files as `[path, Uint8Array]` pairs. An entry that is
+/// not one is skipped with a warning naming its key.
 #[cfg(target_arch = "wasm32")]
 fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
     let Some(saves) = saves else {
@@ -1358,9 +1359,17 @@ fn saves_from_js(saves: Option<js_sys::Array>) -> Vec<(String, Vec<u8>)> {
         .iter()
         .filter_map(|entry| {
             let pair = js_sys::Array::from(&entry);
-            let path = pair.get(0).as_string()?;
-            let bytes = pair.get(1).dyn_into::<js_sys::Uint8Array>().ok()?.to_vec();
-            Some((path, bytes))
+            let (key, bytes) = (pair.get(0), pair.get(1));
+            match (key.as_string(), bytes.dyn_into::<js_sys::Uint8Array>()) {
+                (Some(path), Ok(bytes)) => Some((path, bytes.to_vec())),
+                _ => {
+                    console::warn_2(
+                        &"[qwasm2-rs] stored save skipped, not a path and bytes:".into(),
+                        &key,
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }

@@ -448,7 +448,8 @@ function storedSaves() {{
     req.onsuccess = () => {{
       const cursor = req.result;
       if (!cursor) return resolve(files);
-      files.push([cursor.key, new Uint8Array(cursor.value)]);
+      // As stored: the engine skips a value that is not bytes.
+      files.push([cursor.key, cursor.value]);
       cursor.continue();
     }};
     req.onerror = () => reject(req.error);
@@ -646,7 +647,10 @@ mod tests {
             .nth(1)
             .and_then(|s| s.split("\n});").next())
             .expect("store open");
-        assert!(open.contains("showFailure(ONLY_THIS_VISIT + err);"), "{open}");
+        assert!(
+            open.contains("showFailure(ONLY_THIS_VISIT + err);"),
+            "{open}"
+        );
         // Commits wait until the stored saves are read.
         assert!(html.contains("let saveWritable = false;"));
         assert!(html.contains("if (!saveWritable) return;"));
@@ -681,6 +685,15 @@ mod tests {
             .expect("lock check");
         assert!(refused.contains("showFailure(ONLY_THIS_VISIT + refused);"));
         assert!(refused.contains("saveDb = null;"), "{refused}");
+    }
+
+    #[test]
+    fn stored_saves_reach_the_engine_as_stored() {
+        // new Uint8Array(5) would make a stored number five zero bytes; the
+        // engine skips, and names, a value that is not bytes.
+        let html = generate_html("");
+        assert!(html.contains("files.push([cursor.key, cursor.value]);"));
+        assert!(!html.contains("new Uint8Array(cursor.value)"));
     }
 
     #[test]
