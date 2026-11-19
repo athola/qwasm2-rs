@@ -58,3 +58,22 @@ fn save_commands_print_why_they_refuse() {
     game.change_map(&MapRequest::parse(&level), &common::armor_map())
         .unwrap();
 }
+
+#[test]
+fn the_death_menu_says_why_it_passes_a_save() {
+    let mut game = LocalGame::start("one", &common::armor_map()).unwrap();
+    common::idle(&mut game, 5);
+    run(&mut game, "save older");
+    run(&mut game, "save newer");
+    let game_ssv = game.saves().file("newer", "game.ssv").unwrap().to_vec();
+    game.saves_mut()
+        .insert("newer/game.ssv", game_ssv[..game_ssv.len() / 2].to_vec());
+
+    let (text, _) = run(&mut game, "menu_loadgame");
+    assert!(
+        text.contains("Couldn't load newer: ") && text.contains("game.ssv"),
+        "{text}"
+    );
+    assert!(!text.contains("Couldn't load older"), "{text}");
+    assert!(game.take_map_change().is_some(), "older loads");
+}

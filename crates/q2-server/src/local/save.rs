@@ -486,6 +486,19 @@ impl LocalGame {
         Ok(())
     }
 
+    /// C pushes the load menu; with no menu, load the newest save a load
+    /// can read, saying why each newer one is passed.
+    fn menu_loadgame(&mut self) -> Q2Result<()> {
+        for slot in self.saves.slots() {
+            match self.check_slot(&slot) {
+                Ok(()) => return self.load_game(&slot),
+                Err(e) => tracing::info!(target: SERVER_PRINT_TARGET, "Couldn't load {slot}: {e}"),
+            }
+        }
+        tracing::info!(target: SERVER_PRINT_TARGET, "No savegame to load");
+        Ok(())
+    }
+
     /// The console commands queued since the last call, run in order.
     pub(super) fn run_server_commands(&mut self) -> Q2Result<()> {
         let commands = std::mem::take(&mut *self.server_commands.borrow_mut());
@@ -493,16 +506,7 @@ impl LocalGame {
             match args.as_slice() {
                 [cmd, slot] if cmd == "save" => self.save_game(slot)?,
                 [cmd, slot] if cmd == "load" => self.load_game(slot)?,
-                // C pushes the load menu; with no menu, load the newest save.
-                [cmd] if cmd == "menu_loadgame" => match self
-                    .saves
-                    .slots()
-                    .into_iter()
-                    .find(|slot| self.check_slot(slot).is_ok())
-                {
-                    Some(slot) => self.load_game(&slot.clone())?,
-                    None => tracing::info!(target: SERVER_PRINT_TARGET, "No savegame to load"),
-                },
+                [cmd] if cmd == "menu_loadgame" => self.menu_loadgame()?,
                 // C prints the usage under the long names.
                 [cmd, ..] if cmd == "save" => {
                     tracing::info!(target: SERVER_PRINT_TARGET, "USAGE: savegame <directory>")
