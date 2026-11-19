@@ -102,16 +102,24 @@ pub fn new_world(gi: &std::rc::Rc<q2_server::ServerGameImport>) -> q2_game::worl
     game
 }
 
-/// `frames` game frames of a player standing still.
-pub fn idle(game: &mut q2_server::local::LocalGame, frames: usize) {
+/// `frames` game frames, each with `cmd` thought first.
+pub fn play(game: &mut q2_server::local::LocalGame, frames: usize, cmd: q2_shared::types::UserCmd) {
     for _ in 0..frames {
-        game.think(&q2_shared::types::UserCmd {
-            msec: 100,
-            ..Default::default()
-        })
-        .unwrap();
+        game.think(&cmd).unwrap();
         game.frame(100_000).unwrap();
     }
+}
+
+/// `frames` game frames of a player standing still.
+pub fn idle(game: &mut q2_server::local::LocalGame, frames: usize) {
+    play(
+        game,
+        frames,
+        q2_shared::types::UserCmd {
+            msec: 100,
+            ..Default::default()
+        },
+    );
 }
 
 /// The INFO-and-above log lines written while the returned guard lives,

@@ -10,13 +10,6 @@ use q2_server::local::LocalGame;
 use q2_shared::constants::{STAT_ARMOR, STAT_HEALTH};
 use q2_shared::types::{UserCmd, Vec3f};
 
-fn play(game: &mut LocalGame, frames: usize, cmd: UserCmd) {
-    for _ in 0..frames {
-        game.think(&cmd).unwrap();
-        game.frame(100_000).unwrap();
-    }
-}
-
 fn stat(game: &LocalGame, stat: usize) -> i16 {
     game.player().expect("player in game").1.stats[stat]
 }
@@ -82,7 +75,7 @@ fn loadgame_restores_the_saved_level_and_player() {
         forwardmove: 200,
         ..UserCmd::default()
     };
-    play(&mut game, 8, forward);
+    common::play(&mut game, 8, forward);
     let (origin, _) = game.player().unwrap();
     assert_ne!(
         origin, spawn,
@@ -138,7 +131,7 @@ fn dying_loads_the_latest_save() {
         ..UserCmd::default()
     };
     for _ in 0..60 {
-        play(&mut game, 1, attack);
+        common::play(&mut game, 1, attack);
         common::idle(&mut game, 1);
         if let Some(level) = game.take_map_change() {
             go(&mut game, &level);
