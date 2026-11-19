@@ -15,7 +15,7 @@ use q2_common::error::{Q2Error, Q2Result};
 use q2_game::traits::GameImport;
 use q2_shared::constants::STAT_HEALTH;
 
-use super::{new_game, LocalGame, LOCAL_PLAYER, SERVER_PRINT_TARGET};
+use super::{new_game, Load, LocalGame, LOCAL_PLAYER, SERVER_PRINT_TARGET};
 use crate::init::MapRequest;
 use crate::state::ServerState;
 
@@ -336,7 +336,7 @@ impl LocalGame {
     /// C `SV_CheckForSavegame`, after a map spawned: a level the unit
     /// visited before replaces the fresh one. Coming back to it (not a
     /// manual load) runs it ten seconds first, as if time passed there.
-    pub(super) fn check_for_savegame(&mut self, loading: Option<bool>) -> Q2Result<()> {
+    pub(super) fn check_for_savegame(&mut self, loading: Option<Load>) -> Q2Result<()> {
         let deathmatch = self.gi.cvar("deathmatch", "0") != "0";
         if deathmatch
             || self
@@ -348,7 +348,7 @@ impl LocalGame {
         }
         self.gi.clear_world();
         self.read_level_file()?;
-        let revisit = !matches!(loading, Some(false));
+        let revisit = loading != Some(Load::Exact);
         if revisit {
             let state = std::mem::replace(&mut self.sv.state, ServerState::Loading);
             for _ in 0..REVISIT_FRAMES {
@@ -420,7 +420,10 @@ impl LocalGame {
         let mapcmd = self.read_server_file()?;
         // C sv.state = ss_dead: the level being left is not saved.
         self.sv.state = ServerState::Dead;
-        self.loading = Some(slot == "save0" || slot == "current");
+        self.loading = Some(match slot {
+            "save0" | "current" => Load::Revisit,
+            _ => Load::Exact,
+        });
         *self.next_map.borrow_mut() = Some(mapcmd);
         Ok(())
     }

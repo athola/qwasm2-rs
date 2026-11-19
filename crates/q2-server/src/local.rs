@@ -60,13 +60,24 @@ pub struct LocalGame {
     /// Whether the game data has `maps/<map>.bsp`, as the platform tells
     /// it; a load of a save for a missing map is refused.
     has_map: Box<dyn Fn(&str) -> bool>,
-    /// A `load` waiting for its map: whether it loads an autosave.
-    loading: Option<bool>,
+    /// A `load` waiting for its map.
+    loading: Option<Load>,
     /// `save`, `load` and `menu_loadgame`, as the console queued
     /// them, for `run_server_commands`.
     server_commands: Rc<RefCell<Vec<Vec<String>>>>,
     /// The local client's userinfo, kept for its reconnect after a load.
     userinfo: String,
+}
+
+/// How a `load` brings its level back (C `SV_CheckForSavegame`'s
+/// `isautosave`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Load {
+    /// An autosave (`save0` or `current`): the level runs ten seconds
+    /// first, as a revisit does.
+    Revisit,
+    /// Any other slot: the level comes back as it was saved.
+    Exact,
 }
 
 /// A game as C `SV_InitGameProgs` starts one: one client, `Init` run.
